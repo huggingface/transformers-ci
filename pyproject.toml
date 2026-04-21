@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "transformers-ci"
+version = "0.1.0"
+description = "Shared CI support code for transformers, including OpenTelemetry integration."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+otel = [
+  "opentelemetry-api",
+  "opentelemetry-exporter-otlp",
+  "opentelemetry-sdk",
+  "pytest-opentelemetry",
+]
+pytest-plugin = [
+  "psutil",
+  "pytest>=8.0",
+]
+test = [
+  "psutil",
+  "pytest>=8.0",
+]
+dev = [
+  "opentelemetry-api",
+  "opentelemetry-exporter-otlp",
+  "opentelemetry-sdk",
+  "psutil",
+  "pytest>=8.0",
+  "pytest-opentelemetry",
+]
+
+[project.scripts]
+configure-ci-otel = "transformersci.otel.cli:main"
+pytest-trace-exporter = "transformersci.otel.trace_exporter:main"
+
+[project.entry-points.pytest11]
+transformersci_otel = "transformersci.otel.resource_plugin"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
