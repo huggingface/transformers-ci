@@ -58,6 +58,10 @@ services:
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/pytest-observability-dashboard.json
     volumes:
       - ./pytest-observability-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-dashboard.json
+      - ./pytest-observability-suite-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-suite-dashboard.json
+      - ./pytest-observability-pr-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-pr-dashboard.json
+      - ./pytest-observability-run-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-run-dashboard.json
+      - ./pytest-traceback-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-traceback-dashboard.json
       - ./grafana-dashboard.yaml:/etc/grafana/provisioning/dashboards/grafana-dashboard.yaml
       - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
     depends_on:

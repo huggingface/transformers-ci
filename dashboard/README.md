@@ -9,7 +9,9 @@ It includes:
 - `prometheus.yml`: scrape config for the trace exporter
 - `grafana-datasources.yaml`: provisioned Jaeger and Prometheus data sources
 - `grafana-dashboard.yaml`: dashboard provisioning
-- `pytest-observability-dashboard.json`: the main Grafana dashboard
+- `pytest-observability-dashboard.json`: overview dashboard
+- `pytest-observability-suite-dashboard.json`: per-suite drill-down
+- `pytest-traceback-dashboard.json`: per-trace stacktrace view
 - `data/`: shared local data directory for resource metrics
 
 ## Start The Stack
@@ -39,28 +41,28 @@ docker compose -f dashboard/docker-compose.yml down
 ```sh
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:5317 \
 OTEL_SERVICE_NAME=pytest-observability-demo \
-configure-ci-otel --job-name grafana_demo -- \
+configure-ci-otel --suite grafana_demo -- \
   python3 -m pytest tests/test_cli.py -q
 ```
 
-## Run One Traced Job With CPU And Memory Sampling
+## Run One Traced Suite With CPU And Memory Sampling
 
 ```sh
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:5317 \
 OTEL_SERVICE_NAME=pytest-observability-demo \
-configure-ci-otel --job-name resource_demo -- \
+configure-ci-otel --suite resource_demo -- \
   python3 -m pytest tests/test_demo_workload.py -q \
   --resource-metrics-file dashboard/data/pytest-resource-metrics.jsonl
 ```
 
 ## Build An Average Across Multiple Runs
 
-Reuse the same `--job-name` across repeated runs:
+Reuse the same `--suite` across repeated runs:
 
 ```sh
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:5317 \
 OTEL_SERVICE_NAME=pytest-observability-demo \
-configure-ci-otel --job-name repeat_avg -- \
+configure-ci-otel --suite repeat_avg -- \
   python3 -m pytest tests/test_demo_workload.py -q
 ```
 
@@ -84,6 +86,6 @@ The main panels are:
 
 Useful tags:
 
-- `transformers.test.job`
-- `transformers.test.job.id`
+- `transformers.test.suite`
+- `transformers.test.suite.run`
 - `vcs.change.id`

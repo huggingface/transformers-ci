@@ -28,63 +28,582 @@
       "targetBlank": true,
       "title": "Grafana Explore",
       "type": "link",
-      "url": "http://localhost:3000/explore?orgId=1"
-    },
-    {
-      "targetBlank": true,
-      "title": "Jaeger",
-      "type": "link",
-      "url": "http://localhost:16687"
+      "url": "/explore?orgId=1"
     }
   ],
   "panels": [
     {
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 0,
-        "y": 0
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Last Activity"},
+            "properties": [{"id": "unit", "value": "dateTimeAsLocal"}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Failure Rate"},
+            "properties": [
+              {"id": "unit", "value": "percent"},
+              {
+                "id": "custom.cellOptions",
+                "value": {"mode": "gradient", "type": "color-background"}
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"color": "green", "value": null},
+                    {"color": "orange", "value": 1},
+                    {"color": "red", "value": 10}
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "PR"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View PR",
+                    "url": "/d/pytest-observability-by-pr?var-pr=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
       },
-      "id": 1,
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 0},
+      "id": 10,
       "options": {
-        "content": "## Main Flow\n\n1. Run pytest through `configure-ci-otel`\n2. Copy the `trace_id` from the `OTEL TRACE START` or `OTEL TRACE END` log line\n3. Open Grafana Explore and select the `Jaeger` data source\n4. Use the `TraceID` query type to paste the trace ID directly\n\nUse Jaeger UI when you want the raw upstream interface, but Grafana is the intended main UI for trace lookup and navigation.",
-        "mode": "markdown"
+        "cellHeight": "sm",
+        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "showHeader": true,
+        "sortBy": [{"desc": true, "displayName": "Last Activity"}]
       },
       "pluginVersion": "12.0.0",
-      "title": "Using The UI",
-      "type": "text"
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "topk(10, max by (pr) (pytest_run_start_time_seconds{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\",pr!=\"main\"} * 1000))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Activity"
+        },
+        {
+          "editorMode": "code",
+          "expr": "count by (pr) (pytest_run_start_time_seconds{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\",pr!=\"main\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Runs"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum by (pr) (pytest_run_failed_tests{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\",pr!=\"main\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Failures"
+        },
+        {
+          "editorMode": "code",
+          "expr": "100 * sum by (pr) (pytest_run_failed_tests{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\",pr!=\"main\"}) / sum by (pr) (pytest_run_total_tests{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\",pr!=\"main\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Rate"
+        }
+      ],
+      "title": "Last 10 PRs",
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true
+            },
+            "indexByName": {
+              "pr": 0,
+              "Value #Activity": 1,
+              "Value #Runs": 2,
+              "Value #Failures": 3,
+              "Value #Rate": 4
+            },
+            "renameByName": {
+              "pr": "PR",
+              "Value #Activity": "Last Activity",
+              "Value #Runs": "Runs",
+              "Value #Failures": "Failures",
+              "Value #Rate": "Failure Rate"
+            }
+          }
+        }
+      ],
+      "type": "table"
     },
     {
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 12,
-        "y": 0
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Started"},
+            "properties": [{"id": "unit", "value": "dateTimeAsLocal"}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Failure Rate"},
+            "properties": [
+              {"id": "unit", "value": "percent"},
+              {"id": "custom.cellOptions", "value": {"mode": "gradient", "type": "color-background"}},
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {"color": "green", "value": null},
+                    {"color": "orange", "value": 1},
+                    {"color": "red", "value": 10}
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Trace ID"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View this run",
+                    "url": "/d/pytest-observability-by-run?var-trace_id=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Suite"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View suite details",
+                    "url": "/d/pytest-observability-by-suite?var-suite=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Duration"},
+            "properties": [{"id": "unit", "value": "s"}]
+          }
+        ]
       },
-      "id": 2,
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 6},
+      "id": 11,
       "options": {
-        "content": "## Search Hints\n\nThe wrapper attaches CI and local metadata as resource attributes and Jaeger tags.\n\nUseful filters:\n\n- `service = pytest-observability-demo`\n- `transformers.test.job = grafana_demo`\n- `transformers.test.job.id = ...`\n- `vcs.change.id = ...` in CI\n\nFor local runs, `deployment.environment=local` is also attached.",
-        "mode": "markdown"
+        "cellHeight": "sm",
+        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "showHeader": true,
+        "sortBy": [{"desc": true, "displayName": "Started"}]
       },
       "pluginVersion": "12.0.0",
-      "title": "Search Filters",
-      "type": "text"
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "topk(10, pytest_run_start_time_seconds{service_name=~\"$service\",test_suite=~\"$suite\",pr=\"main\"} * 1000)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Main Branch - Last 10 Runs",
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {"mode": "columns", "valueLabel": ""}
+        },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {"destinationType": "number", "targetField": "total_tests"},
+              {"destinationType": "number", "targetField": "failed_tests"},
+              {"destinationType": "number", "targetField": "total_duration_seconds"},
+              {"destinationType": "number", "targetField": "failure_rate_percent"}
+            ]
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "pr": true,
+              "provider": true,
+              "service_name": true
+            },
+            "indexByName": {},
+            "renameByName": {
+              "Value": "Started",
+              "total_tests": "Total",
+              "failed_tests": "Failures",
+              "total_duration_seconds": "Duration",
+              "failure_rate_percent": "Failure Rate",
+              "test_suite": "Suite",
+              "trace_id": "Trace ID"
+            }
+          }
+        }
+      ],
+      "type": "table"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Trace ID"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View this run",
+                    "url": "/d/pytest-observability-by-run?var-trace_id=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Started"},
+            "properties": [{"id": "unit", "value": "dateTimeAsLocal"}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Suite"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View suite details",
+                    "url": "/d/pytest-observability-by-suite?var-suite=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "PR"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View PR",
+                    "url": "/d/pytest-observability-by-pr?var-pr=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Error"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View traceback",
+                    "url": "/d/pytest-traceback?var-trace_id=${__data.fields[\"Last Failure\"]}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
-        "y": 9
+        "y": 12
       },
-      "id": 3,
+      "id": 8,
       "options": {
-        "content": "## Current Demo Settings\n\n- Collector endpoint: `http://localhost:5317`\n- Grafana: `http://localhost:3000`\n- Jaeger: `http://localhost:16687`\n- Recommended service name: `pytest-observability-demo`\n- Recommended job name: `grafana_demo`\n\nThe slow-test table is now based on average duration across all fetched traces in the exporter lookback window.",
-        "mode": "markdown"
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Started"
+          }
+        ]
       },
       "pluginVersion": "12.0.0",
-      "title": "Demo Configuration",
-      "type": "text"
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "topk(10, pytest_run_start_time_seconds{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"} * 1000)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Last 10 Runs",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "provider": true,
+              "service_name": true
+            },
+            "indexByName": {
+              "Value": 0,
+              "pr": 1,
+              "test_suite": 2,
+              "trace_id": 3
+            },
+            "renameByName": {
+              "Value": "Started",
+              "pr": "PR",
+              "test_suite": "Suite",
+              "trace_id": "Trace ID"
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last Failure"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open last failing trace",
+                    "url": "/explore?schemaVersion=1&orgId=1&panes=%7B%22jg%22:%7B%22datasource%22:%22jaeger%22,%22queries%22:%5B%7B%22query%22:%22${__data.fields[\"Last Failure\"]}%22,%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22jaeger%22,%22uid%22:%22jaeger%22%7D%7D%5D,%22range%22:%7B%22from%22:%22now-1h%22,%22to%22:%22now%22%7D,%22panelsState%22:%7B%22trace%22:%7B%22spanFilters%22:%7B%22tags%22:%5B%7B%22id%22:%22err%22,%22operator%22:%22=%22,%22key%22:%22otel.status_code%22,%22value%22:%22ERROR%22%7D%5D%7D%7D%7D%7D%7D",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Suite"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View suite details",
+                    "url": "/d/pytest-observability-by-suite?var-suite=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Error"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View traceback",
+                    "url": "/d/pytest-traceback?var-trace_id=${__data.fields[\"Last Failure\"]}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      },
+      "id": 9,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Failures"
+          }
+        ]
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "topk(10, (pytest_test_failure_count{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"} > 0) * on(test_nodeid, test_suite, service_name, provider, pr) group_left(trace_id, exception_type) last_over_time(pytest_test_last_failure_info{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"}[30s]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Top 10 Failing Tests",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "provider": true,
+              "service_name": true,
+              "test_class": true,
+              "test_module": true,
+              "test_nodeid": true
+            },
+            "indexByName": {
+              "test_suite": 0,
+              "test_function": 1,
+              "exception_type": 2,
+              "trace_id": 3,
+              "Value": 4
+            },
+            "renameByName": {
+              "Value": "Failures",
+              "exception_type": "Error",
+              "test_function": "Function",
+              "test_suite": "Suite",
+              "trace_id": "Last Failure"
+            }
+          }
+        }
+      ],
+      "type": "table"
     },
     {
       "datasource": {
@@ -114,13 +633,44 @@
           },
           "unit": "s"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Suite"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View suite details",
+                    "url": "/d/pytest-observability-by-suite?var-suite=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Error"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View traceback",
+                    "url": "/d/pytest-traceback?var-trace_id=${__data.fields[\"Last Failure\"]}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 14,
         "w": 24,
         "x": 0,
-        "y": 25
+        "y": 20
       },
       "id": 4,
       "options": {
@@ -139,7 +689,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sort_desc(pytest_test_average_duration_seconds{service_name=~\"$service\",test_job=~\"$job\"})",
+          "expr": "sort_desc(pytest_test_average_duration_seconds{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"} > 10)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -158,202 +708,28 @@
                       "instance": true,
                       "job": true,
                       "provider": true,
+                      "service_name": true,
                       "status_code": true,
                       "test_nodeid": true
                     },
                     "indexByName": {
-                      "test_module": 0,
-                      "test_class": 1,
-                      "test_function": 2,
-                      "service_name": 3,
-                      "test_job": 4,
-                      "trace_id": 5,
-                      "Value": 6
+                      "Value": 0,
+                      "test_suite": 1,
+                      "test_module": 2,
+                      "test_class": 3,
+                      "test_function": 4
                     },
                     "renameByName": {
-                      "Value": "Avg Duration (s)",
+                      "Value": "Avg Duration",
                       "test_module": "Module",
                       "test_class": "Class",
                       "test_function": "Function",
-                      "service_name": "Service",
-                      "test_job": "Job",
-                      "trace_id": "Trace ID"
+                      "test_suite": "Suite"
                     }
                   }
         }
       ],
       "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 4,
-        "x": 0,
-        "y": 17
-      },
-      "id": 5,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "value"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "pytest_trace_exporter_trace_count",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Aggregated Traces",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 10,
-        "x": 4,
-        "y": 17
-      },
-      "id": 6,
-      "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showUnfilled": true
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "sort_desc(topk(10, pytest_test_average_cpu_time_seconds{service_name=~\"$service\",test_job=~\"$job\"}))",
-          "instant": true,
-          "legendFormat": "{{test_module}}::{{test_function}}",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Highest Avg CPU Time",
-      "type": "bargauge"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              }
-            ]
-          },
-          "unit": "decbytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 10,
-        "x": 14,
-        "y": 17
-      },
-      "id": 7,
-      "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showUnfilled": true
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "sort_desc(topk(10, pytest_test_average_rss_peak_bytes{service_name=~\"$service\",test_job=~\"$job\"}))",
-          "instant": true,
-          "legendFormat": "{{test_module}}::{{test_function}}",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Highest Avg Peak RSS",
-      "type": "bargauge"
     }
   ],
   "schemaVersion": 41,
@@ -401,17 +777,36 @@
           "type": "prometheus",
           "uid": "prometheus"
                 },
-                "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_job)",
+                "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_suite)",
                 "includeAll": true,
-                "label": "Job",
+                "label": "Suite",
                 "multi": false,
-        "name": "job",
+        "name": "suite",
                 "options": [],
                 "query": {
                   "qryType": 1,
-                  "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_job)",
-                  "refId": "Prometheus-job-Variable-Query"
+                  "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_suite)",
+                  "refId": "Prometheus-suite-Variable-Query"
                 },
+        "refresh": 1,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {"selected": true, "text": "All", "value": "$__all"},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\",test_suite=~\"$suite\"}, pr)",
+        "includeAll": true,
+        "label": "PR",
+        "multi": false,
+        "name": "pr",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\",test_suite=~\"$suite\"}, pr)",
+          "refId": "Prometheus-pr-Variable-Query"
+        },
         "refresh": 1,
         "sort": 1,
         "type": "query"

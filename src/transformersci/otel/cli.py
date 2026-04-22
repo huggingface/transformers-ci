@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 
 
 DEFAULT_SERVICE_NAME = "transformers-tests"
-DEFAULT_LOCAL_JOB_NAME = "local_pytest"
+DEFAULT_LOCAL_SUITE = "local_pytest"
 LOCAL_PROVIDER = "local"
 
 
@@ -27,12 +27,12 @@ def detect_provider(env: Mapping[str, str]) -> str:
     return LOCAL_PROVIDER
 
 
-def default_job_name(env: Mapping[str, str], provider: str) -> str:
+def default_suite(env: Mapping[str, str], provider: str) -> str:
     if provider == "github_actions":
         return env.get("GITHUB_JOB", "github_actions_pytest")
     if provider == "circleci":
         return env.get("CIRCLE_JOB", "circleci_pytest")
-    return DEFAULT_LOCAL_JOB_NAME
+    return DEFAULT_LOCAL_SUITE
 
 
 def append_resource_attributes(existing: str | None, new_attributes: Sequence[str]) -> str:
@@ -86,14 +86,14 @@ def circleci_pr_number(env: Mapping[str, str]) -> str | None:
     return None
 
 
-def job_instance_id(env: Mapping[str, str], provider: str, job_name: str) -> str | None:
+def suite_run_id(env: Mapping[str, str], provider: str, suite: str) -> str | None:
     if provider == "github_actions":
         run_id = env.get("GITHUB_RUN_ID")
         if not run_id:
             return None
 
         run_attempt = env.get("GITHUB_RUN_ATTEMPT")
-        segments = [run_id, job_name]
+        segments = [run_id, suite]
         if run_attempt:
             segments.append(run_attempt)
         return ":".join(segments)
@@ -105,17 +105,17 @@ def job_instance_id(env: Mapping[str, str], provider: str, job_name: str) -> str
 
         workflow_id = env.get("CIRCLE_WORKFLOW_ID")
         if workflow_id:
-            return f"{workflow_id}:{job_name}"
+            return f"{workflow_id}:{suite}"
 
     return None
 
 
-def build_resource_attributes(env: Mapping[str, str], provider: str, job_name: str) -> list[str]:
+def build_resource_attributes(env: Mapping[str, str], provider: str, suite: str) -> list[str]:
     if provider == "github_actions":
         attributes = [
             "deployment.environment=ci",
             "transformers.test.provider=github_actions",
-            f"transformers.test.job={job_name}",
+            f"transformers.test.suite={suite}",
             f"cicd.pipeline.run.id={env.get('GITHUB_RUN_ID', 'unknown')}",
             f"cicd.pipeline.task.name={env.get('GITHUB_JOB', 'unknown')}",
             f"vcs.ref.head.name={env.get('GITHUB_REF_NAME', 'unknown')}",
@@ -124,18 +124,18 @@ def build_resource_attributes(env: Mapping[str, str], provider: str, job_name: s
             "vcs.provider.name=github",
         ]
         pr_number = github_pr_number(env)
-        resolved_job_instance_id = job_instance_id(env, provider, job_name)
+        resolved_suite_run_id = suite_run_id(env, provider, suite)
         if pr_number is not None:
             attributes.append(f"vcs.change.id={pr_number}")
-        if resolved_job_instance_id is not None:
-            attributes.append(f"transformers.test.job.id={resolved_job_instance_id}")
+        if resolved_suite_run_id is not None:
+            attributes.append(f"transformers.test.suite.run={resolved_suite_run_id}")
         return attributes
 
     if provider == "circleci":
         attributes = [
             "deployment.environment=ci",
             "transformers.test.provider=circleci",
-            f"transformers.test.job={job_name}",
+            f"transformers.test.suite={suite}",
             f"cicd.pipeline.run.id={env.get('CIRCLE_WORKFLOW_ID', 'unknown')}",
             f"cicd.pipeline.task.name={env.get('CIRCLE_JOB', 'unknown')}",
             f"vcs.ref.head.name={env.get('CIRCLE_BRANCH', 'unknown')}",
@@ -144,17 +144,17 @@ def build_resource_attributes(env: Mapping[str, str], provider: str, job_name: s
             "vcs.provider.name=github",
         ]
         pr_number = circleci_pr_number(env)
-        resolved_job_instance_id = job_instance_id(env, provider, job_name)
+        resolved_suite_run_id = suite_run_id(env, provider, suite)
         if pr_number is not None:
             attributes.append(f"vcs.change.id={pr_number}")
-        if resolved_job_instance_id is not None:
-            attributes.append(f"transformers.test.job.id={resolved_job_instance_id}")
+        if resolved_suite_run_id is not None:
+            attributes.append(f"transformers.test.suite.run={resolved_suite_run_id}")
         return attributes
 
     return [
         "deployment.environment=local",
         f"transformers.test.provider={LOCAL_PROVIDER}",
-        f"transformers.test.job={job_name}",
+        f"transformers.test.suite={suite}",
     ]
 
 
@@ -224,7 +224,7 @@ def emit_trace_log(phase: str, trace_id: str, env: Mapping[str, str], command: S
     details = [
         f"trace_id={trace_id}",
         f"service={env.get('OTEL_SERVICE_NAME', DEFAULT_SERVICE_NAME)}",
-        f"job={env.get('TRANSFORMERS_TEST_OTEL_JOB_NAME', DEFAULT_LOCAL_JOB_NAME)}",
+        f"suite={env.get('TRANSFORMERS_TEST_OTEL_SUITE', DEFAULT_LOCAL_SUITE)}",
     ]
     if exit_code is not None:
         details.append(f"exit_code={exit_code}")
@@ -236,7 +236,7 @@ def emit_trace_log(phase: str, trace_id: str, env: Mapping[str, str], command: S
 def prepare_environment(
     env: Mapping[str, str],
     *,
-    job_name: str | None = None,
+    suite: str | None = None,
     service_name: str | None = None,
     force_export_traces: bool = False,
 ) -> tuple[dict[str, str], bool]:
@@ -247,15 +247,29 @@ def prepare_environment(
         return updated_env, False
 
     provider = detect_provider(env)
-    resolved_job_name = job_name or env.get("TRANSFORMERS_TEST_OTEL_JOB_NAME") or default_job_name(env, provider)
+    resolved_suite = suite or env.get("TRANSFORMERS_TEST_OTEL_SUITE") or default_suite(env, provider)
     resolved_service_name = service_name or env.get("OTEL_SERVICE_NAME") or DEFAULT_SERVICE_NAME
+    resolved_pr = env.get("TRANSFORMERS_TEST_OTEL_PR")
+    if resolved_pr is None:
+        if provider == "github_actions":
+            resolved_pr = github_pr_number(env)
+        elif provider == "circleci":
+            resolved_pr = circleci_pr_number(env)
 
-    updated_env["TRANSFORMERS_TEST_OTEL_JOB_NAME"] = resolved_job_name
+    updated_env["TRANSFORMERS_TEST_OTEL_SUITE"] = resolved_suite
     updated_env["OTEL_SERVICE_NAME"] = resolved_service_name
+    if resolved_pr:
+        updated_env["TRANSFORMERS_TEST_OTEL_PR"] = resolved_pr
     updated_env.setdefault("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+    attributes = build_resource_attributes(env, provider, resolved_suite)
+    # The GHA/CircleCI branches in build_resource_attributes already emit
+    # vcs.change.id. For local runs, surface TRANSFORMERS_TEST_OTEL_PR as the
+    # same attribute so the exporter can label metrics by PR.
+    if resolved_pr and provider == LOCAL_PROVIDER:
+        attributes.append(f"vcs.change.id={resolved_pr}")
     updated_env["OTEL_RESOURCE_ATTRIBUTES"] = append_resource_attributes(
         env.get("OTEL_RESOURCE_ATTRIBUTES"),
-        build_resource_attributes(env, provider, resolved_job_name),
+        attributes,
     )
 
     return updated_env, True
@@ -274,7 +288,7 @@ def augment_pytest_command(command: Sequence[str], *, export_traces: bool) -> li
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run pytest with OpenTelemetry configured for CI or local testing.")
-    parser.add_argument("--job-name", help="Override the OpenTelemetry job name attribute.")
+    parser.add_argument("--suite", help="Override the test suite attribute (transformers.test.suite).")
     parser.add_argument("--service-name", help="Override the OpenTelemetry service.name.")
     parser.add_argument(
         "--force-export-traces",
@@ -298,7 +312,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     env, export_traces = prepare_environment(
         os.environ,
-        job_name=args.job_name,
+        suite=args.suite,
         service_name=args.service_name,
         force_export_traces=args.force_export_traces,
     )
@@ -310,7 +324,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.dumps(
                 {
                     "export_traces": export_traces,
-                    "job_name": env.get("TRANSFORMERS_TEST_OTEL_JOB_NAME"),
+                    "suite": env.get("TRANSFORMERS_TEST_OTEL_SUITE"),
                     "service_name": env.get("OTEL_SERVICE_NAME"),
                     "resource_attributes": env.get("OTEL_RESOURCE_ATTRIBUTES"),
                     "trace_id": trace_id,

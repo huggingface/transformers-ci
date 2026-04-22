@@ -138,9 +138,10 @@ def write_resource_record(item: pytest.Item, metrics: dict[str, float | int]) ->
     path.parent.mkdir(parents=True, exist_ok=True)
     node_parts = split_pytest_nodeid(item.nodeid)
     record: dict[str, Any] = {
+        "pr": os.getenv("TRANSFORMERS_TEST_OTEL_PR", "none"),
         "provider": detect_provider(),
         "service_name": os.getenv("OTEL_SERVICE_NAME", "transformers-tests"),
-        "test_job": os.getenv("TRANSFORMERS_TEST_OTEL_JOB_NAME", "local_pytest"),
+        "test_suite": os.getenv("TRANSFORMERS_TEST_OTEL_SUITE", "local_pytest"),
         "test_nodeid": item.nodeid,
         "timestamp": time.time(),
         **node_parts,

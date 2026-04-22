@@ -43,6 +43,22 @@ def tag_map(items: list[dict]) -> dict[str, str]:
     return mapped
 
 
+def extract_exception_info(span: dict) -> tuple[str, str]:
+    logs = span.get("logs", [])
+    if not isinstance(logs, list):
+        return "", ""
+    for log in logs:
+        if not isinstance(log, dict):
+            continue
+        fields = tag_map(log.get("fields", []))
+        if fields.get("event") == "exception":
+            stacktrace = fields.get("exception.stacktrace", "")
+            if len(stacktrace) > 4000:
+                stacktrace = stacktrace[:4000] + "\n... (truncated)"
+            return fields.get("exception.type", ""), stacktrace
+    return "", ""
+
+
 def split_pytest_nodeid(nodeid: str) -> dict[str, str]:
     parts = nodeid.split("::")
     module_path = parts[0] if parts else ""
@@ -122,8 +138,9 @@ def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str
     if not isinstance(trace_id, str) or not isinstance(spans, list) or not isinstance(processes, dict):
         return {"trace_id": "unknown", "latest_start_time": 0}, []
 
-    process_job = ""
+    process_suite = ""
     process_provider = ""
+    process_pr = ""
     service_name = ""
     latest_start_time = 0
     rows: list[dict[str, str | float]] = []
@@ -139,8 +156,12 @@ def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str
         process = processes.get(span.get("processID"), {})
         process_tags = tag_map(process.get("tags", [])) if isinstance(process, dict) else {}
         service_name = process.get("serviceName", service_name) if isinstance(process, dict) else service_name
-        process_job = process_tags.get("transformers.test.job", process_job)
+        process_suite = process_tags.get(
+            "transformers.test.suite",
+            process_tags.get("transformers.test.job", process_suite),
+        )
         process_provider = process_tags.get("transformers.test.provider", process_provider)
+        process_pr = process_tags.get("vcs.change.id", process_pr)
 
         span_tags = tag_map(span.get("tags", []))
         nodeid = span_tags.get("pytest.nodeid")
@@ -150,15 +171,19 @@ def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str
             continue
 
         node_parts = split_pytest_nodeid(nodeid)
+        exc_type, exc_stacktrace = extract_exception_info(span)
         rows.append(
             {
                 "duration_seconds": int(span.get("duration", 0)) / 1_000_000,
+                "exception_type": exc_type,
+                "exception_stacktrace": exc_stacktrace,
+                "pr": process_pr or "none",
                 "provider": process_provider or "unknown",
                 "service_name": service_name or "unknown",
                 "status_code": span_tags.get("otel.status_code", "UNSET"),
                 "test_class": node_parts["test_class"],
                 "test_function": node_parts["test_function"],
-                "test_job": process_job or "unknown",
+                "test_suite": process_suite or "unknown",
                 "test_module": node_parts["test_module"],
                 "test_nodeid": nodeid,
                 "trace_id": trace_id,
@@ -167,47 +192,149 @@ def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str
 
     return {
         "latest_start_time": latest_start_time,
+        "pr": process_pr or "none",
         "provider": process_provider or "unknown",
         "service_name": service_name or "unknown",
-        "test_job": process_job or "unknown",
+        "test_suite": process_suite or "unknown",
         "trace_id": trace_id,
     }, rows
 
 
 def extract_latest_trace_metrics(trace: dict) -> list[str]:
-    trace_info, rows = extract_trace_rows(trace)
-    lines = [
-        "# HELP pytest_test_duration_seconds Duration of pytest test spans from the latest trace.",
-        "# TYPE pytest_test_duration_seconds gauge",
-        "# HELP pytest_latest_trace_info Metadata for the latest pytest trace visible to the exporter.",
-        "# TYPE pytest_latest_trace_info gauge",
-    ]
+    """Emit the small set of 'latest-trace' markers.
 
-    for row in rows:
-        labels = {
-            "test_job": str(row["test_job"]),
-            "provider": str(row["provider"]),
-            "service_name": str(row["service_name"]),
-            "status_code": str(row["status_code"]),
-            "test_class": str(row["test_class"]),
-            "test_function": str(row["test_function"]),
-            "test_module": str(row["test_module"]),
-            "test_nodeid": str(row["test_nodeid"]),
-            "trace_id": str(row["trace_id"]),
-        }
-        lines.append(f"pytest_test_duration_seconds{metric_labels(labels)} {float(row['duration_seconds']):.9f}")
-
+    Per-test duration is now emitted for every trace in the lookback via
+    ``extract_per_run_metrics`` — this function only emits the pointer
+    markers used by a few legacy panels.
+    """
+    trace_info, _ = extract_trace_rows(trace)
     info_labels = {
-        "test_job": str(trace_info["test_job"]),
+        "pr": str(trace_info["pr"]),
+        "test_suite": str(trace_info["test_suite"]),
         "provider": str(trace_info["provider"]),
         "service_name": str(trace_info["service_name"]),
         "trace_id": str(trace_info["trace_id"]),
     }
-    lines.append(f"pytest_latest_trace_info{metric_labels(info_labels)} 1")
-    lines.append(
-        "pytest_latest_trace_start_time_seconds"
-        f"{metric_labels(info_labels)} {int(trace_info['latest_start_time']) / 1_000_000:.6f}"
-    )
+    return [
+        "# HELP pytest_latest_trace_info Metadata for the latest pytest trace visible to the exporter.",
+        "# TYPE pytest_latest_trace_info gauge",
+        f"pytest_latest_trace_info{metric_labels(info_labels)} 1",
+        f"pytest_latest_trace_start_time_seconds{metric_labels(info_labels)} {int(trace_info['latest_start_time']) / 1_000_000:.6f}",
+    ]
+
+
+def extract_pr_last_failure_metrics(traces: list[dict]) -> list[str]:
+    """Emit one ``pytest_pr_last_failure_info`` series per PR with a failure.
+
+    Picks the most recent failing test across all runs of the PR. When the PR
+    has no failures, no sample is emitted — used by the PR dashboard's Last
+    Error panel with a repeat so the panel hides entirely when no data.
+    """
+    per_pr: dict[str, tuple[int, dict[str, str]]] = {}
+    for trace in traces:
+        trace_info, rows = extract_trace_rows(trace)
+        if not rows:
+            continue
+        start_time = int(trace_info.get("latest_start_time", 0) or 0)
+        pr = str(trace_info.get("pr", "none"))
+        for row in rows:
+            if str(row["status_code"]) != "ERROR":
+                continue
+            existing = per_pr.get(pr)
+            if existing is None or start_time >= existing[0]:
+                per_pr[pr] = (
+                    start_time,
+                    {
+                        "pr": pr,
+                        "service_name": str(row["service_name"]),
+                        "provider": str(row["provider"]),
+                        "test_suite": str(row["test_suite"]),
+                        "test_function": str(row["test_function"]),
+                        "test_module": str(row["test_module"]),
+                        "test_class": str(row["test_class"]),
+                        "test_nodeid": str(row["test_nodeid"]),
+                        "exception_type": str(row.get("exception_type", "")) or "unknown",
+                        "stacktrace": str(row.get("exception_stacktrace", "")),
+                        "trace_id": str(row["trace_id"]),
+                    },
+                )
+
+    lines = [
+        "# HELP pytest_pr_last_failure_info Metadata of the most recent failing run in a PR.",
+        "# TYPE pytest_pr_last_failure_info gauge",
+    ]
+    for pr, (_, labels) in sorted(per_pr.items()):
+        lines.append(f"pytest_pr_last_failure_info{metric_labels(labels)} 1")
+    return lines
+
+
+def extract_per_run_metrics(traces: list[dict]) -> list[str]:
+    """Emit metrics scoped to each individual pytest run (trace).
+
+    Unlike ``extract_average_metrics`` which aggregates across the lookback
+    window, this produces one sample per (trace_id, test_nodeid) for
+    per-test duration, plus per-trace roll-ups for total and failed test
+    counts. Feeds the PR dashboard (list of runs) and the Run dashboard
+    (list of tests in one run).
+    """
+    lines = [
+        "# HELP pytest_test_duration_seconds Duration of each pytest test span, per run (trace_id label).",
+        "# TYPE pytest_test_duration_seconds gauge",
+        "# HELP pytest_run_start_time_seconds Start time (unix seconds) of a pytest run.",
+        "# TYPE pytest_run_start_time_seconds gauge",
+        "# HELP pytest_run_total_tests Number of tests recorded in a pytest run.",
+        "# TYPE pytest_run_total_tests gauge",
+        "# HELP pytest_run_failed_tests Number of failing tests in a pytest run.",
+        "# TYPE pytest_run_failed_tests gauge",
+        "# HELP pytest_run_duration_seconds Total duration (sum of test span durations) of a pytest run.",
+        "# TYPE pytest_run_duration_seconds gauge",
+    ]
+    for trace in traces:
+        trace_info, rows = extract_trace_rows(trace)
+        if not rows:
+            continue
+
+        for row in rows:
+            test_labels = {
+                "pr": str(row["pr"]),
+                "test_suite": str(row["test_suite"]),
+                "provider": str(row["provider"]),
+                "service_name": str(row["service_name"]),
+                "status_code": str(row["status_code"]),
+                "test_class": str(row["test_class"]),
+                "test_function": str(row["test_function"]),
+                "test_module": str(row["test_module"]),
+                "test_nodeid": str(row["test_nodeid"]),
+                "trace_id": str(row["trace_id"]),
+            }
+            lines.append(
+                f"pytest_test_duration_seconds{metric_labels(test_labels)} {float(row['duration_seconds']):.9f}"
+            )
+
+        total = len(rows)
+        failed = sum(1 for r in rows if str(r["status_code"]) == "ERROR")
+        total_duration = fsum(float(r["duration_seconds"]) for r in rows)
+        start_time_seconds = int(trace_info.get("latest_start_time", 0) or 0) / 1_000_000
+        run_labels = {
+            "pr": str(trace_info.get("pr", "none")),
+            "test_suite": str(trace_info.get("test_suite", "unknown")),
+            "provider": str(trace_info.get("provider", "unknown")),
+            "service_name": str(trace_info.get("service_name", "unknown")),
+            "trace_id": str(trace_info.get("trace_id", "unknown")),
+        }
+        # Bake totals/failures/duration/rate as labels on the start-time metric
+        # so a single Grafana query can drive the Runs table without any merge
+        # or Grafana-side arithmetic.
+        failure_rate_percent = (100.0 * failed / total) if total else 0.0
+        start_labels = dict(run_labels)
+        start_labels["total_tests"] = str(total)
+        start_labels["failed_tests"] = str(failed)
+        start_labels["total_duration_seconds"] = f"{total_duration:.3f}"
+        start_labels["failure_rate_percent"] = f"{failure_rate_percent:.2f}"
+        lines.append(f"pytest_run_start_time_seconds{metric_labels(start_labels)} {start_time_seconds:.6f}")
+        lines.append(f"pytest_run_total_tests{metric_labels(run_labels)} {total}")
+        lines.append(f"pytest_run_failed_tests{metric_labels(run_labels)} {failed}")
+        lines.append(f"pytest_run_duration_seconds{metric_labels(run_labels)} {total_duration:.6f}")
     return lines
 
 
@@ -217,34 +344,51 @@ def extract_average_metrics(traces: list[dict]) -> list[str]:
         "# TYPE pytest_test_average_duration_seconds gauge",
         "# HELP pytest_test_run_count Number of fetched traces that contained a given pytest test span.",
         "# TYPE pytest_test_run_count gauge",
+        "# HELP pytest_test_failure_count Number of fetched traces where this pytest test span failed.",
+        "# TYPE pytest_test_failure_count gauge",
+        "# HELP pytest_test_last_failure_info Pointer to the most recent failing trace for this pytest test span.",
+        "# TYPE pytest_test_last_failure_info gauge",
     ]
-    aggregates: dict[tuple[str, str, str, str], dict[str, str | list[float]]] = {}
+    aggregates: dict[tuple[str, str, str, str, str], dict] = {}
 
     for trace in traces:
-        _, rows = extract_trace_rows(trace)
+        trace_info, rows = extract_trace_rows(trace)
+        trace_start = int(trace_info.get("latest_start_time", 0) or 0)
+        trace_id = str(trace_info.get("trace_id", "unknown"))
         for row in rows:
             key = (
                 str(row["service_name"]),
-                str(row["test_job"]),
+                str(row["test_suite"]),
+                str(row["pr"]),
                 str(row["provider"]),
                 str(row["test_nodeid"]),
             )
             if key not in aggregates:
                 aggregates[key] = {
                     "durations": [],
+                    "failure_count": 0,
+                    "last_failure_start_time": 0,
+                    "last_failure_trace_id": "",
+                    "last_failure_exception_type": "",
+                    "last_failure_stacktrace": "",
                     "test_class": str(row["test_class"]),
                     "test_function": str(row["test_function"]),
                     "test_module": str(row["test_module"]),
                 }
-            durations = aggregates[key]["durations"]
-            assert isinstance(durations, list)
-            durations.append(float(row["duration_seconds"]))
+            aggregates[key]["durations"].append(float(row["duration_seconds"]))
+            if str(row["status_code"]) == "ERROR":
+                aggregates[key]["failure_count"] += 1
+                if trace_start >= aggregates[key]["last_failure_start_time"]:
+                    aggregates[key]["last_failure_start_time"] = trace_start
+                    aggregates[key]["last_failure_trace_id"] = trace_id
+                    aggregates[key]["last_failure_exception_type"] = str(row.get("exception_type", "")) or "unknown"
+                    aggregates[key]["last_failure_stacktrace"] = str(row.get("exception_stacktrace", ""))
 
-    for (service_name, test_job, provider, test_nodeid), aggregate in sorted(aggregates.items()):
+    for (service_name, test_suite, pr, provider, test_nodeid), aggregate in sorted(aggregates.items()):
         durations = aggregate["durations"]
-        assert isinstance(durations, list)
         labels = {
-            "test_job": test_job,
+            "pr": pr,
+            "test_suite": test_suite,
             "provider": provider,
             "service_name": service_name,
             "test_class": str(aggregate["test_class"]),
@@ -256,6 +400,14 @@ def extract_average_metrics(traces: list[dict]) -> list[str]:
             f"pytest_test_average_duration_seconds{metric_labels(labels)} {fsum(durations) / len(durations):.9f}"
         )
         lines.append(f"pytest_test_run_count{metric_labels(labels)} {len(durations)}")
+        failure_count = int(aggregate["failure_count"])
+        lines.append(f"pytest_test_failure_count{metric_labels(labels)} {failure_count}")
+        if failure_count > 0:
+            pointer_labels = dict(labels)
+            pointer_labels["trace_id"] = str(aggregate["last_failure_trace_id"])
+            pointer_labels["exception_type"] = str(aggregate["last_failure_exception_type"])
+            pointer_labels["stacktrace"] = str(aggregate["last_failure_stacktrace"])
+            lines.append(f"pytest_test_last_failure_info{metric_labels(pointer_labels)} 1")
 
     return lines
 
@@ -273,14 +425,15 @@ def extract_average_resource_metrics(records: list[dict[str, str | float | int]]
         "# HELP pytest_test_resource_run_count Number of recorded resource samples for a given test.",
         "# TYPE pytest_test_resource_run_count gauge",
     ]
-    aggregates: dict[tuple[str, str, str, str], dict[str, str | list[float]]] = {}
+    aggregates: dict[tuple[str, str, str, str, str], dict[str, str | list[float]]] = {}
 
     for record in records:
         service_name = str(record.get("service_name", "unknown"))
-        test_job = str(record.get("test_job", "unknown"))
+        test_suite = str(record.get("test_suite", "unknown"))
+        pr = str(record.get("pr", "none"))
         provider = str(record.get("provider", "unknown"))
         test_nodeid = str(record.get("test_nodeid", "unknown"))
-        key = (service_name, test_job, provider, test_nodeid)
+        key = (service_name, test_suite, pr, provider, test_nodeid)
         if key not in aggregates:
             aggregates[key] = {
                 "cpu_time_seconds": [],
@@ -300,9 +453,10 @@ def extract_average_resource_metrics(records: list[dict[str, str | float | int]]
             if isinstance(value, (int, float)):
                 metric_values.append(float(value))
 
-    for (service_name, test_job, provider, test_nodeid), aggregate in sorted(aggregates.items()):
+    for (service_name, test_suite, pr, provider, test_nodeid), aggregate in sorted(aggregates.items()):
         labels = {
-            "test_job": test_job,
+            "pr": pr,
+            "test_suite": test_suite,
             "provider": provider,
             "service_name": service_name,
             "test_class": str(aggregate["test_class"]),
@@ -356,6 +510,8 @@ def render_metrics() -> str:
         "# TYPE pytest_trace_exporter_trace_count gauge",
         f"pytest_trace_exporter_trace_count {len(traces)}",
     ]
+    rendered.extend(extract_per_run_metrics(traces))
+    rendered.extend(extract_pr_last_failure_metrics(traces))
     rendered.extend(extract_average_metrics(traces))
     rendered.extend(extract_average_resource_metrics(resource_records))
 
