@@ -157,38 +157,22 @@ def _wrap_active_tracer_exporters() -> None:
         return
 
     try:
-        from opentelemetry import trace
-    except ImportError:
-        print("OTEL DEBUG opentelemetry not installed, skipping exporter wrap", file=sys.stderr, flush=True)
+        from .debug_exporter import install_debug_logging
+    except ImportError as error:
+        print(f"OTEL DEBUG could not import debug_exporter: {error!r}", file=sys.stderr, flush=True)
         return
 
-    from .debug_exporter import DebugWrappingSpanExporter
-
-    provider = trace.get_tracer_provider()
-    multi = getattr(provider, "_active_span_processor", None)
-    processors = getattr(multi, "_span_processors", ()) if multi is not None else ()
-    if not processors:
+    patched = install_debug_logging()
+    if patched == 0:
         print(
-            f"OTEL DEBUG no span processors on tracer provider {type(provider).__name__} "
-            "— pytest-opentelemetry may not have set up the SDK (is --export-traces present?)",
+            "OTEL DEBUG no OTLP exporter classes available to patch "
+            "(opentelemetry-exporter-otlp not installed?)",
             file=sys.stderr,
             flush=True,
         )
         return
 
-    wrapped = 0
-    for processor in processors:
-        exporter = getattr(processor, "span_exporter", None)
-        if exporter is None or isinstance(exporter, DebugWrappingSpanExporter):
-            continue
-        processor.span_exporter = DebugWrappingSpanExporter(exporter)
-        wrapped += 1
-
-    print(
-        f"OTEL DEBUG wrapped {wrapped} exporter(s) on tracer provider {type(provider).__name__}",
-        file=sys.stderr,
-        flush=True,
-    )
+    print(f"OTEL DEBUG patched export() on {patched} OTLP exporter class(es)", file=sys.stderr, flush=True)
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:

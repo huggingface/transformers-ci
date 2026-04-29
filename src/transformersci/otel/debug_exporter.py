@@ -3,26 +3,13 @@ from __future__ import annotations
 import os
 import sys
 import time
-from typing import TYPE_CHECKING, Sequence
 
 
-if TYPE_CHECKING:
-    from opentelemetry.sdk.trace import ReadableSpan
-    from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+_PATCH_FLAG = "_transformersci_debug_patched"
 
 
-class DebugWrappingSpanExporter:
-    """Logs each export call before delegating to the inner OTLP exporter.
-
-    Used to confirm whether the worker is actually shipping spans to the
-    configured OTLP endpoint — works for both gRPC and HTTP transports
-    because we wrap at the SpanExporter level, not the wire level.
-    """
-
-    def __init__(self, inner: "SpanExporter") -> None:
-        self._inner = inner
-
-    def export(self, spans: "Sequence[ReadableSpan]") -> "SpanExportResult":
+def _make_logging_export(original):
+    def export(self, spans):
         endpoint = (
             os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
             or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -31,7 +18,7 @@ class DebugWrappingSpanExporter:
         protocol = os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
         start = time.monotonic()
         try:
-            result = self._inner.export(spans)
+            result = original(self, spans)
         except BaseException as error:
             duration_ms = (time.monotonic() - start) * 1000
             print(
@@ -52,11 +39,41 @@ class DebugWrappingSpanExporter:
         )
         return result
 
-    def shutdown(self) -> None:
-        self._inner.shutdown()
+    return export
 
-    def force_flush(self, timeout_millis: int = 30_000) -> bool:
-        force_flush = getattr(self._inner, "force_flush", None)
-        if force_flush is None:
-            return True
-        return force_flush(timeout_millis)
+
+def install_debug_logging() -> int:
+    """Monkey-patch OTLP exporter classes' export() to log each call.
+
+    Patches at the class level so it works regardless of how the SDK
+    pipes spans through processors (incl. SDKs where BatchSpanProcessor
+    exposes span_exporter as a read-only property).
+
+    Returns the number of exporter classes patched.
+    """
+    classes = []
+    try:
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+            OTLPSpanExporter as GrpcSpanExporter,
+        )
+
+        classes.append(GrpcSpanExporter)
+    except ImportError:
+        pass
+    try:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter as HttpSpanExporter,
+        )
+
+        classes.append(HttpSpanExporter)
+    except ImportError:
+        pass
+
+    patched = 0
+    for cls in classes:
+        if getattr(cls, _PATCH_FLAG, False):
+            continue
+        cls.export = _make_logging_export(cls.export)
+        setattr(cls, _PATCH_FLAG, True)
+        patched += 1
+    return patched
