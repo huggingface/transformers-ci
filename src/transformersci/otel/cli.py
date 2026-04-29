@@ -6,17 +6,69 @@ import argparse
 import json
 import os
 import secrets
+import socket
 import subprocess
 from collections.abc import Mapping, Sequence
+from urllib.parse import urlparse
 
 
 DEFAULT_SERVICE_NAME = "transformers-tests"
 DEFAULT_LOCAL_SUITE = "local_pytest"
 LOCAL_PROVIDER = "local"
+OTEL_PING_TIMEOUT_SECONDS = 2.0
 
 
 def has_otel_endpoint(env: Mapping[str, str]) -> bool:
     return bool(env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") or env.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
+
+
+def resolve_otel_endpoint(env: Mapping[str, str]) -> tuple[str | None, str | None]:
+    for key in ("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_ENDPOINT"):
+        endpoint = env.get(key)
+        if endpoint:
+            return key, endpoint
+
+    return None, None
+
+
+def endpoint_target(endpoint: str, env: Mapping[str, str]) -> tuple[str, int] | None:
+    parsed = urlparse(endpoint if "://" in endpoint else f"//{endpoint}")
+    if parsed.hostname is None:
+        return None
+
+    port = parsed.port
+    if port is None:
+        protocol = env.get("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+        port = 4318 if protocol == "http/protobuf" else 4317
+
+    return parsed.hostname, port
+
+
+def ping_server(env: Mapping[str, str], *, timeout_seconds: float = OTEL_PING_TIMEOUT_SECONDS) -> bool:
+    endpoint_source, endpoint = resolve_otel_endpoint(env)
+    if endpoint is None:
+        print("OTEL PING SKIPPED endpoint is not configured", flush=True)
+        return False
+
+    target = endpoint_target(endpoint, env)
+    if target is None:
+        print(f"OTEL PING FAILED source={endpoint_source} endpoint={endpoint} error=unable to parse host/port", flush=True)
+        return False
+
+    host, port = target
+    try:
+        with socket.create_connection((host, port), timeout=timeout_seconds):
+            print(
+                f"OTEL PING OK source={endpoint_source} endpoint={endpoint} target={host}:{port} timeout={timeout_seconds}s",
+                flush=True,
+            )
+            return True
+    except OSError as error:
+        print(
+            f"OTEL PING FAILED source={endpoint_source} endpoint={endpoint} target={host}:{port} timeout={timeout_seconds}s error={error}",
+            flush=True,
+        )
+        return False
 
 
 def detect_provider(env: Mapping[str, str]) -> str:
@@ -291,6 +343,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--suite", help="Override the test suite attribute (transformers.test.suite).")
     parser.add_argument("--service-name", help="Override the OpenTelemetry service.name.")
     parser.add_argument(
+        "--ping-server",
+        action="store_true",
+        help="Best-effort TCP connectivity check for the configured OTLP endpoint. Prints a log line and never fails the command.",
+    )
+    parser.add_argument(
         "--force-export-traces",
         action="store_true",
         help="Enable pytest trace exporting even without an explicit OTLP endpoint env var.",
@@ -334,8 +391,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
 
+    if args.ping_server:
+        ping_server(env)
+
     if not command:
-        if args.print_config:
+        if args.print_config or args.ping_server:
             return 0
         raise SystemExit("A command is required after '--'.")
 
