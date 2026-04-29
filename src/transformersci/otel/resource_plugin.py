@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -149,6 +150,49 @@ def write_resource_record(item: pytest.Item, metrics: dict[str, float | int]) ->
     }
     with path.open("a", encoding="utf-8") as output:
         output.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _wrap_active_tracer_exporters() -> None:
+    if os.getenv("TRANSFORMERSCI_OTEL_DEBUG") != "1":
+        return
+
+    try:
+        from opentelemetry import trace
+    except ImportError:
+        print("OTEL DEBUG opentelemetry not installed, skipping exporter wrap", file=sys.stderr, flush=True)
+        return
+
+    from .debug_exporter import DebugWrappingSpanExporter
+
+    provider = trace.get_tracer_provider()
+    multi = getattr(provider, "_active_span_processor", None)
+    processors = getattr(multi, "_span_processors", ()) if multi is not None else ()
+    if not processors:
+        print(
+            f"OTEL DEBUG no span processors on tracer provider {type(provider).__name__} "
+            "— pytest-opentelemetry may not have set up the SDK (is --export-traces present?)",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+
+    wrapped = 0
+    for processor in processors:
+        exporter = getattr(processor, "span_exporter", None)
+        if exporter is None or isinstance(exporter, DebugWrappingSpanExporter):
+            continue
+        processor.span_exporter = DebugWrappingSpanExporter(exporter)
+        wrapped += 1
+
+    print(
+        f"OTEL DEBUG wrapped {wrapped} exporter(s) on tracer provider {type(provider).__name__}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    _wrap_active_tracer_exporters()
 
 
 @pytest.hookimpl(hookwrapper=True)
