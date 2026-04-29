@@ -162,7 +162,12 @@ def suite_run_id(env: Mapping[str, str], provider: str, suite: str) -> str | Non
     return None
 
 
-def build_resource_attributes(env: Mapping[str, str], provider: str, suite: str) -> list[str]:
+def build_resource_attributes(
+    env: Mapping[str, str],
+    provider: str,
+    suite: str,
+    pr_number: str | None,
+) -> list[str]:
     if provider == "github_actions":
         attributes = [
             "deployment.environment=ci",
@@ -175,9 +180,8 @@ def build_resource_attributes(env: Mapping[str, str], provider: str, suite: str)
             "vcs.ref.type=branch",
             "vcs.provider.name=github",
         ]
-        pr_number = github_pr_number(env)
         resolved_suite_run_id = suite_run_id(env, provider, suite)
-        if pr_number is not None:
+        if pr_number:
             attributes.append(f"vcs.change.id={pr_number}")
         if resolved_suite_run_id is not None:
             attributes.append(f"transformers.test.suite.run={resolved_suite_run_id}")
@@ -195,19 +199,21 @@ def build_resource_attributes(env: Mapping[str, str], provider: str, suite: str)
             "vcs.ref.type=branch",
             "vcs.provider.name=github",
         ]
-        pr_number = circleci_pr_number(env)
         resolved_suite_run_id = suite_run_id(env, provider, suite)
-        if pr_number is not None:
+        if pr_number:
             attributes.append(f"vcs.change.id={pr_number}")
         if resolved_suite_run_id is not None:
             attributes.append(f"transformers.test.suite.run={resolved_suite_run_id}")
         return attributes
 
-    return [
+    attributes = [
         "deployment.environment=local",
         f"transformers.test.provider={LOCAL_PROVIDER}",
         f"transformers.test.suite={suite}",
     ]
+    if pr_number:
+        attributes.append(f"vcs.change.id={pr_number}")
+    return attributes
 
 
 def is_pytest_command(command: Sequence[str]) -> bool:
@@ -301,7 +307,7 @@ def prepare_environment(
     provider = detect_provider(env)
     resolved_suite = suite or env.get("TRANSFORMERS_TEST_OTEL_SUITE") or default_suite(env, provider)
     resolved_service_name = service_name or env.get("OTEL_SERVICE_NAME") or DEFAULT_SERVICE_NAME
-    resolved_pr = env.get("TRANSFORMERS_TEST_OTEL_PR")
+    resolved_pr = env.get("TRANSFORMERS_TEST_OTEL_PR") or None
     if resolved_pr is None:
         if provider == "github_actions":
             resolved_pr = github_pr_number(env)
@@ -313,12 +319,7 @@ def prepare_environment(
     if resolved_pr:
         updated_env["TRANSFORMERS_TEST_OTEL_PR"] = resolved_pr
     updated_env.setdefault("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
-    attributes = build_resource_attributes(env, provider, resolved_suite)
-    # The GHA/CircleCI branches in build_resource_attributes already emit
-    # vcs.change.id. For local runs, surface TRANSFORMERS_TEST_OTEL_PR as the
-    # same attribute so the exporter can label metrics by PR.
-    if resolved_pr and provider == LOCAL_PROVIDER:
-        attributes.append(f"vcs.change.id={resolved_pr}")
+    attributes = build_resource_attributes(env, provider, resolved_suite, resolved_pr)
     updated_env["OTEL_RESOURCE_ATTRIBUTES"] = append_resource_attributes(
         env.get("OTEL_RESOURCE_ATTRIBUTES"),
         attributes,
