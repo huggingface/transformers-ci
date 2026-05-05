@@ -37,10 +37,17 @@ class ConfigureCiOtelTests(TestCase):
 
         self.assertTrue(export_traces)
         self.assertEqual(env["OTEL_SERVICE_NAME"], "transformers-tests")
-        self.assertIn("transformers.test.provider=github_actions", env["OTEL_RESOURCE_ATTRIBUTES"])
-        self.assertIn("transformers.test.suite=models_gpu_slice", env["OTEL_RESOURCE_ATTRIBUTES"])
+        self.assertIn(
+            "transformers.test.provider=github_actions", env["OTEL_RESOURCE_ATTRIBUTES"]
+        )
+        self.assertIn(
+            "transformers.test.suite=models_gpu_slice", env["OTEL_RESOURCE_ATTRIBUTES"]
+        )
         self.assertIn("cicd.pipeline.run.id=12345", env["OTEL_RESOURCE_ATTRIBUTES"])
-        self.assertIn("transformers.test.suite.run=12345:models_gpu_slice:2", env["OTEL_RESOURCE_ATTRIBUTES"])
+        self.assertIn(
+            "transformers.test.suite.run=12345:models_gpu_slice:2",
+            env["OTEL_RESOURCE_ATTRIBUTES"],
+        )
         self.assertIn("vcs.change.id=4321", env["OTEL_RESOURCE_ATTRIBUTES"])
 
     def test_prepare_environment_adds_circleci_attributes(self):
@@ -57,9 +64,15 @@ class ConfigureCiOtelTests(TestCase):
         )
 
         self.assertTrue(export_traces)
-        self.assertIn("transformers.test.provider=circleci", env["OTEL_RESOURCE_ATTRIBUTES"])
-        self.assertIn("transformers.test.suite=tests_torch", env["OTEL_RESOURCE_ATTRIBUTES"])
-        self.assertIn("transformers.test.suite.run=24680", env["OTEL_RESOURCE_ATTRIBUTES"])
+        self.assertIn(
+            "transformers.test.provider=circleci", env["OTEL_RESOURCE_ATTRIBUTES"]
+        )
+        self.assertIn(
+            "transformers.test.suite=tests_torch", env["OTEL_RESOURCE_ATTRIBUTES"]
+        )
+        self.assertIn(
+            "transformers.test.suite.run=24680", env["OTEL_RESOURCE_ATTRIBUTES"]
+        )
         self.assertIn("vcs.change.id=987", env["OTEL_RESOURCE_ATTRIBUTES"])
 
     def test_prepare_environment_supports_local_forced_export(self):
@@ -72,7 +85,9 @@ class ConfigureCiOtelTests(TestCase):
         self.assertTrue(export_traces)
         self.assertEqual(env["OTEL_SERVICE_NAME"], "transformers-tests")
         self.assertIn("deployment.environment=local", env["OTEL_RESOURCE_ATTRIBUTES"])
-        self.assertIn("transformers.test.suite=local_smoke", env["OTEL_RESOURCE_ATTRIBUTES"])
+        self.assertIn(
+            "transformers.test.suite=local_smoke", env["OTEL_RESOURCE_ATTRIBUTES"]
+        )
 
     def test_ping_server_skips_when_endpoint_is_missing(self):
         stdout = io.StringIO()
@@ -89,20 +104,31 @@ class ConfigureCiOtelTests(TestCase):
         connection.__exit__.return_value = False
         stdout = io.StringIO()
 
-        with patch("transformersci.otel.cli.socket.create_connection", return_value=connection) as create_connection:
+        with patch(
+            "transformersci.otel.cli.socket.create_connection", return_value=connection
+        ) as create_connection:
             with contextlib.redirect_stdout(stdout):
-                result = cli.ping_server({"OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel.example"}, timeout_seconds=0.1)
+                result = cli.ping_server(
+                    {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel.example"},
+                    timeout_seconds=0.1,
+                )
 
         self.assertTrue(result)
-        create_connection.assert_called_once_with(("otel.example", 4317), timeout=0.1)
+        create_connection.assert_called_once_with(("otel.example", 4318), timeout=0.1)
         self.assertIn("OTEL PING OK", stdout.getvalue())
 
     def test_ping_server_reports_failure(self):
         stdout = io.StringIO()
 
-        with patch("transformersci.otel.cli.socket.create_connection", side_effect=OSError("connection refused")):
+        with patch(
+            "transformersci.otel.cli.socket.create_connection",
+            side_effect=OSError("connection refused"),
+        ):
             with contextlib.redirect_stdout(stdout):
-                result = cli.ping_server({"OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel.example:4317"}, timeout_seconds=0.1)
+                result = cli.ping_server(
+                    {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel.example:4317"},
+                    timeout_seconds=0.1,
+                )
 
         self.assertFalse(result)
         self.assertIn("OTEL PING FAILED", stdout.getvalue())

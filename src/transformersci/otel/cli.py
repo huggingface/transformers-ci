@@ -11,7 +11,6 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from urllib.parse import urlparse
 
-
 DEFAULT_SERVICE_NAME = "transformers-tests"
 DEFAULT_LOCAL_SUITE = "local_pytest"
 LOCAL_PROVIDER = "local"
@@ -19,7 +18,10 @@ OTEL_PING_TIMEOUT_SECONDS = 2.0
 
 
 def has_otel_endpoint(env: Mapping[str, str]) -> bool:
-    return bool(env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") or env.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
+    return bool(
+        env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        or env.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    )
 
 
 def resolve_otel_endpoint(env: Mapping[str, str]) -> tuple[str | None, str | None]:
@@ -38,13 +40,18 @@ def endpoint_target(endpoint: str, env: Mapping[str, str]) -> tuple[str, int] | 
 
     port = parsed.port
     if port is None:
-        protocol = env.get("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
-        port = 4318 if protocol == "http/protobuf" else 4317
+        if parsed.scheme == "https":
+            port = 443
+        else:
+            protocol = env.get("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+            port = 4318 if protocol == "http/protobuf" else 4317
 
     return parsed.hostname, port
 
 
-def ping_server(env: Mapping[str, str], *, timeout_seconds: float = OTEL_PING_TIMEOUT_SECONDS) -> bool:
+def ping_server(
+    env: Mapping[str, str], *, timeout_seconds: float = OTEL_PING_TIMEOUT_SECONDS
+) -> bool:
     endpoint_source, endpoint = resolve_otel_endpoint(env)
     if endpoint is None:
         print("OTEL PING SKIPPED endpoint is not configured", flush=True)
@@ -52,7 +59,10 @@ def ping_server(env: Mapping[str, str], *, timeout_seconds: float = OTEL_PING_TI
 
     target = endpoint_target(endpoint, env)
     if target is None:
-        print(f"OTEL PING FAILED source={endpoint_source} endpoint={endpoint} error=unable to parse host/port", flush=True)
+        print(
+            f"OTEL PING FAILED source={endpoint_source} endpoint={endpoint} error=unable to parse host/port",
+            flush=True,
+        )
         return False
 
     host, port = target
@@ -87,7 +97,9 @@ def default_suite(env: Mapping[str, str], provider: str) -> str:
     return DEFAULT_LOCAL_SUITE
 
 
-def append_resource_attributes(existing: str | None, new_attributes: Sequence[str]) -> str:
+def append_resource_attributes(
+    existing: str | None, new_attributes: Sequence[str]
+) -> str:
     segments = [segment for segment in [existing, ",".join(new_attributes)] if segment]
     return ",".join(segments)
 
@@ -114,7 +126,11 @@ def github_pr_number(env: Mapping[str, str]) -> str | None:
         return str(pull_request["number"])
 
     issue = event.get("issue")
-    if isinstance(issue, dict) and issue.get("pull_request") and issue.get("number") is not None:
+    if (
+        isinstance(issue, dict)
+        and issue.get("pull_request")
+        and issue.get("number") is not None
+    ):
         return str(issue["number"])
 
     return None
@@ -238,7 +254,12 @@ def trace_id_from_traceparent(traceparent: str | None) -> str | None:
         return None
 
     version, trace_id, span_id, trace_flags = parts
-    if len(version) != 2 or len(trace_id) != 32 or len(span_id) != 16 or len(trace_flags) != 2:
+    if (
+        len(version) != 2
+        or len(trace_id) != 32
+        or len(span_id) != 16
+        or len(trace_flags) != 2
+    ):
         return None
 
     try:
@@ -278,7 +299,14 @@ def configure_trace_context(
     return updated_env, trace_id_from_traceparent(traceparent)
 
 
-def emit_trace_log(phase: str, trace_id: str, env: Mapping[str, str], command: Sequence[str], *, exit_code: int | None = None) -> None:
+def emit_trace_log(
+    phase: str,
+    trace_id: str,
+    env: Mapping[str, str],
+    command: Sequence[str],
+    *,
+    exit_code: int | None = None,
+) -> None:
     details = [
         f"trace_id={trace_id}",
         f"service={env.get('OTEL_SERVICE_NAME', DEFAULT_SERVICE_NAME)}",
@@ -305,8 +333,12 @@ def prepare_environment(
         return updated_env, False
 
     provider = detect_provider(env)
-    resolved_suite = suite or env.get("TRANSFORMERS_TEST_OTEL_SUITE") or default_suite(env, provider)
-    resolved_service_name = service_name or env.get("OTEL_SERVICE_NAME") or DEFAULT_SERVICE_NAME
+    resolved_suite = (
+        suite or env.get("TRANSFORMERS_TEST_OTEL_SUITE") or default_suite(env, provider)
+    )
+    resolved_service_name = (
+        service_name or env.get("OTEL_SERVICE_NAME") or DEFAULT_SERVICE_NAME
+    )
     resolved_pr = env.get("TRANSFORMERS_TEST_OTEL_PR") or None
     if resolved_pr is None:
         if provider == "github_actions":
@@ -333,16 +365,24 @@ def augment_pytest_command(command: Sequence[str], *, export_traces: bool) -> li
     if not export_traces or "--export-traces" in augmented_command:
         return augmented_command
 
-    if any(token == "pytest" or token.endswith("/pytest") for token in augmented_command):
+    if any(
+        token == "pytest" or token.endswith("/pytest") for token in augmented_command
+    ):
         augmented_command.append("--export-traces")
 
     return augmented_command
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run pytest with OpenTelemetry configured for CI or local testing.")
-    parser.add_argument("--suite", help="Override the test suite attribute (transformers.test.suite).")
-    parser.add_argument("--service-name", help="Override the OpenTelemetry service.name.")
+    parser = argparse.ArgumentParser(
+        description="Run pytest with OpenTelemetry configured for CI or local testing."
+    )
+    parser.add_argument(
+        "--suite", help="Override the test suite attribute (transformers.test.suite)."
+    )
+    parser.add_argument(
+        "--service-name", help="Override the OpenTelemetry service.name."
+    )
     parser.add_argument(
         "--ping-server",
         action="store_true",
@@ -358,7 +398,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Print the resolved OpenTelemetry configuration as JSON before running the command.",
     )
-    parser.add_argument("command", nargs=argparse.REMAINDER, help="Command to execute after '--'.")
+    parser.add_argument(
+        "command", nargs=argparse.REMAINDER, help="Command to execute after '--'."
+    )
     return parser.parse_args(argv)
 
 
