@@ -15,6 +15,14 @@ DEFAULT_SERVICE_NAME = "transformers-tests"
 DEFAULT_LOCAL_SUITE = "local_pytest"
 LOCAL_PROVIDER = "local"
 OTEL_PING_TIMEOUT_SECONDS = 2.0
+OTEL_TRACES_EXPORTER_BY_PROTOCOL = {
+    "grpc": "otlp_proto_grpc",
+    "http/protobuf": "otlp_proto_http",
+}
+OTEL_PROTOCOL_BY_TRACES_EXPORTER = {
+    exporter: protocol
+    for protocol, exporter in OTEL_TRACES_EXPORTER_BY_PROTOCOL.items()
+}
 
 
 def has_otel_endpoint(env: Mapping[str, str]) -> bool:
@@ -33,6 +41,66 @@ def resolve_otel_endpoint(env: Mapping[str, str]) -> tuple[str | None, str | Non
     return None, None
 
 
+def normalize_otel_protocol(protocol: str | None) -> str | None:
+    if not protocol:
+        return None
+
+    if protocol in {"http", "https", "http/protobuf"}:
+        return "http/protobuf"
+
+    return protocol
+
+
+def normalize_protocol_override(protocol: str | None) -> str | None:
+    if not protocol:
+        return None
+
+    if protocol == "http":
+        return "http/protobuf"
+
+    return protocol
+
+
+def resolve_otel_protocol(env: Mapping[str, str]) -> str:
+    configured_protocol = normalize_otel_protocol(
+        env.get("OTEL_EXPORTER_OTLP_PROTOCOL")
+    )
+    if configured_protocol is not None:
+        return configured_protocol
+
+    _, endpoint = resolve_otel_endpoint(env)
+    if endpoint is not None:
+        parsed = urlparse(endpoint if "://" in endpoint else f"//{endpoint}")
+        if parsed.scheme in {"http", "https"}:
+            return "http/protobuf"
+
+    return "grpc"
+
+
+def resolve_otel_transport(
+    env: Mapping[str, str], *, protocol_override: str | None = None
+) -> tuple[str, str]:
+    resolved_override = normalize_protocol_override(protocol_override)
+    if resolved_override is not None:
+        return OTEL_TRACES_EXPORTER_BY_PROTOCOL[resolved_override], resolved_override
+
+    configured_exporter = env.get("OTEL_TRACES_EXPORTER")
+    if configured_exporter in OTEL_PROTOCOL_BY_TRACES_EXPORTER:
+        return (
+            configured_exporter,
+            OTEL_PROTOCOL_BY_TRACES_EXPORTER[configured_exporter],
+        )
+
+    resolved_protocol = resolve_otel_protocol(env)
+    if configured_exporter:
+        return configured_exporter, resolved_protocol
+
+    traces_exporter = OTEL_TRACES_EXPORTER_BY_PROTOCOL.get(
+        resolved_protocol, "otlp"
+    )
+    return traces_exporter, resolved_protocol
+
+
 def endpoint_target(endpoint: str, env: Mapping[str, str]) -> tuple[str, int] | None:
     parsed = urlparse(endpoint if "://" in endpoint else f"//{endpoint}")
     if parsed.hostname is None:
@@ -43,7 +111,7 @@ def endpoint_target(endpoint: str, env: Mapping[str, str]) -> tuple[str, int] | 
         if parsed.scheme == "https":
             port = 443
         else:
-            protocol = env.get("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+            _, protocol = resolve_otel_transport(env)
             port = 4318 if protocol == "http/protobuf" else 4317
 
     return parsed.hostname, port
@@ -102,6 +170,10 @@ def append_resource_attributes(
 ) -> str:
     segments = [segment for segment in [existing, ",".join(new_attributes)] if segment]
     return ",".join(segments)
+
+
+def bearer_auth_header(token: str) -> str:
+    return f"Authorization=Bearer {token}"
 
 
 def read_github_event(env: Mapping[str, str]) -> dict | None:
@@ -325,9 +397,20 @@ def prepare_environment(
     suite: str | None = None,
     service_name: str | None = None,
     force_export_traces: bool = False,
+    protocol: str | None = None,
+    otlp_endpoint: str | None = None,
+    token: str | None = None,
 ) -> tuple[dict[str, str], bool]:
-    should_export_traces = force_export_traces or has_otel_endpoint(env)
     updated_env = dict(env)
+    if otlp_endpoint:
+        updated_env["OTEL_EXPORTER_OTLP_ENDPOINT"] = otlp_endpoint
+        updated_env.pop("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None)
+    if token:
+        headers = bearer_auth_header(token)
+        updated_env["OTEL_EXPORTER_OTLP_HEADERS"] = headers
+        updated_env["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = headers
+
+    should_export_traces = force_export_traces or has_otel_endpoint(updated_env)
 
     if not should_export_traces:
         return updated_env, False
@@ -350,7 +433,11 @@ def prepare_environment(
     updated_env["OTEL_SERVICE_NAME"] = resolved_service_name
     if resolved_pr:
         updated_env["TRANSFORMERS_TEST_OTEL_PR"] = resolved_pr
-    updated_env.setdefault("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+    traces_exporter, otel_protocol = resolve_otel_transport(
+        updated_env, protocol_override=protocol
+    )
+    updated_env["OTEL_TRACES_EXPORTER"] = traces_exporter
+    updated_env["OTEL_EXPORTER_OTLP_PROTOCOL"] = otel_protocol
     attributes = build_resource_attributes(env, provider, resolved_suite, resolved_pr)
     updated_env["OTEL_RESOURCE_ATTRIBUTES"] = append_resource_attributes(
         env.get("OTEL_RESOURCE_ATTRIBUTES"),
@@ -384,6 +471,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--service-name", help="Override the OpenTelemetry service.name."
     )
     parser.add_argument(
+        "--protocol",
+        choices=("http", "grpc"),
+        help="Override the OTLP transport and set OTEL_TRACES_EXPORTER plus OTEL_EXPORTER_OTLP_PROTOCOL consistently.",
+    )
+    parser.add_argument(
+        "--token",
+        help="Bearer token used to populate OTEL_EXPORTER_OTLP_HEADERS automatically.",
+    )
+    parser.add_argument(
+        "--otlp-endpoint",
+        "--oltp-endpoint",
+        dest="otlp_endpoint",
+        help="Override the OTLP endpoint URL without setting OTEL_EXPORTER_OTLP_ENDPOINT manually.",
+    )
+    parser.add_argument(
         "--ping-server",
         action="store_true",
         help="Best-effort TCP connectivity check for the configured OTLP endpoint. Prints a log line and never fails the command.",
@@ -415,6 +517,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         suite=args.suite,
         service_name=args.service_name,
         force_export_traces=args.force_export_traces,
+        protocol=args.protocol,
+        otlp_endpoint=args.otlp_endpoint,
+        token=args.token,
     )
     command = augment_pytest_command(command, export_traces=export_traces)
     env, trace_id = configure_trace_context(env, command, export_traces=export_traces)
@@ -426,6 +531,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "export_traces": export_traces,
                     "suite": env.get("TRANSFORMERS_TEST_OTEL_SUITE"),
                     "service_name": env.get("OTEL_SERVICE_NAME"),
+                    "protocol": env.get("OTEL_EXPORTER_OTLP_PROTOCOL"),
+                    "traces_exporter": env.get("OTEL_TRACES_EXPORTER"),
                     "resource_attributes": env.get("OTEL_RESOURCE_ATTRIBUTES"),
                     "trace_id": trace_id,
                     "command": command,

@@ -88,6 +88,112 @@ class ConfigureCiOtelTests(TestCase):
         self.assertIn(
             "transformers.test.suite=local_smoke", env["OTEL_RESOURCE_ATTRIBUTES"]
         )
+        self.assertEqual(env["OTEL_TRACES_EXPORTER"], "otlp_proto_grpc")
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "grpc")
+
+    def test_prepare_environment_uses_http_protobuf_for_https_endpoint(self):
+        env, export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example",
+            }
+        )
+
+        self.assertTrue(export_traces)
+        self.assertEqual(env["OTEL_TRACES_EXPORTER"], "otlp_proto_http")
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf")
+
+    def test_prepare_environment_accepts_cli_otlp_endpoint(self):
+        env, export_traces = cli.prepare_environment(
+            {},
+            otlp_endpoint="https://otel.example",
+        )
+
+        self.assertTrue(export_traces)
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_ENDPOINT"], "https://otel.example")
+        self.assertEqual(env["OTEL_TRACES_EXPORTER"], "otlp_proto_http")
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf")
+
+    def test_prepare_environment_cli_otlp_endpoint_overrides_traces_endpoint(self):
+        env, export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://old.example:4317",
+            },
+            otlp_endpoint="https://otel.example",
+        )
+
+        self.assertTrue(export_traces)
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_ENDPOINT"], "https://otel.example")
+        self.assertNotIn("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", env)
+        self.assertEqual(env["OTEL_TRACES_EXPORTER"], "otlp_proto_http")
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf")
+
+    def test_prepare_environment_sets_headers_from_token(self):
+        env, export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example",
+            },
+            token="secret-token",
+        )
+
+        self.assertTrue(export_traces)
+        self.assertEqual(
+            env["OTEL_EXPORTER_OTLP_HEADERS"],
+            "Authorization=Bearer secret-token",
+        )
+        self.assertEqual(
+            env["OTEL_EXPORTER_OTLP_TRACES_HEADERS"],
+            "Authorization=Bearer secret-token",
+        )
+
+    def test_prepare_environment_normalizes_https_protocol_alias(self):
+        env, export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example",
+                "OTEL_EXPORTER_OTLP_PROTOCOL": "https",
+            }
+        )
+
+        self.assertTrue(export_traces)
+        self.assertEqual(env["OTEL_TRACES_EXPORTER"], "otlp_proto_http")
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf")
+
+    def test_prepare_environment_preserves_explicit_grpc_protocol(self):
+        env, export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example",
+                "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+            }
+        )
+
+        self.assertTrue(export_traces)
+        self.assertEqual(env["OTEL_TRACES_EXPORTER"], "otlp_proto_grpc")
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "grpc")
+
+    def test_prepare_environment_preserves_explicit_traces_exporter(self):
+        env, export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example",
+                "OTEL_TRACES_EXPORTER": "otlp_proto_http",
+            }
+        )
+
+        self.assertTrue(export_traces)
+        self.assertEqual(env["OTEL_TRACES_EXPORTER"], "otlp_proto_http")
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf")
+
+    def test_prepare_environment_protocol_argument_overrides_env(self):
+        env, export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example",
+                "OTEL_TRACES_EXPORTER": "otlp_proto_grpc",
+                "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+            },
+            protocol="http",
+        )
+
+        self.assertTrue(export_traces)
+        self.assertEqual(env["OTEL_TRACES_EXPORTER"], "otlp_proto_http")
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf")
 
     def test_ping_server_skips_when_endpoint_is_missing(self):
         stdout = io.StringIO()
@@ -115,6 +221,25 @@ class ConfigureCiOtelTests(TestCase):
 
         self.assertTrue(result)
         create_connection.assert_called_once_with(("otel.example", 4318), timeout=0.1)
+        self.assertIn("OTEL PING OK", stdout.getvalue())
+
+    def test_ping_server_uses_https_port_for_https_endpoint(self):
+        connection = MagicMock()
+        connection.__enter__.return_value = connection
+        connection.__exit__.return_value = False
+        stdout = io.StringIO()
+
+        with patch(
+            "transformersci.otel.cli.socket.create_connection", return_value=connection
+        ) as create_connection:
+            with contextlib.redirect_stdout(stdout):
+                result = cli.ping_server(
+                    {"OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example"},
+                    timeout_seconds=0.1,
+                )
+
+        self.assertTrue(result)
+        create_connection.assert_called_once_with(("otel.example", 443), timeout=0.1)
         self.assertIn("OTEL PING OK", stdout.getvalue())
 
     def test_ping_server_reports_failure(self):
@@ -167,3 +292,21 @@ class ConfigureCiOtelTests(TestCase):
 
         self.assertEqual(env["TRACEPARENT"], traceparent)
         self.assertEqual(trace_id, "1234567890abcdef1234567890abcdef")
+
+    def test_parse_args_accepts_otlp_flags(self):
+        args = cli.parse_args(
+            [
+                "--protocol",
+                "http",
+                "--token",
+                "secret-token",
+                "--otlp-endpoint",
+                "https://otel.example",
+                "--",
+                "pytest",
+            ]
+        )
+
+        self.assertEqual(args.protocol, "http")
+        self.assertEqual(args.token, "secret-token")
+        self.assertEqual(args.otlp_endpoint, "https://otel.example")
