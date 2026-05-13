@@ -418,7 +418,7 @@
       }
     ]
   },
-  "time": {"from": "now-1h", "to": "now"},
+  "time": {"from": "now-24h", "to": "now"},
   "timezone": "browser",
   "title": "Pytest Observability - Suite",
   "uid": "pytest-observability-by-suite",
