@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from math import fsum
 from pathlib import Path
@@ -15,6 +17,7 @@ DEFAULT_LOOKBACK = "1h"
 DEFAULT_PORT = 8000
 DEFAULT_RESOURCE_METRICS_FILE = "/data/pytest-resource-metrics.jsonl"
 DEFAULT_SERVICE_NAME = "pytest-observability-demo"
+DEFAULT_CACHE_SECONDS = 10.0
 
 
 def env_int(name: str, default: int) -> int:
@@ -200,6 +203,12 @@ def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str
     }, rows
 
 
+def _precompute_trace_rows(
+    traces: list[dict],
+) -> list[tuple[dict[str, str | int], list[dict[str, str | float]]]]:
+    return [extract_trace_rows(trace) for trace in traces]
+
+
 def extract_latest_trace_metrics(trace: dict) -> list[str]:
     """Emit the small set of 'latest-trace' markers.
 
@@ -223,16 +232,20 @@ def extract_latest_trace_metrics(trace: dict) -> list[str]:
     ]
 
 
-def extract_pr_last_failure_metrics(traces: list[dict]) -> list[str]:
+def extract_pr_last_failure_metrics(
+    traces: list[dict],
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] | None = None,
+) -> list[str]:
     """Emit one ``pytest_pr_last_failure_info`` series per PR with a failure.
 
     Picks the most recent failing test across all runs of the PR. When the PR
     has no failures, no sample is emitted — used by the PR dashboard's Last
     Error panel with a repeat so the panel hides entirely when no data.
     """
+    extracted = _extracted if _extracted is not None else _precompute_trace_rows(traces)
     per_pr: dict[str, tuple[int, dict[str, str]]] = {}
-    for trace in traces:
-        trace_info, rows = extract_trace_rows(trace)
+    for trace_info, rows in extracted:
         if not rows:
             continue
         start_time = int(trace_info.get("latest_start_time", 0) or 0)
@@ -268,7 +281,11 @@ def extract_pr_last_failure_metrics(traces: list[dict]) -> list[str]:
     return lines
 
 
-def extract_per_run_metrics(traces: list[dict]) -> list[str]:
+def extract_per_run_metrics(
+    traces: list[dict],
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] | None = None,
+) -> list[str]:
     """Emit metrics scoped to each individual pytest run (trace).
 
     Unlike ``extract_average_metrics`` which aggregates across the lookback
@@ -277,6 +294,7 @@ def extract_per_run_metrics(traces: list[dict]) -> list[str]:
     counts. Feeds the PR dashboard (list of runs) and the Run dashboard
     (list of tests in one run).
     """
+    extracted = _extracted if _extracted is not None else _precompute_trace_rows(traces)
     lines = [
         "# HELP pytest_test_duration_seconds Duration of each pytest test span, per run (trace_id label).",
         "# TYPE pytest_test_duration_seconds gauge",
@@ -289,8 +307,7 @@ def extract_per_run_metrics(traces: list[dict]) -> list[str]:
         "# HELP pytest_run_duration_seconds Total duration (sum of test span durations) of a pytest run.",
         "# TYPE pytest_run_duration_seconds gauge",
     ]
-    for trace in traces:
-        trace_info, rows = extract_trace_rows(trace)
+    for trace_info, rows in extracted:
         if not rows:
             continue
 
@@ -338,7 +355,12 @@ def extract_per_run_metrics(traces: list[dict]) -> list[str]:
     return lines
 
 
-def extract_average_metrics(traces: list[dict]) -> list[str]:
+def extract_average_metrics(
+    traces: list[dict],
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] | None = None,
+) -> list[str]:
+    extracted = _extracted if _extracted is not None else _precompute_trace_rows(traces)
     lines = [
         "# HELP pytest_test_average_duration_seconds Average duration of pytest test spans across fetched traces.",
         "# TYPE pytest_test_average_duration_seconds gauge",
@@ -351,8 +373,7 @@ def extract_average_metrics(traces: list[dict]) -> list[str]:
     ]
     aggregates: dict[tuple[str, str, str, str, str], dict] = {}
 
-    for trace in traces:
-        trace_info, rows = extract_trace_rows(trace)
+    for trace_info, rows in extracted:
         trace_start = int(trace_info.get("latest_start_time", 0) or 0)
         trace_id = str(trace_info.get("trace_id", "unknown"))
         for row in rows:
@@ -481,7 +502,7 @@ def extract_average_resource_metrics(records: list[dict[str, str | float | int]]
     return lines
 
 
-def render_metrics() -> str:
+def _render_metrics_uncached() -> str:
     try:
         traces = fetch_traces()
         resource_records = fetch_resource_records()
@@ -502,6 +523,8 @@ def render_metrics() -> str:
             "pytest_trace_exporter_up 1\n"
         )
 
+    extracted = _precompute_trace_rows(traces)
+
     rendered = [
         "# HELP pytest_trace_exporter_up Whether the exporter could query Jaeger.",
         "# TYPE pytest_trace_exporter_up gauge",
@@ -510,15 +533,43 @@ def render_metrics() -> str:
         "# TYPE pytest_trace_exporter_trace_count gauge",
         f"pytest_trace_exporter_trace_count {len(traces)}",
     ]
-    rendered.extend(extract_per_run_metrics(traces))
-    rendered.extend(extract_pr_last_failure_metrics(traces))
-    rendered.extend(extract_average_metrics(traces))
+    rendered.extend(extract_per_run_metrics(traces, _extracted=extracted))
+    rendered.extend(extract_pr_last_failure_metrics(traces, _extracted=extracted))
+    rendered.extend(extract_average_metrics(traces, _extracted=extracted))
     rendered.extend(extract_average_resource_metrics(resource_records))
 
     latest = latest_trace(traces)
     if latest is not None:
         rendered.extend(extract_latest_trace_metrics(latest))
     return "\n".join(rendered) + "\n"
+
+
+_cache_lock = threading.Lock()
+_cached_payload: tuple[float, str] | None = None
+
+
+def _cache_ttl_seconds() -> float:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_CACHE_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_CACHE_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return DEFAULT_CACHE_SECONDS
+
+
+def render_metrics() -> str:
+    global _cached_payload
+    ttl = _cache_ttl_seconds()
+    with _cache_lock:
+        now = time.monotonic()
+        if _cached_payload is not None and ttl > 0:
+            cached_at, body = _cached_payload
+            if now - cached_at < ttl:
+                return body
+        body = _render_metrics_uncached()
+        _cached_payload = (now, body)
+        return body
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
