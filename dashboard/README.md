@@ -86,6 +86,7 @@ The main panels are:
 
 Useful tags:
 
+- `transformers.test.run.id`
 - `transformers.test.suite`
 - `transformers.test.suite.run`
 - `vcs.change.id`

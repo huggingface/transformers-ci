@@ -121,15 +121,15 @@
         },
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Trace ID"},
+            "matcher": {"id": "byName", "options": "Run ID"},
             "properties": [
               {
                 "id": "links",
                 "value": [
                   {
-                    "title": "Open trace",
-                    "url": "/explore?schemaVersion=1&orgId=1&panes=%7B%22jg%22:%7B%22datasource%22:%22jaeger%22,%22queries%22:%5B%7B%22query%22:%22${__data.fields[\"Trace ID\"]}%22,%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22jaeger%22,%22uid%22:%22jaeger%22%7D%7D%5D,%22range%22:%7B%22from%22:%22now-1h%22,%22to%22:%22now%22%7D%7D%7D",
-                    "targetBlank": true
+                    "title": "View this run",
+                    "url": "/d/pytest-observability-by-run?var-run_id=${__value.raw}",
+                    "targetBlank": false
                   }
                 ]
               }
@@ -155,7 +155,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, last_over_time(pytest_latest_trace_start_time_seconds{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"}[1h]) * 1000)",
+          "expr": "topk(10, (pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_suite_member_info{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"})) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -175,15 +175,17 @@
               "job": true,
               "provider": true,
               "service_name": true,
-              "test_suite": true
+              "suites": true,
+              "suite_count": true,
+              "trace_count": true
             },
             "indexByName": {
               "Value": 0,
-              "trace_id": 1
+              "run_id": 1
             },
             "renameByName": {
               "Value": "Started",
-              "trace_id": "Trace ID"
+              "run_id": "Run ID"
             }
           }
         }
@@ -293,72 +295,6 @@
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "palette-classic"},
-          "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]},
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
-      "id": 4,
-      "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "showUnfilled": true
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "sort_desc(topk(10, pytest_test_average_cpu_time_seconds{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"}))",
-          "instant": true,
-          "legendFormat": "{{test_module}}::{{test_function}}",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Highest Avg CPU Time",
-      "type": "bargauge"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "palette-classic"},
-          "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]},
-          "unit": "decbytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
-      "id": 5,
-      "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "showUnfilled": true
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "sort_desc(topk(10, pytest_test_average_rss_peak_bytes{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"}))",
-          "instant": true,
-          "legendFormat": "{{test_module}}::{{test_function}}",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Highest Avg Peak RSS",
-      "type": "bargauge"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {
-        "defaults": {
           "color": {"mode": "thresholds"},
           "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
           "mappings": [],
@@ -367,7 +303,7 @@
         },
         "overrides": []
       },
-      "gridPos": {"h": 14, "w": 24, "x": 0, "y": 24},
+      "gridPos": {"h": 22, "w": 24, "x": 0, "y": 16},
       "id": 6,
       "options": {
         "cellHeight": "sm",
@@ -378,7 +314,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sort_desc(pytest_test_average_duration_seconds{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"} > 10)",
+          "expr": "sort_desc(topk(20, pytest_test_average_duration_seconds{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"}))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",

@@ -43,12 +43,16 @@ class ConfigureCiOtelTests(TestCase):
         self.assertIn(
             "transformers.test.suite=models_gpu_slice", env["OTEL_RESOURCE_ATTRIBUTES"]
         )
-        self.assertIn("cicd.pipeline.run.id=12345", env["OTEL_RESOURCE_ATTRIBUTES"])
+        self.assertIn("cicd.pipeline.run.id=12345:2", env["OTEL_RESOURCE_ATTRIBUTES"])
         self.assertIn(
-            "transformers.test.suite.run=12345:models_gpu_slice:2",
+            "transformers.test.run.id=12345:2", env["OTEL_RESOURCE_ATTRIBUTES"]
+        )
+        self.assertIn(
+            "transformers.test.suite.run=12345:2:models_gpu_slice",
             env["OTEL_RESOURCE_ATTRIBUTES"],
         )
         self.assertIn("vcs.change.id=4321", env["OTEL_RESOURCE_ATTRIBUTES"])
+        self.assertEqual(env["TRANSFORMERS_TEST_OTEL_RUN_ID"], "12345:2")
 
     def test_prepare_environment_adds_circleci_attributes(self):
         env, export_traces = cli.prepare_environment(
@@ -71,9 +75,16 @@ class ConfigureCiOtelTests(TestCase):
             "transformers.test.suite=tests_torch", env["OTEL_RESOURCE_ATTRIBUTES"]
         )
         self.assertIn(
+            "cicd.pipeline.run.id=workflow-123", env["OTEL_RESOURCE_ATTRIBUTES"]
+        )
+        self.assertIn(
+            "transformers.test.run.id=workflow-123", env["OTEL_RESOURCE_ATTRIBUTES"]
+        )
+        self.assertIn(
             "transformers.test.suite.run=24680", env["OTEL_RESOURCE_ATTRIBUTES"]
         )
         self.assertIn("vcs.change.id=987", env["OTEL_RESOURCE_ATTRIBUTES"])
+        self.assertEqual(env["TRANSFORMERS_TEST_OTEL_RUN_ID"], "workflow-123")
 
     def test_prepare_environment_supports_local_forced_export(self):
         env, export_traces = cli.prepare_environment(

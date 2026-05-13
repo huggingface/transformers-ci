@@ -215,7 +215,7 @@
       "gridPos": {"h": 12, "w": 24, "x": 0, "y": 5},
       "id": 8,
       "options": {
-        "content": "### Last Failure: `${last_failure_exception:raw}`\n\n**Suite:** `${last_failure_suite:raw}` | **Test:** `${last_failure_function:raw}` | [View Run](/d/pytest-observability-by-run?var-trace_id=${last_failure_trace_id:raw})\n\n```python\n${last_failure_stacktrace:raw}\n```",
+        "content": "### Last Failure: `${last_failure_exception:raw}`\n\n**Suite:** [${last_failure_suite:raw}](/d/pytest-observability-by-suite?var-suite=${last_failure_suite:raw}) | **Test:** `${last_failure_function:raw}` | [View Run](/d/pytest-observability-by-run?var-run_id=${last_failure_run_id:raw})\n\n```python\n${last_failure_stacktrace:raw}\n```",
         "mode": "markdown"
       },
       "pluginVersion": "12.0.0",
@@ -260,29 +260,14 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Trace ID"},
+            "matcher": {"id": "byName", "options": "Run ID"},
             "properties": [
               {
                 "id": "links",
                 "value": [
                   {
                     "title": "View this run",
-                    "url": "/d/pytest-observability-by-run?var-trace_id=${__value.raw}",
-                    "targetBlank": false
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {"id": "byName", "options": "Suite"},
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View suite details",
-                    "url": "/d/pytest-observability-by-suite?var-suite=${__value.raw}",
+                    "url": "/d/pytest-observability-by-run?var-run_id=${__value.raw}",
                     "targetBlank": false
                   }
                 ]
@@ -325,6 +310,7 @@
           "id": "convertFieldType",
           "options": {
             "conversions": [
+              {"destinationType": "number", "targetField": "suite_count"},
               {"destinationType": "number", "targetField": "total_tests"},
               {"destinationType": "number", "targetField": "failed_tests"},
               {"destinationType": "number", "targetField": "total_duration_seconds"},
@@ -342,17 +328,19 @@
               "job": true,
               "pr": true,
               "provider": true,
-              "service_name": true
+              "service_name": true,
+              "trace_count": true
             },
             "indexByName": {},
             "renameByName": {
               "Value": "Started",
+              "suite_count": "Suite Count",
+              "suites": "Suites",
               "total_tests": "Total",
               "failed_tests": "Failures",
               "total_duration_seconds": "Duration",
               "failure_rate_percent": "Failure Rate",
-              "test_suite": "Suite",
-              "trace_id": "Trace ID"
+              "run_id": "Run ID"
             }
           }
         }
@@ -379,6 +367,21 @@
                     "title": "Open last failing trace",
                     "url": "/explore?schemaVersion=1&orgId=1&panes=%7B%22jg%22:%7B%22datasource%22:%22jaeger%22,%22queries%22:%5B%7B%22query%22:%22${__data.fields[\"Last Failure\"]}%22,%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22jaeger%22,%22uid%22:%22jaeger%22%7D%7D%5D,%22range%22:%7B%22from%22:%22now-1h%22,%22to%22:%22now%22%7D,%22panelsState%22:%7B%22trace%22:%7B%22spanFilters%22:%7B%22tags%22:%5B%7B%22id%22:%22err%22,%22operator%22:%22=%22,%22key%22:%22otel.status_code%22,%22value%22:%22ERROR%22%7D%5D%7D%7D%7D%7D%7D",
                     "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Suite"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View suite details",
+                    "url": "/d/pytest-observability-by-suite?var-suite=${__value.raw}",
+                    "targetBlank": false
                   }
                 ]
               }
@@ -503,7 +506,7 @@
       {
         "current": {"selected": false, "text": "", "value": ""},
         "datasource": {"type": "prometheus", "uid": "prometheus"},
-        "definition": "label_values(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"}, test_suite)",
+        "definition": "query_result(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"})",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -512,17 +515,19 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"}, test_suite)",
+          "query": "query_result(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"})",
           "refId": "Prometheus-last_failure_suite-Variable-Query"
         },
+        "regex": "/.*test_suite=\"([^\"]+)\".*/",
         "refresh": 1,
+        "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
         "current": {"selected": false, "text": "", "value": ""},
         "datasource": {"type": "prometheus", "uid": "prometheus"},
-        "definition": "label_values(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"}, test_function)",
+        "definition": "query_result(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"})",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -531,17 +536,19 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"}, test_function)",
+          "query": "query_result(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"})",
           "refId": "Prometheus-last_failure_function-Variable-Query"
         },
+        "regex": "/.*test_function=\"([^\"]+)\".*/",
         "refresh": 1,
+        "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
         "current": {"selected": false, "text": "", "value": ""},
         "datasource": {"type": "prometheus", "uid": "prometheus"},
-        "definition": "label_values(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"}, exception_type)",
+        "definition": "query_result(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"})",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -550,17 +557,19 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"}, exception_type)",
+          "query": "query_result(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"})",
           "refId": "Prometheus-last_failure_exception-Variable-Query"
         },
+        "regex": "/.*exception_type=\"([^\"]+)\".*/",
         "refresh": 1,
+        "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
         "current": {"selected": false, "text": [], "value": []},
         "datasource": {"type": "prometheus", "uid": "prometheus"},
-        "definition": "label_values(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"}, trace_id)",
+        "definition": "query_result(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"})",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -569,17 +578,40 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"}, trace_id)",
+          "query": "query_result(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"})",
           "refId": "Prometheus-last_failure_trace_id-Variable-Query"
         },
+        "regex": "/.*trace_id=\"([^\"]+)\".*/",
         "refresh": 1,
+        "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
         "current": {"selected": false, "text": "", "value": ""},
         "datasource": {"type": "prometheus", "uid": "prometheus"},
-        "definition": "label_values(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"}, stacktrace)",
+        "definition": "query_result(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"})",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "last_failure_run_id",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "query_result(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"})",
+          "refId": "Prometheus-last_failure_run_id-Variable-Query"
+        },
+        "regex": "/.*run_id=\"([^\"]+)\".*/",
+        "refresh": 1,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {"selected": false, "text": "", "value": ""},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "definition": "query_result(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"})",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -588,10 +620,12 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"}, stacktrace)",
+          "query": "query_result(pytest_pr_last_failure_info{service_name=~\"$service\",pr=~\"$pr\"})",
           "refId": "Prometheus-last_failure_stacktrace-Variable-Query"
         },
+        "regex": "/.*stacktrace=\"([^\"]*)\".*/",
         "refresh": 1,
+        "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       }

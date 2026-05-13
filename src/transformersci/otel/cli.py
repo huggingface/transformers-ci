@@ -226,26 +226,47 @@ def circleci_pr_number(env: Mapping[str, str]) -> str | None:
     return None
 
 
-def suite_run_id(env: Mapping[str, str], provider: str, suite: str) -> str | None:
+def workflow_run_id(env: Mapping[str, str], provider: str) -> str | None:
+    explicit_run_id = env.get("TRANSFORMERS_TEST_OTEL_RUN_ID")
+    if explicit_run_id:
+        return explicit_run_id
+
     if provider == "github_actions":
         run_id = env.get("GITHUB_RUN_ID")
         if not run_id:
             return None
 
         run_attempt = env.get("GITHUB_RUN_ATTEMPT")
-        segments = [run_id, suite]
         if run_attempt:
-            segments.append(run_attempt)
-        return ":".join(segments)
+            return f"{run_id}:{run_attempt}"
+        return run_id
+
+    if provider == "circleci":
+        workflow_id = env.get("CIRCLE_WORKFLOW_ID")
+        if workflow_id:
+            return workflow_id
+
+        build_num = env.get("CIRCLE_BUILD_NUM")
+        if build_num:
+            return build_num
+
+    return None
+
+
+def suite_run_id(env: Mapping[str, str], provider: str, suite: str) -> str | None:
+    run_id = workflow_run_id(env, provider)
+    if provider == "github_actions":
+        if run_id is None:
+            return None
+        return f"{run_id}:{suite}"
 
     if provider == "circleci":
         build_num = env.get("CIRCLE_BUILD_NUM")
         if build_num:
             return build_num
 
-        workflow_id = env.get("CIRCLE_WORKFLOW_ID")
-        if workflow_id:
-            return f"{workflow_id}:{suite}"
+        if run_id is not None:
+            return f"{run_id}:{suite}"
 
     return None
 
@@ -257,11 +278,12 @@ def build_resource_attributes(
     pr_number: str | None,
 ) -> list[str]:
     if provider == "github_actions":
+        resolved_run_id = workflow_run_id(env, provider)
         attributes = [
             "deployment.environment=ci",
             "transformers.test.provider=github_actions",
             f"transformers.test.suite={suite}",
-            f"cicd.pipeline.run.id={env.get('GITHUB_RUN_ID', 'unknown')}",
+            f"cicd.pipeline.run.id={resolved_run_id or env.get('GITHUB_RUN_ID', 'unknown')}",
             f"cicd.pipeline.task.name={env.get('GITHUB_JOB', 'unknown')}",
             f"vcs.ref.head.name={env.get('GITHUB_REF_NAME', 'unknown')}",
             f"vcs.ref.head.revision={env.get('GITHUB_SHA', 'unknown')}",
@@ -271,16 +293,19 @@ def build_resource_attributes(
         resolved_suite_run_id = suite_run_id(env, provider, suite)
         if pr_number:
             attributes.append(f"vcs.change.id={pr_number}")
+        if resolved_run_id is not None:
+            attributes.append(f"transformers.test.run.id={resolved_run_id}")
         if resolved_suite_run_id is not None:
             attributes.append(f"transformers.test.suite.run={resolved_suite_run_id}")
         return attributes
 
     if provider == "circleci":
+        resolved_run_id = workflow_run_id(env, provider)
         attributes = [
             "deployment.environment=ci",
             "transformers.test.provider=circleci",
             f"transformers.test.suite={suite}",
-            f"cicd.pipeline.run.id={env.get('CIRCLE_WORKFLOW_ID', 'unknown')}",
+            f"cicd.pipeline.run.id={resolved_run_id or env.get('CIRCLE_WORKFLOW_ID', 'unknown')}",
             f"cicd.pipeline.task.name={env.get('CIRCLE_JOB', 'unknown')}",
             f"vcs.ref.head.name={env.get('CIRCLE_BRANCH', 'unknown')}",
             f"vcs.ref.head.revision={env.get('CIRCLE_SHA1', 'unknown')}",
@@ -290,6 +315,8 @@ def build_resource_attributes(
         resolved_suite_run_id = suite_run_id(env, provider, suite)
         if pr_number:
             attributes.append(f"vcs.change.id={pr_number}")
+        if resolved_run_id is not None:
+            attributes.append(f"transformers.test.run.id={resolved_run_id}")
         if resolved_suite_run_id is not None:
             attributes.append(f"transformers.test.suite.run={resolved_suite_run_id}")
         return attributes
@@ -429,19 +456,24 @@ def prepare_environment(
             resolved_pr = github_pr_number(env)
         elif provider == "circleci":
             resolved_pr = circleci_pr_number(env)
+    resolved_run_id = workflow_run_id(updated_env, provider)
 
     updated_env["TRANSFORMERS_TEST_OTEL_SUITE"] = resolved_suite
     updated_env["OTEL_SERVICE_NAME"] = resolved_service_name
     if resolved_pr:
         updated_env["TRANSFORMERS_TEST_OTEL_PR"] = resolved_pr
+    if resolved_run_id:
+        updated_env["TRANSFORMERS_TEST_OTEL_RUN_ID"] = resolved_run_id
     traces_exporter, otel_protocol = resolve_otel_transport(
         updated_env, protocol_override=protocol
     )
     updated_env["OTEL_TRACES_EXPORTER"] = traces_exporter
     updated_env["OTEL_EXPORTER_OTLP_PROTOCOL"] = otel_protocol
-    attributes = build_resource_attributes(env, provider, resolved_suite, resolved_pr)
+    attributes = build_resource_attributes(
+        updated_env, provider, resolved_suite, resolved_pr
+    )
     updated_env["OTEL_RESOURCE_ATTRIBUTES"] = append_resource_attributes(
-        env.get("OTEL_RESOURCE_ATTRIBUTES"),
+        updated_env.get("OTEL_RESOURCE_ATTRIBUTES"),
         attributes,
     )
 

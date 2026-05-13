@@ -21,12 +21,6 @@
       "title": "Back to Overview",
       "type": "link",
       "url": "/d/pytest-observability/pytest-observability"
-    },
-    {
-      "targetBlank": false,
-      "title": "View Traceback",
-      "type": "link",
-      "url": "/d/pytest-traceback?var-trace_id=$trace_id"
     }
   ],
   "panels": [
@@ -54,7 +48,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_run_total_tests{trace_id=~\"$trace_id\"}",
+          "expr": "pytest_run_total_tests{run_id=~\"$run_id\"}",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -94,7 +88,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_run_failed_tests{trace_id=~\"$trace_id\"}",
+          "expr": "pytest_run_failed_tests{run_id=~\"$run_id\"}",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -138,7 +132,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * (1 - pytest_run_failed_tests{trace_id=~\"$trace_id\"} / pytest_run_total_tests{trace_id=~\"$trace_id\"})",
+          "expr": "100 * (1 - pytest_run_failed_tests{run_id=~\"$run_id\"} / pytest_run_total_tests{run_id=~\"$run_id\"})",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -173,7 +167,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_run_start_time_seconds{trace_id=~\"$trace_id\"} * 1000",
+          "expr": "pytest_run_start_time_seconds{run_id=~\"$run_id\"} * 1000",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -213,14 +207,29 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Error"},
+            "matcher": {"id": "byName", "options": "Trace ID"},
             "properties": [
               {
                 "id": "links",
                 "value": [
                   {
                     "title": "View traceback",
-                    "url": "/d/pytest-traceback?var-trace_id=$trace_id",
+                    "url": "/d/pytest-traceback?var-trace_id=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Suite"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View suite details",
+                    "url": "/d/pytest-observability-by-suite?var-suite=${__value.raw}",
                     "targetBlank": false
                   }
                 ]
@@ -241,7 +250,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_test_duration_seconds{trace_id=~\"$trace_id\"}",
+          "expr": "pytest_test_duration_seconds{run_id=~\"$run_id\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -262,23 +271,25 @@
               "pr": true,
               "provider": true,
               "service_name": true,
-              "test_nodeid": true,
-              "test_suite": true,
-              "trace_id": true
+              "test_nodeid": true
             },
             "indexByName": {
-              "test_module": 0,
-              "test_class": 1,
-              "test_function": 2,
-              "status_code": 3,
-              "Value": 4
+              "test_suite": 0,
+              "test_module": 1,
+              "test_class": 2,
+              "test_function": 3,
+              "trace_id": 4,
+              "status_code": 5,
+              "Value": 6
             },
             "renameByName": {
               "Value": "Duration",
               "status_code": "Status",
               "test_class": "Class",
               "test_function": "Function",
-              "test_module": "Module"
+              "test_module": "Module",
+              "test_suite": "Suite",
+              "trace_id": "Trace ID"
             }
           }
         }
@@ -292,8 +303,8 @@
     "list": [
       {
         "current": {"selected": false, "text": "", "value": ""},
-        "label": "Trace ID",
-        "name": "trace_id",
+        "label": "Run ID",
+        "name": "run_id",
         "options": [{"selected": true, "text": "", "value": ""}],
         "query": "",
         "type": "textbox"

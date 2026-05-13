@@ -141,6 +141,7 @@ def write_resource_record(item: pytest.Item, metrics: dict[str, float | int]) ->
     record: dict[str, Any] = {
         "pr": os.getenv("TRANSFORMERS_TEST_OTEL_PR", "none"),
         "provider": detect_provider(),
+        "run_id": os.getenv("TRANSFORMERS_TEST_OTEL_RUN_ID", "unknown"),
         "service_name": os.getenv("OTEL_SERVICE_NAME", "transformers-tests"),
         "test_suite": os.getenv("TRANSFORMERS_TEST_OTEL_SUITE", "local_pytest"),
         "test_nodeid": item.nodeid,
