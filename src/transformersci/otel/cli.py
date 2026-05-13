@@ -400,6 +400,7 @@ def prepare_environment(
     protocol: str | None = None,
     otlp_endpoint: str | None = None,
     token: str | None = None,
+    pr: str | None = None,
 ) -> tuple[dict[str, str], bool]:
     updated_env = dict(env)
     if otlp_endpoint:
@@ -422,7 +423,7 @@ def prepare_environment(
     resolved_service_name = (
         service_name or env.get("OTEL_SERVICE_NAME") or DEFAULT_SERVICE_NAME
     )
-    resolved_pr = env.get("TRANSFORMERS_TEST_OTEL_PR") or None
+    resolved_pr = pr or env.get("TRANSFORMERS_TEST_OTEL_PR") or None
     if resolved_pr is None:
         if provider == "github_actions":
             resolved_pr = github_pr_number(env)
@@ -480,6 +481,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Bearer token used to populate OTEL_EXPORTER_OTLP_HEADERS automatically.",
     )
     parser.add_argument(
+        "--pr",
+        help="Override the PR number (sets TRANSFORMERS_TEST_OTEL_PR and vcs.change.id).",
+    )
+    parser.add_argument(
         "--otlp-endpoint",
         "--oltp-endpoint",
         dest="otlp_endpoint",
@@ -520,6 +525,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         protocol=args.protocol,
         otlp_endpoint=args.otlp_endpoint,
         token=args.token,
+        pr=args.pr,
     )
     command = augment_pytest_command(command, export_traces=export_traces)
     env, trace_id = configure_trace_context(env, command, export_traces=export_traces)
