@@ -1,6 +1,9 @@
 services:
   jaeger:
     image: jaegertracing/all-in-one:latest
+    # run as root so badger can create /badger/{data,key} in the named volume,
+    # which is created with root ownership on first mount
+    user: "0"
     environment:
       - COLLECTOR_OTLP_ENABLED=true
       - SPAN_STORAGE_TYPE=badger
