@@ -3,6 +3,13 @@ services:
     image: jaegertracing/all-in-one:latest
     environment:
       - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=badger
+      - BADGER_EPHEMERAL=false
+      - BADGER_DIRECTORY_VALUE=/badger/data
+      - BADGER_DIRECTORY_KEY=/badger/key
+      - BADGER_SPAN_STORE_TTL=2160h
+    volumes:
+      - jaeger-data:/badger
     ports:
       - "16687:16686"
 
@@ -30,8 +37,11 @@ services:
     image: prom/prometheus:latest
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=90d"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
     depends_on:
       - pytest-trace-exporter
     ports:
@@ -64,8 +74,14 @@ services:
       - ./pytest-traceback-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-traceback-dashboard.json
       - ./grafana-dashboard.yaml:/etc/grafana/provisioning/dashboards/grafana-dashboard.yaml
       - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+      - grafana-data:/var/lib/grafana
     depends_on:
       - jaeger
       - prometheus
     ports:
       - "3000:3000"
+
+volumes:
+  jaeger-data:
+  prometheus-data:
+  grafana-data:
