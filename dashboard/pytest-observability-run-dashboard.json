@@ -21,6 +21,12 @@
       "title": "Back to Overview",
       "type": "link",
       "url": "/d/pytest-observability/pytest-observability"
+    },
+    {
+      "targetBlank": false,
+      "title": "Back to PR",
+      "type": "link",
+      "url": "/d/pytest-observability-by-pr/pytest-observability-pr?var-pr=${pr}"
     }
   ],
   "panels": [
@@ -270,6 +276,7 @@
               "job": true,
               "pr": true,
               "provider": true,
+              "run_id": true,
               "service_name": true,
               "test_nodeid": true
             },
@@ -308,6 +315,26 @@
         "options": [{"selected": true, "text": "", "value": ""}],
         "query": "",
         "type": "textbox"
+      },
+      {
+        "current": {"selected": false, "text": "", "value": ""},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "definition": "label_values(pytest_run_total_tests{run_id=~\"$run_id\"}, pr)",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "pr",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_run_total_tests{run_id=~\"$run_id\"}, pr)",
+          "refId": "Prometheus-pr-Variable-Query"
+        },
+        "refresh": 1,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
       }
     ]
   },
