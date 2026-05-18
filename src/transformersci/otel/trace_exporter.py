@@ -4,11 +4,12 @@ import json
 import os
 import threading
 import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from math import fsum
 from pathlib import Path
-from urllib.parse import quote
-from urllib.request import urlopen
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
 
 
 DEFAULT_JAEGER_URL = "http://jaeger:16686"
@@ -18,6 +19,8 @@ DEFAULT_PORT = 8000
 DEFAULT_RESOURCE_METRICS_FILE = "/data/pytest-resource-metrics.jsonl"
 DEFAULT_SERVICE_NAME = "pytest-observability-demo"
 DEFAULT_CACHE_SECONDS = 10.0
+DEFAULT_GITHUB_API_URL = "https://api.github.com"
+DEFAULT_GITHUB_CACHE_SECONDS = 300.0
 
 
 def env_int(name: str, default: int) -> int:
@@ -127,6 +130,100 @@ def fetch_resource_records() -> list[dict[str, str | float | int]]:
     return records
 
 
+def github_pr_html_url(repository: str, pr: str) -> str:
+    if not repository or not pr:
+        return ""
+    return f"https://github.com/{repository}/pull/{quote(pr, safe='')}"
+
+
+def repository_from_pr_url(pr_url: str) -> str:
+    parsed = urlparse(pr_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 4 and parts[2] == "pull":
+        return f"{parts[0]}/{parts[1]}"
+    return ""
+
+
+def github_api_token() -> str | None:
+    for env_name in ("PYTEST_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
+        value = os.getenv(env_name, "").strip()
+        if value:
+            return value
+    return None
+
+
+def github_cache_ttl_seconds() -> float:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_GITHUB_CACHE_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_GITHUB_CACHE_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return DEFAULT_GITHUB_CACHE_SECONDS
+
+
+def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
+    api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
+    api_url = f"{api_base_url}/repos/{quote(repository, safe='/')}/pulls/{quote(pr, safe='')}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "transformersci-trace-exporter",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = github_api_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    request = Request(api_url, headers=headers)
+    with urlopen(request, timeout=5) as response:
+        payload = json.load(response)
+    if not isinstance(payload, dict):
+        raise ValueError("GitHub API returned a non-object payload")
+
+    user = payload.get("user")
+    author = user.get("login") if isinstance(user, dict) else ""
+    html_url = payload.get("html_url")
+    title = payload.get("title")
+    state = payload.get("state")
+    return {
+        "author": author if isinstance(author, str) else "",
+        "html_url": html_url if isinstance(html_url, str) else github_pr_html_url(repository, pr),
+        "state": state if isinstance(state, str) else "",
+        "title": title if isinstance(title, str) else "",
+    }
+
+
+_pr_info_cache_lock = threading.Lock()
+_cached_pr_info: dict[tuple[str, str], tuple[float, dict[str, str]]] = {}
+
+
+def fetch_github_pr_info_cached(repository: str, pr: str) -> dict[str, str]:
+    key = (repository, pr)
+    ttl = github_cache_ttl_seconds()
+    now = time.monotonic()
+    with _pr_info_cache_lock:
+        cached = _cached_pr_info.get(key)
+        if cached is not None and ttl > 0:
+            cached_at, payload = cached
+            if now - cached_at < ttl:
+                return dict(payload)
+
+    fallback = {
+        "author": "",
+        "html_url": github_pr_html_url(repository, pr),
+        "state": "",
+        "title": "",
+    }
+    try:
+        payload = fetch_github_pr_info(repository, pr)
+    except Exception:
+        payload = fallback
+
+    with _pr_info_cache_lock:
+        _cached_pr_info[key] = (now, dict(payload))
+    return dict(payload)
+
+
 def latest_trace(traces: list[dict]) -> dict | None:
     if not traces:
         return None
@@ -151,6 +248,8 @@ def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str
     process_suite = ""
     process_provider = ""
     process_pr = ""
+    process_pr_url = ""
+    process_repository = ""
     service_name = ""
     end_time = 0
     start_time = 0
@@ -183,6 +282,8 @@ def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str
         )
         process_provider = process_tags.get("transformers.test.provider", process_provider)
         process_pr = process_tags.get("vcs.change.id", process_pr)
+        process_pr_url = process_tags.get("vcs.change.url", process_pr_url)
+        process_repository = process_tags.get("vcs.repository.name", process_repository)
 
         span_tags = tag_map(span.get("tags", []))
         nodeid = span_tags.get("pytest.nodeid")
@@ -212,11 +313,18 @@ def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str
             }
         )
 
+    if not process_repository and process_pr_url:
+        process_repository = repository_from_pr_url(process_pr_url)
+    if not process_pr_url and process_repository and process_pr:
+        process_pr_url = github_pr_html_url(process_repository, process_pr)
+
     return {
         "end_time": end_time,
         "latest_start_time": latest_start_time,
         "pr": process_pr or "none",
+        "pr_url": process_pr_url,
         "provider": process_provider or "unknown",
+        "repository": process_repository,
         "run_id": process_run_id or trace_id,
         "service_name": service_name or "unknown",
         "start_time": start_time,
@@ -302,6 +410,76 @@ def extract_pr_last_failure_metrics(
     ]
     for pr, (_, labels) in sorted(per_pr.items()):
         lines.append(f"pytest_pr_last_failure_info{metric_labels(labels)} 1")
+    return lines
+
+
+def extract_pr_info_metrics(
+    traces: list[dict],
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] | None = None,
+    _metadata_fetcher: Callable[[str, str], dict[str, str]] | None = None,
+) -> list[str]:
+    """Emit one ``pytest_pr_info`` series per PR with GitHub metadata.
+
+    The metric is intentionally small and PR-scoped so Grafana can render
+    stable PR metadata without querying GitHub directly from the panel.
+    """
+    extracted = _extracted if _extracted is not None else _precompute_trace_rows(traces)
+    metadata_fetcher = _metadata_fetcher or fetch_github_pr_info_cached
+    lines = [
+        "# HELP pytest_pr_info Metadata fetched for a pull request.",
+        "# TYPE pytest_pr_info gauge",
+    ]
+    best_by_pr: dict[tuple[str, str], tuple[int, dict[str, str]]] = {}
+    for trace_info, _rows in extracted:
+        pr = str(trace_info.get("pr", "none"))
+        if not pr.isdigit():
+            continue
+        service_name = str(trace_info.get("service_name", "unknown"))
+        repository = str(trace_info.get("repository", ""))
+        pr_url = str(trace_info.get("pr_url", ""))
+        if not repository and pr_url:
+            repository = repository_from_pr_url(pr_url)
+        key = (service_name, pr)
+        candidate = {
+            "pr": pr,
+            "pr_url": pr_url,
+            "repository": repository,
+            "service_name": service_name,
+        }
+        trace_score = int(trace_info.get("latest_start_time", 0) or 0)
+        if repository:
+            trace_score += 1
+        if pr_url:
+            trace_score += 1
+        existing = best_by_pr.get(key)
+        if existing is None or trace_score >= existing[0]:
+            best_by_pr[key] = (trace_score, candidate)
+
+    for (_service_name, _pr), (_score, candidate) in sorted(best_by_pr.items()):
+        pr = candidate["pr"]
+        repository = candidate["repository"]
+        pr_url = candidate["pr_url"]
+        service_name = candidate["service_name"]
+        metadata = {
+            "author": "",
+            "html_url": pr_url or github_pr_html_url(repository, pr),
+            "state": "",
+            "title": "",
+        }
+        if repository:
+            metadata.update(metadata_fetcher(repository, pr))
+
+        labels = {
+            "author": str(metadata.get("author", "")),
+            "html_url": str(metadata.get("html_url", "")),
+            "pr": pr,
+            "repository": repository,
+            "service_name": service_name,
+            "state": str(metadata.get("state", "")),
+            "title": str(metadata.get("title", "")),
+        }
+        lines.append(f"pytest_pr_info{metric_labels(labels)} 1")
     return lines
 
 
@@ -616,6 +794,7 @@ def _render_metrics_uncached() -> str:
         f"pytest_trace_exporter_trace_count {len(traces)}",
     ]
     rendered.extend(extract_per_run_metrics(traces, _extracted=extracted))
+    rendered.extend(extract_pr_info_metrics(traces, _extracted=extracted))
     rendered.extend(extract_pr_last_failure_metrics(traces, _extracted=extracted))
     rendered.extend(extract_average_metrics(traces, _extracted=extracted))
     rendered.extend(extract_average_resource_metrics(resource_records))

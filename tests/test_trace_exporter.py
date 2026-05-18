@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+from unittest.mock import patch
+
 from transformersci.otel import trace_exporter
 
 
@@ -52,7 +55,9 @@ def make_trace(
     suite: str,
     spans: list[dict],
     pr: str = "4321",
+    pr_url: str = "https://github.com/huggingface/transformers/pull/4321",
     provider: str = "github_actions",
+    repository: str = "huggingface/transformers",
     service_name: str = "transformers-tests",
 ) -> dict:
     return {
@@ -64,6 +69,8 @@ def make_trace(
                     make_tag("transformers.test.run.id", run_id),
                     make_tag("transformers.test.suite", suite),
                     make_tag("vcs.change.id", pr),
+                    make_tag("vcs.change.url", pr_url),
+                    make_tag("vcs.repository.name", repository),
                 ],
             }
         },
@@ -183,3 +190,126 @@ def test_extract_pr_last_failure_metrics_links_failure_back_to_run() -> None:
     assert 'run_id="12345:2"' in failure_lines[0]
     assert 'trace_id="trace-torch"' in failure_lines[0]
     assert 'test_suite="tests_torch"' in failure_lines[0]
+
+
+class FakeResponse(io.StringIO):
+    def __enter__(self) -> "FakeResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.close()
+        return False
+
+
+def test_fetch_github_pr_info_uses_github_api_response() -> None:
+    payload = FakeResponse(
+        '{"html_url": "https://github.com/huggingface/transformers/pull/4321", '
+        '"state": "open", "title": "Fix dashboard metadata", '
+        '"user": {"login": "octocat"}}'
+    )
+    with patch.dict(
+        "os.environ",
+        {
+            "PYTEST_GITHUB_API_URL": "https://api.github.example",
+            "PYTEST_GITHUB_TOKEN": "secret-token",
+        },
+        clear=False,
+    ):
+        with patch(
+            "transformersci.otel.trace_exporter.urlopen", return_value=payload
+        ) as mocked_urlopen:
+            metadata = trace_exporter.fetch_github_pr_info(
+                "huggingface/transformers", "4321"
+            )
+
+    request = mocked_urlopen.call_args.args[0]
+    assert request.full_url == (
+        "https://api.github.example/repos/huggingface/transformers/pulls/4321"
+    )
+    assert request.get_header("Authorization") == "Bearer secret-token"
+    assert metadata == {
+        "author": "octocat",
+        "html_url": "https://github.com/huggingface/transformers/pull/4321",
+        "state": "open",
+        "title": "Fix dashboard metadata",
+    }
+
+
+def test_extract_pr_info_metrics_fetches_metadata_once_per_pr() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def metadata_fetcher(repository: str, pr: str) -> dict[str, str]:
+        calls.append((repository, pr))
+        return {
+            "author": "octocat",
+            "html_url": "https://github.com/huggingface/transformers/pull/4321",
+            "state": "open",
+            "title": "Fix dashboard metadata",
+        }
+
+    metrics = trace_exporter.extract_pr_info_metrics(
+        workflow_split_across_three_suites(),
+        _metadata_fetcher=metadata_fetcher,
+    )
+
+    info_lines = metric_lines(metrics, "pytest_pr_info")
+    assert len(info_lines) == 1
+    assert calls == [("huggingface/transformers", "4321")]
+    assert 'author="octocat"' in info_lines[0]
+    assert 'html_url="https://github.com/huggingface/transformers/pull/4321"' in info_lines[0]
+    assert 'repository="huggingface/transformers"' in info_lines[0]
+    assert 'state="open"' in info_lines[0]
+    assert 'title="Fix dashboard metadata"' in info_lines[0]
+
+
+def test_extract_pr_info_metrics_prefers_repository_backed_trace() -> None:
+    process_id = "pytest-process"
+    traces = [
+        make_trace(
+            trace_id="trace-without-repo",
+            run_id="run-1",
+            suite="tests_a",
+            spans=[
+                make_test_span(
+                    process_id=process_id,
+                    nodeid="tests/test_a.py::TestA::test_one",
+                    start_time=1_000_000,
+                    duration=1_000_000,
+                )
+            ],
+            pr="45983",
+            pr_url="",
+            repository="",
+        ),
+        make_trace(
+            trace_id="trace-with-repo",
+            run_id="run-2",
+            suite="tests_b",
+            spans=[
+                make_test_span(
+                    process_id=process_id,
+                    nodeid="tests/test_b.py::TestB::test_two",
+                    start_time=2_000_000,
+                    duration=1_000_000,
+                )
+            ],
+            pr="45983",
+            pr_url="https://github.com/huggingface/transformers/pull/45983",
+            repository="huggingface/transformers",
+        ),
+    ]
+
+    metrics = trace_exporter.extract_pr_info_metrics(
+        traces,
+        _metadata_fetcher=lambda repository, pr: {
+            "author": "octocat",
+            "html_url": f"https://github.com/{repository}/pull/{pr}",
+            "state": "open",
+            "title": "Existing PR sample",
+        },
+    )
+
+    info_lines = metric_lines(metrics, "pytest_pr_info")
+    assert len(info_lines) == 1
+    assert 'repository="huggingface/transformers"' in info_lines[0]
+    assert 'html_url="https://github.com/huggingface/transformers/pull/45983"' in info_lines[0]

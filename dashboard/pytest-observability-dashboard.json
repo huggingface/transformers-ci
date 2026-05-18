@@ -606,10 +606,33 @@
                 "color": "green"
               }
             ]
-          },
-          "unit": "s"
+          }
         },
         "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Avg Duration"},
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "PR"},
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View PR",
+                    "url": "/d/pytest-observability-by-pr?var-pr=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
           {
             "matcher": {"id": "byName", "options": "Suite"},
             "properties": [
@@ -690,13 +713,15 @@
                     },
                     "indexByName": {
                       "Value": 0,
-                      "test_suite": 1,
-                      "test_module": 2,
-                      "test_class": 3,
-                      "test_function": 4
+                      "pr": 1,
+                      "test_suite": 2,
+                      "test_module": 3,
+                      "test_class": 4,
+                      "test_function": 5
                     },
                     "renameByName": {
                       "Value": "Avg Duration",
+                      "pr": "PR",
                       "test_module": "Module",
                       "test_class": "Class",
                       "test_function": "Function",

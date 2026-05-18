@@ -18,7 +18,16 @@ class ConfigureCiOtelTests(TestCase):
 
     def test_prepare_environment_adds_github_attributes(self):
         with tempfile.NamedTemporaryFile("w", suffix=".json") as event_file:
-            json.dump({"pull_request": {"number": 4321}}, event_file)
+            json.dump(
+                {
+                    "pull_request": {
+                        "html_url": "https://github.com/huggingface/transformers/pull/4321",
+                        "number": 4321,
+                    },
+                    "repository": {"full_name": "huggingface/transformers"},
+                },
+                event_file,
+            )
             event_file.flush()
 
             env, export_traces = cli.prepare_environment(
@@ -52,6 +61,14 @@ class ConfigureCiOtelTests(TestCase):
             env["OTEL_RESOURCE_ATTRIBUTES"],
         )
         self.assertIn("vcs.change.id=4321", env["OTEL_RESOURCE_ATTRIBUTES"])
+        self.assertIn(
+            "vcs.change.url=https://github.com/huggingface/transformers/pull/4321",
+            env["OTEL_RESOURCE_ATTRIBUTES"],
+        )
+        self.assertIn(
+            "vcs.repository.name=huggingface/transformers",
+            env["OTEL_RESOURCE_ATTRIBUTES"],
+        )
         self.assertEqual(env["TRANSFORMERS_TEST_OTEL_RUN_ID"], "12345:2")
 
     def test_prepare_environment_adds_circleci_attributes(self):
@@ -60,6 +77,9 @@ class ConfigureCiOtelTests(TestCase):
                 "CIRCLE_BRANCH": "pull/987",
                 "CIRCLE_BUILD_NUM": "24680",
                 "CIRCLE_JOB": "tests_torch",
+                "CIRCLE_PROJECT_REPONAME": "transformers",
+                "CIRCLE_PROJECT_USERNAME": "huggingface",
+                "CIRCLE_PULL_REQUEST": "https://github.com/huggingface/transformers/pull/987",
                 "CIRCLE_SHA1": "cafebabe",
                 "CIRCLE_WORKFLOW_ID": "workflow-123",
                 "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
@@ -84,6 +104,14 @@ class ConfigureCiOtelTests(TestCase):
             "transformers.test.suite.run=24680", env["OTEL_RESOURCE_ATTRIBUTES"]
         )
         self.assertIn("vcs.change.id=987", env["OTEL_RESOURCE_ATTRIBUTES"])
+        self.assertIn(
+            "vcs.change.url=https://github.com/huggingface/transformers/pull/987",
+            env["OTEL_RESOURCE_ATTRIBUTES"],
+        )
+        self.assertIn(
+            "vcs.repository.name=huggingface/transformers",
+            env["OTEL_RESOURCE_ATTRIBUTES"],
+        )
         self.assertEqual(env["TRANSFORMERS_TEST_OTEL_RUN_ID"], "workflow-123")
 
     def test_prepare_environment_supports_local_forced_export(self):

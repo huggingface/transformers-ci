@@ -80,6 +80,10 @@ The main panels are:
 - `Highest Avg Peak RSS`
 - `Aggregated Traces`
 
+The PR dashboard can enrich its top panel from the GitHub API. For higher rate
+limits, export `PYTEST_GITHUB_TOKEN` before starting the stack. Optional knobs:
+`PYTEST_GITHUB_API_URL` and `PYTEST_TRACE_EXPORTER_GITHUB_CACHE_SECONDS`.
+
 ## Jaeger
 
 - `http://localhost:16687`

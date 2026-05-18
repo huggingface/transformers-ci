@@ -208,6 +208,74 @@ def github_pr_number(env: Mapping[str, str]) -> str | None:
     return None
 
 
+def github_repository(env: Mapping[str, str]) -> str | None:
+    event = read_github_event(env)
+    if event is not None:
+        repository = event.get("repository")
+        if isinstance(repository, dict):
+            full_name = repository.get("full_name")
+            if isinstance(full_name, str) and full_name:
+                return full_name
+
+        pull_request = event.get("pull_request")
+        if isinstance(pull_request, dict):
+            base = pull_request.get("base")
+            if isinstance(base, dict):
+                repo = base.get("repo")
+                if isinstance(repo, dict):
+                    full_name = repo.get("full_name")
+                    if isinstance(full_name, str) and full_name:
+                        return full_name
+
+    repository_name = env.get("GITHUB_REPOSITORY", "")
+    return repository_name or None
+
+
+def github_pr_url(env: Mapping[str, str]) -> str | None:
+    event = read_github_event(env)
+    if event is None:
+        return None
+
+    pull_request = event.get("pull_request")
+    if isinstance(pull_request, dict):
+        html_url = pull_request.get("html_url")
+        if isinstance(html_url, str) and html_url:
+            return html_url
+
+    issue = event.get("issue")
+    if (
+        isinstance(issue, dict)
+        and issue.get("pull_request")
+        and isinstance(issue.get("html_url"), str)
+        and issue["html_url"]
+    ):
+        return issue["html_url"]
+
+    return None
+
+
+def circleci_repository(env: Mapping[str, str]) -> str | None:
+    owner = env.get("CIRCLE_PROJECT_USERNAME", "").strip()
+    repo = env.get("CIRCLE_PROJECT_REPONAME", "").strip()
+    if owner and repo:
+        return f"{owner}/{repo}"
+    return None
+
+
+def circleci_pr_url(env: Mapping[str, str]) -> str | None:
+    pull_request = env.get("CIRCLE_PULL_REQUEST", "").strip()
+    if pull_request:
+        return pull_request
+
+    pull_requests = env.get("CIRCLE_PULL_REQUESTS", "")
+    if pull_requests:
+        first_pull_request = pull_requests.split(",")[0].strip()
+        if first_pull_request:
+            return first_pull_request
+
+    return None
+
+
 def circleci_pr_number(env: Mapping[str, str]) -> str | None:
     pull_request = env.get("CIRCLE_PULL_REQUEST", "")
     if pull_request:
@@ -277,6 +345,19 @@ def build_resource_attributes(
     suite: str,
     pr_number: str | None,
 ) -> list[str]:
+    repository_name = env.get("TRANSFORMERS_TEST_OTEL_REPOSITORY")
+    pr_url = env.get("TRANSFORMERS_TEST_OTEL_PR_URL")
+    if not repository_name:
+        if provider == "github_actions":
+            repository_name = github_repository(env)
+        elif provider == "circleci":
+            repository_name = circleci_repository(env)
+    if not pr_url:
+        if provider == "github_actions":
+            pr_url = github_pr_url(env)
+        elif provider == "circleci":
+            pr_url = circleci_pr_url(env)
+
     if provider == "github_actions":
         resolved_run_id = workflow_run_id(env, provider)
         attributes = [
@@ -293,6 +374,10 @@ def build_resource_attributes(
         resolved_suite_run_id = suite_run_id(env, provider, suite)
         if pr_number:
             attributes.append(f"vcs.change.id={pr_number}")
+        if pr_url:
+            attributes.append(f"vcs.change.url={pr_url}")
+        if repository_name:
+            attributes.append(f"vcs.repository.name={repository_name}")
         if resolved_run_id is not None:
             attributes.append(f"transformers.test.run.id={resolved_run_id}")
         if resolved_suite_run_id is not None:
@@ -315,6 +400,10 @@ def build_resource_attributes(
         resolved_suite_run_id = suite_run_id(env, provider, suite)
         if pr_number:
             attributes.append(f"vcs.change.id={pr_number}")
+        if pr_url:
+            attributes.append(f"vcs.change.url={pr_url}")
+        if repository_name:
+            attributes.append(f"vcs.repository.name={repository_name}")
         if resolved_run_id is not None:
             attributes.append(f"transformers.test.run.id={resolved_run_id}")
         if resolved_suite_run_id is not None:
@@ -328,6 +417,10 @@ def build_resource_attributes(
     ]
     if pr_number:
         attributes.append(f"vcs.change.id={pr_number}")
+    if pr_url:
+        attributes.append(f"vcs.change.url={pr_url}")
+    if repository_name:
+        attributes.append(f"vcs.repository.name={repository_name}")
     return attributes
 
 
