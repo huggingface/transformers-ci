@@ -202,10 +202,16 @@ class FakeResponse(io.StringIO):
 
 
 def test_fetch_github_pr_info_uses_github_api_response() -> None:
-    payload = FakeResponse(
+    pr_payload = FakeResponse(
         '{"html_url": "https://github.com/huggingface/transformers/pull/4321", '
         '"state": "open", "title": "Fix dashboard metadata", '
-        '"user": {"login": "octocat"}}'
+        '"user": {"login": "octocat"}, '
+        '"head": {"sha": "deadbeefcafebabe1234567890abcdef00000000"}, '
+        '"created_at": "2024-01-02T03:04:05Z", '
+        '"requested_reviewers": [{"login": "alice"}, {"login": "bob"}]}'
+    )
+    reviews_payload = FakeResponse(
+        '[{"user": {"login": "carol"}}, {"user": {"login": "alice"}}]'
     )
     with patch.dict(
         "os.environ",
@@ -216,20 +222,28 @@ def test_fetch_github_pr_info_uses_github_api_response() -> None:
         clear=False,
     ):
         with patch(
-            "transformersci.otel.trace_exporter.urlopen", return_value=payload
+            "transformersci.otel.trace_exporter.urlopen",
+            side_effect=[pr_payload, reviews_payload],
         ) as mocked_urlopen:
             metadata = trace_exporter.fetch_github_pr_info(
                 "huggingface/transformers", "4321"
             )
 
-    request = mocked_urlopen.call_args.args[0]
-    assert request.full_url == (
+    first_request = mocked_urlopen.call_args_list[0].args[0]
+    second_request = mocked_urlopen.call_args_list[1].args[0]
+    assert first_request.full_url == (
         "https://api.github.example/repos/huggingface/transformers/pulls/4321"
     )
-    assert request.get_header("Authorization") == "Bearer secret-token"
+    assert second_request.full_url == (
+        "https://api.github.example/repos/huggingface/transformers/pulls/4321/reviews"
+    )
+    assert first_request.get_header("Authorization") == "Bearer secret-token"
     assert metadata == {
         "author": "octocat",
+        "commit_sha": "deadbeefcafebabe1234567890abcdef00000000",
+        "created_at": "2024-01-02T03:04:05Z",
         "html_url": "https://github.com/huggingface/transformers/pull/4321",
+        "reviewers": "carol,alice,bob",
         "state": "open",
         "title": "Fix dashboard metadata",
     }
@@ -242,7 +256,10 @@ def test_extract_pr_info_metrics_fetches_metadata_once_per_pr() -> None:
         calls.append((repository, pr))
         return {
             "author": "octocat",
+            "commit_sha": "deadbeefcafebabe1234567890abcdef00000000",
+            "created_at": "2024-01-02T03:04:05Z",
             "html_url": "https://github.com/huggingface/transformers/pull/4321",
+            "reviewers": "alice,bob",
             "state": "open",
             "title": "Fix dashboard metadata",
         }
@@ -256,10 +273,58 @@ def test_extract_pr_info_metrics_fetches_metadata_once_per_pr() -> None:
     assert len(info_lines) == 1
     assert calls == [("huggingface/transformers", "4321")]
     assert 'author="octocat"' in info_lines[0]
+    assert 'commit_sha="deadbeefcafebabe1234567890abcdef00000000"' in info_lines[0]
     assert 'html_url="https://github.com/huggingface/transformers/pull/4321"' in info_lines[0]
     assert 'repository="huggingface/transformers"' in info_lines[0]
+    assert 'reviewers="alice,bob"' in info_lines[0]
     assert 'state="open"' in info_lines[0]
     assert 'title="Fix dashboard metadata"' in info_lines[0]
+
+    created_lines = metric_lines(metrics, "pytest_pr_created_at_seconds")
+    assert len(created_lines) == 1
+    assert 'pr="4321"' in created_lines[0]
+    # 2024-01-02T03:04:05Z == 1704164645
+    assert created_lines[0].endswith(" 1704164645")
+
+
+def test_extract_pr_info_metrics_defaults_commit_sha_to_main() -> None:
+    def metadata_fetcher(repository: str, pr: str) -> dict[str, str]:
+        return {
+            "author": "octocat",
+            "commit_sha": "",
+            "html_url": "https://github.com/huggingface/transformers/pull/4321",
+            "state": "open",
+            "title": "Fix dashboard metadata",
+        }
+
+    metrics = trace_exporter.extract_pr_info_metrics(
+        workflow_split_across_three_suites(),
+        _metadata_fetcher=metadata_fetcher,
+    )
+
+    info_lines = metric_lines(metrics, "pytest_pr_info")
+    assert len(info_lines) == 1
+    assert 'commit_sha="main"' in info_lines[0]
+
+
+def test_extract_test_line_returns_first_test_file_line_number() -> None:
+    nodeid = "tests/pipelines/test_x.py::TestX::test_one"
+    stacktrace = (
+        "self = <tests.pipelines.test_x.TestX testMethod=test_one>\n\n"
+        "    def test_one(self):\n"
+        ">       call_thing()\n\n"
+        "tests/pipelines/test_x.py:145: \n"
+        "_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _\n"
+        "src/transformers/foo.py:1002: in call_thing\n"
+        "    raise ValueError(\"boom\")\n"
+    )
+    assert trace_exporter.extract_test_line(stacktrace, nodeid) == "145"
+
+
+def test_extract_test_line_returns_empty_when_no_match() -> None:
+    nodeid = "tests/test_z.py::test_nope"
+    stacktrace = "some other stacktrace that does not reference the test file"
+    assert trace_exporter.extract_test_line(stacktrace, nodeid) == ""
 
 
 def test_extract_pr_info_metrics_prefers_repository_backed_trace() -> None:

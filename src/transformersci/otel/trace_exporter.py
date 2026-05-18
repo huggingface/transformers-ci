@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -63,6 +64,22 @@ def extract_exception_info(span: dict) -> tuple[str, str]:
                 stacktrace = stacktrace[:4000] + "\n... (truncated)"
             return fields.get("exception.type", ""), stacktrace
     return "", ""
+
+
+def extract_test_line(stacktrace: str, test_nodeid: str) -> str:
+    """Pull the first source line in *stacktrace* that points at the test file.
+
+    Pytest's exception output starts with `<test_file>:<lineno>:` at the top of
+    the captured stacktrace, before any framework or library frames. Used to
+    deep-link the failure panel to the offending line on GitHub.
+    """
+    if not stacktrace or not test_nodeid:
+        return ""
+    test_file = test_nodeid.split("::", 1)[0]
+    if not test_file:
+        return ""
+    match = re.search(rf"{re.escape(test_file)}:(\d+)", stacktrace)
+    return match.group(1) if match else ""
 
 
 def split_pytest_nodeid(nodeid: str) -> dict[str, str]:
@@ -162,9 +179,20 @@ def github_cache_ttl_seconds() -> float:
         return DEFAULT_GITHUB_CACHE_SECONDS
 
 
-def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
-    api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
-    api_url = f"{api_base_url}/repos/{quote(repository, safe='/')}/pulls/{quote(pr, safe='')}"
+def parse_github_timestamp(value: str) -> float | None:
+    """Parse a GitHub ISO-8601 timestamp (e.g. '2024-01-02T03:04:05Z') to epoch seconds."""
+    if not value:
+        return None
+    cleaned = value.replace("Z", "+00:00")
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(cleaned).timestamp()
+    except ValueError:
+        return None
+
+
+def _github_api_get(api_url: str) -> object:
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "transformersci-trace-exporter",
@@ -173,10 +201,45 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
     token = github_api_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
-
     request = Request(api_url, headers=headers)
     with urlopen(request, timeout=5) as response:
-        payload = json.load(response)
+        return json.load(response)
+
+
+def fetch_github_pr_reviews(repository: str, pr: str) -> list[str]:
+    """Return GitHub logins that have submitted a review on the PR.
+
+    Used to enrich `pytest_pr_info` so the dashboard can show actual reviewers
+    in addition to pending `requested_reviewers`.
+    """
+    api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
+    api_url = (
+        f"{api_base_url}/repos/{quote(repository, safe='/')}/pulls/"
+        f"{quote(pr, safe='')}/reviews"
+    )
+    try:
+        payload = _github_api_get(api_url)
+    except Exception:
+        return []
+    if not isinstance(payload, list):
+        return []
+    logins: list[str] = []
+    seen: set[str] = set()
+    for review in payload:
+        if not isinstance(review, dict):
+            continue
+        user = review.get("user")
+        login = user.get("login") if isinstance(user, dict) else None
+        if isinstance(login, str) and login and login not in seen:
+            seen.add(login)
+            logins.append(login)
+    return logins
+
+
+def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
+    api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
+    api_url = f"{api_base_url}/repos/{quote(repository, safe='/')}/pulls/{quote(pr, safe='')}"
+    payload = _github_api_get(api_url)
     if not isinstance(payload, dict):
         raise ValueError("GitHub API returned a non-object payload")
 
@@ -185,9 +248,33 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
     html_url = payload.get("html_url")
     title = payload.get("title")
     state = payload.get("state")
+    head = payload.get("head")
+    commit_sha = head.get("sha") if isinstance(head, dict) else ""
+    created_at = payload.get("created_at")
+
+    pending: list[str] = []
+    requested = payload.get("requested_reviewers")
+    if isinstance(requested, list):
+        for entry in requested:
+            if isinstance(entry, dict):
+                login = entry.get("login")
+                if isinstance(login, str) and login:
+                    pending.append(login)
+    submitted = fetch_github_pr_reviews(repository, pr)
+    seen: set[str] = set()
+    merged: list[str] = []
+    for login in submitted + pending:
+        if login not in seen:
+            seen.add(login)
+            merged.append(login)
+    reviewers = ",".join(merged)
+
     return {
         "author": author if isinstance(author, str) else "",
+        "commit_sha": commit_sha if isinstance(commit_sha, str) else "",
+        "created_at": created_at if isinstance(created_at, str) else "",
         "html_url": html_url if isinstance(html_url, str) else github_pr_html_url(repository, pr),
+        "reviewers": reviewers,
         "state": state if isinstance(state, str) else "",
         "title": title if isinstance(title, str) else "",
     }
@@ -210,7 +297,10 @@ def fetch_github_pr_info_cached(repository: str, pr: str) -> dict[str, str]:
 
     fallback = {
         "author": "",
+        "commit_sha": "",
+        "created_at": "",
         "html_url": github_pr_html_url(repository, pr),
+        "reviewers": "",
         "state": "",
         "title": "",
     }
@@ -306,6 +396,7 @@ def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str
                 "status_code": span_tags.get("otel.status_code", "UNSET"),
                 "test_class": node_parts["test_class"],
                 "test_function": node_parts["test_function"],
+                "test_line": extract_test_line(exc_stacktrace, nodeid),
                 "test_suite": process_suite or "unknown",
                 "test_module": node_parts["test_module"],
                 "test_nodeid": nodeid,
@@ -397,6 +488,7 @@ def extract_pr_last_failure_metrics(
                         "test_function": str(row["test_function"]),
                         "test_module": str(row["test_module"]),
                         "test_class": str(row["test_class"]),
+                        "test_line": str(row.get("test_line", "")),
                         "test_nodeid": str(row["test_nodeid"]),
                         "exception_type": str(row.get("exception_type", "")) or "unknown",
                         "stacktrace": str(row.get("exception_stacktrace", "")),
@@ -430,6 +522,7 @@ def extract_pr_info_metrics(
         "# HELP pytest_pr_info Metadata fetched for a pull request.",
         "# TYPE pytest_pr_info gauge",
     ]
+    created_lines: list[str] = []
     best_by_pr: dict[tuple[str, str], tuple[int, dict[str, str]]] = {}
     for trace_info, _rows in extracted:
         pr = str(trace_info.get("pr", "none"))
@@ -463,7 +556,10 @@ def extract_pr_info_metrics(
         service_name = candidate["service_name"]
         metadata = {
             "author": "",
+            "commit_sha": "",
+            "created_at": "",
             "html_url": pr_url or github_pr_html_url(repository, pr),
+            "reviewers": "",
             "state": "",
             "title": "",
         }
@@ -472,14 +568,32 @@ def extract_pr_info_metrics(
 
         labels = {
             "author": str(metadata.get("author", "")),
+            "commit_sha": str(metadata.get("commit_sha", "")) or "main",
             "html_url": str(metadata.get("html_url", "")),
             "pr": pr,
             "repository": repository,
+            "reviewers": str(metadata.get("reviewers", "")),
             "service_name": service_name,
             "state": str(metadata.get("state", "")),
             "title": str(metadata.get("title", "")),
         }
         lines.append(f"pytest_pr_info{metric_labels(labels)} 1")
+
+        created_ts = parse_github_timestamp(str(metadata.get("created_at", "")))
+        if created_ts is not None:
+            created_labels = {
+                "pr": pr,
+                "repository": repository,
+                "service_name": service_name,
+            }
+            created_lines.append(
+                f"pytest_pr_created_at_seconds{metric_labels(created_labels)} {created_ts:.0f}"
+            )
+
+    if created_lines:
+        lines.append("# HELP pytest_pr_created_at_seconds Unix timestamp the PR was created at.")
+        lines.append("# TYPE pytest_pr_created_at_seconds gauge")
+        lines.extend(created_lines)
     return lines
 
 
