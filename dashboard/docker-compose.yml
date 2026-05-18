@@ -1,23 +1,46 @@
 services:
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    # run as root so badger can create /badger/{data,key} in the named volume,
-    # which is created with root ownership on first mount
-    user: "0"
+  opensearch:
+    image: opensearchproject/opensearch:2.19.1
+    restart: unless-stopped
     environment:
-      - COLLECTOR_OTLP_ENABLED=true
-      - SPAN_STORAGE_TYPE=badger
-      - BADGER_EPHEMERAL=false
-      - BADGER_DIRECTORY_VALUE=/badger/data
-      - BADGER_DIRECTORY_KEY=/badger/key
-      - BADGER_SPAN_STORE_TTL=2160h
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      # Security is disabled, but OpenSearch 2.12+ still requires this env to start.
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=DevOnly_Unused_Password_123!
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+      - bootstrap.memory_lock=false
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
-      - jaeger-data:/badger
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "curl -fsS http://localhost:9200/_cluster/health | grep -E '\"status\":\"(green|yellow)\"' >/dev/null"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  jaeger:
+    image: jaegertracing/jaeger:2.17.0
+    restart: unless-stopped
+    command:
+      - "--config=/etc/jaeger/config.yaml"
+    volumes:
+      - ./jaeger.yaml:/etc/jaeger/config.yaml:ro
+    depends_on:
+      opensearch:
+        condition: service_healthy
     ports:
       - "16687:16686"
 
   pytest-trace-exporter:
     image: python:3.12-slim
+    restart: unless-stopped
     command:
       - "python"
       - "-m"
@@ -31,19 +54,20 @@ services:
       - PYTEST_RESOURCE_METRICS_FILE=/data/pytest-resource-metrics.jsonl
       - PYTEST_TRACE_EXPORTER_SERVICE_NAME=pytest-observability-demo
     volumes:
-      - ../src:/app/src
+      - ../src:/app/src:ro
       - ./data:/data
     depends_on:
       - jaeger
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.0.1
+    restart: unless-stopped
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--storage.tsdb.retention.time=90d"
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     depends_on:
       - pytest-trace-exporter
@@ -51,11 +75,12 @@ services:
       - "9091:9090"
 
   otelcol:
-    image: otel/opentelemetry-collector-contrib:latest
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    restart: unless-stopped
     command:
       - "--config=/etc/otelcol/config.yaml"
     volumes:
-      - ./otelcol.yaml:/etc/otelcol/config.yaml
+      - ./otelcol.yaml:/etc/otelcol/config.yaml:ro
     depends_on:
       - jaeger
     ports:
@@ -63,20 +88,21 @@ services:
       - "5318:4318"
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.4.0
+    restart: unless-stopped
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_DISABLE_LOGIN_FORM=true
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/pytest-observability-dashboard.json
     volumes:
-      - ./pytest-observability-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-dashboard.json
-      - ./pytest-observability-suite-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-suite-dashboard.json
-      - ./pytest-observability-pr-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-pr-dashboard.json
-      - ./pytest-observability-run-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-run-dashboard.json
-      - ./pytest-traceback-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-traceback-dashboard.json
-      - ./grafana-dashboard.yaml:/etc/grafana/provisioning/dashboards/grafana-dashboard.yaml
-      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+      - ./pytest-observability-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-dashboard.json:ro
+      - ./pytest-observability-suite-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-suite-dashboard.json:ro
+      - ./pytest-observability-pr-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-pr-dashboard.json:ro
+      - ./pytest-observability-run-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-run-dashboard.json:ro
+      - ./pytest-traceback-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-traceback-dashboard.json:ro
+      - ./grafana-dashboard.yaml:/etc/grafana/provisioning/dashboards/grafana-dashboard.yaml:ro
+      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
       - grafana-data:/var/lib/grafana
     depends_on:
       - jaeger
@@ -85,6 +111,6 @@ services:
       - "3000:3000"
 
 volumes:
-  jaeger-data:
+  opensearch-data:
   prometheus-data:
   grafana-data:
