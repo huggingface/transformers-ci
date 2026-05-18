@@ -213,7 +213,7 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Trace ID"},
+            "matcher": {"id": "byName", "options": "Trace"},
             "properties": [
               {
                 "id": "links",
@@ -296,7 +296,7 @@
               "test_function": "Function",
               "test_module": "Module",
               "test_suite": "Suite",
-              "trace_id": "Trace ID"
+              "trace_id": "Trace"
             }
           }
         }
