@@ -94,7 +94,9 @@ class ResourceSampler:
         while not self.stop_event.wait(0.05):
             self.peak_rss_bytes = max(self.peak_rss_bytes, self._rss_bytes())
             if self.cuda_available:
-                self.peak_cuda_allocated_bytes = max(self.peak_cuda_allocated_bytes, self._cuda_allocated_bytes())
+                self.peak_cuda_allocated_bytes = max(
+                    self.peak_cuda_allocated_bytes, self._cuda_allocated_bytes()
+                )
 
     def start(self) -> None:
         self.thread = threading.Thread(target=self._sample_loop, daemon=True)
@@ -109,7 +111,9 @@ class ResourceSampler:
         end_cpu_time = self._cpu_time_seconds()
         end_cuda_allocated_bytes = self._cuda_allocated_bytes()
         self.peak_rss_bytes = max(self.peak_rss_bytes, end_rss_bytes)
-        self.peak_cuda_allocated_bytes = max(self.peak_cuda_allocated_bytes, end_cuda_allocated_bytes)
+        self.peak_cuda_allocated_bytes = max(
+            self.peak_cuda_allocated_bytes, end_cuda_allocated_bytes
+        )
 
         return {
             "cpu_time_seconds": max(0.0, end_cpu_time - self.start_cpu_time),
@@ -125,7 +129,11 @@ def metrics_file_path(config: pytest.Config | None = None) -> Path | None:
     raw_path = None
     if config is not None:
         raw_path = config.getoption("resource_metrics_file", default=None)
-    raw_path = raw_path or os.getenv("PYTEST_RESOURCE_METRICS_FILE") or os.getenv("TRANSFORMERS_TEST_RESOURCE_METRICS_FILE")
+    raw_path = (
+        raw_path
+        or os.getenv("PYTEST_RESOURCE_METRICS_FILE")
+        or os.getenv("TRANSFORMERS_TEST_RESOURCE_METRICS_FILE")
+    )
     if not raw_path:
         return None
     return Path(raw_path)
@@ -138,12 +146,15 @@ def write_resource_record(item: pytest.Item, metrics: dict[str, float | int]) ->
 
     path.parent.mkdir(parents=True, exist_ok=True)
     node_parts = split_pytest_nodeid(item.nodeid)
+    test_job = os.getenv("TRANSFORMERS_TEST_OTEL_JOB") or os.getenv(
+        "TRANSFORMERS_TEST_OTEL_SUITE", "local_pytest"
+    )
     record: dict[str, Any] = {
         "pr": os.getenv("TRANSFORMERS_TEST_OTEL_PR", "none"),
         "provider": detect_provider(),
         "run_id": os.getenv("TRANSFORMERS_TEST_OTEL_RUN_ID", "unknown"),
         "service_name": os.getenv("OTEL_SERVICE_NAME", "transformers-tests"),
-        "test_suite": os.getenv("TRANSFORMERS_TEST_OTEL_SUITE", "local_pytest"),
+        "test_job": test_job,
         "test_nodeid": item.nodeid,
         "timestamp": time.time(),
         **node_parts,
@@ -160,7 +171,11 @@ def _wrap_active_tracer_exporters() -> None:
     try:
         from .debug_exporter import install_debug_logging
     except ImportError as error:
-        print(f"OTEL DEBUG could not import debug_exporter: {error!r}", file=sys.stderr, flush=True)
+        print(
+            f"OTEL DEBUG could not import debug_exporter: {error!r}",
+            file=sys.stderr,
+            flush=True,
+        )
         return
 
     patched = install_debug_logging()
@@ -173,7 +188,11 @@ def _wrap_active_tracer_exporters() -> None:
         )
         return
 
-    print(f"OTEL DEBUG patched export() on {patched} OTLP exporter class(es)", file=sys.stderr, flush=True)
+    print(
+        f"OTEL DEBUG patched export() on {patched} OTLP exporter class(es)",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:

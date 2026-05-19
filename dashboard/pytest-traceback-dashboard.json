@@ -95,7 +95,7 @@
               "test_nodeid": true
             },
             "indexByName": {
-              "test_suite": 0,
+              "test_job": 0,
               "test_function": 1,
               "exception_type": 2,
               "trace_id": 3
@@ -103,7 +103,7 @@
             "renameByName": {
               "exception_type": "Error",
               "test_function": "Function",
-              "test_suite": "Suite",
+              "test_job": "Job",
               "trace_id": "Open trace"
             }
           }

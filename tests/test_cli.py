@@ -41,7 +41,7 @@ class ConfigureCiOtelTests(TestCase):
                     "GITHUB_SHA": "deadbeef",
                     "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
                 },
-                suite="models_gpu_slice",
+                job="models_gpu_slice",
             )
 
         self.assertTrue(export_traces)
@@ -50,14 +50,14 @@ class ConfigureCiOtelTests(TestCase):
             "transformers.test.provider=github_actions", env["OTEL_RESOURCE_ATTRIBUTES"]
         )
         self.assertIn(
-            "transformers.test.suite=models_gpu_slice", env["OTEL_RESOURCE_ATTRIBUTES"]
+            "transformers.test.job=models_gpu_slice", env["OTEL_RESOURCE_ATTRIBUTES"]
         )
         self.assertIn("cicd.pipeline.run.id=12345:2", env["OTEL_RESOURCE_ATTRIBUTES"])
         self.assertIn(
             "transformers.test.run.id=12345:2", env["OTEL_RESOURCE_ATTRIBUTES"]
         )
         self.assertIn(
-            "transformers.test.suite.run=12345:2:models_gpu_slice",
+            "transformers.test.job.run=12345:2:models_gpu_slice",
             env["OTEL_RESOURCE_ATTRIBUTES"],
         )
         self.assertIn("vcs.change.id=4321", env["OTEL_RESOURCE_ATTRIBUTES"])
@@ -84,7 +84,7 @@ class ConfigureCiOtelTests(TestCase):
                 "CIRCLE_WORKFLOW_ID": "workflow-123",
                 "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
             },
-            suite="tests_torch",
+            job="tests_torch",
         )
 
         self.assertTrue(export_traces)
@@ -92,7 +92,7 @@ class ConfigureCiOtelTests(TestCase):
             "transformers.test.provider=circleci", env["OTEL_RESOURCE_ATTRIBUTES"]
         )
         self.assertIn(
-            "transformers.test.suite=tests_torch", env["OTEL_RESOURCE_ATTRIBUTES"]
+            "transformers.test.job=tests_torch", env["OTEL_RESOURCE_ATTRIBUTES"]
         )
         self.assertIn(
             "cicd.pipeline.run.id=workflow-123", env["OTEL_RESOURCE_ATTRIBUTES"]
@@ -101,7 +101,7 @@ class ConfigureCiOtelTests(TestCase):
             "transformers.test.run.id=workflow-123", env["OTEL_RESOURCE_ATTRIBUTES"]
         )
         self.assertIn(
-            "transformers.test.suite.run=24680", env["OTEL_RESOURCE_ATTRIBUTES"]
+            "transformers.test.job.run=24680", env["OTEL_RESOURCE_ATTRIBUTES"]
         )
         self.assertIn("vcs.change.id=987", env["OTEL_RESOURCE_ATTRIBUTES"])
         self.assertIn(
@@ -117,7 +117,7 @@ class ConfigureCiOtelTests(TestCase):
     def test_prepare_environment_supports_local_forced_export(self):
         env, export_traces = cli.prepare_environment(
             {},
-            suite="local_smoke",
+            job="local_smoke",
             force_export_traces=True,
         )
 
@@ -125,7 +125,7 @@ class ConfigureCiOtelTests(TestCase):
         self.assertEqual(env["OTEL_SERVICE_NAME"], "transformers-tests")
         self.assertIn("deployment.environment=local", env["OTEL_RESOURCE_ATTRIBUTES"])
         self.assertIn(
-            "transformers.test.suite=local_smoke", env["OTEL_RESOURCE_ATTRIBUTES"]
+            "transformers.test.job=local_smoke", env["OTEL_RESOURCE_ATTRIBUTES"]
         )
         self.assertEqual(env["OTEL_TRACES_EXPORTER"], "otlp_proto_grpc")
         self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "grpc")
@@ -341,6 +341,8 @@ class ConfigureCiOtelTests(TestCase):
                 "secret-token",
                 "--otlp-endpoint",
                 "https://otel.example",
+                "--job",
+                "my_job",
                 "--",
                 "pytest",
             ]
@@ -349,3 +351,30 @@ class ConfigureCiOtelTests(TestCase):
         self.assertEqual(args.protocol, "http")
         self.assertEqual(args.token, "secret-token")
         self.assertEqual(args.otlp_endpoint, "https://otel.example")
+        self.assertEqual(args.job, "my_job")
+
+    def test_parse_args_accepts_suite_alias_for_back_compat(self):
+        args = cli.parse_args(
+            [
+                "--suite",
+                "legacy_suite",
+                "--",
+                "pytest",
+            ]
+        )
+
+        # --suite is kept as an alias for --job so existing workflows still work.
+        self.assertEqual(args.job, "legacy_suite")
+
+    def test_default_job_uses_local_default(self):
+        self.assertEqual(cli.default_job({}, "local"), cli.DEFAULT_LOCAL_JOB)
+
+    def test_job_run_id_for_github_actions(self):
+        env = {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_RUN_ID": "999",
+            "GITHUB_RUN_ATTEMPT": "1",
+        }
+        self.assertEqual(
+            cli.job_run_id(env, "github_actions", "my_job"), "999:1:my_job"
+        )

@@ -96,7 +96,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, max by (pr) ((pytest_run_end_time_seconds{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_suite_member_info{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\",pr!=\"main\"})) * 1000))",
+          "expr": "topk(10, max by (pr) ((pytest_run_end_time_seconds{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"})) * 1000))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -105,7 +105,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "count by (pr) (max by (pr, run_id) (pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_suite_member_info{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\",pr!=\"main\"})))",
+          "expr": "count by (pr) (max by (pr, run_id) (pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"})))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -114,7 +114,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "sum by (pr) (max by (pr, run_id) (pytest_run_failed_tests{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_suite_member_info{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\",pr!=\"main\"})))",
+          "expr": "sum by (pr) (max by (pr, run_id) (pytest_run_failed_tests{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"})))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -123,7 +123,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "100 * sum by (pr) (max by (pr, run_id) (pytest_run_failed_tests{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_suite_member_info{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\",pr!=\"main\"}))) / sum by (pr) (max by (pr, run_id) (pytest_run_total_tests{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_suite_member_info{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\",pr!=\"main\"})))",
+          "expr": "100 * sum by (pr) (max by (pr, run_id) (pytest_run_failed_tests{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"}))) / sum by (pr) (max by (pr, run_id) (pytest_run_total_tests{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"})))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -227,7 +227,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, (pytest_run_start_time_seconds{service_name=~\"$service\",pr=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_suite_member_info{service_name=~\"$service\",test_suite=~\"$suite\",pr=\"main\"})) * 1000)",
+          "expr": "topk(10, (pytest_run_start_time_seconds{service_name=~\"$service\",pr=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=\"main\"})) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -245,7 +245,7 @@
           "id": "convertFieldType",
           "options": {
             "conversions": [
-              {"destinationType": "number", "targetField": "suite_count"},
+              {"destinationType": "number", "targetField": "job_count"},
               {"destinationType": "number", "targetField": "total_tests"},
               {"destinationType": "number", "targetField": "failed_tests"},
               {"destinationType": "number", "targetField": "total_duration_seconds"},
@@ -269,8 +269,8 @@
             "indexByName": {},
             "renameByName": {
               "Value": "Started",
-              "suite_count": "Suite Count",
-              "suites": "Suites",
+              "job_count": "Job Count",
+              "jobs": "Jobs",
               "total_tests": "Total",
               "failed_tests": "Failures",
               "total_duration_seconds": "Duration",
@@ -390,7 +390,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, (pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_suite_member_info{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"})) * 1000)",
+          "expr": "topk(10, (pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\"})) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -415,15 +415,15 @@
             "indexByName": {
               "Value": 0,
               "pr": 1,
-              "suite_count": 2,
-              "suites": 3,
+              "job_count": 2,
+              "jobs": 3,
               "run_id": 4
             },
             "renameByName": {
               "Value": "Started",
               "pr": "PR",
-              "suite_count": "Suite Count",
-              "suites": "Suites",
+              "job_count": "Job Count",
+              "jobs": "Jobs",
               "run_id": "Run ID"
             }
           }
@@ -478,14 +478,14 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Suite"},
+            "matcher": {"id": "byName", "options": "Job"},
             "properties": [
               {
                 "id": "links",
                 "value": [
                   {
-                    "title": "View suite details",
-                    "url": "/d/pytest-observability-by-suite?var-suite=${__value.raw}",
+                    "title": "View job details",
+                    "url": "/d/pytest-observability-by-job?var-job=${__value.raw}",
                     "targetBlank": false
                   }
                 ]
@@ -538,7 +538,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, (pytest_test_failure_count{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"} > 0) * on(test_nodeid, test_suite, service_name, provider, pr) group_left(trace_id, exception_type) (topk by (test_nodeid, test_suite, service_name, provider, pr) (1, last_over_time(pytest_test_last_failure_info{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"}[30s]))))",
+          "expr": "topk(10, (pytest_test_failure_count{service_name=~\"$service\",test_job=~\"$job\",pr=\"main\"} > 0) * on(test_nodeid, test_job, service_name, provider, pr) group_left(trace_id, exception_type) (topk by (test_nodeid, test_job, service_name, provider, pr) (1, last_over_time(pytest_test_last_failure_info{service_name=~\"$service\",test_job=~\"$job\",pr=\"main\"}[30s]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -556,6 +556,7 @@
               "__name__": true,
               "instance": true,
               "job": true,
+              "pr": true,
               "provider": true,
               "service_name": true,
               "test_class": true,
@@ -563,7 +564,7 @@
               "test_nodeid": true
             },
             "indexByName": {
-              "test_suite": 0,
+              "test_job": 0,
               "test_function": 1,
               "exception_type": 2,
               "trace_id": 3,
@@ -573,7 +574,7 @@
               "Value": "Failures",
               "exception_type": "Error",
               "test_function": "Function",
-              "test_suite": "Suite",
+              "test_job": "Job",
               "trace_id": "Last Failure"
             }
           }
@@ -634,14 +635,14 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Suite"},
+            "matcher": {"id": "byName", "options": "Job"},
             "properties": [
               {
                 "id": "links",
                 "value": [
                   {
-                    "title": "View suite details",
-                    "url": "/d/pytest-observability-by-suite?var-suite=${__value.raw}",
+                    "title": "View job details",
+                    "url": "/d/pytest-observability-by-job?var-job=${__value.raw}",
                     "targetBlank": false
                   }
                 ]
@@ -688,7 +689,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sort_desc(topk(20, pytest_test_average_duration_seconds{service_name=~\"$service\",test_suite=~\"$suite\",pr=~\"$pr\"}))",
+          "expr": "sort_desc(topk(20, pytest_test_average_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=\"main\"}))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -706,6 +707,7 @@
                       "__name__": true,
                       "instance": true,
                       "job": true,
+                      "pr": true,
                       "provider": true,
                       "service_name": true,
                       "status_code": true,
@@ -713,19 +715,17 @@
                     },
                     "indexByName": {
                       "Value": 0,
-                      "pr": 1,
-                      "test_suite": 2,
-                      "test_module": 3,
-                      "test_class": 4,
-                      "test_function": 5
+                      "test_job": 1,
+                      "test_module": 2,
+                      "test_class": 3,
+                      "test_function": 4
                     },
                     "renameByName": {
                       "Value": "Avg Duration",
-                      "pr": "PR",
                       "test_module": "Module",
                       "test_class": "Class",
                       "test_function": "Function",
-                      "test_suite": "Suite"
+                      "test_job": "Job"
                     }
                   }
         }
@@ -778,16 +778,16 @@
           "type": "prometheus",
           "uid": "prometheus"
                 },
-                "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_suite)",
+                "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_job)",
                 "includeAll": true,
-                "label": "Suite",
+                "label": "Job",
                 "multi": false,
-        "name": "suite",
+        "name": "job",
                 "options": [],
                 "query": {
                   "qryType": 1,
-                  "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_suite)",
-                  "refId": "Prometheus-suite-Variable-Query"
+                  "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_job)",
+                  "refId": "Prometheus-job-Variable-Query"
                 },
         "refresh": 1,
         "sort": 1,
@@ -797,7 +797,7 @@
         "allValue": ".*",
         "current": {"selected": true, "text": "All", "value": "$__all"},
         "datasource": {"type": "prometheus", "uid": "prometheus"},
-        "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\",test_suite=~\"$suite\"}, pr)",
+        "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\",test_job=~\"$job\"}, pr)",
         "includeAll": true,
         "label": "PR",
         "multi": false,
@@ -805,7 +805,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\",test_suite=~\"$suite\"}, pr)",
+          "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\",test_job=~\"$job\"}, pr)",
           "refId": "Prometheus-pr-Variable-Query"
         },
         "refresh": 1,

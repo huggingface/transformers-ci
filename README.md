@@ -26,7 +26,7 @@ Example:
 
 ```sh
 configure-ci-otel \
-  --suite local_smoke \
+  --job local_smoke \
   --service-name transformers-tests \
   --protocol grpc \
   --otlp-endpoint http://localhost:5317 \
@@ -45,7 +45,7 @@ Example:
 
 ```sh
 configure-ci-otel \
-  --suite resource_demo \
+  --job resource_demo \
   --service-name pytest-observability-demo \
   --protocol grpc \
   --otlp-endpoint http://localhost:5317 \
@@ -102,7 +102,7 @@ To test the instrumentation locally without sending traces to a remote endpoint:
 pip install -e ".[dev]"
 
 # Run tests with local resource metrics collection (no OTLP endpoint needed)
-configure-ci-otel --force-export-traces --suite local_test -- \
+configure-ci-otel --force-export-traces --job local_test -- \
   pytest tests/test_demo_workload.py -v \
   --resource-metrics-file /tmp/pytest-metrics.jsonl
 ```

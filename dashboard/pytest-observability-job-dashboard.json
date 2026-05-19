@@ -3,12 +3,20 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
         "name": "Annotations & Alerts",
-        "target": {"limit": 100, "matchAny": false, "tags": [], "type": "dashboard"},
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [],
+          "type": "dashboard"
+        },
         "type": "dashboard"
       }
     ]
@@ -27,21 +35,37 @@
       "title": "Back to PR",
       "type": "link",
       "url": "/d/pytest-observability-by-pr/pytest-observability-pr?var-pr=${pr}"
+    },
+    {
+      "targetBlank": true,
+      "title": "Grafana Explore",
+      "type": "link",
+      "url": "/explore?orgId=1"
     }
   ],
   "panels": [
+    {
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "id": 20,
+      "options": {
+        "content": "### `${job}`\n\n**Run:** `${run_id}`\n\n**PR:** `${pr}`",
+        "mode": "markdown"
+      },
+      "pluginVersion": "12.0.0",
+      "title": "Job",
+      "type": "text"
+    },
     {
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]}
-        },
-        "overrides": []
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue"}]}
+        }
       },
-      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
-      "id": 1,
+      "gridPos": {"h": 5, "w": 3, "x": 6, "y": 0},
+      "id": 21,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -54,14 +78,47 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_run_total_tests{run_id=~\"$run_id\"}",
+          "expr": "count(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"})",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
           "refId": "A"
         }
       ],
-      "title": "Total Tests",
+      "title": "Tests",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": [],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]}
+        }
+      },
+      "gridPos": {"h": 5, "w": 3, "x": 9, "y": 0},
+      "id": 22,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "count(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",status_code=\"OK\"}) or vector(0)",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Passed",
       "type": "stat"
     },
     {
@@ -77,11 +134,10 @@
               {"color": "red", "value": 1}
             ]
           }
-        },
-        "overrides": []
+        }
       },
-      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
-      "id": 2,
+      "gridPos": {"h": 5, "w": 3, "x": 12, "y": 0},
+      "id": 23,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -94,14 +150,14 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_run_failed_tests{run_id=~\"$run_id\"}",
+          "expr": "count(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",status_code=\"ERROR\"}) or vector(0)",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
           "refId": "A"
         }
       ],
-      "title": "Failed Tests",
+      "title": "Failed",
       "type": "stat"
     },
     {
@@ -110,25 +166,15 @@
         "defaults": {
           "color": {"mode": "thresholds"},
           "mappings": [],
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "red", "value": null},
-              {"color": "orange", "value": 90},
-              {"color": "green", "value": 99}
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue"}]},
+          "unit": "s"
+        }
       },
-      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
-      "id": 3,
+      "gridPos": {"h": 5, "w": 3, "x": 15, "y": 0},
+      "id": 24,
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
@@ -138,14 +184,14 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * (1 - pytest_run_failed_tests{run_id=~\"$run_id\"} / pytest_run_total_tests{run_id=~\"$run_id\"})",
+          "expr": "sum(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"})",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
           "refId": "A"
         }
       ],
-      "title": "Pass Rate",
+      "title": "Duration",
       "type": "stat"
     },
     {
@@ -154,13 +200,12 @@
         "defaults": {
           "color": {"mode": "thresholds"},
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]},
-          "unit": "dateTimeAsLocal"
-        },
-        "overrides": []
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue"}]},
+          "unit": "dateTimeFromNow"
+        }
       },
       "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
-      "id": 4,
+      "id": 25,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -173,7 +218,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_run_start_time_seconds{run_id=~\"$run_id\"} * 1000",
+          "expr": "max(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$run_id\"}) * 1000",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -185,6 +230,7 @@
     },
     {
       "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "description": "Per-test results for the run currently selected via the Run ID template variable. Defaults to all runs (.*).",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "thresholds"},
@@ -205,10 +251,7 @@
                   {"type": "value", "options": {"UNSET": {"text": "PASS", "color": "green", "index": 2}}}
                 ]
               },
-              {
-                "id": "custom.cellOptions",
-                "value": {"mode": "basic", "type": "color-background"}
-              },
+              {"id": "custom.cellOptions", "value": {"mode": "basic", "type": "color-background"}},
               {"id": "unit", "value": "none"}
             ]
           },
@@ -226,26 +269,11 @@
                 ]
               }
             ]
-          },
-          {
-            "matcher": {"id": "byName", "options": "Job"},
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View job details",
-                    "url": "/d/pytest-observability-by-job?var-job=${__value.raw}",
-                    "targetBlank": false
-                  }
-                ]
-              }
-            ]
           }
         ]
       },
-      "gridPos": {"h": 24, "w": 24, "x": 0, "y": 5},
-      "id": 5,
+      "gridPos": {"h": 22, "w": 24, "x": 0, "y": 5},
+      "id": 14,
       "options": {
         "cellHeight": "sm",
         "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
@@ -256,7 +284,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_test_duration_seconds{run_id=~\"$run_id\"}",
+          "expr": "pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -264,7 +292,7 @@
           "refId": "A"
         }
       ],
-      "title": "Tests",
+      "title": "Tests for Selected Run",
       "transformations": [
         {
           "id": "organize",
@@ -276,18 +304,17 @@
               "job": true,
               "pr": true,
               "provider": true,
-              "run_id": true,
               "service_name": true,
+              "test_job": true,
               "test_nodeid": true
             },
             "indexByName": {
-              "test_job": 0,
-              "test_module": 1,
-              "test_class": 2,
-              "test_function": 3,
+              "test_module": 0,
+              "test_class": 1,
+              "test_function": 2,
+              "status_code": 3,
               "trace_id": 4,
-              "status_code": 5,
-              "Value": 6
+              "Value": 5
             },
             "renameByName": {
               "Value": "Duration",
@@ -295,7 +322,6 @@
               "test_class": "Class",
               "test_function": "Function",
               "test_module": "Module",
-              "test_job": "Job",
               "trace_id": "Trace"
             }
           }
@@ -309,38 +335,74 @@
   "templating": {
     "list": [
       {
-        "current": {"selected": false, "text": "", "value": ""},
-        "label": "Run ID",
-        "name": "run_id",
-        "options": [{"selected": true, "text": "", "value": ""}],
-        "query": "",
-        "type": "textbox"
+        "allValue": ".*",
+        "current": {"selected": true, "text": "All", "value": "$__all"},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "definition": "label_values(pytest_test_average_duration_seconds, service_name)",
+        "includeAll": true,
+        "label": "Service",
+        "multi": false,
+        "name": "service",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_test_average_duration_seconds, service_name)",
+          "refId": "Prometheus-service-Variable-Query"
+        },
+        "refresh": 1,
+        "sort": 1,
+        "type": "query"
       },
       {
         "current": {"selected": false, "text": "", "value": ""},
         "datasource": {"type": "prometheus", "uid": "prometheus"},
-        "definition": "label_values(pytest_run_total_tests{run_id=~\"$run_id\"}, pr)",
-        "hide": 2,
+        "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_job)",
         "includeAll": false,
-        "label": "",
+        "label": "Job",
+        "multi": false,
+        "name": "job",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_job)",
+          "refId": "Prometheus-job-Variable-Query"
+        },
+        "refresh": 1,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {"selected": true, "text": "All", "value": "$__all"},
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\",test_job=~\"$job\"}, pr)",
+        "includeAll": true,
+        "label": "PR",
         "multi": false,
         "name": "pr",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_run_total_tests{run_id=~\"$run_id\"}, pr)",
+          "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\",test_job=~\"$job\"}, pr)",
           "refId": "Prometheus-pr-Variable-Query"
         },
         "refresh": 1,
-        "skipUrlSync": true,
-        "sort": 0,
+        "sort": 1,
         "type": "query"
+      },
+      {
+        "current": {"selected": false, "text": ".*", "value": ".*"},
+        "label": "Run ID",
+        "name": "run_id",
+        "options": [{"selected": true, "text": ".*", "value": ".*"}],
+        "query": ".*",
+        "type": "textbox"
       }
     ]
   },
   "time": {"from": "now-24h", "to": "now"},
   "timezone": "browser",
-  "title": "Pytest Observability - Run",
-  "uid": "pytest-observability-by-run",
+  "title": "Pytest Observability - Job",
+  "uid": "pytest-observability-by-job",
   "version": 1
 }

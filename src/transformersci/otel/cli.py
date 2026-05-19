@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from urllib.parse import urlparse
 
 DEFAULT_SERVICE_NAME = "transformers-tests"
-DEFAULT_LOCAL_SUITE = "local_pytest"
+DEFAULT_LOCAL_JOB = "local_pytest"
 LOCAL_PROVIDER = "local"
 OTEL_PING_TIMEOUT_SECONDS = 2.0
 OTEL_TRACES_EXPORTER_BY_PROTOCOL = {
@@ -95,9 +95,7 @@ def resolve_otel_transport(
     if configured_exporter:
         return configured_exporter, resolved_protocol
 
-    traces_exporter = OTEL_TRACES_EXPORTER_BY_PROTOCOL.get(
-        resolved_protocol, "otlp"
-    )
+    traces_exporter = OTEL_TRACES_EXPORTER_BY_PROTOCOL.get(resolved_protocol, "otlp")
     return traces_exporter, resolved_protocol
 
 
@@ -157,12 +155,12 @@ def detect_provider(env: Mapping[str, str]) -> str:
     return LOCAL_PROVIDER
 
 
-def default_suite(env: Mapping[str, str], provider: str) -> str:
+def default_job(env: Mapping[str, str], provider: str) -> str:
     if provider == "github_actions":
         return env.get("GITHUB_JOB", "github_actions_pytest")
     if provider == "circleci":
         return env.get("CIRCLE_JOB", "circleci_pytest")
-    return DEFAULT_LOCAL_SUITE
+    return DEFAULT_LOCAL_JOB
 
 
 def append_resource_attributes(
@@ -321,12 +319,12 @@ def workflow_run_id(env: Mapping[str, str], provider: str) -> str | None:
     return None
 
 
-def suite_run_id(env: Mapping[str, str], provider: str, suite: str) -> str | None:
+def job_run_id(env: Mapping[str, str], provider: str, job: str) -> str | None:
     run_id = workflow_run_id(env, provider)
     if provider == "github_actions":
         if run_id is None:
             return None
-        return f"{run_id}:{suite}"
+        return f"{run_id}:{job}"
 
     if provider == "circleci":
         build_num = env.get("CIRCLE_BUILD_NUM")
@@ -334,7 +332,7 @@ def suite_run_id(env: Mapping[str, str], provider: str, suite: str) -> str | Non
             return build_num
 
         if run_id is not None:
-            return f"{run_id}:{suite}"
+            return f"{run_id}:{job}"
 
     return None
 
@@ -342,7 +340,7 @@ def suite_run_id(env: Mapping[str, str], provider: str, suite: str) -> str | Non
 def build_resource_attributes(
     env: Mapping[str, str],
     provider: str,
-    suite: str,
+    job: str,
     pr_number: str | None,
 ) -> list[str]:
     repository_name = env.get("TRANSFORMERS_TEST_OTEL_REPOSITORY")
@@ -363,7 +361,7 @@ def build_resource_attributes(
         attributes = [
             "deployment.environment=ci",
             "transformers.test.provider=github_actions",
-            f"transformers.test.suite={suite}",
+            f"transformers.test.job={job}",
             f"cicd.pipeline.run.id={resolved_run_id or env.get('GITHUB_RUN_ID', 'unknown')}",
             f"cicd.pipeline.task.name={env.get('GITHUB_JOB', 'unknown')}",
             f"vcs.ref.head.name={env.get('GITHUB_REF_NAME', 'unknown')}",
@@ -371,7 +369,7 @@ def build_resource_attributes(
             "vcs.ref.type=branch",
             "vcs.provider.name=github",
         ]
-        resolved_suite_run_id = suite_run_id(env, provider, suite)
+        resolved_job_run_id = job_run_id(env, provider, job)
         if pr_number:
             attributes.append(f"vcs.change.id={pr_number}")
         if pr_url:
@@ -380,8 +378,8 @@ def build_resource_attributes(
             attributes.append(f"vcs.repository.name={repository_name}")
         if resolved_run_id is not None:
             attributes.append(f"transformers.test.run.id={resolved_run_id}")
-        if resolved_suite_run_id is not None:
-            attributes.append(f"transformers.test.suite.run={resolved_suite_run_id}")
+        if resolved_job_run_id is not None:
+            attributes.append(f"transformers.test.job.run={resolved_job_run_id}")
         return attributes
 
     if provider == "circleci":
@@ -389,7 +387,7 @@ def build_resource_attributes(
         attributes = [
             "deployment.environment=ci",
             "transformers.test.provider=circleci",
-            f"transformers.test.suite={suite}",
+            f"transformers.test.job={job}",
             f"cicd.pipeline.run.id={resolved_run_id or env.get('CIRCLE_WORKFLOW_ID', 'unknown')}",
             f"cicd.pipeline.task.name={env.get('CIRCLE_JOB', 'unknown')}",
             f"vcs.ref.head.name={env.get('CIRCLE_BRANCH', 'unknown')}",
@@ -397,7 +395,7 @@ def build_resource_attributes(
             "vcs.ref.type=branch",
             "vcs.provider.name=github",
         ]
-        resolved_suite_run_id = suite_run_id(env, provider, suite)
+        resolved_job_run_id = job_run_id(env, provider, job)
         if pr_number:
             attributes.append(f"vcs.change.id={pr_number}")
         if pr_url:
@@ -406,15 +404,19 @@ def build_resource_attributes(
             attributes.append(f"vcs.repository.name={repository_name}")
         if resolved_run_id is not None:
             attributes.append(f"transformers.test.run.id={resolved_run_id}")
-        if resolved_suite_run_id is not None:
-            attributes.append(f"transformers.test.suite.run={resolved_suite_run_id}")
+        if resolved_job_run_id is not None:
+            attributes.append(f"transformers.test.job.run={resolved_job_run_id}")
         return attributes
 
     attributes = [
         "deployment.environment=local",
         f"transformers.test.provider={LOCAL_PROVIDER}",
-        f"transformers.test.suite={suite}",
+        f"transformers.test.job={job}",
     ]
+    resolved_run_id = workflow_run_id(env, LOCAL_PROVIDER)
+    if resolved_run_id is not None:
+        attributes.append(f"transformers.test.run.id={resolved_run_id}")
+        attributes.append(f"transformers.test.job.run={resolved_run_id}:{job}")
     if pr_number:
         attributes.append(f"vcs.change.id={pr_number}")
     if pr_url:
@@ -502,7 +504,7 @@ def emit_trace_log(
     details = [
         f"trace_id={trace_id}",
         f"service={env.get('OTEL_SERVICE_NAME', DEFAULT_SERVICE_NAME)}",
-        f"suite={env.get('TRANSFORMERS_TEST_OTEL_SUITE', DEFAULT_LOCAL_SUITE)}",
+        f"job={env.get('TRANSFORMERS_TEST_OTEL_JOB', DEFAULT_LOCAL_JOB)}",
     ]
     if exit_code is not None:
         details.append(f"exit_code={exit_code}")
@@ -514,7 +516,7 @@ def emit_trace_log(
 def prepare_environment(
     env: Mapping[str, str],
     *,
-    suite: str | None = None,
+    job: str | None = None,
     service_name: str | None = None,
     force_export_traces: bool = False,
     protocol: str | None = None,
@@ -537,8 +539,11 @@ def prepare_environment(
         return updated_env, False
 
     provider = detect_provider(env)
-    resolved_suite = (
-        suite or env.get("TRANSFORMERS_TEST_OTEL_SUITE") or default_suite(env, provider)
+    resolved_job = (
+        job
+        or env.get("TRANSFORMERS_TEST_OTEL_JOB")
+        or env.get("TRANSFORMERS_TEST_OTEL_SUITE")
+        or default_job(env, provider)
     )
     resolved_service_name = (
         service_name or env.get("OTEL_SERVICE_NAME") or DEFAULT_SERVICE_NAME
@@ -551,7 +556,7 @@ def prepare_environment(
             resolved_pr = circleci_pr_number(env)
     resolved_run_id = workflow_run_id(updated_env, provider)
 
-    updated_env["TRANSFORMERS_TEST_OTEL_SUITE"] = resolved_suite
+    updated_env["TRANSFORMERS_TEST_OTEL_JOB"] = resolved_job
     updated_env["OTEL_SERVICE_NAME"] = resolved_service_name
     if resolved_pr:
         updated_env["TRANSFORMERS_TEST_OTEL_PR"] = resolved_pr
@@ -563,7 +568,7 @@ def prepare_environment(
     updated_env["OTEL_TRACES_EXPORTER"] = traces_exporter
     updated_env["OTEL_EXPORTER_OTLP_PROTOCOL"] = otel_protocol
     attributes = build_resource_attributes(
-        updated_env, provider, resolved_suite, resolved_pr
+        updated_env, provider, resolved_job, resolved_pr
     )
     updated_env["OTEL_RESOURCE_ATTRIBUTES"] = append_resource_attributes(
         updated_env.get("OTEL_RESOURCE_ATTRIBUTES"),
@@ -591,7 +596,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description="Run pytest with OpenTelemetry configured for CI or local testing."
     )
     parser.add_argument(
-        "--suite", help="Override the test suite attribute (transformers.test.suite)."
+        "--job",
+        "--suite",
+        dest="job",
+        help="Override the test job attribute (transformers.test.job). --suite is accepted as a back-compat alias.",
     )
     parser.add_argument(
         "--service-name", help="Override the OpenTelemetry service.name."
@@ -644,7 +652,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     env, export_traces = prepare_environment(
         os.environ,
-        suite=args.suite,
+        job=args.job,
         service_name=args.service_name,
         force_export_traces=args.force_export_traces,
         protocol=args.protocol,
@@ -660,7 +668,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.dumps(
                 {
                     "export_traces": export_traces,
-                    "suite": env.get("TRANSFORMERS_TEST_OTEL_SUITE"),
+                    "job": env.get("TRANSFORMERS_TEST_OTEL_JOB"),
                     "service_name": env.get("OTEL_SERVICE_NAME"),
                     "protocol": env.get("OTEL_EXPORTER_OTLP_PROTOCOL"),
                     "traces_exporter": env.get("OTEL_TRACES_EXPORTER"),

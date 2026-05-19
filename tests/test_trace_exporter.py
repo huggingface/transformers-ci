@@ -52,13 +52,14 @@ def make_trace(
     *,
     trace_id: str,
     run_id: str,
-    suite: str,
+    job: str,
     spans: list[dict],
     pr: str = "4321",
     pr_url: str = "https://github.com/huggingface/transformers/pull/4321",
     provider: str = "github_actions",
     repository: str = "huggingface/transformers",
     service_name: str = "transformers-tests",
+    job_tag_key: str = "transformers.test.job",
 ) -> dict:
     return {
         "processes": {
@@ -67,7 +68,7 @@ def make_trace(
                 "tags": [
                     make_tag("transformers.test.provider", provider),
                     make_tag("transformers.test.run.id", run_id),
-                    make_tag("transformers.test.suite", suite),
+                    make_tag(job_tag_key, job),
                     make_tag("vcs.change.id", pr),
                     make_tag("vcs.change.url", pr_url),
                     make_tag("vcs.repository.name", repository),
@@ -79,13 +80,13 @@ def make_trace(
     }
 
 
-def workflow_split_across_three_suites() -> list[dict]:
+def workflow_split_across_three_jobs() -> list[dict]:
     process_id = "pytest-process"
     return [
         make_trace(
             trace_id="trace-torch",
             run_id="12345:2",
-            suite="tests_torch",
+            job="tests_torch",
             spans=[
                 make_test_span(
                     process_id=process_id,
@@ -106,7 +107,7 @@ def workflow_split_across_three_suites() -> list[dict]:
         make_trace(
             trace_id="trace-tf",
             run_id="12345:2",
-            suite="tests_tf",
+            job="tests_tf",
             spans=[
                 make_test_span(
                     process_id=process_id,
@@ -119,7 +120,7 @@ def workflow_split_across_three_suites() -> list[dict]:
         make_trace(
             trace_id="trace-flax",
             run_id="12345:2",
-            suite="tests_flax",
+            job="tests_flax",
             spans=[
                 make_test_span(
                     process_id=process_id,
@@ -137,16 +138,14 @@ def metric_lines(metrics: list[str], metric_name: str) -> list[str]:
     return [line for line in metrics if line.startswith(prefix)]
 
 
-def test_extract_per_run_metrics_aggregates_suite_traces_into_one_run() -> None:
-    metrics = trace_exporter.extract_per_run_metrics(
-        workflow_split_across_three_suites()
-    )
+def test_extract_per_run_metrics_aggregates_job_traces_into_one_run() -> None:
+    metrics = trace_exporter.extract_per_run_metrics(workflow_split_across_three_jobs())
 
     run_start_lines = metric_lines(metrics, "pytest_run_start_time_seconds")
     assert len(run_start_lines) == 1
     assert 'run_id="12345:2"' in run_start_lines[0]
-    assert 'suite_count="3"' in run_start_lines[0]
-    assert 'suites="tests_flax,tests_tf,tests_torch"' in run_start_lines[0]
+    assert 'job_count="3"' in run_start_lines[0]
+    assert 'jobs="tests_flax,tests_tf,tests_torch"' in run_start_lines[0]
     assert 'trace_count="3"' in run_start_lines[0]
     assert 'total_tests="4"' in run_start_lines[0]
     assert 'failed_tests="1"' in run_start_lines[0]
@@ -165,11 +164,11 @@ def test_extract_per_run_metrics_aggregates_suite_traces_into_one_run() -> None:
     assert len(failed_test_lines) == 1
     assert failed_test_lines[0].endswith(" 1")
 
-    suite_member_lines = metric_lines(metrics, "pytest_run_suite_member_info")
-    assert len(suite_member_lines) == 3
-    assert any('test_suite="tests_torch"' in line for line in suite_member_lines)
-    assert any('test_suite="tests_tf"' in line for line in suite_member_lines)
-    assert any('test_suite="tests_flax"' in line for line in suite_member_lines)
+    job_member_lines = metric_lines(metrics, "pytest_run_job_member_info")
+    assert len(job_member_lines) == 3
+    assert any('test_job="tests_torch"' in line for line in job_member_lines)
+    assert any('test_job="tests_tf"' in line for line in job_member_lines)
+    assert any('test_job="tests_flax"' in line for line in job_member_lines)
 
     duration_lines = metric_lines(metrics, "pytest_test_duration_seconds")
     assert len(duration_lines) == 4
@@ -181,7 +180,7 @@ def test_extract_per_run_metrics_aggregates_suite_traces_into_one_run() -> None:
 
 def test_extract_pr_last_failure_metrics_links_failure_back_to_run() -> None:
     metrics = trace_exporter.extract_pr_last_failure_metrics(
-        workflow_split_across_three_suites()
+        workflow_split_across_three_jobs()
     )
 
     failure_lines = metric_lines(metrics, "pytest_pr_last_failure_info")
@@ -189,7 +188,30 @@ def test_extract_pr_last_failure_metrics_links_failure_back_to_run() -> None:
     assert 'pr="4321"' in failure_lines[0]
     assert 'run_id="12345:2"' in failure_lines[0]
     assert 'trace_id="trace-torch"' in failure_lines[0]
-    assert 'test_suite="tests_torch"' in failure_lines[0]
+    assert 'test_job="tests_torch"' in failure_lines[0]
+
+
+def test_extract_trace_rows_falls_back_to_legacy_suite_tag() -> None:
+    """A trace still using the legacy `transformers.test.suite` process tag is
+    surfaced as `test_job` in the resulting rows, so dashboards keep working
+    while emitters migrate to the new attribute name."""
+    legacy_trace = make_trace(
+        trace_id="trace-legacy",
+        run_id="run-legacy",
+        job="legacy_job_name",
+        job_tag_key="transformers.test.suite",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_legacy.py::TestLegacy::test_one",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    trace_info, rows = trace_exporter.extract_trace_rows(legacy_trace)
+    assert trace_info["test_job"] == "legacy_job_name"
+    assert rows[0]["test_job"] == "legacy_job_name"
 
 
 class FakeResponse(io.StringIO):
@@ -265,7 +287,7 @@ def test_extract_pr_info_metrics_fetches_metadata_once_per_pr() -> None:
         }
 
     metrics = trace_exporter.extract_pr_info_metrics(
-        workflow_split_across_three_suites(),
+        workflow_split_across_three_jobs(),
         _metadata_fetcher=metadata_fetcher,
     )
 
@@ -274,7 +296,10 @@ def test_extract_pr_info_metrics_fetches_metadata_once_per_pr() -> None:
     assert calls == [("huggingface/transformers", "4321")]
     assert 'author="octocat"' in info_lines[0]
     assert 'commit_sha="deadbeefcafebabe1234567890abcdef00000000"' in info_lines[0]
-    assert 'html_url="https://github.com/huggingface/transformers/pull/4321"' in info_lines[0]
+    assert (
+        'html_url="https://github.com/huggingface/transformers/pull/4321"'
+        in info_lines[0]
+    )
     assert 'repository="huggingface/transformers"' in info_lines[0]
     assert 'reviewers="alice,bob"' in info_lines[0]
     assert 'state="open"' in info_lines[0]
@@ -298,7 +323,7 @@ def test_extract_pr_info_metrics_defaults_commit_sha_to_main() -> None:
         }
 
     metrics = trace_exporter.extract_pr_info_metrics(
-        workflow_split_across_three_suites(),
+        workflow_split_across_three_jobs(),
         _metadata_fetcher=metadata_fetcher,
     )
 
@@ -316,7 +341,7 @@ def test_extract_test_line_returns_first_test_file_line_number() -> None:
         "tests/pipelines/test_x.py:145: \n"
         "_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _\n"
         "src/transformers/foo.py:1002: in call_thing\n"
-        "    raise ValueError(\"boom\")\n"
+        '    raise ValueError("boom")\n'
     )
     assert trace_exporter.extract_test_line(stacktrace, nodeid) == "145"
 
@@ -333,7 +358,7 @@ def test_extract_pr_info_metrics_prefers_repository_backed_trace() -> None:
         make_trace(
             trace_id="trace-without-repo",
             run_id="run-1",
-            suite="tests_a",
+            job="tests_a",
             spans=[
                 make_test_span(
                     process_id=process_id,
@@ -349,7 +374,7 @@ def test_extract_pr_info_metrics_prefers_repository_backed_trace() -> None:
         make_trace(
             trace_id="trace-with-repo",
             run_id="run-2",
-            suite="tests_b",
+            job="tests_b",
             spans=[
                 make_test_span(
                     process_id=process_id,
@@ -377,4 +402,7 @@ def test_extract_pr_info_metrics_prefers_repository_backed_trace() -> None:
     info_lines = metric_lines(metrics, "pytest_pr_info")
     assert len(info_lines) == 1
     assert 'repository="huggingface/transformers"' in info_lines[0]
-    assert 'html_url="https://github.com/huggingface/transformers/pull/45983"' in info_lines[0]
+    assert (
+        'html_url="https://github.com/huggingface/transformers/pull/45983"'
+        in info_lines[0]
+    )

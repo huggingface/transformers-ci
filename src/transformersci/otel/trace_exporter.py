@@ -107,17 +107,20 @@ def trace_start_time(trace: dict) -> int:
     spans = trace.get("spans", [])
     if not isinstance(spans, list):
         return 0
-    return max((int(span.get("startTime", 0)) for span in spans if isinstance(span, dict)), default=0)
+    return max(
+        (int(span.get("startTime", 0)) for span in spans if isinstance(span, dict)),
+        default=0,
+    )
 
 
 def fetch_traces() -> list[dict]:
-    base_url = os.getenv("PYTEST_TRACE_EXPORTER_JAEGER_URL", DEFAULT_JAEGER_URL).rstrip("/")
+    base_url = os.getenv("PYTEST_TRACE_EXPORTER_JAEGER_URL", DEFAULT_JAEGER_URL).rstrip(
+        "/"
+    )
     limit = env_int("PYTEST_TRACE_EXPORTER_LIMIT", DEFAULT_LIMIT)
     lookback = os.getenv("PYTEST_TRACE_EXPORTER_LOOKBACK", DEFAULT_LOOKBACK)
     service_name = os.getenv("PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME)
-    search_url = (
-        f"{base_url}/api/traces?service={quote(service_name)}&limit={limit}&lookback={quote(lookback)}"
-    )
+    search_url = f"{base_url}/api/traces?service={quote(service_name)}&limit={limit}&lookback={quote(lookback)}"
     with urlopen(search_url, timeout=5) as response:
         payload = json.load(response)
 
@@ -128,7 +131,9 @@ def fetch_traces() -> list[dict]:
 
 
 def fetch_resource_records() -> list[dict[str, str | float | int]]:
-    resource_metrics_file = Path(os.getenv("PYTEST_RESOURCE_METRICS_FILE", DEFAULT_RESOURCE_METRICS_FILE))
+    resource_metrics_file = Path(
+        os.getenv("PYTEST_RESOURCE_METRICS_FILE", DEFAULT_RESOURCE_METRICS_FILE)
+    )
     if not resource_metrics_file.exists():
         return []
 
@@ -212,7 +217,9 @@ def fetch_github_pr_reviews(repository: str, pr: str) -> list[str]:
     Used to enrich `pytest_pr_info` so the dashboard can show actual reviewers
     in addition to pending `requested_reviewers`.
     """
-    api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
+    api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip(
+        "/"
+    )
     api_url = (
         f"{api_base_url}/repos/{quote(repository, safe='/')}/pulls/"
         f"{quote(pr, safe='')}/reviews"
@@ -237,8 +244,12 @@ def fetch_github_pr_reviews(repository: str, pr: str) -> list[str]:
 
 
 def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
-    api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
-    api_url = f"{api_base_url}/repos/{quote(repository, safe='/')}/pulls/{quote(pr, safe='')}"
+    api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip(
+        "/"
+    )
+    api_url = (
+        f"{api_base_url}/repos/{quote(repository, safe='/')}/pulls/{quote(pr, safe='')}"
+    )
     payload = _github_api_get(api_url)
     if not isinstance(payload, dict):
         raise ValueError("GitHub API returned a non-object payload")
@@ -273,7 +284,9 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
         "author": author if isinstance(author, str) else "",
         "commit_sha": commit_sha if isinstance(commit_sha, str) else "",
         "created_at": created_at if isinstance(created_at, str) else "",
-        "html_url": html_url if isinstance(html_url, str) else github_pr_html_url(repository, pr),
+        "html_url": html_url
+        if isinstance(html_url, str)
+        else github_pr_html_url(repository, pr),
         "reviewers": reviewers,
         "state": state if isinstance(state, str) else "",
         "title": title if isinstance(title, str) else "",
@@ -320,12 +333,18 @@ def latest_trace(traces: list[dict]) -> dict | None:
     return max(traces, key=trace_start_time)
 
 
-def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str, str | float]]]:
+def extract_trace_rows(
+    trace: dict,
+) -> tuple[dict[str, str | int], list[dict[str, str | float]]]:
     trace_id = trace.get("traceID")
     spans = trace.get("spans", [])
     processes = trace.get("processes", {})
 
-    if not isinstance(trace_id, str) or not isinstance(spans, list) or not isinstance(processes, dict):
+    if (
+        not isinstance(trace_id, str)
+        or not isinstance(spans, list)
+        or not isinstance(processes, dict)
+    ):
         return {
             "end_time": 0,
             "latest_start_time": 0,
@@ -335,7 +354,7 @@ def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str
         }, []
 
     process_run_id = ""
-    process_suite = ""
+    process_job = ""
     process_provider = ""
     process_pr = ""
     process_pr_url = ""
@@ -360,17 +379,25 @@ def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str
             end_time = span_end_time
 
         process = processes.get(span.get("processID"), {})
-        process_tags = tag_map(process.get("tags", [])) if isinstance(process, dict) else {}
-        service_name = process.get("serviceName", service_name) if isinstance(process, dict) else service_name
+        process_tags = (
+            tag_map(process.get("tags", [])) if isinstance(process, dict) else {}
+        )
+        service_name = (
+            process.get("serviceName", service_name)
+            if isinstance(process, dict)
+            else service_name
+        )
         process_run_id = process_tags.get(
             "transformers.test.run.id",
             process_tags.get("cicd.pipeline.run.id", process_run_id),
         )
-        process_suite = process_tags.get(
-            "transformers.test.suite",
-            process_tags.get("transformers.test.job", process_suite),
+        process_job = process_tags.get(
+            "transformers.test.job",
+            process_tags.get("transformers.test.suite", process_job),
         )
-        process_provider = process_tags.get("transformers.test.provider", process_provider)
+        process_provider = process_tags.get(
+            "transformers.test.provider", process_provider
+        )
         process_pr = process_tags.get("vcs.change.id", process_pr)
         process_pr_url = process_tags.get("vcs.change.url", process_pr_url)
         process_repository = process_tags.get("vcs.repository.name", process_repository)
@@ -397,7 +424,7 @@ def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str
                 "test_class": node_parts["test_class"],
                 "test_function": node_parts["test_function"],
                 "test_line": extract_test_line(exc_stacktrace, nodeid),
-                "test_suite": process_suite or "unknown",
+                "test_job": process_job or "unknown",
                 "test_module": node_parts["test_module"],
                 "test_nodeid": nodeid,
                 "trace_id": trace_id,
@@ -419,7 +446,7 @@ def extract_trace_rows(trace: dict) -> tuple[dict[str, str | int], list[dict[str
         "run_id": process_run_id or trace_id,
         "service_name": service_name or "unknown",
         "start_time": start_time,
-        "test_suite": process_suite or "unknown",
+        "test_job": process_job or "unknown",
         "trace_id": trace_id,
     }, rows
 
@@ -441,7 +468,7 @@ def extract_latest_trace_metrics(trace: dict) -> list[str]:
     info_labels = {
         "pr": str(trace_info["pr"]),
         "run_id": str(trace_info["run_id"]),
-        "test_suite": str(trace_info["test_suite"]),
+        "test_job": str(trace_info["test_job"]),
         "provider": str(trace_info["provider"]),
         "service_name": str(trace_info["service_name"]),
         "trace_id": str(trace_info["trace_id"]),
@@ -457,21 +484,42 @@ def extract_latest_trace_metrics(trace: dict) -> list[str]:
 def extract_pr_last_failure_metrics(
     traces: list[dict],
     *,
-    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] | None = None,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
 ) -> list[str]:
-    """Emit one ``pytest_pr_last_failure_info`` series per PR with a failure.
+    """Emit one ``pytest_pr_last_failure_info`` series per PR — only when the
+    most recent *run* (across all of its job traces) actually has a failure.
 
-    Picks the most recent failing test across all runs of the PR. When the PR
-    has no failures, no sample is emitted — used by the PR dashboard's Last
-    Error panel with a repeat so the panel hides entirely when no data.
+    Rows from all traces sharing the same ``(pr, run_id)`` are merged together
+    so a workflow run that splits across multiple jobs is treated as one
+    run. If the latest run for a PR finished clean, no sample is emitted, so
+    the dashboard's Last Error panel hides entirely instead of surfacing a
+    stale failure from an earlier run.
     """
     extracted = _extracted if _extracted is not None else _precompute_trace_rows(traces)
-    per_pr: dict[str, tuple[int, dict[str, str]]] = {}
+
+    runs: dict[tuple[str, str], tuple[int, list[dict[str, str | float]]]] = {}
     for trace_info, rows in extracted:
         if not rows:
             continue
-        latest_time = int(trace_info.get("end_time", 0) or 0)
         pr = str(trace_info.get("pr", "none"))
+        run_id = str(trace_info.get("run_id", ""))
+        end_time = int(trace_info.get("end_time", 0) or 0)
+        key = (pr, run_id)
+        existing = runs.get(key)
+        if existing is None:
+            runs[key] = (end_time, list(rows))
+        else:
+            runs[key] = (max(existing[0], end_time), existing[1] + list(rows))
+
+    latest_run_per_pr: dict[str, tuple[int, list[dict[str, str | float]]]] = {}
+    for (pr, _run_id), (end_time, merged_rows) in runs.items():
+        existing = latest_run_per_pr.get(pr)
+        if existing is None or end_time > existing[0]:
+            latest_run_per_pr[pr] = (end_time, merged_rows)
+
+    per_pr: dict[str, tuple[int, dict[str, str]]] = {}
+    for pr, (latest_time, rows) in latest_run_per_pr.items():
         for row in rows:
             if str(row["status_code"]) != "ERROR":
                 continue
@@ -484,13 +532,14 @@ def extract_pr_last_failure_metrics(
                         "service_name": str(row["service_name"]),
                         "provider": str(row["provider"]),
                         "run_id": str(row["run_id"]),
-                        "test_suite": str(row["test_suite"]),
+                        "test_job": str(row["test_job"]),
                         "test_function": str(row["test_function"]),
                         "test_module": str(row["test_module"]),
                         "test_class": str(row["test_class"]),
                         "test_line": str(row.get("test_line", "")),
                         "test_nodeid": str(row["test_nodeid"]),
-                        "exception_type": str(row.get("exception_type", "")) or "unknown",
+                        "exception_type": str(row.get("exception_type", ""))
+                        or "unknown",
                         "stacktrace": str(row.get("exception_stacktrace", "")),
                         "trace_id": str(row["trace_id"]),
                     },
@@ -508,7 +557,8 @@ def extract_pr_last_failure_metrics(
 def extract_pr_info_metrics(
     traces: list[dict],
     *,
-    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] | None = None,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
     _metadata_fetcher: Callable[[str, str], dict[str, str]] | None = None,
 ) -> list[str]:
     """Emit one ``pytest_pr_info`` series per PR with GitHub metadata.
@@ -591,7 +641,9 @@ def extract_pr_info_metrics(
             )
 
     if created_lines:
-        lines.append("# HELP pytest_pr_created_at_seconds Unix timestamp the PR was created at.")
+        lines.append(
+            "# HELP pytest_pr_created_at_seconds Unix timestamp the PR was created at."
+        )
         lines.append("# TYPE pytest_pr_created_at_seconds gauge")
         lines.extend(created_lines)
     return lines
@@ -600,13 +652,14 @@ def extract_pr_info_metrics(
 def extract_per_run_metrics(
     traces: list[dict],
     *,
-    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] | None = None,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
 ) -> list[str]:
     """Emit metrics scoped to each workflow-level pytest run.
 
     Unlike ``extract_average_metrics`` which aggregates across the lookback
     window, this produces one sample per (run_id, trace_id, test_nodeid) for
-    per-test duration, plus one roll-up per workflow run across every suite
+    per-test duration, plus one roll-up per workflow run across every job
     trace that shared the same run identifier. Feeds the PR dashboard (list of
     workflow runs) and the Run dashboard (list of tests in one run).
     """
@@ -624,8 +677,8 @@ def extract_per_run_metrics(
         "# TYPE pytest_run_failed_tests gauge",
         "# HELP pytest_run_duration_seconds Total duration (sum of test span durations) of a pytest run.",
         "# TYPE pytest_run_duration_seconds gauge",
-        "# HELP pytest_run_suite_member_info Whether a suite contributed tests to a pytest run.",
-        "# TYPE pytest_run_suite_member_info gauge",
+        "# HELP pytest_run_job_member_info Whether a job contributed tests to a pytest run.",
+        "# TYPE pytest_run_job_member_info gauge",
     ]
     run_aggregates: dict[tuple[str, str, str, str], dict[str, object]] = {}
 
@@ -636,7 +689,7 @@ def extract_per_run_metrics(
         for row in rows:
             test_labels = {
                 "pr": str(row["pr"]),
-                "test_suite": str(row["test_suite"]),
+                "test_job": str(row["test_job"]),
                 "provider": str(row["provider"]),
                 "run_id": str(row["run_id"]),
                 "service_name": str(row["service_name"]),
@@ -665,7 +718,7 @@ def extract_per_run_metrics(
                 "end_time": int(trace_info.get("end_time", 0) or 0),
                 "failed": 0,
                 "start_time": int(trace_info.get("start_time", 0) or 0),
-                "suite_names": set(),
+                "job_names": set(),
                 "total": 0,
                 "total_duration": 0.0,
                 "trace_ids": set(),
@@ -674,8 +727,12 @@ def extract_per_run_metrics(
         aggregate = run_aggregates[run_key]
         aggregate["failed"] = int(aggregate["failed"]) + failed
         aggregate["total"] = int(aggregate["total"]) + total
-        aggregate["total_duration"] = float(aggregate["total_duration"]) + total_duration
-        aggregate["end_time"] = max(int(aggregate["end_time"]), int(trace_info.get("end_time", 0) or 0))
+        aggregate["total_duration"] = (
+            float(aggregate["total_duration"]) + total_duration
+        )
+        aggregate["end_time"] = max(
+            int(aggregate["end_time"]), int(trace_info.get("end_time", 0) or 0)
+        )
 
         trace_start_time = int(trace_info.get("start_time", 0) or 0)
         aggregate_start_time = int(aggregate["start_time"])
@@ -684,15 +741,17 @@ def extract_per_run_metrics(
         ):
             aggregate["start_time"] = trace_start_time
 
-        suite_names = aggregate["suite_names"]
+        job_names = aggregate["job_names"]
         trace_ids = aggregate["trace_ids"]
-        assert isinstance(suite_names, set)
+        assert isinstance(job_names, set)
         assert isinstance(trace_ids, set)
-        suite_names.add(str(trace_info.get("test_suite", "unknown")))
+        job_names.add(str(trace_info.get("test_job", "unknown")))
         trace_ids.add(str(trace_info.get("trace_id", "unknown")))
 
-    for (service_name, provider, pr, run_id), aggregate in sorted(run_aggregates.items()):
-        suite_names = sorted(str(suite_name) for suite_name in aggregate["suite_names"])
+    for (service_name, provider, pr, run_id), aggregate in sorted(
+        run_aggregates.items()
+    ):
+        job_names = sorted(str(job_name) for job_name in aggregate["job_names"])
         trace_ids = sorted(str(trace_id) for trace_id in aggregate["trace_ids"])
         total = int(aggregate["total"])
         failed = int(aggregate["failed"])
@@ -709,30 +768,39 @@ def extract_per_run_metrics(
         # so a single Grafana query can drive the Runs table without any merge
         # or Grafana-side arithmetic.
         failure_rate_percent = (100.0 * failed / total) if total else 0.0
+        success_rate_percent = 100.0 - failure_rate_percent if total else 100.0
         start_labels = dict(run_labels)
-        start_labels["suite_count"] = str(len(suite_names))
-        start_labels["suites"] = ",".join(suite_names)
+        start_labels["job_count"] = str(len(job_names))
+        start_labels["jobs"] = ",".join(job_names)
         start_labels["trace_count"] = str(len(trace_ids))
         start_labels["total_tests"] = str(total)
         start_labels["failed_tests"] = str(failed)
         start_labels["total_duration_seconds"] = f"{total_duration:.3f}"
         start_labels["failure_rate_percent"] = f"{failure_rate_percent:.2f}"
-        lines.append(f"pytest_run_start_time_seconds{metric_labels(start_labels)} {start_time_seconds:.6f}")
-        lines.append(f"pytest_run_end_time_seconds{metric_labels(run_labels)} {end_time_seconds:.6f}")
+        start_labels["success_rate_percent"] = f"{success_rate_percent:.2f}"
+        lines.append(
+            f"pytest_run_start_time_seconds{metric_labels(start_labels)} {start_time_seconds:.6f}"
+        )
+        lines.append(
+            f"pytest_run_end_time_seconds{metric_labels(run_labels)} {end_time_seconds:.6f}"
+        )
         lines.append(f"pytest_run_total_tests{metric_labels(run_labels)} {total}")
         lines.append(f"pytest_run_failed_tests{metric_labels(run_labels)} {failed}")
-        lines.append(f"pytest_run_duration_seconds{metric_labels(run_labels)} {total_duration:.6f}")
-        for suite_name in suite_names:
-            suite_labels = dict(run_labels)
-            suite_labels["test_suite"] = suite_name
-            lines.append(f"pytest_run_suite_member_info{metric_labels(suite_labels)} 1")
+        lines.append(
+            f"pytest_run_duration_seconds{metric_labels(run_labels)} {total_duration:.6f}"
+        )
+        for job_name in job_names:
+            job_labels = dict(run_labels)
+            job_labels["test_job"] = job_name
+            lines.append(f"pytest_run_job_member_info{metric_labels(job_labels)} 1")
     return lines
 
 
 def extract_average_metrics(
     traces: list[dict],
     *,
-    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] | None = None,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
 ) -> list[str]:
     extracted = _extracted if _extracted is not None else _precompute_trace_rows(traces)
     lines = [
@@ -753,7 +821,7 @@ def extract_average_metrics(
         for row in rows:
             key = (
                 str(row["service_name"]),
-                str(row["test_suite"]),
+                str(row["test_job"]),
                 str(row["pr"]),
                 str(row["provider"]),
                 str(row["test_nodeid"]),
@@ -776,14 +844,20 @@ def extract_average_metrics(
                 if trace_start >= aggregates[key]["last_failure_start_time"]:
                     aggregates[key]["last_failure_start_time"] = trace_start
                     aggregates[key]["last_failure_trace_id"] = trace_id
-                    aggregates[key]["last_failure_exception_type"] = str(row.get("exception_type", "")) or "unknown"
-                    aggregates[key]["last_failure_stacktrace"] = str(row.get("exception_stacktrace", ""))
+                    aggregates[key]["last_failure_exception_type"] = (
+                        str(row.get("exception_type", "")) or "unknown"
+                    )
+                    aggregates[key]["last_failure_stacktrace"] = str(
+                        row.get("exception_stacktrace", "")
+                    )
 
-    for (service_name, test_suite, pr, provider, test_nodeid), aggregate in sorted(aggregates.items()):
+    for (service_name, test_job, pr, provider, test_nodeid), aggregate in sorted(
+        aggregates.items()
+    ):
         durations = aggregate["durations"]
         labels = {
             "pr": pr,
-            "test_suite": test_suite,
+            "test_job": test_job,
             "provider": provider,
             "service_name": service_name,
             "test_class": str(aggregate["test_class"]),
@@ -796,18 +870,26 @@ def extract_average_metrics(
         )
         lines.append(f"pytest_test_run_count{metric_labels(labels)} {len(durations)}")
         failure_count = int(aggregate["failure_count"])
-        lines.append(f"pytest_test_failure_count{metric_labels(labels)} {failure_count}")
+        lines.append(
+            f"pytest_test_failure_count{metric_labels(labels)} {failure_count}"
+        )
         if failure_count > 0:
             pointer_labels = dict(labels)
             pointer_labels["trace_id"] = str(aggregate["last_failure_trace_id"])
-            pointer_labels["exception_type"] = str(aggregate["last_failure_exception_type"])
+            pointer_labels["exception_type"] = str(
+                aggregate["last_failure_exception_type"]
+            )
             pointer_labels["stacktrace"] = str(aggregate["last_failure_stacktrace"])
-            lines.append(f"pytest_test_last_failure_info{metric_labels(pointer_labels)} 1")
+            lines.append(
+                f"pytest_test_last_failure_info{metric_labels(pointer_labels)} 1"
+            )
 
     return lines
 
 
-def extract_average_resource_metrics(records: list[dict[str, str | float | int]]) -> list[str]:
+def extract_average_resource_metrics(
+    records: list[dict[str, str | float | int]],
+) -> list[str]:
     lines = [
         "# HELP pytest_test_average_cpu_time_seconds Average process CPU time delta across recorded test runs.",
         "# TYPE pytest_test_average_cpu_time_seconds gauge",
@@ -824,11 +906,11 @@ def extract_average_resource_metrics(records: list[dict[str, str | float | int]]
 
     for record in records:
         service_name = str(record.get("service_name", "unknown"))
-        test_suite = str(record.get("test_suite", "unknown"))
+        test_job = str(record.get("test_job", record.get("test_suite", "unknown")))
         pr = str(record.get("pr", "none"))
         provider = str(record.get("provider", "unknown"))
         test_nodeid = str(record.get("test_nodeid", "unknown"))
-        key = (service_name, test_suite, pr, provider, test_nodeid)
+        key = (service_name, test_job, pr, provider, test_nodeid)
         if key not in aggregates:
             aggregates[key] = {
                 "cpu_time_seconds": [],
@@ -841,17 +923,24 @@ def extract_average_resource_metrics(records: list[dict[str, str | float | int]]
             }
 
         aggregate = aggregates[key]
-        for metric_name in ("cpu_time_seconds", "rss_delta_bytes", "rss_peak_bytes", "cuda_peak_allocated_bytes"):
+        for metric_name in (
+            "cpu_time_seconds",
+            "rss_delta_bytes",
+            "rss_peak_bytes",
+            "cuda_peak_allocated_bytes",
+        ):
             value = record.get(metric_name)
             metric_values = aggregate[metric_name]
             assert isinstance(metric_values, list)
             if isinstance(value, (int, float)):
                 metric_values.append(float(value))
 
-    for (service_name, test_suite, pr, provider, test_nodeid), aggregate in sorted(aggregates.items()):
+    for (service_name, test_job, pr, provider, test_nodeid), aggregate in sorted(
+        aggregates.items()
+    ):
         labels = {
             "pr": pr,
-            "test_suite": test_suite,
+            "test_job": test_job,
             "provider": provider,
             "service_name": service_name,
             "test_class": str(aggregate["test_class"]),
@@ -860,18 +949,25 @@ def extract_average_resource_metrics(records: list[dict[str, str | float | int]]
             "test_nodeid": test_nodeid,
         }
         resource_count = len(aggregate["cpu_time_seconds"])  # type: ignore[arg-type]
-        lines.append(f"pytest_test_resource_run_count{metric_labels(labels)} {resource_count}")
+        lines.append(
+            f"pytest_test_resource_run_count{metric_labels(labels)} {resource_count}"
+        )
         for metric_name, prom_name in (
             ("cpu_time_seconds", "pytest_test_average_cpu_time_seconds"),
             ("rss_peak_bytes", "pytest_test_average_rss_peak_bytes"),
             ("rss_delta_bytes", "pytest_test_average_rss_delta_bytes"),
-            ("cuda_peak_allocated_bytes", "pytest_test_average_cuda_peak_allocated_bytes"),
+            (
+                "cuda_peak_allocated_bytes",
+                "pytest_test_average_cuda_peak_allocated_bytes",
+            ),
         ):
             metric_values = aggregate[metric_name]
             assert isinstance(metric_values, list)
             if not metric_values:
                 continue
-            lines.append(f"{prom_name}{metric_labels(labels)} {fsum(metric_values) / len(metric_values):.9f}")
+            lines.append(
+                f"{prom_name}{metric_labels(labels)} {fsum(metric_values) / len(metric_values):.9f}"
+            )
 
     return lines
 
