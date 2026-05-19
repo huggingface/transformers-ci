@@ -34,7 +34,7 @@
       "targetBlank": false,
       "title": "Back to PR",
       "type": "link",
-      "url": "/d/pytest-observability-by-pr/pytest-observability-pr?var-pr=${pr}"
+      "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr}"
     },
     {
       "targetBlank": true,
@@ -48,7 +48,7 @@
       "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
       "id": 20,
       "options": {
-        "content": "### `${job}`\n\n**Run:** `${run_id}`\n\n**PR:** `${pr}`",
+        "content": "### `${job}`\n\n**Run:** [${run_id}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id})\n\n**PR:** [${pr}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr})",
         "mode": "markdown"
       },
       "pluginVersion": "12.0.0",
@@ -262,12 +262,18 @@
                 "id": "links",
                 "value": [
                   {
-                    "title": "View traceback",
-                    "url": "/d/pytest-traceback?var-trace_id=${__value.raw}",
+                    "title": "View test",
+                    "url": "/d/pytest-test/pytest-test?var-trace_id=${__value.raw}&var-test_nodeid=${__data.fields[\"test_nodeid\"]}",
                     "targetBlank": false
                   }
                 ]
               }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "test_nodeid"},
+            "properties": [
+              {"id": "custom.hidden", "value": true}
             ]
           }
         ]
@@ -284,7 +290,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}",
+          "expr": "pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",status_code=~\"$status_filter\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -305,8 +311,7 @@
               "pr": true,
               "provider": true,
               "service_name": true,
-              "test_job": true,
-              "test_nodeid": true
+              "test_job": true
             },
             "indexByName": {
               "test_module": 0,
@@ -397,6 +402,19 @@
         "options": [{"selected": true, "text": ".*", "value": ".*"}],
         "query": ".*",
         "type": "textbox"
+      },
+      {
+        "current": {"selected": true, "text": "Failing", "value": "ERROR"},
+        "label": "Show",
+        "name": "status_filter",
+        "options": [
+          {"selected": true, "text": "Failing", "value": "ERROR"},
+          {"selected": false, "text": "All", "value": ".+"}
+        ],
+        "query": "Failing : ERROR,All : .+",
+        "type": "custom",
+        "includeAll": false,
+        "multi": false
       }
     ]
   },

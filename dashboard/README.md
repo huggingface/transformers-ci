@@ -12,7 +12,7 @@ It includes:
 - `grafana-dashboard.yaml`: dashboard provisioning
 - `pytest-observability-dashboard.json`: overview dashboard
 - `pytest-observability-job-dashboard.json`: per-job drill-down
-- `pytest-traceback-dashboard.json`: per-trace stacktrace view
+- `pytest-test-dashboard.json`: per-test view (metadata + stacktrace when failed)
 - `data/`: shared local data directory for resource metrics
 
 ## Architecture

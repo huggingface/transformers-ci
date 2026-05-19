@@ -44,7 +44,11 @@
         "overrides": [
           {
             "matcher": {"id": "byName", "options": "Last Activity"},
-            "properties": [{"id": "unit", "value": "dateTimeAsLocal"}]
+            "properties": [{"id": "unit", "value": "dateTimeFromNow"}]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Age"},
+            "properties": [{"id": "unit", "value": "d"}]
           },
           {
             "matcher": {"id": "byName", "options": "Failure Rate"},
@@ -75,7 +79,7 @@
                 "value": [
                   {
                     "title": "View PR",
-                    "url": "/d/pytest-observability-by-pr?var-pr=${__value.raw}",
+                    "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${__value.raw}",
                     "targetBlank": false
                   }
                 ]
@@ -129,6 +133,15 @@
           "legendFormat": "__auto",
           "range": false,
           "refId": "Rate"
+        },
+        {
+          "editorMode": "code",
+          "expr": "floor((time() - max by (pr) (pytest_pr_created_at_seconds{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"})) / 86400)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Age"
         }
       ],
       "title": "Last 10 PRs",
@@ -145,13 +158,15 @@
             },
             "indexByName": {
               "pr": 0,
-              "Value #Activity": 1,
-              "Value #Runs": 2,
-              "Value #Failures": 3,
-              "Value #Rate": 4
+              "Value #Age": 1,
+              "Value #Activity": 2,
+              "Value #Runs": 3,
+              "Value #Failures": 4,
+              "Value #Rate": 5
             },
             "renameByName": {
               "pr": "PR",
+              "Value #Age": "Age",
               "Value #Activity": "Last Activity",
               "Value #Runs": "Runs",
               "Value #Failures": "Failures",
@@ -174,7 +189,7 @@
         "overrides": [
           {
             "matcher": {"id": "byName", "options": "Started"},
-            "properties": [{"id": "unit", "value": "dateTimeAsLocal"}]
+            "properties": [{"id": "unit", "value": "dateTimeFromNow"}]
           },
           {
             "matcher": {"id": "byName", "options": "Failure Rate"},
@@ -202,7 +217,7 @@
                 "value": [
                   {
                     "title": "View this run",
-                    "url": "/d/pytest-observability-by-run?var-run_id=${__value.raw}",
+                    "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${__value.raw}",
                     "targetBlank": false
                   }
                 ]
@@ -261,16 +276,24 @@
               "__name__": true,
               "instance": true,
               "job": true,
+              "jobs": true,
               "pr": true,
               "provider": true,
               "service_name": true,
               "trace_count": true
             },
-            "indexByName": {},
+            "indexByName": {
+              "run_id": 0,
+              "job_count": 1,
+              "total_tests": 2,
+              "failed_tests": 3,
+              "Value": 4,
+              "total_duration_seconds": 5,
+              "failure_rate_percent": 6
+            },
             "renameByName": {
               "Value": "Started",
               "job_count": "Job Count",
-              "jobs": "Jobs",
               "total_tests": "Total",
               "failed_tests": "Failures",
               "total_duration_seconds": "Duration",
@@ -318,7 +341,7 @@
                 "value": [
                   {
                     "title": "View this run",
-                    "url": "/d/pytest-observability-by-run?var-run_id=${__value.raw}",
+                    "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${__value.raw}",
                     "targetBlank": false
                   }
                 ]
@@ -327,7 +350,7 @@
           },
           {
             "matcher": {"id": "byName", "options": "Started"},
-            "properties": [{"id": "unit", "value": "dateTimeAsLocal"}]
+            "properties": [{"id": "unit", "value": "dateTimeFromNow"}]
           },
           {
             "matcher": {"id": "byName", "options": "PR"},
@@ -337,22 +360,7 @@
                 "value": [
                   {
                     "title": "View PR",
-                    "url": "/d/pytest-observability-by-pr?var-pr=${__value.raw}",
-                    "targetBlank": false
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {"id": "byName", "options": "Error"},
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View traceback",
-                    "url": "/d/pytest-traceback?var-trace_id=${__data.fields[\"Last Failure\"]}",
+                    "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${__value.raw}",
                     "targetBlank": false
                   }
                 ]
@@ -408,22 +416,21 @@
               "__name__": true,
               "instance": true,
               "job": true,
+              "jobs": true,
               "provider": true,
               "service_name": true,
               "trace_count": true
             },
             "indexByName": {
-              "Value": 0,
+              "run_id": 0,
               "pr": 1,
               "job_count": 2,
-              "jobs": 3,
-              "run_id": 4
+              "Value": 3
             },
             "renameByName": {
               "Value": "Started",
               "pr": "PR",
               "job_count": "Job Count",
-              "jobs": "Jobs",
               "run_id": "Run ID"
             }
           }
@@ -485,7 +492,7 @@
                 "value": [
                   {
                     "title": "View job details",
-                    "url": "/d/pytest-observability-by-job?var-job=${__value.raw}",
+                    "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${__value.raw}",
                     "targetBlank": false
                   }
                 ]
@@ -499,12 +506,18 @@
                 "id": "links",
                 "value": [
                   {
-                    "title": "View traceback",
-                    "url": "/d/pytest-traceback?var-trace_id=${__data.fields[\"Last Failure\"]}",
+                    "title": "View test",
+                    "url": "/d/pytest-test/pytest-test?var-trace_id=${__data.fields[\"Last Failure\"]}&var-test_nodeid=${__data.fields[\"test_nodeid\"]}",
                     "targetBlank": false
                   }
                 ]
               }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "test_nodeid"},
+            "properties": [
+              {"id": "custom.hidden", "value": true}
             ]
           }
         ]
@@ -560,8 +573,7 @@
               "provider": true,
               "service_name": true,
               "test_class": true,
-              "test_module": true,
-              "test_nodeid": true
+              "test_module": true
             },
             "indexByName": {
               "test_job": 0,
@@ -627,7 +639,7 @@
                 "value": [
                   {
                     "title": "View PR",
-                    "url": "/d/pytest-observability-by-pr?var-pr=${__value.raw}",
+                    "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${__value.raw}",
                     "targetBlank": false
                   }
                 ]
@@ -642,7 +654,7 @@
                 "value": [
                   {
                     "title": "View job details",
-                    "url": "/d/pytest-observability-by-job?var-job=${__value.raw}",
+                    "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${__value.raw}",
                     "targetBlank": false
                   }
                 ]
@@ -650,18 +662,24 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Error"},
+            "matcher": {"id": "byName", "options": "Function"},
             "properties": [
               {
                 "id": "links",
                 "value": [
                   {
-                    "title": "View traceback",
-                    "url": "/d/pytest-traceback?var-trace_id=${__data.fields[\"Last Failure\"]}",
+                    "title": "View test",
+                    "url": "/d/pytest-test/pytest-test?var-test_nodeid=${__data.fields[\"test_nodeid\"]}",
                     "targetBlank": false
                   }
                 ]
               }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "test_nodeid"},
+            "properties": [
+              {"id": "custom.hidden", "value": true}
             ]
           }
         ]
@@ -710,8 +728,7 @@
                       "pr": true,
                       "provider": true,
                       "service_name": true,
-                      "status_code": true,
-                      "test_nodeid": true
+                      "status_code": true
                     },
                     "indexByName": {
                       "Value": 0,

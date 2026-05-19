@@ -100,7 +100,7 @@ services:
       - ./pytest-observability-job-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-job-dashboard.json:ro
       - ./pytest-observability-pr-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-pr-dashboard.json:ro
       - ./pytest-observability-run-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-run-dashboard.json:ro
-      - ./pytest-traceback-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-traceback-dashboard.json:ro
+      - ./pytest-test-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-test-dashboard.json:ro
       - ./grafana-dashboard.yaml:/etc/grafana/provisioning/dashboards/grafana-dashboard.yaml:ro
       - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
       - grafana-data:/var/lib/grafana

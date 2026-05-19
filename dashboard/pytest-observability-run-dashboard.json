@@ -26,7 +26,7 @@
       "targetBlank": false,
       "title": "Back to PR",
       "type": "link",
-      "url": "/d/pytest-observability-by-pr/pytest-observability-pr?var-pr=${pr}"
+      "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr}"
     }
   ],
   "panels": [
@@ -155,7 +155,7 @@
           "color": {"mode": "thresholds"},
           "mappings": [],
           "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]},
-          "unit": "dateTimeAsLocal"
+          "unit": "dateTimeFromNow"
         },
         "overrides": []
       },
@@ -219,12 +219,18 @@
                 "id": "links",
                 "value": [
                   {
-                    "title": "View traceback",
-                    "url": "/d/pytest-traceback?var-trace_id=${__value.raw}",
+                    "title": "View test",
+                    "url": "/d/pytest-test/pytest-test?var-trace_id=${__value.raw}&var-test_nodeid=${__data.fields[\"test_nodeid\"]}",
                     "targetBlank": false
                   }
                 ]
               }
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "test_nodeid"},
+            "properties": [
+              {"id": "custom.hidden", "value": true}
             ]
           },
           {
@@ -235,7 +241,7 @@
                 "value": [
                   {
                     "title": "View job details",
-                    "url": "/d/pytest-observability-by-job?var-job=${__value.raw}",
+                    "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${__value.raw}&var-run_id=${run_id}&var-pr=${pr}",
                     "targetBlank": false
                   }
                 ]
@@ -250,13 +256,18 @@
         "cellHeight": "sm",
         "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
         "showHeader": true,
-        "sortBy": [{"desc": true, "displayName": "Duration"}]
+        "sortBy": [
+          {"desc": false, "displayName": "Job"},
+          {"desc": false, "displayName": "Module"},
+          {"desc": false, "displayName": "Class"},
+          {"desc": false, "displayName": "Function"}
+        ]
       },
       "pluginVersion": "12.0.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_test_duration_seconds{run_id=~\"$run_id\"}",
+          "expr": "pytest_test_duration_seconds{run_id=~\"$run_id\",status_code=~\"$status_filter\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -277,8 +288,7 @@
               "pr": true,
               "provider": true,
               "run_id": true,
-              "service_name": true,
-              "test_nodeid": true
+              "service_name": true
             },
             "indexByName": {
               "test_job": 0,
@@ -315,6 +325,19 @@
         "options": [{"selected": true, "text": "", "value": ""}],
         "query": "",
         "type": "textbox"
+      },
+      {
+        "current": {"selected": true, "text": "Failing", "value": "ERROR"},
+        "label": "Show",
+        "name": "status_filter",
+        "options": [
+          {"selected": true, "text": "Failing", "value": "ERROR"},
+          {"selected": false, "text": "All", "value": ".+"}
+        ],
+        "query": "Failing : ERROR,All : .+",
+        "type": "custom",
+        "includeAll": false,
+        "multi": false
       },
       {
         "current": {"selected": false, "text": "", "value": ""},
