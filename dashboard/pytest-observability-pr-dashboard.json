@@ -164,7 +164,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "count by (test_job, status_code) (pytest_test_duration_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$latest_run_id\"})",
+          "expr": "count by (test_job, status_code) (last_over_time(pytest_test_duration_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$latest_run_id\"}[$__range]))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -350,7 +350,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(5, pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}) * 1000",
+          "expr": "topk(5, last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range])) * 1000",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -466,7 +466,7 @@
           "query": "label_values(pytest_run_start_time_seconds, service_name)",
           "refId": "Prometheus-service-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "sort": 1,
         "type": "query"
       },
@@ -491,7 +491,7 @@
           "query": "label_values(pytest_run_start_time_seconds{service_name=~\"$service\"}, pr)",
           "refId": "Prometheus-pr-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "sort": 1,
         "type": "query"
       },
@@ -517,7 +517,7 @@
           "query": "label_values(pytest_pr_info{service_name=~\"$service\"}, repository)",
           "refId": "Prometheus-pr_repository-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -544,7 +544,7 @@
           "query": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, author)",
           "refId": "Prometheus-pr_author-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -571,7 +571,7 @@
           "query": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, title)",
           "refId": "Prometheus-pr_title-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -598,7 +598,7 @@
           "query": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, state)",
           "refId": "Prometheus-pr_state-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -625,7 +625,7 @@
           "query": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, html_url)",
           "refId": "Prometheus-pr_html_url-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -652,7 +652,7 @@
           "query": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, reviewers)",
           "refId": "Prometheus-pr_reviewers-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -676,11 +676,11 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(floor((time() - max by (pr) (pytest_pr_created_at_seconds{service_name=~\"$service\",pr=~\"$pr\"})) / 86400))",
+          "query": "query_result(floor((time() - max by (pr) (last_over_time(pytest_pr_created_at_seconds{service_name=~\"$service\",pr=~\"$pr\"}[$__range]))) / 86400))",
           "refId": "Prometheus-pr_age_days-Variable-Query"
         },
         "regex": "/} (\\d+)/",
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -704,11 +704,11 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(count(count by (run_id) (pytest_run_total_tests{service_name=~\"$service\",pr=~\"$pr\"})))",
+          "query": "query_result(count(count by (run_id) (last_over_time(pytest_run_total_tests{service_name=~\"$service\",pr=~\"$pr\"}[$__range]))))",
           "refId": "Prometheus-pr_total_runs-Variable-Query"
         },
         "regex": "/} (\\d+)/",
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -732,11 +732,11 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(topk(1, pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"}))",
+          "query": "query_result(topk(1, last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"}[$__range])))",
           "refId": "Prometheus-latest_run_id-Variable-Query"
         },
         "regex": "/.*run_id=\"([^\"]+)\".*/",
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -759,11 +759,11 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(label_replace(group by (pr) (pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"}), \"v\", \"PR #$1\", \"pr\", \"([0-9]+)\"), \"v\", \"Main branch\", \"pr\", \"main\"))",
+          "query": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"}[$__range])), \"v\", \"PR #$1\", \"pr\", \"([0-9]+)\"), \"v\", \"Main branch\", \"pr\", \"main\"))",
           "refId": "Prometheus-branch_label-Variable-Query"
         },
         "regex": "/v=\"([^\"]+)\"/",
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -786,11 +786,11 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(label_replace(group by (pr) (pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"}), \"u\", \"https://github.com/${pr_repository:raw}/pull/$1\", \"pr\", \"([0-9]+)\"), \"u\", \"https://github.com/${pr_repository:raw}/tree/main\", \"pr\", \"main\"))",
+          "query": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"}[$__range])), \"u\", \"https://github.com/${pr_repository:raw}/pull/$1\", \"pr\", \"([0-9]+)\"), \"u\", \"https://github.com/${pr_repository:raw}/tree/main\", \"pr\", \"main\"))",
           "refId": "Prometheus-branch_url-Variable-Query"
         },
         "regex": "/u=\"([^\"]+)\"/",
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -813,11 +813,11 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(group by (pr) (pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
+          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}[$__range])), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
           "refId": "Prometheus-pr_title_section-Variable-Query"
         },
         "regex": "/t=\"([^\"]+)\"/",
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -840,11 +840,11 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(group by (pr) (pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days\", \"pr\", \".*\"))",
+          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}[$__range])), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days\", \"pr\", \".*\"))",
           "refId": "Prometheus-pr_metadata_section-Variable-Query"
         },
         "regex": "/m=\"([^\"]+)\"/",
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"

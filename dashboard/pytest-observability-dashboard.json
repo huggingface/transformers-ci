@@ -33,46 +33,101 @@
   ],
   "panels": [
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
-          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]}
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Last Activity"},
-            "properties": [{"id": "unit", "value": "dateTimeFromNow"}]
-          },
-          {
-            "matcher": {"id": "byName", "options": "Age"},
-            "properties": [{"id": "unit", "value": "d"}]
-          },
-          {
-            "matcher": {"id": "byName", "options": "Failure Rate"},
+            "matcher": {
+              "id": "byName",
+              "options": "Last Activity"
+            },
             "properties": [
-              {"id": "unit", "value": "percent"},
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Age"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "d"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failure Rate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
               {
                 "id": "custom.cellOptions",
-                "value": {"mode": "gradient", "type": "color-background"}
+                "value": {
+                  "mode": "gradient",
+                  "type": "color-background"
+                }
               },
               {
                 "id": "thresholds",
                 "value": {
                   "mode": "absolute",
                   "steps": [
-                    {"color": "green", "value": null},
-                    {"color": "orange", "value": 1},
-                    {"color": "red", "value": 10}
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 10
+                    }
                   ]
                 }
               }
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "PR"},
+            "matcher": {
+              "id": "byName",
+              "options": "PR"
+            },
             "properties": [
               {
                 "id": "links",
@@ -88,19 +143,36 @@
           }
         ]
       },
-      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 0},
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "id": 10,
       "options": {
         "cellHeight": "sm",
-        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
         "showHeader": true,
-        "sortBy": [{"desc": true, "displayName": "Last Activity"}]
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Last Activity"
+          }
+        ]
       },
       "pluginVersion": "12.0.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, max by (pr) ((pytest_run_end_time_seconds{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"})) * 1000))",
+          "expr": "topk(10, max by (pr) ((last_over_time(pytest_run_end_time_seconds{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"}[$__range]))) * 1000))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -109,7 +181,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "count by (pr) (max by (pr, run_id) (pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"})))",
+          "expr": "count by (pr) (max by (pr, run_id) (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"}[$__range]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -118,7 +190,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "sum by (pr) (max by (pr, run_id) (pytest_run_failed_tests{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"})))",
+          "expr": "sum by (pr) (max by (pr, run_id) (last_over_time(pytest_run_failed_tests{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"}[$__range]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -127,7 +199,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "100 * sum by (pr) (max by (pr, run_id) (pytest_run_failed_tests{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"}))) / sum by (pr) (max by (pr, run_id) (pytest_run_total_tests{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"})))",
+          "expr": "100 * sum by (pr) (max by (pr, run_id) (last_over_time(pytest_run_failed_tests{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"}[$__range])))) / sum by (pr) (max by (pr, run_id) (last_over_time(pytest_run_total_tests{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"}[$__range]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -136,7 +208,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "floor((time() - max by (pr) (pytest_pr_created_at_seconds{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"})) / 86400)",
+          "expr": "floor((time() - max by (pr) (last_over_time(pytest_pr_created_at_seconds{service_name=~\"$service\",pr=~\"$pr\",pr!=\"main\"}[$__range]))) / 86400)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -146,7 +218,10 @@
       ],
       "title": "Last 10 PRs",
       "transformations": [
-        {"id": "merge", "options": {}},
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {
@@ -178,39 +253,89 @@
       "type": "table"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
-          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]}
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Started"},
-            "properties": [{"id": "unit", "value": "dateTimeFromNow"}]
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
           },
           {
-            "matcher": {"id": "byName", "options": "Failure Rate"},
+            "matcher": {
+              "id": "byName",
+              "options": "Failure Rate"
+            },
             "properties": [
-              {"id": "unit", "value": "percent"},
-              {"id": "custom.cellOptions", "value": {"mode": "gradient", "type": "color-background"}},
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "color-background"
+                }
+              },
               {
                 "id": "thresholds",
                 "value": {
                   "mode": "absolute",
                   "steps": [
-                    {"color": "green", "value": null},
-                    {"color": "orange", "value": 1},
-                    {"color": "red", "value": 10}
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 10
+                    }
                   ]
                 }
               }
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Run ID"},
+            "matcher": {
+              "id": "byName",
+              "options": "Run ID"
+            },
             "properties": [
               {
                 "id": "links",
@@ -225,24 +350,49 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Duration"},
-            "properties": [{"id": "unit", "value": "s"}]
+            "matcher": {
+              "id": "byName",
+              "options": "Duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
           }
         ]
       },
-      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 6},
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
       "id": 11,
       "options": {
         "cellHeight": "sm",
-        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
         "showHeader": true,
-        "sortBy": [{"desc": true, "displayName": "Started"}]
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Started"
+          }
+        ]
       },
       "pluginVersion": "12.0.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, (pytest_run_start_time_seconds{service_name=~\"$service\",pr=\"main\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=\"main\"})) * 1000)",
+          "expr": "topk(10, (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=\"main\"}[$__range]))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -254,17 +404,35 @@
       "transformations": [
         {
           "id": "labelsToFields",
-          "options": {"mode": "columns", "valueLabel": ""}
+          "options": {
+            "mode": "columns",
+            "valueLabel": ""
+          }
         },
         {
           "id": "convertFieldType",
           "options": {
             "conversions": [
-              {"destinationType": "number", "targetField": "job_count"},
-              {"destinationType": "number", "targetField": "total_tests"},
-              {"destinationType": "number", "targetField": "failed_tests"},
-              {"destinationType": "number", "targetField": "total_duration_seconds"},
-              {"destinationType": "number", "targetField": "failure_rate_percent"}
+              {
+                "destinationType": "number",
+                "targetField": "job_count"
+              },
+              {
+                "destinationType": "number",
+                "targetField": "total_tests"
+              },
+              {
+                "destinationType": "number",
+                "targetField": "failed_tests"
+              },
+              {
+                "destinationType": "number",
+                "targetField": "total_duration_seconds"
+              },
+              {
+                "destinationType": "number",
+                "targetField": "failure_rate_percent"
+              }
             ]
           }
         },
@@ -334,7 +502,10 @@
         },
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Run ID"},
+            "matcher": {
+              "id": "byName",
+              "options": "Run ID"
+            },
             "properties": [
               {
                 "id": "links",
@@ -349,11 +520,22 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Started"},
-            "properties": [{"id": "unit", "value": "dateTimeFromNow"}]
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
           },
           {
-            "matcher": {"id": "byName", "options": "PR"},
+            "matcher": {
+              "id": "byName",
+              "options": "PR"
+            },
             "properties": [
               {
                 "id": "links",
@@ -398,7 +580,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, (pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"} * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\"})) * 1000)",
+          "expr": "topk(10, (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\"}[$__range]))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -485,7 +667,10 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Job"},
+            "matcher": {
+              "id": "byName",
+              "options": "Job"
+            },
             "properties": [
               {
                 "id": "links",
@@ -500,7 +685,10 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Error"},
+            "matcher": {
+              "id": "byName",
+              "options": "Error"
+            },
             "properties": [
               {
                 "id": "links",
@@ -515,9 +703,15 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "test_nodeid"},
+            "matcher": {
+              "id": "byName",
+              "options": "test_nodeid"
+            },
             "properties": [
-              {"id": "custom.hidden", "value": true}
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
             ]
           }
         ]
@@ -551,7 +745,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, (pytest_test_failure_count{service_name=~\"$service\",test_job=~\"$job\",pr=\"main\"} > 0) * on(test_nodeid, test_job, service_name, provider, pr) group_left(trace_id, exception_type) (topk by (test_nodeid, test_job, service_name, provider, pr) (1, last_over_time(pytest_test_last_failure_info{service_name=~\"$service\",test_job=~\"$job\",pr=\"main\"}[30s]))))",
+          "expr": "topk(10, (last_over_time(pytest_test_failure_count{service_name=~\"$service\",test_job=~\"$job\",pr=\"main\"}[$__range]) > 0) * on(test_nodeid, test_job, service_name, provider, pr) group_left(trace_id, exception_type) (topk by (test_nodeid, test_job, service_name, provider, pr) (1, last_over_time(pytest_test_last_failure_info{service_name=~\"$service\",test_job=~\"$job\",pr=\"main\"}[$__range]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -623,7 +817,10 @@
         },
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Avg Duration"},
+            "matcher": {
+              "id": "byName",
+              "options": "Avg Duration"
+            },
             "properties": [
               {
                 "id": "unit",
@@ -632,7 +829,10 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "PR"},
+            "matcher": {
+              "id": "byName",
+              "options": "PR"
+            },
             "properties": [
               {
                 "id": "links",
@@ -647,7 +847,10 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Job"},
+            "matcher": {
+              "id": "byName",
+              "options": "Job"
+            },
             "properties": [
               {
                 "id": "links",
@@ -662,7 +865,10 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Function"},
+            "matcher": {
+              "id": "byName",
+              "options": "Function"
+            },
             "properties": [
               {
                 "id": "links",
@@ -677,9 +883,15 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "test_nodeid"},
+            "matcher": {
+              "id": "byName",
+              "options": "test_nodeid"
+            },
             "properties": [
-              {"id": "custom.hidden", "value": true}
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
             ]
           }
         ]
@@ -707,7 +919,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sort_desc(topk(20, pytest_test_average_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=\"main\"}))",
+          "expr": "sort_desc(topk(20, last_over_time(pytest_test_average_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=\"main\"}[$__range])))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -720,31 +932,31 @@
         {
           "id": "organize",
           "options": {
-                    "excludeByName": {
-                      "Time": true,
-                      "__name__": true,
-                      "instance": true,
-                      "job": true,
-                      "pr": true,
-                      "provider": true,
-                      "service_name": true,
-                      "status_code": true
-                    },
-                    "indexByName": {
-                      "Value": 0,
-                      "test_job": 1,
-                      "test_module": 2,
-                      "test_class": 3,
-                      "test_function": 4
-                    },
-                    "renameByName": {
-                      "Value": "Avg Duration",
-                      "test_module": "Module",
-                      "test_class": "Class",
-                      "test_function": "Function",
-                      "test_job": "Job"
-                    }
-                  }
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "pr": true,
+              "provider": true,
+              "service_name": true,
+              "status_code": true
+            },
+            "indexByName": {
+              "Value": 0,
+              "test_job": 1,
+              "test_module": 2,
+              "test_class": 3,
+              "test_function": 4
+            },
+            "renameByName": {
+              "Value": "Avg Duration",
+              "test_module": "Module",
+              "test_class": "Class",
+              "test_function": "Function",
+              "test_job": "Job"
+            }
+          }
         }
       ],
       "type": "table"
@@ -780,7 +992,7 @@
           "query": "label_values(pytest_test_average_duration_seconds, service_name)",
           "refId": "Prometheus-service-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "sort": 1,
         "type": "query"
       },
@@ -794,26 +1006,33 @@
         "datasource": {
           "type": "prometheus",
           "uid": "prometheus"
-                },
-                "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_job)",
-                "includeAll": true,
-                "label": "Job",
-                "multi": false,
+        },
+        "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_job)",
+        "includeAll": true,
+        "label": "Job",
+        "multi": false,
         "name": "job",
-                "options": [],
-                "query": {
-                  "qryType": 1,
-                  "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_job)",
-                  "refId": "Prometheus-job-Variable-Query"
-                },
-        "refresh": 1,
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_job)",
+          "refId": "Prometheus-job-Variable-Query"
+        },
+        "refresh": 2,
         "sort": 1,
         "type": "query"
       },
       {
         "allValue": ".*",
-        "current": {"selected": true, "text": "All", "value": "$__all"},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\",test_job=~\"$job\"}, pr)",
         "includeAll": true,
         "label": "PR",
@@ -825,7 +1044,7 @@
           "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\",test_job=~\"$job\"}, pr)",
           "refId": "Prometheus-pr-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "sort": 1,
         "type": "query"
       }

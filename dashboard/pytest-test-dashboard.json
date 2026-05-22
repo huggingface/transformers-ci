@@ -3,12 +3,20 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
         "name": "Annotations & Alerts",
-        "target": {"limit": 100, "matchAny": false, "tags": [], "type": "dashboard"},
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [],
+          "type": "dashboard"
+        },
         "type": "dashboard"
       }
     ]
@@ -25,10 +33,15 @@
   ],
   "panels": [
     {
-      "gridPos": {"h": 5, "w": 18, "x": 0, "y": 0},
+      "gridPos": {
+        "h": 5,
+        "w": 18,
+        "x": 0,
+        "y": 0
+      },
       "id": 1,
       "options": {
-        "content": "### `${test_function:raw}`\n\n`${test_nodeid:raw}`\n\n**Module:** `${test_module:raw}` | **Class:** `${test_class:raw}` | **Status:** `${status_code:raw}`\n\n**Job:** [${test_job:raw}](/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${run_id:raw}&var-pr=${pr:raw}) | **Run:** [${run_id:raw}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id:raw}) | **PR:** [${pr:raw}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr:raw}) | <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"14\" height=\"14\" alt=\"GH\"/> [Full logs](https://github.com/${repository:raw}/actions/runs/${gh_run_id:raw}) | [Open trace in Jaeger](/explore?schemaVersion=1&orgId=1&panes=%7B%22jg%22:%7B%22datasource%22:%22jaeger%22,%22queries%22:%5B%7B%22query%22:%22${trace_id:raw}%22,%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22jaeger%22,%22uid%22:%22jaeger%22%7D%7D%5D,%22range%22:%7B%22from%22:%22now-24h%22,%22to%22:%22now%22%7D%7D%7D)\n\n<sub>💡 The stacktrace below is only retained for the **most recent** failure per test. For older runs, the panel is empty — click **Open trace in Jaeger** to see the full traceback.</sub>",
+        "content": "### `${test_function:raw}`\n\n`${test_nodeid:raw}`\n\n**Module:** `${test_module:raw}` | **Class:** `${test_class:raw}` | **Status:** `${status_code:raw}`\n\n**Job:** [${test_job:raw}](/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${run_id:raw}&var-pr=${pr:raw}) | **Run:** [${run_id:raw}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id:raw}) | **PR:** [${pr:raw}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr:raw}) | <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"14\" height=\"14\" alt=\"GH\"/> [Full logs](https://github.com/${repository:raw}/actions/runs/${gh_run_id:raw}) | [Open trace in Jaeger](/explore?schemaVersion=1&orgId=1&panes=%7B%22jg%22:%7B%22datasource%22:%22jaeger%22,%22queries%22:%5B%7B%22query%22:%22${trace_id:raw}%22,%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22jaeger%22,%22uid%22:%22jaeger%22%7D%7D%5D,%22range%22:%7B%22from%22:%22now-24h%22,%22to%22:%22now%22%7D%7D%7D)\n\n<sub>\ud83d\udca1 The stacktrace below is only retained for the **most recent** failure per test. For older runs, the panel is empty \u2014 click **Open trace in Jaeger** to see the full traceback.</sub>",
         "mode": "markdown"
       },
       "pluginVersion": "12.0.0",
@@ -36,31 +49,54 @@
       "type": "text"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "blue"}]},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue"
+              }
+            ]
+          },
           "unit": "s"
         },
         "overrides": []
       },
-      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
       "id": 2,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "value"
       },
       "pluginVersion": "12.0.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}",
+          "expr": "last_over_time(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}[$__range])",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -71,7 +107,12 @@
       "type": "stat"
     },
     {
-      "gridPos": {"h": 24, "w": 24, "x": 0, "y": 5},
+      "gridPos": {
+        "h": 24,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
       "id": 3,
       "options": {
         "content": "```python\n${stacktrace:raw}\n```",
@@ -85,28 +126,59 @@
     }
   ],
   "schemaVersion": 41,
-  "tags": ["pytest", "observability", "otel"],
+  "tags": [
+    "pytest",
+    "observability",
+    "otel"
+  ],
   "templating": {
     "list": [
       {
-        "current": {"selected": false, "text": "", "value": ""},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
         "label": "Trace ID",
         "name": "trace_id",
-        "options": [{"selected": true, "text": "", "value": ""}],
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ],
         "query": "",
         "type": "textbox"
       },
       {
-        "current": {"selected": false, "text": "", "value": ""},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
         "label": "Test Node ID",
         "name": "test_nodeid",
-        "options": [{"selected": true, "text": "", "value": ""}],
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ],
         "query": "",
         "type": "textbox"
       },
       {
-        "current": {"selected": false, "text": "", "value": ""},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, test_function)",
         "hide": 2,
         "includeAll": false,
@@ -118,14 +190,21 @@
           "query": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, test_function)",
           "refId": "Prometheus-test_function-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
-        "current": {"selected": false, "text": "", "value": ""},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, test_module)",
         "hide": 2,
         "includeAll": false,
@@ -137,14 +216,21 @@
           "query": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, test_module)",
           "refId": "Prometheus-test_module-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
-        "current": {"selected": false, "text": "", "value": ""},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, test_class)",
         "hide": 2,
         "includeAll": false,
@@ -156,14 +242,21 @@
           "query": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, test_class)",
           "refId": "Prometheus-test_class-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
-        "current": {"selected": false, "text": "", "value": ""},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, test_job)",
         "hide": 2,
         "includeAll": false,
@@ -175,14 +268,21 @@
           "query": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, test_job)",
           "refId": "Prometheus-test_job-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
-        "current": {"selected": false, "text": "", "value": ""},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, run_id)",
         "hide": 2,
         "includeAll": false,
@@ -194,14 +294,21 @@
           "query": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, run_id)",
           "refId": "Prometheus-run_id-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
-        "current": {"selected": false, "text": "", "value": ""},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, pr)",
         "hide": 2,
         "includeAll": false,
@@ -213,14 +320,21 @@
           "query": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, pr)",
           "refId": "Prometheus-pr-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
-        "current": {"selected": false, "text": "", "value": ""},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, status_code)",
         "hide": 2,
         "includeAll": false,
@@ -232,14 +346,21 @@
           "query": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, status_code)",
           "refId": "Prometheus-status_code-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
-        "current": {"selected": false, "text": "", "value": ""},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "label_values(pytest_test_last_failure_info{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, exception_type)",
         "hide": 2,
         "includeAll": false,
@@ -251,14 +372,21 @@
           "query": "label_values(pytest_test_last_failure_info{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, exception_type)",
           "refId": "Prometheus-exception_type-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
-        "current": {"selected": false, "text": "", "value": ""},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "label_values(pytest_test_last_failure_info{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, stacktrace)",
         "hide": 2,
         "includeAll": false,
@@ -270,14 +398,21 @@
           "query": "label_values(pytest_test_last_failure_info{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, stacktrace)",
           "refId": "Prometheus-stacktrace-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
-        "current": {"selected": false, "text": [], "value": []},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": false,
+          "text": [],
+          "value": []
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "label_values(pytest_test_last_failure_info{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, trace_id)",
         "hide": 2,
         "includeAll": false,
@@ -289,14 +424,21 @@
           "query": "label_values(pytest_test_last_failure_info{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, trace_id)",
           "refId": "Prometheus-failure_indicator-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
-        "current": {"selected": false, "text": "", "value": ""},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, repository)",
         "hide": 2,
         "includeAll": false,
@@ -308,14 +450,21 @@
           "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, repository)",
           "refId": "Prometheus-repository-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
       {
-        "current": {"selected": false, "text": "", "value": ""},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "query_result(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"})",
         "hide": 2,
         "includeAll": false,
@@ -324,18 +473,21 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"})",
+          "query": "query_result(last_over_time(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}[$__range]))",
           "refId": "Prometheus-gh_run_id-Variable-Query"
         },
         "regex": "/.*run_id=\"([^:\"]+).*/",
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       }
     ]
   },
-  "time": {"from": "now-24h", "to": "now"},
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
   "timezone": "browser",
   "title": "Pytest Test",
   "uid": "pytest-test",

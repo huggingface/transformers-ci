@@ -3,12 +3,20 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
         "name": "Annotations & Alerts",
-        "target": {"limit": 100, "matchAny": false, "tags": [], "type": "dashboard"},
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [],
+          "type": "dashboard"
+        },
         "type": "dashboard"
       }
     ]
@@ -31,30 +39,53 @@
   ],
   "panels": [
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]}
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
       "id": 1,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "value"
       },
       "pluginVersion": "12.0.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_run_total_tests{run_id=~\"$run_id\"}",
+          "expr": "last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[$__range])",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -65,36 +96,58 @@
       "type": "stat"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {"color": "green", "value": null},
-              {"color": "red", "value": 1}
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           }
         },
         "overrides": []
       },
-      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
       "id": 2,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "value"
       },
       "pluginVersion": "12.0.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_run_failed_tests{run_id=~\"$run_id\"}",
+          "expr": "last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[$__range])",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -105,40 +158,65 @@
       "type": "stat"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
           "max": 100,
           "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {"color": "red", "value": null},
-              {"color": "orange", "value": 90},
-              {"color": "green", "value": 99}
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 90
+              },
+              {
+                "color": "green",
+                "value": 99
+              }
             ]
           },
           "unit": "percent"
         },
         "overrides": []
       },
-      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
       "id": 3,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "value"
       },
       "pluginVersion": "12.0.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * (1 - pytest_run_failed_tests{run_id=~\"$run_id\"} / pytest_run_total_tests{run_id=~\"$run_id\"})",
+          "expr": "100 * (1 - last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[$__range]) / last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[$__range]))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -149,31 +227,54 @@
       "type": "stat"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          },
           "unit": "dateTimeFromNow"
         },
         "overrides": []
       },
-      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
       "id": 4,
       "options": {
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "value"
       },
       "pluginVersion": "12.0.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_run_start_time_seconds{run_id=~\"$run_id\"} * 1000",
+          "expr": "last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\"}[$__range]) * 1000",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -184,36 +285,93 @@
       "type": "stat"
     },
     {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": {"mode": "thresholds"},
-          "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
           "mappings": [],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green"}]},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          },
           "unit": "s"
         },
         "overrides": [
           {
-            "matcher": {"id": "byName", "options": "Status"},
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
             "properties": [
               {
                 "id": "mappings",
                 "value": [
-                  {"type": "value", "options": {"ERROR": {"text": "FAIL", "color": "red", "index": 0}}},
-                  {"type": "value", "options": {"OK": {"text": "PASS", "color": "green", "index": 1}}},
-                  {"type": "value", "options": {"UNSET": {"text": "PASS", "color": "green", "index": 2}}}
+                  {
+                    "type": "value",
+                    "options": {
+                      "ERROR": {
+                        "text": "FAIL",
+                        "color": "red",
+                        "index": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "OK": {
+                        "text": "PASS",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "UNSET": {
+                        "text": "PASS",
+                        "color": "green",
+                        "index": 2
+                      }
+                    }
+                  }
                 ]
               },
               {
                 "id": "custom.cellOptions",
-                "value": {"mode": "basic", "type": "color-background"}
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
               },
-              {"id": "unit", "value": "none"}
+              {
+                "id": "unit",
+                "value": "none"
+              }
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Trace"},
+            "matcher": {
+              "id": "byName",
+              "options": "Trace"
+            },
             "properties": [
               {
                 "id": "links",
@@ -228,13 +386,22 @@
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "test_nodeid"},
+            "matcher": {
+              "id": "byName",
+              "options": "test_nodeid"
+            },
             "properties": [
-              {"id": "custom.hidden", "value": true}
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
             ]
           },
           {
-            "matcher": {"id": "byName", "options": "Job"},
+            "matcher": {
+              "id": "byName",
+              "options": "Job"
+            },
             "properties": [
               {
                 "id": "links",
@@ -250,24 +417,48 @@
           }
         ]
       },
-      "gridPos": {"h": 24, "w": 24, "x": 0, "y": 5},
+      "gridPos": {
+        "h": 24,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
       "id": 5,
       "options": {
         "cellHeight": "sm",
-        "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false},
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
         "showHeader": true,
         "sortBy": [
-          {"desc": false, "displayName": "Job"},
-          {"desc": false, "displayName": "Module"},
-          {"desc": false, "displayName": "Class"},
-          {"desc": false, "displayName": "Function"}
+          {
+            "desc": false,
+            "displayName": "Job"
+          },
+          {
+            "desc": false,
+            "displayName": "Module"
+          },
+          {
+            "desc": false,
+            "displayName": "Class"
+          },
+          {
+            "desc": false,
+            "displayName": "Function"
+          }
         ]
       },
       "pluginVersion": "12.0.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "pytest_test_duration_seconds{run_id=~\"$run_id\",status_code=~\"$status_filter\"}",
+          "expr": "last_over_time(pytest_test_duration_seconds{run_id=~\"$run_id\",status_code=~\"$status_filter\"}[$__range])",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -315,24 +506,50 @@
     }
   ],
   "schemaVersion": 41,
-  "tags": ["pytest", "observability", "otel"],
+  "tags": [
+    "pytest",
+    "observability",
+    "otel"
+  ],
   "templating": {
     "list": [
       {
-        "current": {"selected": false, "text": "", "value": ""},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
         "label": "Run ID",
         "name": "run_id",
-        "options": [{"selected": true, "text": "", "value": ""}],
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ],
         "query": "",
         "type": "textbox"
       },
       {
-        "current": {"selected": true, "text": "Failing", "value": "ERROR"},
+        "current": {
+          "selected": true,
+          "text": "Failing",
+          "value": "ERROR"
+        },
         "label": "Show",
         "name": "status_filter",
         "options": [
-          {"selected": true, "text": "Failing", "value": "ERROR"},
-          {"selected": false, "text": "All", "value": ".+"}
+          {
+            "selected": true,
+            "text": "Failing",
+            "value": "ERROR"
+          },
+          {
+            "selected": false,
+            "text": "All",
+            "value": ".+"
+          }
         ],
         "query": "Failing : ERROR,All : .+",
         "type": "custom",
@@ -340,8 +557,15 @@
         "multi": false
       },
       {
-        "current": {"selected": false, "text": "", "value": ""},
-        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "label_values(pytest_run_total_tests{run_id=~\"$run_id\"}, pr)",
         "hide": 2,
         "includeAll": false,
@@ -354,14 +578,17 @@
           "query": "label_values(pytest_run_total_tests{run_id=~\"$run_id\"}, pr)",
           "refId": "Prometheus-pr-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       }
     ]
   },
-  "time": {"from": "now-24h", "to": "now"},
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
   "timezone": "browser",
   "title": "Pytest Observability - Run",
   "uid": "pytest-observability-by-run",
