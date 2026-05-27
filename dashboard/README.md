@@ -4,33 +4,35 @@ This directory is the initial implementation of the Grafana dashboard for pytest
 
 It includes:
 
-- `docker-compose.yml`: Grafana, Jaeger, OpenSearch, Prometheus, and the OTEL collector
-- `jaeger.yaml`: Jaeger v2 config — OTLP receivers and OpenSearch storage backend
-- `otelcol.yaml`: OTLP receiver and Jaeger exporter config
+- `docker-compose.yml`: Grafana, Tempo, and Prometheus
+- `tempo.yaml`: Tempo config — OTLP receivers and local trace storage backend
 - `prometheus.yml`: scrape config for the trace exporter
-- `grafana-datasources.yaml`: provisioned Jaeger and Prometheus data sources
+- `grafana-datasources.yaml`: provisioned Tempo and Prometheus data sources
 - `grafana-dashboard.yaml`: dashboard provisioning
 - `pytest-observability-dashboard.json`: overview dashboard
 - `pytest-observability-job-dashboard.json`: per-job drill-down
-- `pytest-test-dashboard.json`: per-test view (metadata + stacktrace when failed)
+- `pytest-test-dashboard.json`: per-test view (metadata + embedded Tempo trace view when failed)
 - `data/`: shared local data directory for resource metrics
 
 ## Architecture
 
-Trace storage is backed by an external OpenSearch service, not Jaeger's
-embedded Badger store. The flow is:
+Traces are ingested and stored by a single Grafana Tempo service (no separate
+OTEL collector and no external trace database). The flow is:
 
 ```
 test/job instrumentation
-  -> otelcol           (host ports 5317 gRPC / 5318 HTTP)
-  -> jaeger (v2 OTLP)  (internal 4317)
-  -> opensearch        (internal 9200, persisted to opensearch-data volume)
-  -> jaeger query/UI   (host port 16687, internal 16686)
-  -> Grafana           (host port 3000)
+  -> tempo (OTLP receiver)   (host ports 5317 gRPC / 5318 HTTP -> internal 4317/4318)
+  -> tempo local storage     (internal, persisted to the tempo-data volume)
+  -> tempo query API         (host port 3200)
+  -> pytest-trace-exporter   (polls /api/search + /api/traces, exports Prometheus metrics)
+  -> Grafana                 (host port 3000; Tempo datasource for trace views)
 ```
 
-Image versions are pinned. Trace data survives a `jaeger` container restart
-because it lives in the `opensearch-data` named volume.
+The host-facing OTLP endpoints (5317 gRPC / 5318 HTTP) are unchanged from the
+previous otelcol-fronted setup, so emitters need no reconfiguration.
+
+Image versions are pinned. Trace data survives a `tempo` container restart
+because it lives in the `tempo-data` named volume.
 
 ## Start The Stack
 
@@ -50,9 +52,9 @@ docker compose -f dashboard/docker-compose.yml down
 
 - Grafana: `http://localhost:3000`
 - Prometheus: `http://localhost:9091`
-- Jaeger: `http://localhost:16687`
-- OTLP gRPC collector endpoint: `http://localhost:5317`
-- OTLP HTTP collector endpoint: `http://localhost:5318`
+- Tempo API: `http://localhost:3200`
+- OTLP gRPC endpoint: `http://localhost:5317`
+- OTLP HTTP endpoint: `http://localhost:5318`
 
 ## Run One Traced Pytest Job
 
@@ -102,59 +104,60 @@ The PR dashboard can enrich its top panel from the GitHub API. For higher rate
 limits, export `PYTEST_GITHUB_TOKEN` before starting the stack. Optional knobs:
 `PYTEST_GITHUB_API_URL` and `PYTEST_TRACE_EXPORTER_GITHUB_CACHE_SECONDS`.
 
-## Jaeger
+## Tempo
 
-- `http://localhost:16687`
+- API: `http://localhost:3200`
 
-Useful tags:
+Browse traces through Grafana's **Explore** view (Tempo datasource) rather than
+a standalone UI. Useful resource/span attributes to search on:
 
 - `transformers.test.run.id`
 - `transformers.test.job`
 - `transformers.test.job.run`
 - `vcs.change.id`
 
+A failing test's trace is one click away: the per-test dashboard embeds a Tempo
+trace view and links to the full waterfall in Explore.
+
 ## Validate The Stack
 
 After `docker compose -f dashboard/docker-compose.yml up -d`:
 
 ```sh
-# OpenSearch healthy (status green or yellow):
-curl -s http://localhost:9200/_cluster/health | jq .
+# Tempo ready:
+curl -fsS http://localhost:3200/ready   # expect: ready
 
-# Jaeger UI reachable:
-curl -fI http://localhost:16687/ | head -1   # expect HTTP/1.1 200
-
-# Send a test trace (uses the same otelcol path tests use):
+# Send a test trace (uses the same OTLP host ports tests use):
 ./dashboard/sample-run.sh
 
-# Confirm a Jaeger index was created in OpenSearch:
-curl -s http://localhost:9200/_cat/indices/jaeger-main-*?v
+# Confirm Tempo has the demo service after ingest (TraceQL search):
+curl -s "http://localhost:3200/api/search?q=%7B%20resource.service.name%3D%22pytest-observability-demo%22%20%7D&limit=5" | jq '.traces | length'
 
-# Confirm the pytest trace exporter can query Jaeger:
+# Confirm the pytest trace exporter can query Tempo:
 docker compose -f dashboard/docker-compose.yml logs pytest-trace-exporter | tail
 ```
 
-To verify persistence, restart Jaeger and confirm old traces are still queryable:
+To verify persistence, restart Tempo and confirm old traces are still queryable:
 
 ```sh
-docker compose -f dashboard/docker-compose.yml restart jaeger
-# wait ~10s, then re-open the Jaeger UI; previously ingested traces are still listed.
+docker compose -f dashboard/docker-compose.yml restart tempo
+# wait ~15s for /ready, then re-run the TraceQL search above; previously
+# ingested traces are still returned because they live in the tempo-data volume.
 ```
 
 ## Rollback
 
-The previous setup used `jaegertracing/all-in-one` with a Badger volume.
-To roll back without redeploying from scratch:
+The previous setup used Jaeger v2 + OpenSearch. To roll back without
+redeploying from scratch:
 
-1. `git revert` the OpenSearch migration commit (or check out the pre-migration
-   `docker-compose.yml` and delete `jaeger.yaml`).
+1. `git revert` the Tempo migration commit (or check out the pre-migration
+   `docker-compose.yml` and restore `jaeger.yaml` / `otelcol.yaml`).
 2. `docker compose -f dashboard/docker-compose.yml up -d`. The previous
-   `jaeger-data` volume, if it still exists on the host, is reattached and any
-   spans it held become queryable again.
-3. The `opensearch-data` volume is left in place and can be removed with
-   `docker volume rm dashboard_opensearch-data` once rollback is confirmed
-   stable.
+   `opensearch-data` volume, if it still exists on the host, is reattached and
+   any spans it held become queryable again.
+3. The `tempo-data` volume is left in place and can be removed with
+   `docker volume rm dashboard_tempo-data` once rollback is confirmed stable.
 
-Note that the two backends do **not** share data — traces written to OpenSearch
-are not migrated back into Badger on rollback. Treat the rollback as a fresh
-window of trace history.
+Note that the two backends do **not** share data — traces written to Tempo are
+not migrated into OpenSearch on rollback. Treat the rollback as a fresh window
+of trace history.

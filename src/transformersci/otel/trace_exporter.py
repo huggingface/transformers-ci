@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -9,11 +10,11 @@ from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from math import fsum
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
 
-DEFAULT_JAEGER_URL = "http://jaeger:16686"
+DEFAULT_TEMPO_URL = "http://tempo:3200"
 DEFAULT_LIMIT = 200
 DEFAULT_LOOKBACK = "1h"
 DEFAULT_PORT = 8000
@@ -22,6 +23,11 @@ DEFAULT_SERVICE_NAME = "pytest-observability-demo"
 DEFAULT_CACHE_SECONDS = 10.0
 DEFAULT_GITHUB_API_URL = "https://api.github.com"
 DEFAULT_GITHUB_CACHE_SECONDS = 300.0
+# A completed CI trace is immutable, so once it is this many seconds old we
+# parse it once and memoize the result instead of re-fetching it from Tempo on
+# every scrape. Younger traces may still be receiving spans, so they are left
+# uncached and refreshed each cycle.
+DEFAULT_TRACE_SETTLE_SECONDS = 120.0
 
 
 def env_int(name: str, default: int) -> int:
@@ -66,6 +72,102 @@ def extract_exception_info(span: dict) -> tuple[str, str]:
     return "", ""
 
 
+def extract_failure_details(trace: dict, test_nodeid: str = "") -> list[dict[str, str]]:
+    """Pull full (untruncated) exception info for failing test spans in a trace.
+
+    Unlike ``extract_exception_info`` (which feeds metrics and caps the
+    stacktrace), this returns the complete ``exception.message`` and
+    ``exception.stacktrace`` for the ``/failure`` traceback page. Optionally
+    filtered to a single ``test_nodeid``.
+    """
+    details: list[dict[str, str]] = []
+    spans = trace.get("spans", [])
+    if not isinstance(spans, list):
+        return details
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        tags = tag_map(span.get("tags", []))
+        if tags.get("pytest.span_type") != "test":
+            continue
+        nodeid = tags.get("pytest.nodeid") or str(span.get("operationName", ""))
+        if test_nodeid and nodeid != test_nodeid:
+            continue
+        logs = span.get("logs", [])
+        fields: dict[str, str] = {}
+        for log in logs if isinstance(logs, list) else []:
+            if isinstance(log, dict):
+                candidate = tag_map(log.get("fields", []))
+                if candidate.get("event") == "exception":
+                    fields = candidate
+                    break
+        if not fields:
+            continue
+        details.append(
+            {
+                "test_nodeid": nodeid,
+                "exception_type": fields.get("exception.type", ""),
+                "exception_message": fields.get("exception.message", ""),
+                "exception_stacktrace": fields.get("exception.stacktrace", ""),
+            }
+        )
+    return details
+
+
+def render_failure_html(trace_id: str, details: list[dict[str, str]]) -> str:
+    """Render a self-contained, dark-themed HTML page for a trace's failures.
+
+    Pytest exception messages and tracebacks are multi-line and render as an
+    unreadable wall in Tempo's span-event view. This serves them in monospace
+    ``<pre>`` blocks with preserved line breaks instead.
+    """
+    esc = html.escape
+    out = [
+        "<!doctype html><html><head><meta charset='utf-8'>",
+        f"<title>Traceback {esc(trace_id)}</title>",
+        "<style>"
+        "body{margin:0;padding:14px;background:#0b0c0e;color:#d8d9da;"
+        "font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}"
+        "h2{margin:0 0 2px;font:600 14px system-ui,sans-serif;color:#f2cc60}"
+        ".nodeid{margin:0 0 10px;color:#8e9197;font:12px system-ui,sans-serif}"
+        ".nodeid a{color:#6ab0ff;text-decoration:none}"
+        ".nodeid a:hover{text-decoration:underline}"
+        ".label{margin:14px 0 4px;color:#8e9197;font:600 11px system-ui,sans-serif;"
+        "text-transform:uppercase;letter-spacing:.05em}"
+        "pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#141619;"
+        "border:1px solid #24262b;border-radius:6px;padding:12px;overflow:auto}"
+        ".msg{color:#ff8a80}"
+        "</style></head><body>",
+    ]
+    if not details:
+        out.append("<p style='color:#8e9197;font-family:system-ui'>")
+        out.append(
+            "No failing test span found for this trace."
+            if trace_id
+            else "No trace selected."
+        )
+        out.append("</p>")
+    for detail in details:
+        out.append(f"<h2>{esc(detail['exception_type'] or 'Failure')}</h2>")
+        github_url = detail.get("github_url", "")
+        if github_url:
+            nodeid_html = (
+                f'<a href="{esc(github_url)}" target="_blank" rel="noopener">'
+                f"{esc(detail['test_nodeid'])} ↗</a>"
+            )
+        else:
+            nodeid_html = esc(detail["test_nodeid"])
+        out.append(f"<div class='nodeid'>{nodeid_html}</div>")
+        if detail["exception_message"]:
+            out.append("<div class='label'>Message</div>")
+            out.append(f"<pre class='msg'>{esc(detail['exception_message'])}</pre>")
+        if detail["exception_stacktrace"]:
+            out.append("<div class='label'>Traceback</div>")
+            out.append(f"<pre>{esc(detail['exception_stacktrace'])}</pre>")
+    out.append("</body></html>")
+    return "".join(out)
+
+
 def extract_test_line(stacktrace: str, test_nodeid: str) -> str:
     """Pull the first source line in *stacktrace* that points at the test file.
 
@@ -80,6 +182,52 @@ def extract_test_line(stacktrace: str, test_nodeid: str) -> str:
         return ""
     match = re.search(rf"{re.escape(test_file)}:(\d+)", stacktrace)
     return match.group(1) if match else ""
+
+
+def github_test_url(
+    repository: str, ref: str, test_nodeid: str, stacktrace: str
+) -> str:
+    """Build a GitHub blob link to the failing test's file and line.
+
+    ``ref`` should be the PR head commit SHA when known (so line numbers match
+    the code that actually ran), falling back to ``main``. The line is pulled
+    from the traceback via :func:`extract_test_line`.
+    """
+    test_file = test_nodeid.split("::", 1)[0]
+    if not repository or not test_file:
+        return ""
+    url = f"https://github.com/{repository}/blob/{ref or 'main'}/{test_file}"
+    line = extract_test_line(stacktrace, test_nodeid)
+    if line:
+        url += f"#L{line}"
+    return url
+
+
+def annotate_github_links(
+    trace: dict,
+    details: list[dict[str, str]],
+    *,
+    _metadata_fetcher: Callable[[str, str], dict[str, str]] | None = None,
+) -> None:
+    """Add a ``github_url`` to each failure detail pointing at the test file/line.
+
+    Resolves the repository from the trace's resource tags and the PR head
+    commit SHA via the GitHub API (cached) so the linked line matches the code
+    that ran; falls back to the ``main`` branch when there is no numeric PR.
+    """
+    trace_info, _ = extract_trace_rows(trace)
+    repository = str(trace_info.get("repository") or "")
+    if not repository:
+        repository = repository_from_pr_url(str(trace_info.get("pr_url") or ""))
+    pr = str(trace_info.get("pr") or "none")
+    ref = "main"
+    if repository and pr.isdigit():
+        fetcher = _metadata_fetcher or fetch_github_pr_info_cached
+        ref = fetcher(repository, pr).get("commit_sha") or "main"
+    for detail in details:
+        detail["github_url"] = github_test_url(
+            repository, ref, detail["test_nodeid"], detail["exception_stacktrace"]
+        )
 
 
 def split_pytest_nodeid(nodeid: str) -> dict[str, str]:
@@ -113,21 +261,240 @@ def trace_start_time(trace: dict) -> int:
     )
 
 
-def fetch_traces() -> list[dict]:
-    base_url = os.getenv("PYTEST_TRACE_EXPORTER_JAEGER_URL", DEFAULT_JAEGER_URL).rstrip(
-        "/"
+def tempo_base_url() -> str:
+    # PYTEST_TRACE_EXPORTER_JAEGER_URL is accepted as a deprecated alias so an
+    # existing deployment's env keeps working through the Tempo cutover.
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_TEMPO_URL") or os.getenv(
+        "PYTEST_TRACE_EXPORTER_JAEGER_URL", DEFAULT_TEMPO_URL
     )
+    return raw.rstrip("/")
+
+
+_LOOKBACK_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def parse_lookback_seconds(lookback: str, default: str = DEFAULT_LOOKBACK) -> int:
+    """Convert a Go-style duration like ``1h``/``30m``/``2d`` to seconds.
+
+    Tempo's search API wants an absolute ``start``/``end`` window in unix
+    seconds, whereas the old Jaeger query took a relative ``lookback`` string;
+    this bridges the two so the exporter keeps the same env knob.
+    """
+    for candidate in (lookback, default):
+        text = (candidate or "").strip().lower()
+        match = re.fullmatch(r"(\d+)([smhd])", text)
+        if match:
+            return int(match.group(1)) * _LOOKBACK_UNIT_SECONDS[match.group(2)]
+    return 3600
+
+
+def _otlp_scalar(value: object) -> str:
+    """Flatten an OTLP ``AnyValue`` JSON object down to a string.
+
+    OTLP attribute values are tagged unions (``{"stringValue": ...}``,
+    ``{"intValue": "5"}``, ...). Jaeger flattened these to plain strings, which
+    is the shape ``tag_map`` and the rest of the exporter already expect.
+    """
+    if not isinstance(value, dict):
+        return str(value)
+    for key in ("stringValue", "intValue", "doubleValue"):
+        if key in value:
+            return str(value[key])
+    if "boolValue" in value:
+        return "true" if value["boolValue"] else "false"
+    if "arrayValue" in value:
+        items = value["arrayValue"].get("values", [])
+        return ",".join(_otlp_scalar(item) for item in items)
+    return ""
+
+
+def otlp_attributes_to_tags(attributes: object) -> list[dict[str, str]]:
+    tags: list[dict[str, str]] = []
+    if not isinstance(attributes, list):
+        return tags
+    for attribute in attributes:
+        if not isinstance(attribute, dict):
+            continue
+        key = attribute.get("key")
+        if isinstance(key, str):
+            tags.append({"key": key, "value": _otlp_scalar(attribute.get("value"))})
+    return tags
+
+
+_OTLP_STATUS_CODE = {
+    0: "UNSET",
+    1: "OK",
+    2: "ERROR",
+    "STATUS_CODE_UNSET": "UNSET",
+    "STATUS_CODE_OK": "OK",
+    "STATUS_CODE_ERROR": "ERROR",
+}
+
+
+def tempo_trace_to_jaeger(trace_id: str, payload: dict) -> dict:
+    """Adapt Tempo's OTLP-JSON trace into the Jaeger-shaped dict the rest of
+    the exporter already knows how to aggregate.
+
+    Tempo returns ``{"batches": [ResourceSpans, ...]}``. Each batch carries a
+    ``resource`` (→ a Jaeger *process*) and ``scopeSpans``/``spans``. We map
+    span attributes to Jaeger ``tags``, synthesize the ``otel.status_code`` tag
+    from the OTLP ``status`` enum, and turn span ``events`` into Jaeger
+    ``logs`` so ``extract_exception_info`` keeps working unchanged.
+    """
+    batches = payload.get("batches")
+    if not isinstance(batches, list):
+        batches = payload.get("resourceSpans", [])
+    processes: dict[str, dict] = {}
+    spans: list[dict] = []
+
+    for index, batch in enumerate(batches if isinstance(batches, list) else []):
+        if not isinstance(batch, dict):
+            continue
+        process_id = f"p{index}"
+        resource = batch.get("resource", {})
+        resource_attrs = (
+            resource.get("attributes", []) if isinstance(resource, dict) else []
+        )
+        resource_tags = otlp_attributes_to_tags(resource_attrs)
+        service_name = next(
+            (tag["value"] for tag in resource_tags if tag["key"] == "service.name"),
+            "unknown",
+        )
+        processes[process_id] = {"serviceName": service_name, "tags": resource_tags}
+
+        scope_spans = batch.get("scopeSpans")
+        if not isinstance(scope_spans, list):
+            scope_spans = batch.get("instrumentationLibrarySpans", [])
+        for scope_span in scope_spans if isinstance(scope_spans, list) else []:
+            if not isinstance(scope_span, dict):
+                continue
+            for span in scope_span.get("spans", []):
+                if not isinstance(span, dict):
+                    continue
+                start_nano = int(span.get("startTimeUnixNano", 0) or 0)
+                end_nano = int(span.get("endTimeUnixNano", 0) or 0)
+                tags = otlp_attributes_to_tags(span.get("attributes"))
+                if not any(tag["key"] == "otel.status_code" for tag in tags):
+                    status = span.get("status", {})
+                    code = status.get("code") if isinstance(status, dict) else None
+                    tags.append(
+                        {
+                            "key": "otel.status_code",
+                            "value": _OTLP_STATUS_CODE.get(code, "UNSET"),
+                        }
+                    )
+                logs = []
+                for event in span.get("events", []) or []:
+                    if not isinstance(event, dict):
+                        continue
+                    fields = [{"key": "event", "value": str(event.get("name", ""))}]
+                    fields.extend(otlp_attributes_to_tags(event.get("attributes")))
+                    logs.append({"fields": fields})
+                spans.append(
+                    {
+                        "duration": max(0, end_nano - start_nano) // 1000,
+                        "logs": logs,
+                        "operationName": span.get("name", ""),
+                        "processID": process_id,
+                        "startTime": start_nano // 1000,
+                        "tags": tags,
+                    }
+                )
+
+    return {"processes": processes, "spans": spans, "traceID": trace_id}
+
+
+def _http_get_json(url: str, timeout: float = 5.0) -> object:
+    with urlopen(url, timeout=timeout) as response:
+        return json.load(response)
+
+
+def search_trace_ids(
+    base_url: str, service_name: str, start: int, end: int, limit: int
+) -> list[str]:
+    traceql = quote(f'{{ resource.service.name = "{service_name}" }}', safe="")
+    search_url = (
+        f"{base_url}/api/search?q={traceql}&start={start}&end={end}&limit={limit}"
+    )
+    payload = _http_get_json(search_url)
+    if not isinstance(payload, dict):
+        return []
+    found = payload.get("traces", [])
+    if not isinstance(found, list):
+        return []
+    trace_ids: list[str] = []
+    for entry in found:
+        if isinstance(entry, dict):
+            trace_id = entry.get("traceID")
+            if isinstance(trace_id, str) and trace_id:
+                trace_ids.append(trace_id)
+    return trace_ids
+
+
+_trace_cache_lock = threading.Lock()
+_trace_cache: dict[str, dict] = {}
+
+
+def _trace_settle_seconds() -> float:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_TRACE_SETTLE_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return DEFAULT_TRACE_SETTLE_SECONDS
+
+
+def get_trace(trace_id: str, base_url: str | None = None) -> dict | None:
+    """Return one trace in the Jaeger-shaped dict, fetching from Tempo if needed.
+
+    Completed traces are immutable, so once one is old enough to have settled it
+    is memoized by ``trace_id`` and never re-fetched. Used both by the scrape
+    loop (``fetch_traces``) and the ``/failure`` traceback view.
+    """
+    with _trace_cache_lock:
+        cached = _trace_cache.get(trace_id)
+    if cached is not None:
+        return cached
+
+    if base_url is None:
+        base_url = tempo_base_url()
+    try:
+        payload = _http_get_json(f"{base_url}/api/traces/{quote(trace_id, safe='')}")
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    trace = tempo_trace_to_jaeger(trace_id, payload)
+    # Only memoize traces old enough to be definitely complete, so an in-flight
+    # CI run still picks up its later spans on the next scrape.
+    latest_micros = trace_start_time(trace)
+    if (
+        latest_micros
+        and time.time() - (latest_micros / 1_000_000) > _trace_settle_seconds()
+    ):
+        with _trace_cache_lock:
+            _trace_cache[trace_id] = trace
+    return trace
+
+
+def fetch_traces() -> list[dict]:
+    base_url = tempo_base_url()
     limit = env_int("PYTEST_TRACE_EXPORTER_LIMIT", DEFAULT_LIMIT)
     lookback = os.getenv("PYTEST_TRACE_EXPORTER_LOOKBACK", DEFAULT_LOOKBACK)
     service_name = os.getenv("PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME)
-    search_url = f"{base_url}/api/traces?service={quote(service_name)}&limit={limit}&lookback={quote(lookback)}"
-    with urlopen(search_url, timeout=5) as response:
-        payload = json.load(response)
 
-    traces = payload.get("data", [])
-    if not isinstance(traces, list):
-        return []
-    return [trace for trace in traces if isinstance(trace, dict)]
+    end = int(time.time())
+    start = end - parse_lookback_seconds(lookback)
+    trace_ids = search_trace_ids(base_url, service_name, start, end, limit)
+
+    traces: list[dict] = []
+    for trace_id in trace_ids:
+        trace = get_trace(trace_id, base_url)
+        if trace is not None:
+            traces.append(trace)
+    return traces
 
 
 def fetch_resource_records() -> list[dict[str, str | float | int]]:
@@ -540,7 +907,11 @@ def extract_pr_last_failure_metrics(
                         "test_nodeid": str(row["test_nodeid"]),
                         "exception_type": str(row.get("exception_type", ""))
                         or "unknown",
-                        "stacktrace": str(row.get("exception_stacktrace", "")),
+                        # The stacktrace itself is intentionally NOT a label —
+                        # it lives in the trace in Tempo, which the dashboard
+                        # links to by trace_id. Baking ≤4000-char stacktraces
+                        # into labels exploded TSDB cardinality on every code
+                        # edit (and caused the group_left 422s).
                         "trace_id": str(row["trace_id"]),
                     },
                 )
@@ -833,7 +1204,6 @@ def extract_average_metrics(
                     "last_failure_start_time": 0,
                     "last_failure_trace_id": "",
                     "last_failure_exception_type": "",
-                    "last_failure_stacktrace": "",
                     "test_class": str(row["test_class"]),
                     "test_function": str(row["test_function"]),
                     "test_module": str(row["test_module"]),
@@ -846,9 +1216,6 @@ def extract_average_metrics(
                     aggregates[key]["last_failure_trace_id"] = trace_id
                     aggregates[key]["last_failure_exception_type"] = (
                         str(row.get("exception_type", "")) or "unknown"
-                    )
-                    aggregates[key]["last_failure_stacktrace"] = str(
-                        row.get("exception_stacktrace", "")
                     )
 
     for (service_name, test_job, pr, provider, test_nodeid), aggregate in sorted(
@@ -879,7 +1246,8 @@ def extract_average_metrics(
             pointer_labels["exception_type"] = str(
                 aggregate["last_failure_exception_type"]
             )
-            pointer_labels["stacktrace"] = str(aggregate["last_failure_stacktrace"])
+            # No stacktrace label here either — the trace_id pointer is enough
+            # for the dashboard to deep-link into the Tempo trace view.
             lines.append(
                 f"pytest_test_last_failure_info{metric_labels(pointer_labels)} 1"
             )
@@ -978,7 +1346,7 @@ def _render_metrics_uncached() -> str:
         resource_records = fetch_resource_records()
     except Exception as error:
         return (
-            "# HELP pytest_trace_exporter_up Whether the exporter could query Jaeger.\n"
+            "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.\n"
             "# TYPE pytest_trace_exporter_up gauge\n"
             "pytest_trace_exporter_up 0\n"
             "# HELP pytest_trace_exporter_last_error Last exporter error.\n"
@@ -988,7 +1356,7 @@ def _render_metrics_uncached() -> str:
 
     if not traces:
         return (
-            "# HELP pytest_trace_exporter_up Whether the exporter could query Jaeger.\n"
+            "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.\n"
             "# TYPE pytest_trace_exporter_up gauge\n"
             "pytest_trace_exporter_up 1\n"
         )
@@ -996,10 +1364,10 @@ def _render_metrics_uncached() -> str:
     extracted = _precompute_trace_rows(traces)
 
     rendered = [
-        "# HELP pytest_trace_exporter_up Whether the exporter could query Jaeger.",
+        "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.",
         "# TYPE pytest_trace_exporter_up gauge",
         "pytest_trace_exporter_up 1",
-        "# HELP pytest_trace_exporter_trace_count Number of traces fetched from Jaeger for aggregation.",
+        "# HELP pytest_trace_exporter_trace_count Number of traces fetched from Tempo for aggregation.",
         "# TYPE pytest_trace_exporter_trace_count gauge",
         f"pytest_trace_exporter_trace_count {len(traces)}",
     ]
@@ -1045,14 +1413,36 @@ def render_metrics() -> str:
 
 class MetricsHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
-        if self.path not in {"/metrics", "/"}:
-            self.send_response(404)
-            self.end_headers()
+        parsed = urlparse(self.path)
+        if parsed.path == "/failure":
+            self._serve_failure(parse_qs(parsed.query))
             return
+        if parsed.path in {"/metrics", "/"}:
+            self._send(
+                200,
+                "text/plain; version=0.0.4; charset=utf-8",
+                render_metrics().encode("utf-8"),
+            )
+            return
+        self.send_response(404)
+        self.end_headers()
 
-        payload = render_metrics().encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+    def _serve_failure(self, params: dict[str, list[str]]) -> None:
+        trace_id = (params.get("trace_id") or [""])[0].strip()
+        test_nodeid = (params.get("test_nodeid") or [""])[0].strip()
+        trace = get_trace(trace_id) if trace_id else None
+        details = extract_failure_details(trace, test_nodeid) if trace else []
+        if trace and details:
+            annotate_github_links(trace, details)
+        self._send(
+            200,
+            "text/html; charset=utf-8",
+            render_failure_html(trace_id, details).encode("utf-8"),
+        )
+
+    def _send(self, status: int, content_type: str, payload: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)

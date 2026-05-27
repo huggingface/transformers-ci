@@ -13,7 +13,7 @@ The main pieces are:
 
 - `transformersci.otel.cli`: configures OTEL env vars and launches pytest
 - `transformersci.otel.resource_plugin`: optional per-test CPU, RSS, and CUDA memory sampling
-- `transformersci.otel.trace_exporter`: converts recent Jaeger traces into Prometheus metrics
+- `transformersci.otel.trace_exporter`: converts recent Tempo traces into Prometheus metrics
 
 ## CLI Entry Points
 

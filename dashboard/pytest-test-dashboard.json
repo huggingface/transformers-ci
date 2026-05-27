@@ -41,7 +41,7 @@
       },
       "id": 1,
       "options": {
-        "content": "### `${test_function:raw}`\n\n`${test_nodeid:raw}`\n\n**Module:** `${test_module:raw}` | **Class:** `${test_class:raw}` | **Status:** `${status_code:raw}`\n\n**Job:** [${test_job:raw}](/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${run_id:raw}&var-pr=${pr:raw}) | **Run:** [${run_id:raw}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id:raw}) | **PR:** [${pr:raw}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr:raw}) | <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"14\" height=\"14\" alt=\"GH\"/> [Full logs](https://github.com/${repository:raw}/actions/runs/${gh_run_id:raw}) | [Open trace in Jaeger](/explore?schemaVersion=1&orgId=1&panes=%7B%22jg%22:%7B%22datasource%22:%22jaeger%22,%22queries%22:%5B%7B%22query%22:%22${trace_id:raw}%22,%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22jaeger%22,%22uid%22:%22jaeger%22%7D%7D%5D,%22range%22:%7B%22from%22:%22now-24h%22,%22to%22:%22now%22%7D%7D%7D)\n\n<sub>\ud83d\udca1 The stacktrace below is only retained for the **most recent** failure per test. For older runs, the panel is empty \u2014 click **Open trace in Jaeger** to see the full traceback.</sub>",
+        "content": "### `${test_function:raw}`\n\n`${test_nodeid:raw}`\n\n**Module:** `${test_module:raw}` | **Class:** `${test_class:raw}` | **Status:** `${status_code:raw}`\n\n**Job:** [${test_job:raw}](/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${run_id:raw}&var-pr=${pr:raw}) | **Run:** [${run_id:raw}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id:raw}) | **PR:** [${pr:raw}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr:raw}) | <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"14\" height=\"14\" alt=\"GH\"/> [Full logs](https://github.com/${repository:raw}/actions/runs/${gh_run_id:raw}) | [Open trace in Tempo](/explore?schemaVersion=1&orgId=1&panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22query%22:%22${trace_id:raw}%22,%22queryType%22:%22traceql%22,%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22tempo%22,%22uid%22:%22tempo%22%7D%7D%5D,%22range%22:%7B%22from%22:%22now-24h%22,%22to%22:%22now%22%7D%7D%7D)\n\n<sub>The panel below shows this failure's exception message and full traceback in readable monospace, served by the trace exporter. Use <b>Open trace in Tempo</b> for the span waterfall / timing.</sub>",
         "mode": "markdown"
       },
       "pluginVersion": "12.0.0",
@@ -114,15 +114,15 @@
         "y": 5
       },
       "id": 3,
-      "options": {
-        "content": "```python\n${stacktrace:raw}\n```",
-        "mode": "markdown"
-      },
       "pluginVersion": "12.0.0",
       "repeat": "failure_indicator",
       "repeatDirection": "v",
       "title": "${exception_type:raw}",
-      "type": "text"
+      "type": "text",
+      "options": {
+        "mode": "html",
+        "content": "<iframe title=\"traceback\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var t=encodeURIComponent('${trace_id}');var n='${test_nodeid}';var u=parent.location.protocol+'//'+parent.location.hostname+':8000/failure?trace_id='+t;if(n){u+='&test_nodeid='+encodeURIComponent(n);}location.replace(u);</script>\"></iframe>"
+      }
     }
   ],
   "schemaVersion": 41,
@@ -371,32 +371,6 @@
           "qryType": 1,
           "query": "label_values(pytest_test_last_failure_info{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, exception_type)",
           "refId": "Prometheus-exception_type-Variable-Query"
-        },
-        "refresh": 2,
-        "skipUrlSync": true,
-        "sort": 0,
-        "type": "query"
-      },
-      {
-        "current": {
-          "selected": false,
-          "text": "",
-          "value": ""
-        },
-        "datasource": {
-          "type": "prometheus",
-          "uid": "prometheus"
-        },
-        "definition": "label_values(pytest_test_last_failure_info{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, stacktrace)",
-        "hide": 2,
-        "includeAll": false,
-        "multi": false,
-        "name": "stacktrace",
-        "options": [],
-        "query": {
-          "qryType": 1,
-          "query": "label_values(pytest_test_last_failure_info{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\"}, stacktrace)",
-          "refId": "Prometheus-stacktrace-Variable-Query"
         },
         "refresh": 2,
         "skipUrlSync": true,

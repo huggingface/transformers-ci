@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from unittest.mock import patch
 
 from transformersci.otel import trace_exporter
@@ -406,3 +407,383 @@ def test_extract_pr_info_metrics_prefers_repository_backed_trace() -> None:
         'html_url="https://github.com/huggingface/transformers/pull/45983"'
         in info_lines[0]
     )
+
+
+# ---------------------------------------------------------------------------
+# Tempo client + OTLP-shape adapter
+# ---------------------------------------------------------------------------
+
+
+def otlp_attr(key: str, value: str) -> dict:
+    return {"key": key, "value": {"stringValue": value}}
+
+
+def make_otlp_trace(
+    *,
+    nodeid: str,
+    start_nano: int,
+    end_nano: int,
+    status_code: str = "STATUS_CODE_UNSET",
+    exception_type: str | None = None,
+    service_name: str = "pytest-observability-demo",
+) -> dict:
+    """Build a Tempo /api/traces/<id> payload (OTLP JSON) for one test span."""
+    events = []
+    if exception_type is not None:
+        events.append(
+            {
+                "name": "exception",
+                "attributes": [
+                    otlp_attr("exception.type", exception_type),
+                    otlp_attr("exception.stacktrace", f"Traceback for {nodeid}"),
+                ],
+            }
+        )
+    return {
+        "batches": [
+            {
+                "resource": {
+                    "attributes": [
+                        otlp_attr("service.name", service_name),
+                        otlp_attr("transformers.test.run.id", "run-1"),
+                        otlp_attr("transformers.test.job", "tests_torch"),
+                        otlp_attr("transformers.test.provider", "github_actions"),
+                        otlp_attr("vcs.change.id", "4321"),
+                        otlp_attr(
+                            "vcs.change.url",
+                            "https://github.com/huggingface/transformers/pull/4321",
+                        ),
+                        otlp_attr("vcs.repository.name", "huggingface/transformers"),
+                    ]
+                },
+                "scopeSpans": [
+                    {
+                        "spans": [
+                            {
+                                "name": nodeid,
+                                "startTimeUnixNano": str(start_nano),
+                                "endTimeUnixNano": str(end_nano),
+                                "status": {"code": status_code},
+                                "attributes": [
+                                    otlp_attr("pytest.nodeid", nodeid),
+                                    otlp_attr("pytest.span_type", "test"),
+                                ],
+                                "events": events,
+                            }
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_parse_lookback_seconds_handles_units() -> None:
+    assert trace_exporter.parse_lookback_seconds("1h") == 3600
+    assert trace_exporter.parse_lookback_seconds("30m") == 1800
+    assert trace_exporter.parse_lookback_seconds("45s") == 45
+    assert trace_exporter.parse_lookback_seconds("2d") == 172800
+    # Falls back to the default (1h) for unparseable input.
+    assert trace_exporter.parse_lookback_seconds("garbage") == 3600
+
+
+def test_tempo_trace_to_jaeger_maps_spans_status_and_events() -> None:
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_fail",
+        start_nano=4_000_000_000,  # 4_000_000 micros
+        end_nano=5_000_000_000,  # duration 1_000_000 micros
+        status_code="STATUS_CODE_ERROR",
+        exception_type="AssertionError",
+    )
+    trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
+
+    assert trace["traceID"] == "trace-torch"
+    assert len(trace["spans"]) == 1
+    span = trace["spans"][0]
+    assert span["operationName"] == "tests/test_torch.py::TestTorch::test_fail"
+    assert span["startTime"] == 4_000_000
+    assert span["duration"] == 1_000_000
+
+    span_tags = trace_exporter.tag_map(span["tags"])
+    # status.code (no explicit otel.status_code attr) is synthesized into a tag.
+    assert span_tags["otel.status_code"] == "ERROR"
+    assert span_tags["pytest.span_type"] == "test"
+
+    # The exception event becomes a Jaeger-style log that extract_exception_info reads.
+    exc_type, stacktrace = trace_exporter.extract_exception_info(span)
+    assert exc_type == "AssertionError"
+    assert "Traceback for" in stacktrace
+
+    process = trace["processes"][span["processID"]]
+    assert process["serviceName"] == "pytest-observability-demo"
+    process_tags = trace_exporter.tag_map(process["tags"])
+    assert process_tags["transformers.test.run.id"] == "run-1"
+    assert process_tags["vcs.change.id"] == "4321"
+
+
+def test_adapted_tempo_trace_flows_through_extract_trace_rows() -> None:
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_fail",
+        start_nano=4_000_000_000,
+        end_nano=5_000_000_000,
+        status_code="STATUS_CODE_ERROR",
+        exception_type="AssertionError",
+    )
+    trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
+    trace_info, rows = trace_exporter.extract_trace_rows(trace)
+
+    assert trace_info["run_id"] == "run-1"
+    assert trace_info["test_job"] == "tests_torch"
+    assert len(rows) == 1
+    assert rows[0]["status_code"] == "ERROR"
+    assert rows[0]["exception_type"] == "AssertionError"
+    assert rows[0]["test_function"] == "test_fail"
+
+
+class _UrlResponse(io.StringIO):
+    def __enter__(self) -> "_UrlResponse":
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        self.close()
+        return False
+
+
+def _tempo_urlopen(search_ids: list[str], trace_payload: dict):
+    """Fake urlopen routing /api/search vs /api/traces/<id> for fetch_traces."""
+
+    def opener(url, timeout=None):
+        if "/api/search" in url:
+            body = {"traces": [{"traceID": tid} for tid in search_ids]}
+        else:
+            body = trace_payload
+        return _UrlResponse(json.dumps(body))
+
+    return opener
+
+
+def test_fetch_traces_searches_then_fetches_each_trace() -> None:
+    trace_exporter._trace_cache.clear()
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    with patch.dict(
+        "os.environ",
+        {
+            "PYTEST_TRACE_EXPORTER_TEMPO_URL": "http://tempo:3200",
+            "PYTEST_TRACE_EXPORTER_SERVICE_NAME": "pytest-observability-demo",
+        },
+        clear=False,
+    ):
+        with patch(
+            "transformersci.otel.trace_exporter.urlopen",
+            side_effect=_tempo_urlopen(["trace-torch"], payload),
+        ):
+            traces = trace_exporter.fetch_traces()
+
+    assert len(traces) == 1
+    assert traces[0]["traceID"] == "trace-torch"
+    assert traces[0]["spans"][0]["operationName"].endswith("test_one")
+
+
+def test_fetch_traces_caches_settled_traces() -> None:
+    trace_exporter._trace_cache.clear()
+    # Old timestamps so the trace is "settled" and gets memoized.
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    opener = _tempo_urlopen(["trace-torch"], payload)
+    with patch.dict(
+        "os.environ",
+        {"PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS": "60"},
+        clear=False,
+    ):
+        with patch(
+            "transformersci.otel.trace_exporter.urlopen", side_effect=opener
+        ) as mocked:
+            trace_exporter.fetch_traces()
+            first_calls = mocked.call_count
+            trace_exporter.fetch_traces()
+            second_calls = mocked.call_count
+
+    # First fetch: 1 search + 1 trace fetch = 2. Second fetch: only the search,
+    # because the settled trace is served from the in-memory cache.
+    assert first_calls == 2
+    assert second_calls == 3
+
+
+def test_last_failure_metrics_omit_stacktrace_but_keep_pointers() -> None:
+    metrics = trace_exporter.extract_average_metrics(workflow_split_across_three_jobs())
+    pointer_lines = metric_lines(metrics, "pytest_test_last_failure_info")
+    assert len(pointer_lines) == 1
+    assert "stacktrace=" not in pointer_lines[0]
+    assert 'exception_type="AssertionError"' in pointer_lines[0]
+    assert 'trace_id="trace-torch"' in pointer_lines[0]
+
+    pr_metrics = trace_exporter.extract_pr_last_failure_metrics(
+        workflow_split_across_three_jobs()
+    )
+    pr_lines = metric_lines(pr_metrics, "pytest_pr_last_failure_info")
+    assert len(pr_lines) == 1
+    assert "stacktrace=" not in pr_lines[0]
+    assert 'trace_id="trace-torch"' in pr_lines[0]
+
+
+# ---------------------------------------------------------------------------
+# /failure traceback page
+# ---------------------------------------------------------------------------
+
+
+def _trace_with_exception(message: str, stacktrace: str) -> dict:
+    return {
+        "traceID": "trace-fail",
+        "processes": {"p0": {"serviceName": "demo", "tags": []}},
+        "spans": [
+            {
+                "operationName": "tests/test_x.py::TestX::test_boom",
+                "processID": "p0",
+                "startTime": 1_000_000,
+                "duration": 1_000_000,
+                "tags": [
+                    make_tag("pytest.nodeid", "tests/test_x.py::TestX::test_boom"),
+                    make_tag("pytest.span_type", "test"),
+                    make_tag("otel.status_code", "ERROR"),
+                ],
+                "logs": [
+                    {
+                        "fields": [
+                            make_tag("event", "exception"),
+                            make_tag("exception.type", "AssertionError"),
+                            make_tag("exception.message", message),
+                            make_tag("exception.stacktrace", stacktrace),
+                        ]
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_extract_failure_details_returns_untruncated_message_and_stacktrace() -> None:
+    long_stack = "Traceback\n" + ("frame line\n" * 600)  # >4000 chars
+    trace = _trace_with_exception("assert 3 == 4\n  +  where 3 = f()", long_stack)
+    details = trace_exporter.extract_failure_details(trace)
+    assert len(details) == 1
+    d = details[0]
+    assert d["test_nodeid"] == "tests/test_x.py::TestX::test_boom"
+    assert d["exception_type"] == "AssertionError"
+    assert d["exception_message"] == "assert 3 == 4\n  +  where 3 = f()"
+    # Not truncated (extract_exception_info caps at 4000, this must not).
+    assert d["exception_stacktrace"] == long_stack
+    assert "(truncated)" not in d["exception_stacktrace"]
+
+
+def test_extract_failure_details_filters_by_nodeid() -> None:
+    trace = _trace_with_exception("boom", "stack")
+    assert trace_exporter.extract_failure_details(
+        trace, "tests/test_x.py::TestX::test_boom"
+    )
+    assert (
+        trace_exporter.extract_failure_details(trace, "tests/other.py::test_nope") == []
+    )
+
+
+def test_render_failure_html_escapes_and_includes_both_blocks() -> None:
+    details = [
+        {
+            "test_nodeid": "tests/test_x.py::test_boom",
+            "exception_type": "ValueError",
+            "exception_message": "bad <value> & stuff",
+            "exception_stacktrace": "line1\nline2 <tag>",
+        }
+    ]
+    page = trace_exporter.render_failure_html("abc123", details)
+    assert "<pre" in page
+    assert "ValueError" in page
+    # HTML-escaped, not raw, to avoid breaking the page / XSS.
+    assert "bad &lt;value&gt; &amp; stuff" in page
+    assert "line2 &lt;tag&gt;" in page
+    assert "<value>" not in page
+
+
+def test_render_failure_html_handles_missing_trace() -> None:
+    assert "No trace selected" in trace_exporter.render_failure_html("", [])
+    assert "No failing test span" in trace_exporter.render_failure_html("abc", [])
+
+
+def test_github_test_url_points_at_file_and_line() -> None:
+    nodeid = "tests/pipelines/test_pipelines_depth_estimation.py::DepthEstimationPipelineTests::test_multiprocess"
+    stacktrace = (
+        "self = <...>\n"
+        "tests/pipelines/test_pipelines_depth_estimation.py:142: in test_multiprocess\n"
+        "    raise ValueError('boom')\n"
+    )
+    url = trace_exporter.github_test_url(
+        "huggingface/transformers", "abc123", nodeid, stacktrace
+    )
+    assert url == (
+        "https://github.com/huggingface/transformers/blob/abc123/"
+        "tests/pipelines/test_pipelines_depth_estimation.py#L142"
+    )
+
+
+def test_github_test_url_falls_back_to_main_and_omits_missing_line() -> None:
+    nodeid = "tests/test_x.py::test_one"
+    url = trace_exporter.github_test_url("org/repo", "", nodeid, "no line info here")
+    assert url == "https://github.com/org/repo/blob/main/tests/test_x.py"
+
+
+def test_github_test_url_empty_without_repository() -> None:
+    assert trace_exporter.github_test_url("", "abc", "tests/test_x.py::t", "x") == ""
+
+
+def test_annotate_github_links_uses_commit_sha_from_metadata() -> None:
+    trace = make_trace(
+        trace_id="trace-fail",
+        run_id="run-1",
+        job="tests_x",
+        pr="45983",
+        repository="huggingface/transformers",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_x.py::TestX::test_boom",
+                start_time=1_000_000,
+                duration=1_000_000,
+                status_code="ERROR",
+                exception_type="AssertionError",
+            )
+        ],
+    )
+    # make_test_span writes stacktrace "Traceback for <nodeid>" (no file:line),
+    # so the URL resolves to the file without an #L anchor.
+    details = trace_exporter.extract_failure_details(trace)
+    trace_exporter.annotate_github_links(
+        trace,
+        details,
+        _metadata_fetcher=lambda repo, pr: {"commit_sha": "deadbeef"},
+    )
+    assert details[0]["github_url"] == (
+        "https://github.com/huggingface/transformers/blob/deadbeef/tests/test_x.py"
+    )
+
+
+def test_render_failure_html_linkifies_nodeid_when_url_present() -> None:
+    details = [
+        {
+            "test_nodeid": "tests/test_x.py::test_boom",
+            "exception_type": "ValueError",
+            "exception_message": "boom",
+            "exception_stacktrace": "stack",
+            "github_url": "https://github.com/org/repo/blob/abc/tests/test_x.py#L9",
+        }
+    ]
+    page = trace_exporter.render_failure_html("t", details)
+    assert '<a href="https://github.com/org/repo/blob/abc/tests/test_x.py#L9"' in page
+    assert 'target="_blank"' in page

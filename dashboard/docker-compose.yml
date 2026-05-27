@@ -1,42 +1,23 @@
 services:
-  opensearch:
-    image: opensearchproject/opensearch:2.19.1
+  tempo:
+    image: grafana/tempo:2.10.5
     restart: unless-stopped
-    environment:
-      - discovery.type=single-node
-      - plugins.security.disabled=true
-      - DISABLE_INSTALL_DEMO_CONFIG=true
-      # Security is disabled, but OpenSearch 2.12+ still requires this env to start.
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=DevOnly_Unused_Password_123!
-      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
-      - bootstrap.memory_lock=false
-    ulimits:
-      nofile:
-        soft: 65536
-        hard: 65536
-    volumes:
-      - opensearch-data:/usr/share/opensearch/data
-    healthcheck:
-      test:
-        - "CMD-SHELL"
-        - "curl -fsS http://localhost:9200/_cluster/health | grep -E '\"status\":\"(green|yellow)\"' >/dev/null"
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 30s
-
-  jaeger:
-    image: jaegertracing/jaeger:2.17.0
-    restart: unless-stopped
+    user: root
     command:
-      - "--config=/etc/jaeger/config.yaml"
+      - "-config.file=/etc/tempo/tempo.yaml"
     volumes:
-      - ./jaeger.yaml:/etc/jaeger/config.yaml:ro
-    depends_on:
-      opensearch:
-        condition: service_healthy
+      - ./tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    # No healthcheck: the grafana/tempo image is distroless (no shell, wget, or
+    # curl), so an in-container HTTP probe can't run. The trace exporter already
+    # tolerates Tempo being briefly unavailable on startup (emits _up 0).
     ports:
-      - "16687:16686"
+      # Host-facing OTLP endpoints — unchanged from the otelcol setup so
+      # clients keep sending to 5317 (gRPC) / 5318 (HTTP).
+      - "5317:4317"
+      - "5318:4318"
+      # Tempo query/API (replaces the old Jaeger UI on 16687).
+      - "3200:3200"
 
   pytest-trace-exporter:
     image: python:3.12-slim
@@ -47,7 +28,7 @@ services:
       - "transformersci.otel.trace_exporter"
     environment:
       - PYTHONPATH=/app/src
-      - PYTEST_TRACE_EXPORTER_JAEGER_URL=http://jaeger:16686
+      - PYTEST_TRACE_EXPORTER_TEMPO_URL=http://tempo:3200
       - PYTEST_TRACE_EXPORTER_LIMIT=200
       - PYTEST_TRACE_EXPORTER_LOOKBACK=1h
       - PYTEST_TRACE_EXPORTER_PORT=8000
@@ -57,7 +38,11 @@ services:
       - ../src:/app/src:ro
       - ./data:/data
     depends_on:
-      - jaeger
+      - tempo
+    ports:
+      # Serves /metrics (scraped by Prometheus) and /failure?trace_id=... — a
+      # readable HTML traceback page the test dashboard embeds in an iframe.
+      - "8000:8000"
 
   prometheus:
     image: prom/prometheus:v3.0.1
@@ -74,19 +59,6 @@ services:
     ports:
       - "9091:9090"
 
-  otelcol:
-    image: otel/opentelemetry-collector-contrib:0.114.0
-    restart: unless-stopped
-    command:
-      - "--config=/etc/otelcol/config.yaml"
-    volumes:
-      - ./otelcol.yaml:/etc/otelcol/config.yaml:ro
-    depends_on:
-      - jaeger
-    ports:
-      - "5317:4317"
-      - "5318:4318"
-
   grafana:
     image: grafana/grafana:11.4.0
     restart: unless-stopped
@@ -94,6 +66,9 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_DISABLE_LOGIN_FORM=true
+      # The per-test dashboard embeds the exporter's /failure traceback page via
+      # an <iframe> in a Text panel; the default sanitizer would strip it.
+      - GF_PANELS_DISABLE_SANITIZE_HTML=true
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/pytest-observability-dashboard.json
     volumes:
       - ./pytest-observability-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-dashboard.json:ro
@@ -105,12 +80,12 @@ services:
       - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
       - grafana-data:/var/lib/grafana
     depends_on:
-      - jaeger
+      - tempo
       - prometheus
     ports:
       - "3000:3000"
 
 volumes:
-  opensearch-data:
+  tempo-data:
   prometheus-data:
   grafana-data:

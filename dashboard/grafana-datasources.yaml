@@ -7,9 +7,16 @@ datasources:
     url: http://prometheus:9090
     uid: prometheus
 
-  - name: Jaeger
-    type: jaeger
+  - name: Tempo
+    type: tempo
     access: proxy
-    url: http://jaeger:16686
-    uid: jaeger
+    url: http://tempo:3200
+    uid: tempo
     isDefault: true
+    jsonData:
+      # Let trace links resolve a test failure's run/PR metadata back to the
+      # Prometheus-backed dashboards.
+      tracesToMetrics:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
