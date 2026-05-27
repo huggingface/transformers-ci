@@ -787,3 +787,99 @@ def test_render_failure_html_linkifies_nodeid_when_url_present() -> None:
     page = trace_exporter.render_failure_html("t", details)
     assert '<a href="https://github.com/org/repo/blob/abc/tests/test_x.py#L9"' in page
     assert 'target="_blank"' in page
+
+
+# ---------------------------------------------------------------------------
+# Run roll-up: complete-set computation + settle gating (no decay / no churn)
+# ---------------------------------------------------------------------------
+
+
+def test_run_rollup_over_complete_set_counts_all_jobs() -> None:
+    rollup = trace_exporter.extract_run_rollup_metrics(
+        workflow_split_across_three_jobs()
+    )
+    start = metric_lines(rollup, "pytest_run_start_time_seconds")
+    assert len(start) == 1
+    assert 'total_tests="4"' in start[0]
+    assert 'failed_tests="1"' in start[0]
+    # The split functions together equal the legacy combined emitter.
+    combined = trace_exporter.extract_per_run_metrics(
+        workflow_split_across_three_jobs()
+    )
+    assert metric_lines(combined, "pytest_run_failed_tests")[0].endswith(" 1")
+    assert metric_lines(
+        combined, "pytest_test_duration_seconds"
+    )  # per-test still there
+
+
+def test_run_membership_settle_gating() -> None:
+    trace_exporter._run_members.clear()
+    trace_exporter._run_last_growth.clear()
+    extracted = trace_exporter._precompute_trace_rows(
+        workflow_split_across_three_jobs()
+    )
+    trace_exporter.record_run_membership(extracted, now=1000.0)
+    # Just ingested -> not settled -> nothing emitted yet (avoids churn).
+    assert (
+        trace_exporter.settled_runs_complete_extracted(extracted, 1000.0, 120.0) == []
+    )
+    # After a quiet period the run is considered complete and is emitted.
+    complete = trace_exporter.settled_runs_complete_extracted(extracted, 1200.0, 120.0)
+    assert len(complete) == 3
+
+
+def test_run_rollup_resists_lookback_window_decay() -> None:
+    """The exact bug: a run's failing job trace ages out of the window, but the
+    roll-up must still report the failure (computed over the complete set)."""
+    trace_exporter._run_members.clear()
+    trace_exporter._run_last_growth.clear()
+    trace_exporter._trace_cache.clear()
+
+    failing = make_trace(
+        trace_id="t-fail",
+        run_id="run-x",
+        job="job_fail",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/a.py::test_bad",
+                start_time=1_000_000,
+                duration=1_000_000,
+                status_code="ERROR",
+                exception_type="AssertionError",
+            )
+        ],
+    )
+    passing = make_trace(
+        trace_id="t-pass",
+        run_id="run-x",
+        job="job_pass",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/b.py::test_ok",
+                start_time=2_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+
+    # Scrape 1: both job traces visible; both settle into the trace cache.
+    trace_exporter.record_run_membership(
+        trace_exporter._precompute_trace_rows([failing, passing]), now=1000.0
+    )
+    trace_exporter._trace_cache["t-fail"] = failing
+    trace_exporter._trace_cache["t-pass"] = passing
+
+    # Scrape 2 (much later): the failing trace has aged out of the window.
+    window2 = trace_exporter._precompute_trace_rows([passing])
+    trace_exporter.record_run_membership(window2, now=2000.0)  # no new trace
+    complete = trace_exporter.settled_runs_complete_extracted(window2, 2000.0, 120.0)
+
+    rollup = trace_exporter.extract_run_rollup_metrics(_extracted=complete)
+    assert metric_lines(rollup, "pytest_run_failed_tests")[0].endswith(" 1")
+    assert metric_lines(rollup, "pytest_run_total_tests")[0].endswith(" 2")
+
+    # Without the complete-set fix (window-only) the failure would vanish.
+    window_only = trace_exporter.extract_run_rollup_metrics(_extracted=window2)
+    assert metric_lines(window_only, "pytest_run_failed_tests")[0].endswith(" 0")

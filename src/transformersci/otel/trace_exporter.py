@@ -1020,24 +1020,65 @@ def extract_pr_info_metrics(
     return lines
 
 
-def extract_per_run_metrics(
-    traces: list[dict],
+def extract_per_test_duration_metrics(
+    traces: list[dict] | None = None,
     *,
     _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
     | None = None,
 ) -> list[str]:
-    """Emit metrics scoped to each workflow-level pytest run.
+    """Emit one ``pytest_test_duration_seconds`` sample per test span.
 
-    Unlike ``extract_average_metrics`` which aggregates across the lookback
-    window, this produces one sample per (run_id, trace_id, test_nodeid) for
-    per-test duration, plus one roll-up per workflow run across every job
-    trace that shared the same run identifier. Feeds the PR dashboard (list of
-    workflow runs) and the Run dashboard (list of tests in one run).
+    Window-based: each test span seen in the lookback is emitted. Per-test
+    series never decay (a test's last status is correct and retained by
+    Prometheus), so this stays on the in-window set.
     """
-    extracted = _extracted if _extracted is not None else _precompute_trace_rows(traces)
+    extracted = (
+        _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
+    )
     lines = [
         "# HELP pytest_test_duration_seconds Duration of each pytest test span, labeled with run_id and trace_id.",
         "# TYPE pytest_test_duration_seconds gauge",
+    ]
+    for _trace_info, rows in extracted:
+        for row in rows:
+            test_labels = {
+                "pr": str(row["pr"]),
+                "test_job": str(row["test_job"]),
+                "provider": str(row["provider"]),
+                "run_id": str(row["run_id"]),
+                "service_name": str(row["service_name"]),
+                "status_code": str(row["status_code"]),
+                "test_class": str(row["test_class"]),
+                "test_function": str(row["test_function"]),
+                "test_module": str(row["test_module"]),
+                "test_nodeid": str(row["test_nodeid"]),
+                "trace_id": str(row["trace_id"]),
+            }
+            lines.append(
+                f"pytest_test_duration_seconds{metric_labels(test_labels)} {float(row['duration_seconds']):.9f}"
+            )
+    return lines
+
+
+def extract_run_rollup_metrics(
+    traces: list[dict] | None = None,
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
+) -> list[str]:
+    """Emit one roll-up series per workflow-level pytest run.
+
+    The caller is expected to pass the run's *complete* trace set (see
+    :func:`settled_runs_complete_extracted`), not just the traces currently in
+    the lookback window — otherwise the roll-up decays to a partial value as a
+    run's job traces age out of the window one by one (which froze a wrong
+    "100% pass" into Prometheus). Feeds the PR "Past Runs" table and the
+    overview run/PR panels.
+    """
+    extracted = (
+        _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
+    )
+    lines = [
         "# HELP pytest_run_start_time_seconds Start time (unix seconds) of a pytest run.",
         "# TYPE pytest_run_start_time_seconds gauge",
         "# HELP pytest_run_end_time_seconds End time (unix seconds) of a pytest run.",
@@ -1056,24 +1097,6 @@ def extract_per_run_metrics(
     for trace_info, rows in extracted:
         if not rows:
             continue
-
-        for row in rows:
-            test_labels = {
-                "pr": str(row["pr"]),
-                "test_job": str(row["test_job"]),
-                "provider": str(row["provider"]),
-                "run_id": str(row["run_id"]),
-                "service_name": str(row["service_name"]),
-                "status_code": str(row["status_code"]),
-                "test_class": str(row["test_class"]),
-                "test_function": str(row["test_function"]),
-                "test_module": str(row["test_module"]),
-                "test_nodeid": str(row["test_nodeid"]),
-                "trace_id": str(row["trace_id"]),
-            }
-            lines.append(
-                f"pytest_test_duration_seconds{metric_labels(test_labels)} {float(row['duration_seconds']):.9f}"
-            )
 
         total = len(rows)
         failed = sum(1 for r in rows if str(r["status_code"]) == "ERROR")
@@ -1165,6 +1188,117 @@ def extract_per_run_metrics(
             job_labels["test_job"] = job_name
             lines.append(f"pytest_run_job_member_info{metric_labels(job_labels)} 1")
     return lines
+
+
+def extract_per_run_metrics(
+    traces: list[dict] | None = None,
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
+) -> list[str]:
+    """Backward-compatible combination of per-test duration + run roll-ups.
+
+    Computes both from the same (window) set. The live exporter no longer uses
+    this — it feeds the roll-up its complete-set view (see
+    :func:`settled_runs_complete_extracted`) — but it keeps the original
+    single-call behavior for callers/tests that pass one trace list.
+    """
+    extracted = (
+        _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
+    )
+    return extract_per_test_duration_metrics(
+        _extracted=extracted
+    ) + extract_run_rollup_metrics(_extracted=extracted)
+
+
+# ---------------------------------------------------------------------------
+# Run membership tracking — lets run roll-ups be computed over a run's COMPLETE
+# set of job traces even after some have aged out of the lookback window.
+# ---------------------------------------------------------------------------
+
+_run_state_lock = threading.Lock()
+# run_id -> set of trace_ids ever seen for that run.
+_run_members: dict[str, set[str]] = {}
+# run_id -> monotonic time a new trace_id was last added (i.e. last job arrival).
+_run_last_growth: dict[str, float] = {}
+# Drop membership for runs untouched for this long, to bound memory.
+RUN_MEMBERSHIP_TTL_SECONDS = 86400.0
+
+
+def _run_settle_seconds() -> float:
+    """A run is 'complete' once no new job trace has arrived for this long.
+
+    Reuses the trace-settle window: by the time a trace has settled, the run it
+    belongs to has had a quiet period, so its roll-up can be emitted as a
+    single stable series instead of one churning series per ingestion step.
+    """
+    return _trace_settle_seconds()
+
+
+def record_run_membership(
+    extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]],
+    now: float,
+) -> None:
+    with _run_state_lock:
+        for trace_info, _rows in extracted:
+            run_id = str(trace_info.get("run_id", ""))
+            trace_id = str(trace_info.get("trace_id", ""))
+            if not run_id or not trace_id:
+                continue
+            members = _run_members.setdefault(run_id, set())
+            if trace_id not in members:
+                members.add(trace_id)
+                _run_last_growth[run_id] = now
+        # Evict long-idle runs so the maps don't grow without bound.
+        stale = [
+            run_id
+            for run_id, grown in _run_last_growth.items()
+            if now - grown > RUN_MEMBERSHIP_TTL_SECONDS
+        ]
+        for run_id in stale:
+            _run_members.pop(run_id, None)
+            _run_last_growth.pop(run_id, None)
+
+
+def settled_runs_complete_extracted(
+    window_extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]],
+    now: float,
+    settle_seconds: float,
+) -> list[tuple[dict[str, str | int], list[dict[str, str | float]]]]:
+    """Return complete per-run extracted rows for runs that are settled.
+
+    For every run with at least one trace in the current window that has not
+    received a new trace for ``settle_seconds``, gather all of its member
+    traces — the in-window ones plus any aged-out ones still in the trace cache
+    — so the roll-up reflects the whole run. Runs still ingesting are skipped
+    this cycle (so only one stable, complete series is ever emitted per run).
+    """
+    by_trace_id: dict[
+        str, tuple[dict[str, str | int], list[dict[str, str | float]]]
+    ] = {}
+    active_runs: set[str] = set()
+    for trace_info, rows in window_extracted:
+        trace_id = str(trace_info.get("trace_id", ""))
+        run_id = str(trace_info.get("run_id", ""))
+        if trace_id:
+            by_trace_id[trace_id] = (trace_info, rows)
+        if run_id:
+            active_runs.add(run_id)
+
+    complete: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] = []
+    with _run_state_lock:
+        for run_id in active_runs:
+            if now - _run_last_growth.get(run_id, now) < settle_seconds:
+                continue  # still ingesting — wait until it looks complete
+            for trace_id in _run_members.get(run_id, set()):
+                entry = by_trace_id.get(trace_id)
+                if entry is not None:
+                    complete.append(entry)
+                    continue
+                cached = _trace_cache.get(trace_id)
+                if cached is not None:
+                    complete.append(extract_trace_rows(cached))
+    return complete
 
 
 def extract_average_metrics(
@@ -1363,6 +1497,16 @@ def _render_metrics_uncached() -> str:
 
     extracted = _precompute_trace_rows(traces)
 
+    # Track which traces belong to which run, then build the run roll-ups over
+    # each run's COMPLETE (settled) trace set rather than just the in-window
+    # traces — otherwise a run's rollup decays to a wrong partial value as its
+    # job traces age out of the lookback window one by one.
+    now = time.monotonic()
+    record_run_membership(extracted, now)
+    rollup_extracted = settled_runs_complete_extracted(
+        extracted, now, _run_settle_seconds()
+    )
+
     rendered = [
         "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.",
         "# TYPE pytest_trace_exporter_up gauge",
@@ -1371,7 +1515,8 @@ def _render_metrics_uncached() -> str:
         "# TYPE pytest_trace_exporter_trace_count gauge",
         f"pytest_trace_exporter_trace_count {len(traces)}",
     ]
-    rendered.extend(extract_per_run_metrics(traces, _extracted=extracted))
+    rendered.extend(extract_per_test_duration_metrics(_extracted=extracted))
+    rendered.extend(extract_run_rollup_metrics(_extracted=rollup_extracted))
     rendered.extend(extract_pr_info_metrics(traces, _extracted=extracted))
     rendered.extend(extract_pr_last_failure_metrics(traces, _extracted=extracted))
     rendered.extend(extract_average_metrics(traces, _extracted=extracted))

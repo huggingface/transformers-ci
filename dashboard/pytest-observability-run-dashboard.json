@@ -85,7 +85,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[$__range])",
+          "expr": "count(last_over_time(pytest_test_duration_seconds{run_id=~\"$run_id\"}[$__range]))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -147,7 +147,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[$__range])",
+          "expr": "count(last_over_time(pytest_test_duration_seconds{run_id=~\"$run_id\",status_code=\"ERROR\"}[$__range])) or vector(0)",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -216,7 +216,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * (1 - last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[$__range]) / last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[$__range]))",
+          "expr": "100 * (count(last_over_time(pytest_test_duration_seconds{run_id=~\"$run_id\"}[$__range])) - (count(last_over_time(pytest_test_duration_seconds{run_id=~\"$run_id\",status_code=\"ERROR\"}[$__range])) or vector(0))) / count(last_over_time(pytest_test_duration_seconds{run_id=~\"$run_id\"}[$__range]))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -274,7 +274,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\"}[$__range]) * 1000",
+          "expr": "min(last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\"}[$__range])) * 1000",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,

@@ -25,10 +25,22 @@
   "graphTooltip": 0,
   "links": [
     {
+      "asDropdown": false,
+      "icon": "external link",
+      "tags": [],
       "targetBlank": false,
-      "title": "Back to Overview",
+      "title": "Back to Job",
       "type": "link",
-      "url": "/d/pytest-observability/pytest-observability"
+      "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${run_id:raw}&var-pr=${pr:raw}"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "tags": [],
+      "targetBlank": false,
+      "title": "Back to PR",
+      "type": "link",
+      "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr:raw}"
     }
   ],
   "panels": [
@@ -41,7 +53,7 @@
       },
       "id": 1,
       "options": {
-        "content": "### `${test_function:raw}`\n\n`${test_nodeid:raw}`\n\n**Module:** `${test_module:raw}` | **Class:** `${test_class:raw}` | **Status:** `${status_code:raw}`\n\n**Job:** [${test_job:raw}](/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${run_id:raw}&var-pr=${pr:raw}) | **Run:** [${run_id:raw}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id:raw}) | **PR:** [${pr:raw}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr:raw}) | <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"14\" height=\"14\" alt=\"GH\"/> [Full logs](https://github.com/${repository:raw}/actions/runs/${gh_run_id:raw}) | [Open trace in Tempo](/explore?schemaVersion=1&orgId=1&panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22query%22:%22${trace_id:raw}%22,%22queryType%22:%22traceql%22,%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22tempo%22,%22uid%22:%22tempo%22%7D%7D%5D,%22range%22:%7B%22from%22:%22now-24h%22,%22to%22:%22now%22%7D%7D%7D)\n\n<sub>The panel below shows this failure's exception message and full traceback in readable monospace, served by the trace exporter. Use <b>Open trace in Tempo</b> for the span waterfall / timing.</sub>",
+        "content": "```\npytest -svx ${test_nodeid:raw}\n```\n\n**Module:** `${test_module:raw}` | **Class:** `${test_class:raw}` | **Status:** `${status_code:raw}`\n\n**Job:** [${test_job:raw}](/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${run_id:raw}&var-pr=${pr:raw}) | **Run:** [${run_id:raw}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id:raw}) | **PR:** [${pr:raw}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr:raw}) | <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"14\" height=\"14\" alt=\"GH\"/> [Full logs](https://github.com/${repository:raw}/actions/runs/${gh_run_id:raw}) | [Open trace in Tempo](/explore?schemaVersion=1&orgId=1&panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22query%22:%22${trace_id:raw}%22,%22queryType%22:%22traceql%22,%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22tempo%22,%22uid%22:%22tempo%22%7D%7D%5D,%22range%22:%7B%22from%22:%22now-24h%22,%22to%22:%22now%22%7D%7D%7D)\n\n<sub>The panel below shows this failure's exception message and full traceback in readable monospace, served by the trace exporter. Use <b>Open trace in Tempo</b> for the span waterfall / timing.</sub>",
         "mode": "markdown"
       },
       "pluginVersion": "12.0.0",
