@@ -766,6 +766,11 @@ def extract_trace_rows(
             "transformers.test.provider", process_provider
         )
         process_pr = process_tags.get("vcs.change.id", process_pr)
+        # Push events (e.g. merges to main) carry no vcs.change.id, so fall back
+        # to the branch name. Keeps main-branch runs from collapsing into a
+        # single pr="none" bucket in the dashboards.
+        if not process_pr:
+            process_pr = process_tags.get("vcs.ref.head.name", process_pr)
         process_pr_url = process_tags.get("vcs.change.url", process_pr_url)
         process_repository = process_tags.get("vcs.repository.name", process_repository)
 

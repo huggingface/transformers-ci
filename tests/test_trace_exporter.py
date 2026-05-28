@@ -220,6 +220,38 @@ def test_extract_pr_last_failure_metrics_links_failure_back_to_run() -> None:
     assert 'test_job="tests_torch"' in failure_lines[0]
 
 
+def test_extract_trace_rows_falls_back_to_branch_name_when_no_pr() -> None:
+    """Push events to main carry no vcs.change.id; the branch name from
+    vcs.ref.head.name takes its place so main-branch data doesn't collapse into
+    a single pr="none" bucket."""
+    trace = {
+        "processes": {
+            "pytest-process": {
+                "serviceName": "transformers-tests",
+                "tags": [
+                    make_tag("transformers.test.provider", "github_actions"),
+                    make_tag("transformers.test.run.id", "run-main"),
+                    make_tag("transformers.test.job", "tests_torch"),
+                    make_tag("vcs.ref.head.name", "main"),
+                    make_tag("vcs.repository.name", "huggingface/transformers"),
+                ],
+            }
+        },
+        "spans": [
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_main.py::TestMain::test_one",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+        "traceID": "trace-main",
+    }
+    trace_info, rows = trace_exporter.extract_trace_rows(trace)
+    assert trace_info["pr"] == "main"
+    assert rows[0]["pr"] == "main"
+
+
 def test_extract_trace_rows_falls_back_to_legacy_suite_tag() -> None:
     """A trace still using the legacy `transformers.test.suite` process tag is
     surfaced as `test_job` in the resulting rows, so dashboards keep working
