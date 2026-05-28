@@ -82,10 +82,27 @@ services:
     depends_on:
       - tempo
       - prometheus
+
+  # Front-door reverse proxy so Grafana and the exporter are reachable on the
+  # same origin. The /failure traceback iframe in pytest-test-dashboard needs
+  # this — the public hostname only forwards one port, so the exporter has to
+  # live behind the same hostname under a path prefix.
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - grafana
+      - pytest-trace-exporter
     ports:
-      - "3000:3000"
+      - "3000:80"
 
 volumes:
+  caddy-data:
+  caddy-config:
   tempo-data:
   prometheus-data:
   grafana-data:

@@ -1,0 +1,8 @@
+:80 {
+	handle_path /exporter/* {
+		reverse_proxy pytest-trace-exporter:8000
+	}
+	handle {
+		reverse_proxy grafana:3000
+	}
+}
