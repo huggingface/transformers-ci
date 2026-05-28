@@ -164,7 +164,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "count by (test_job, status_code) (last_over_time(pytest_test_duration_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$latest_run_id\"}[$__range]))",
+          "expr": "(label_replace(last_over_time(pytest_run_job_passed_tests{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$latest_run_id\"}[$__range]), \"status_code\", \"OK\", \"test_job\", \".*\")) or (label_replace(last_over_time(pytest_run_job_failed_tests{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$latest_run_id\"}[$__range]), \"status_code\", \"ERROR\", \"test_job\", \".*\"))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
