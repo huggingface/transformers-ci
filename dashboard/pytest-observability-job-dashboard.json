@@ -106,7 +106,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "count(last_over_time(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))",
+          "expr": "sum(last_over_time(pytest_run_job_total_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -162,7 +162,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "count(last_over_time(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",status_code=\"OK\"}[$__range])) or vector(0)",
+          "expr": "sum(last_over_time(pytest_run_job_passed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range])) or vector(0)",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -223,7 +223,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "count(last_over_time(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",status_code=\"ERROR\"}[$__range])) or vector(0)",
+          "expr": "sum(last_over_time(pytest_run_job_failed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range])) or vector(0)",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -280,7 +280,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(last_over_time(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))",
+          "expr": "sum(last_over_time(pytest_run_job_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -352,7 +352,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per-test results for the run currently selected via the Run ID template variable. Defaults to all runs (.*).",
+      "description": "Per-test results for the selected job/run. The query is capped by the Row limit variable so large runs stay responsive.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -492,7 +492,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "last_over_time(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",status_code=~\"$status_filter\"}[$__range])",
+          "expr": "topk($test_limit, last_over_time(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",status_code=~\"$status_filter\"}[$__range]))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -500,7 +500,7 @@
           "refId": "A"
         }
       ],
-      "title": "Tests for Selected Run",
+      "title": "Tests for Selected Run (Top $test_limit by Duration)",
       "transformations": [
         {
           "id": "organize",
@@ -664,6 +664,41 @@
         "type": "custom",
         "includeAll": false,
         "multi": false
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "500",
+          "value": "500"
+        },
+        "includeAll": false,
+        "label": "Row limit",
+        "multi": false,
+        "name": "test_limit",
+        "options": [
+          {
+            "selected": false,
+            "text": "100",
+            "value": "100"
+          },
+          {
+            "selected": true,
+            "text": "500",
+            "value": "500"
+          },
+          {
+            "selected": false,
+            "text": "1000",
+            "value": "1000"
+          },
+          {
+            "selected": false,
+            "text": "2000",
+            "value": "2000"
+          }
+        ],
+        "query": "100,500,1000,2000",
+        "type": "custom"
       }
     ]
   },

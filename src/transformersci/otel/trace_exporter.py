@@ -1091,8 +1091,17 @@ def extract_run_rollup_metrics(
         "# TYPE pytest_run_duration_seconds gauge",
         "# HELP pytest_run_job_member_info Whether a job contributed tests to a pytest run.",
         "# TYPE pytest_run_job_member_info gauge",
+        "# HELP pytest_run_job_total_tests Number of tests recorded in one job of a pytest run.",
+        "# TYPE pytest_run_job_total_tests gauge",
+        "# HELP pytest_run_job_passed_tests Number of passing tests recorded in one job of a pytest run.",
+        "# TYPE pytest_run_job_passed_tests gauge",
+        "# HELP pytest_run_job_failed_tests Number of failing tests recorded in one job of a pytest run.",
+        "# TYPE pytest_run_job_failed_tests gauge",
+        "# HELP pytest_run_job_duration_seconds Total duration (sum of test span durations) for one job of a pytest run.",
+        "# TYPE pytest_run_job_duration_seconds gauge",
     ]
     run_aggregates: dict[tuple[str, str, str, str], dict[str, object]] = {}
+    job_aggregates: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
 
     for trace_info, rows in extracted:
         if not rows:
@@ -1142,6 +1151,20 @@ def extract_run_rollup_metrics(
         job_names.add(str(trace_info.get("test_job", "unknown")))
         trace_ids.add(str(trace_info.get("trace_id", "unknown")))
 
+        job_key = run_key + (str(trace_info.get("test_job", "unknown")),)
+        if job_key not in job_aggregates:
+            job_aggregates[job_key] = {
+                "failed": 0,
+                "total": 0,
+                "total_duration": 0.0,
+            }
+        job_aggregate = job_aggregates[job_key]
+        job_aggregate["failed"] = int(job_aggregate["failed"]) + failed
+        job_aggregate["total"] = int(job_aggregate["total"]) + total
+        job_aggregate["total_duration"] = (
+            float(job_aggregate["total_duration"]) + total_duration
+        )
+
     for (service_name, provider, pr, run_id), aggregate in sorted(
         run_aggregates.items()
     ):
@@ -1187,6 +1210,27 @@ def extract_run_rollup_metrics(
             job_labels = dict(run_labels)
             job_labels["test_job"] = job_name
             lines.append(f"pytest_run_job_member_info{metric_labels(job_labels)} 1")
+
+    for (service_name, provider, pr, run_id, test_job), aggregate in sorted(
+        job_aggregates.items()
+    ):
+        total = int(aggregate["total"])
+        failed = int(aggregate["failed"])
+        job_labels = {
+            "pr": pr,
+            "provider": provider,
+            "run_id": run_id,
+            "service_name": service_name,
+            "test_job": test_job,
+        }
+        lines.append(f"pytest_run_job_total_tests{metric_labels(job_labels)} {total}")
+        lines.append(
+            f"pytest_run_job_passed_tests{metric_labels(job_labels)} {total - failed}"
+        )
+        lines.append(f"pytest_run_job_failed_tests{metric_labels(job_labels)} {failed}")
+        lines.append(
+            f"pytest_run_job_duration_seconds{metric_labels(job_labels)} {float(aggregate['total_duration']):.6f}"
+        )
     return lines
 
 

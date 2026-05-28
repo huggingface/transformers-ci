@@ -133,7 +133,7 @@
       "type": "text",
       "options": {
         "mode": "html",
-        "content": "<iframe title=\"traceback\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var t=encodeURIComponent('${trace_id}');var n='${test_nodeid}';var u=parent.location.protocol+'//'+parent.location.hostname+':8000/failure?trace_id='+t;if(n){u+='&test_nodeid='+encodeURIComponent(n);}location.replace(u);</script>\"></iframe>"
+        "content": "<iframe title=\"traceback\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var t=encodeURIComponent('${trace_id}');var n='${test_nodeid}';var u=parent.location.protocol+'//'+parent.location.host+'/exporter/failure?trace_id='+t;if(n){u+='&test_nodeid='+encodeURIComponent(n);}location.replace(u);</script>\"></iframe>"
       }
     }
   ],

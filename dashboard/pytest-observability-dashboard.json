@@ -981,7 +981,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_test_average_duration_seconds, service_name)",
+        "definition": "label_values(pytest_run_start_time_seconds, service_name)",
         "includeAll": true,
         "label": "Service",
         "multi": false,
@@ -989,7 +989,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_test_average_duration_seconds, service_name)",
+          "query": "label_values(pytest_run_start_time_seconds, service_name)",
           "refId": "Prometheus-service-Variable-Query"
         },
         "refresh": 2,
@@ -1007,7 +1007,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_job)",
+        "definition": "label_values(pytest_run_job_member_info{service_name=~\"$service\"}, test_job)",
         "includeAll": true,
         "label": "Job",
         "multi": false,
@@ -1015,7 +1015,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\"}, test_job)",
+          "query": "label_values(pytest_run_job_member_info{service_name=~\"$service\"}, test_job)",
           "refId": "Prometheus-job-Variable-Query"
         },
         "refresh": 2,
@@ -1033,7 +1033,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\",test_job=~\"$job\"}, pr)",
+        "definition": "label_values(pytest_run_start_time_seconds{service_name=~\"$service\"}, pr)",
         "includeAll": true,
         "label": "PR",
         "multi": false,
@@ -1041,7 +1041,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_test_average_duration_seconds{service_name=~\"$service\",test_job=~\"$job\"}, pr)",
+          "query": "label_values(pytest_run_start_time_seconds{service_name=~\"$service\"}, pr)",
           "refId": "Prometheus-pr-Variable-Query"
         },
         "refresh": 2,

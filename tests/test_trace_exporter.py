@@ -171,6 +171,34 @@ def test_extract_per_run_metrics_aggregates_job_traces_into_one_run() -> None:
     assert any('test_job="tests_tf"' in line for line in job_member_lines)
     assert any('test_job="tests_flax"' in line for line in job_member_lines)
 
+    job_total_lines = metric_lines(metrics, "pytest_run_job_total_tests")
+    assert len(job_total_lines) == 3
+    assert any(
+        'test_job="tests_torch"' in line and line.endswith(" 2")
+        for line in job_total_lines
+    )
+
+    job_passed_lines = metric_lines(metrics, "pytest_run_job_passed_tests")
+    assert len(job_passed_lines) == 3
+    assert any(
+        'test_job="tests_torch"' in line and line.endswith(" 1")
+        for line in job_passed_lines
+    )
+
+    job_failed_lines = metric_lines(metrics, "pytest_run_job_failed_tests")
+    assert len(job_failed_lines) == 3
+    assert any(
+        'test_job="tests_torch"' in line and line.endswith(" 1")
+        for line in job_failed_lines
+    )
+
+    job_duration_lines = metric_lines(metrics, "pytest_run_job_duration_seconds")
+    assert len(job_duration_lines) == 3
+    assert any(
+        'test_job="tests_torch"' in line and line.endswith(" 3.000000")
+        for line in job_duration_lines
+    )
+
     duration_lines = metric_lines(metrics, "pytest_test_duration_seconds")
     assert len(duration_lines) == 4
     assert all('run_id="12345:2"' in line for line in duration_lines)
