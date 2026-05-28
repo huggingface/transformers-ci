@@ -7,6 +7,14 @@ datasources:
     url: http://prometheus:9090
     uid: prometheus
 
+  # Stack-health Prometheus (14d retention). The Stack Health dashboard
+  # queries this datasource; CI dashboards keep using the main `prometheus`.
+  - name: Prometheus Infra
+    type: prometheus
+    access: proxy
+    url: http://prometheus-infra:9090
+    uid: prometheus-infra
+
   - name: Tempo
     type: tempo
     access: proxy

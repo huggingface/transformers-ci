@@ -52,11 +52,12 @@ services:
       # readable HTML traceback page the test dashboard embeds in an iframe.
       - "8000:8000"
 
+  # CI-data Prometheus: 90d retention, scrapes only pytest_trace_exporter.
   prometheus:
     image: prom/prometheus:v3.0.1
     restart: unless-stopped
-    mem_limit: ${PROMETHEUS_MEM_LIMIT:-960m}
-    cpus: ${PROMETHEUS_CPUS:-0.50}
+    mem_limit: ${PROMETHEUS_MEM_LIMIT:-512m}
+    cpus: ${PROMETHEUS_CPUS:-0.20}
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -68,6 +69,26 @@ services:
       - pytest-trace-exporter
     ports:
       - "9091:9090"
+
+  # Infrastructure Prometheus: 14d retention, scrapes the observability stack
+  # itself (tempo, grafana, cadvisor, node_exporter, and both prom instances).
+  # Kept separate from the CI prometheus so high-cardinality infra series
+  # don't eat the 90d disk budget reserved for CI history.
+  prometheus-infra:
+    image: prom/prometheus:v3.0.1
+    restart: unless-stopped
+    mem_limit: ${PROMETHEUS_INFRA_MEM_LIMIT:-512m}
+    cpus: ${PROMETHEUS_INFRA_CPUS:-0.30}
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=14d"
+      - "--web.external-url=http://localhost:9092"
+    volumes:
+      - ./prometheus-infra.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-infra-data:/prometheus
+    ports:
+      - "9092:9090"
 
   grafana:
     image: grafana/grafana:11.4.0
@@ -88,12 +109,53 @@ services:
       - ./pytest-observability-pr-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-pr-dashboard.json:ro
       - ./pytest-observability-run-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-observability-run-dashboard.json:ro
       - ./pytest-test-dashboard.json:/etc/grafana/provisioning/dashboards/pytest-test-dashboard.json:ro
+      - ./pytest-observability-stack-health.json:/etc/grafana/provisioning/dashboards/pytest-observability-stack-health.json:ro
       - ./grafana-dashboard.yaml:/etc/grafana/provisioning/dashboards/grafana-dashboard.yaml:ro
       - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
       - grafana-data:/var/lib/grafana
     depends_on:
       - tempo
       - prometheus
+
+  # Container-level metrics (CPU/mem/network/disk I/O per service) — scraped
+  # by Prometheus and rendered by the Stack Health dashboard.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    mem_limit: ${CADVISOR_MEM_LIMIT:-256m}
+    cpus: ${CADVISOR_CPUS:-0.15}
+    command:
+      - "--housekeeping_interval=15s"
+      - "--docker_only=true"
+      - "--store_container_labels=false"
+      # Drop metric families we never chart. Each disabled group removes
+      # dozens to hundreds of series (e.g. percpu emits per-core counters
+      # × per-container, which dominates the cardinality on multi-core hosts).
+      - "--disable_metrics=advtcp,tcp,udp,sched,process,hugetlb,referenced_memory,cpu_topology,resctrl,percpu,diskIO"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg
+
+  # Host-level metrics (disk usage, load, filesystem, network) for the EC2 box
+  # itself. Mounts the host rootfs read-only and exposes /metrics on :9100.
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.8.2
+    restart: unless-stopped
+    mem_limit: ${NODE_EXPORTER_MEM_LIMIT:-128m}
+    cpus: ${NODE_EXPORTER_CPUS:-0.10}
+    command:
+      - "--path.rootfs=/host"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker/.+)($$|/)"
+      - "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$"
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
 
   # Front-door reverse proxy so Grafana and the exporter are reachable on the
   # same origin. The /failure traceback iframe in pytest-test-dashboard needs
@@ -119,4 +181,5 @@ volumes:
   caddy-config:
   tempo-data:
   prometheus-data:
+  prometheus-infra-data:
   grafana-data:

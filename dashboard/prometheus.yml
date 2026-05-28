@@ -1,4 +1,9 @@
 global:
+  # CI-data Prometheus: only scrapes pytest_trace_exporter. Long retention
+  # (90d in compose) preserves a quarter of CI history. Infrastructure
+  # metrics (tempo/grafana/cadvisor/node_exporter/self) live in the separate
+  # prometheus-infra instance with 14d retention so their high cardinality
+  # doesn't eat the CI disk budget.
   scrape_interval: 5s
 
 scrape_configs:
