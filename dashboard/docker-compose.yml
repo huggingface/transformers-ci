@@ -1,8 +1,14 @@
+# Resource caps are parameterized so the same compose file works on any VM
+# size. Defaults below fit a t3.medium (4 GB / 2 vCPU). For other sizes, set
+# the env vars (or drop a .env next to this file) — deploy.sh computes them
+# automatically from the AWS describe-instance-types response.
 services:
   tempo:
     image: grafana/tempo:2.10.5
     restart: unless-stopped
     user: root
+    mem_limit: ${TEMPO_MEM_LIMIT:-1200m}
+    cpus: ${TEMPO_CPUS:-0.70}
     command:
       - "-config.file=/etc/tempo/tempo.yaml"
     volumes:
@@ -22,6 +28,8 @@ services:
   pytest-trace-exporter:
     image: python:3.12-slim
     restart: unless-stopped
+    mem_limit: ${EXPORTER_MEM_LIMIT:-768m}
+    cpus: ${EXPORTER_CPUS:-0.30}
     command:
       - "python"
       - "-m"
@@ -29,8 +37,8 @@ services:
     environment:
       - PYTHONPATH=/app/src
       - PYTEST_TRACE_EXPORTER_TEMPO_URL=http://tempo:3200
-      - PYTEST_TRACE_EXPORTER_LIMIT=200
-      - PYTEST_TRACE_EXPORTER_LOOKBACK=1h
+      - PYTEST_TRACE_EXPORTER_LIMIT=${PYTEST_TRACE_EXPORTER_LIMIT:-200}
+      - PYTEST_TRACE_EXPORTER_LOOKBACK=${PYTEST_TRACE_EXPORTER_LOOKBACK:-1h}
       - PYTEST_TRACE_EXPORTER_PORT=8000
       - PYTEST_RESOURCE_METRICS_FILE=/data/pytest-resource-metrics.jsonl
       - PYTEST_TRACE_EXPORTER_SERVICE_NAME=pytest-observability-demo
@@ -47,6 +55,8 @@ services:
   prometheus:
     image: prom/prometheus:v3.0.1
     restart: unless-stopped
+    mem_limit: ${PROMETHEUS_MEM_LIMIT:-960m}
+    cpus: ${PROMETHEUS_CPUS:-0.50}
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -62,6 +72,8 @@ services:
   grafana:
     image: grafana/grafana:11.4.0
     restart: unless-stopped
+    mem_limit: ${GRAFANA_MEM_LIMIT:-640m}
+    cpus: ${GRAFANA_CPUS:-0.30}
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
@@ -90,6 +102,8 @@ services:
   proxy:
     image: caddy:2-alpine
     restart: unless-stopped
+    mem_limit: ${PROXY_MEM_LIMIT:-192m}
+    cpus: ${PROXY_CPUS:-0.15}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
