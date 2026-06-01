@@ -145,12 +145,26 @@ def test_extract_per_run_metrics_aggregates_job_traces_into_one_run() -> None:
     run_start_lines = metric_lines(metrics, "pytest_run_start_time_seconds")
     assert len(run_start_lines) == 1
     assert 'run_id="12345:2"' in run_start_lines[0]
-    assert 'job_count="3"' in run_start_lines[0]
-    assert 'jobs="tests_flax,tests_tf,tests_torch"' in run_start_lines[0]
-    assert 'trace_count="3"' in run_start_lines[0]
-    assert 'total_tests="4"' in run_start_lines[0]
-    assert 'failed_tests="1"' in run_start_lines[0]
+    # Run-level totals are values on their own metrics now, NOT labels on the
+    # start-time series (see comment in extract_run_rollup_metrics). The
+    # start-time series carries only the stable run identity.
+    for mutable_label in (
+        "job_count=",
+        "jobs=",
+        "trace_count=",
+        "total_tests=",
+        "failed_tests=",
+        "total_duration_seconds=",
+        "failure_rate_percent=",
+        "success_rate_percent=",
+    ):
+        assert mutable_label not in run_start_lines[0]
     assert run_start_lines[0].endswith(" 1.000000")
+
+    job_count_lines = metric_lines(metrics, "pytest_run_job_count")
+    assert len(job_count_lines) == 1
+    assert 'run_id="12345:2"' in job_count_lines[0]
+    assert job_count_lines[0].endswith(" 3")
 
     run_end_lines = metric_lines(metrics, "pytest_run_end_time_seconds")
     assert len(run_end_lines) == 1
@@ -860,8 +874,9 @@ def test_run_rollup_over_complete_set_counts_all_jobs() -> None:
     )
     start = metric_lines(rollup, "pytest_run_start_time_seconds")
     assert len(start) == 1
-    assert 'total_tests="4"' in start[0]
-    assert 'failed_tests="1"' in start[0]
+    # Totals live on their own value metrics keyed by run identity.
+    assert metric_lines(rollup, "pytest_run_total_tests")[0].endswith(" 4")
+    assert metric_lines(rollup, "pytest_run_failed_tests")[0].endswith(" 1")
     # The split functions together equal the legacy combined emitter.
     combined = trace_exporter.extract_per_run_metrics(
         workflow_split_across_three_jobs()

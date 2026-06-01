@@ -1094,6 +1094,8 @@ def extract_run_rollup_metrics(
         "# TYPE pytest_run_failed_tests gauge",
         "# HELP pytest_run_duration_seconds Total duration (sum of test span durations) of a pytest run.",
         "# TYPE pytest_run_duration_seconds gauge",
+        "# HELP pytest_run_job_count Number of distinct jobs that contributed tests to a pytest run.",
+        "# TYPE pytest_run_job_count gauge",
         "# HELP pytest_run_job_member_info Whether a job contributed tests to a pytest run.",
         "# TYPE pytest_run_job_member_info gauge",
         "# HELP pytest_run_job_total_tests Number of tests recorded in one job of a pytest run.",
@@ -1129,7 +1131,6 @@ def extract_run_rollup_metrics(
                 "job_names": set(),
                 "total": 0,
                 "total_duration": 0.0,
-                "trace_ids": set(),
             }
 
         aggregate = run_aggregates[run_key]
@@ -1150,11 +1151,8 @@ def extract_run_rollup_metrics(
             aggregate["start_time"] = trace_start_time
 
         job_names = aggregate["job_names"]
-        trace_ids = aggregate["trace_ids"]
         assert isinstance(job_names, set)
-        assert isinstance(trace_ids, set)
         job_names.add(str(trace_info.get("test_job", "unknown")))
-        trace_ids.add(str(trace_info.get("trace_id", "unknown")))
 
         job_key = run_key + (str(trace_info.get("test_job", "unknown")),)
         if job_key not in job_aggregates:
@@ -1174,7 +1172,6 @@ def extract_run_rollup_metrics(
         run_aggregates.items()
     ):
         job_names = sorted(str(job_name) for job_name in aggregate["job_names"])
-        trace_ids = sorted(str(trace_id) for trace_id in aggregate["trace_ids"])
         total = int(aggregate["total"])
         failed = int(aggregate["failed"])
         total_duration = float(aggregate["total_duration"])
@@ -1186,22 +1183,17 @@ def extract_run_rollup_metrics(
             "run_id": run_id,
             "service_name": service_name,
         }
-        # Bake totals/failures/duration/rate as labels on the start-time metric
-        # so a single Grafana query can drive the Runs table without any merge
-        # or Grafana-side arithmetic.
-        failure_rate_percent = (100.0 * failed / total) if total else 0.0
-        success_rate_percent = 100.0 - failure_rate_percent if total else 100.0
-        start_labels = dict(run_labels)
-        start_labels["job_count"] = str(len(job_names))
-        start_labels["jobs"] = ",".join(job_names)
-        start_labels["trace_count"] = str(len(trace_ids))
-        start_labels["total_tests"] = str(total)
-        start_labels["failed_tests"] = str(failed)
-        start_labels["total_duration_seconds"] = f"{total_duration:.3f}"
-        start_labels["failure_rate_percent"] = f"{failure_rate_percent:.2f}"
-        start_labels["success_rate_percent"] = f"{success_rate_percent:.2f}"
+        # Every run-level rollup is emitted as a metric *value* keyed only by the
+        # stable run identity. Earlier versions baked the mutable totals
+        # (total_tests, failed_tests, job_count, ...) into labels on the
+        # start-time metric. A label set IS the series identity in Prometheus, so
+        # each re-aggregation while a run's job traces trickled in minted a brand
+        # new series; last_over_time(...[range]) then resurrected every stale
+        # snapshot and a single run showed up as many identical-run_id rows.
+        # Keeping totals as values means the run stays one series whose value
+        # simply updates as more of its traces arrive.
         lines.append(
-            f"pytest_run_start_time_seconds{metric_labels(start_labels)} {start_time_seconds:.6f}"
+            f"pytest_run_start_time_seconds{metric_labels(run_labels)} {start_time_seconds:.6f}"
         )
         lines.append(
             f"pytest_run_end_time_seconds{metric_labels(run_labels)} {end_time_seconds:.6f}"
@@ -1210,6 +1202,9 @@ def extract_run_rollup_metrics(
         lines.append(f"pytest_run_failed_tests{metric_labels(run_labels)} {failed}")
         lines.append(
             f"pytest_run_duration_seconds{metric_labels(run_labels)} {total_duration:.6f}"
+        )
+        lines.append(
+            f"pytest_run_job_count{metric_labels(run_labels)} {len(job_names)}"
         )
         for job_name in job_names:
             job_labels = dict(run_labels)

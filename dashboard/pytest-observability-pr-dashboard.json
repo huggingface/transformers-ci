@@ -350,53 +350,55 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(5, last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range])) * 1000",
+          "expr": "topk(5, max by (run_id, pr) (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range])))) * 1000",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
-          "refId": "A"
+          "refId": "Start"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (run_id, pr) (last_over_time(pytest_run_job_count{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range])))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Jobs"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (run_id, pr) (last_over_time(pytest_run_total_tests{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range])))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Total"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (run_id, pr) (last_over_time(pytest_run_duration_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range])))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Duration"
+        },
+        {
+          "editorMode": "code",
+          "expr": "100 * (1 - max by (run_id, pr) (last_over_time(pytest_run_failed_tests{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]))) / max by (run_id, pr) (last_over_time(pytest_run_total_tests{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Result"
         }
       ],
       "title": "Past Runs",
       "transformations": [
         {
-          "id": "labelsToFields",
-          "options": {
-            "mode": "columns",
-            "valueLabel": ""
-          }
-        },
-        {
-          "id": "convertFieldType",
-          "options": {
-            "conversions": [
-              {
-                "destinationType": "number",
-                "targetField": "job_count"
-              },
-              {
-                "destinationType": "number",
-                "targetField": "total_tests"
-              },
-              {
-                "destinationType": "number",
-                "targetField": "failed_tests"
-              },
-              {
-                "destinationType": "number",
-                "targetField": "total_duration_seconds"
-              },
-              {
-                "destinationType": "number",
-                "targetField": "failure_rate_percent"
-              },
-              {
-                "destinationType": "number",
-                "targetField": "success_rate_percent"
-              }
-            ]
-          }
+          "id": "merge",
+          "options": {}
         },
         {
           "id": "organize",
@@ -406,30 +408,44 @@
               "__name__": true,
               "instance": true,
               "job": true,
-              "jobs": true,
-              "pr": true,
               "provider": true,
               "service_name": true,
-              "trace_count": true,
-              "failed_tests": true,
-              "failure_rate_percent": true
+              "pr": true
             },
             "indexByName": {
               "run_id": 0,
-              "job_count": 1,
-              "total_tests": 2,
-              "Value": 3,
-              "total_duration_seconds": 4,
-              "success_rate_percent": 5
+              "Value #Jobs": 1,
+              "Value #Total": 2,
+              "Value #Start": 3,
+              "Value #Duration": 4,
+              "Value #Result": 5
             },
             "renameByName": {
-              "Value": "Started",
-              "job_count": "Job Count",
-              "total_tests": "Tests",
-              "total_duration_seconds": "Duration",
-              "success_rate_percent": "Result",
-              "run_id": "Run ID"
+              "run_id": "Run ID",
+              "Value #Jobs": "Job Count",
+              "Value #Total": "Tests",
+              "Value #Start": "Started",
+              "Value #Duration": "Duration",
+              "Value #Result": "Result"
             }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Started",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "limit",
+          "options": {
+            "limitField": 5
           }
         }
       ],
