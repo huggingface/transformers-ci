@@ -528,8 +528,9 @@ def prepare_environment(
     if otlp_endpoint:
         updated_env["OTEL_EXPORTER_OTLP_ENDPOINT"] = otlp_endpoint
         updated_env.pop("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None)
-    if token:
-        headers = bearer_auth_header(token)
+    resolved_token = token or updated_env.get("OTEL_EXPORTER_OTLP_TOKEN")
+    if resolved_token:
+        headers = bearer_auth_header(resolved_token)
         updated_env["OTEL_EXPORTER_OTLP_HEADERS"] = headers
         updated_env["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = headers
 

@@ -141,6 +141,16 @@ class ConfigureCiOtelTests(TestCase):
         self.assertEqual(env["OTEL_TRACES_EXPORTER"], "otlp_proto_http")
         self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf")
 
+    def test_prepare_environment_uses_env_otlp_endpoint(self):
+        env, export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example",
+            }
+        )
+
+        self.assertTrue(export_traces)
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_ENDPOINT"], "https://otel.example")
+
     def test_prepare_environment_accepts_cli_otlp_endpoint(self):
         env, export_traces = cli.prepare_environment(
             {},
@@ -182,6 +192,43 @@ class ConfigureCiOtelTests(TestCase):
         self.assertEqual(
             env["OTEL_EXPORTER_OTLP_TRACES_HEADERS"],
             "Authorization=Bearer secret-token",
+        )
+
+    def test_prepare_environment_sets_headers_from_env_token(self):
+        env, export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example",
+                "OTEL_EXPORTER_OTLP_TOKEN": "env-token",
+            }
+        )
+
+        self.assertTrue(export_traces)
+        self.assertEqual(
+            env["OTEL_EXPORTER_OTLP_HEADERS"],
+            "Authorization=Bearer env-token",
+        )
+        self.assertEqual(
+            env["OTEL_EXPORTER_OTLP_TRACES_HEADERS"],
+            "Authorization=Bearer env-token",
+        )
+
+    def test_prepare_environment_cli_token_overrides_env_token(self):
+        env, export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example",
+                "OTEL_EXPORTER_OTLP_TOKEN": "env-token",
+            },
+            token="cli-token",
+        )
+
+        self.assertTrue(export_traces)
+        self.assertEqual(
+            env["OTEL_EXPORTER_OTLP_HEADERS"],
+            "Authorization=Bearer cli-token",
+        )
+        self.assertEqual(
+            env["OTEL_EXPORTER_OTLP_TRACES_HEADERS"],
+            "Authorization=Bearer cli-token",
         )
 
     def test_prepare_environment_normalizes_https_protocol_alias(self):
