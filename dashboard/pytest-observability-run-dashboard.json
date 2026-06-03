@@ -642,7 +642,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) ((timestamp(last_over_time(pytest_run_job_duration_seconds{run_id=~\"$run_id\"}[90d])) - last_over_time(pytest_run_job_duration_seconds{run_id=~\"$run_id\"}[90d])) * 1000)"
+          "expr": "max by (test_job) (last_over_time(pytest_run_job_member_info{run_id=~\"$run_id\"}[90d]) * on (run_id) group_left() max by (run_id)(last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\"}[90d]))) * 1000"
         },
         {
           "refId": "Duration",

@@ -35,12 +35,6 @@
       "title": "Back to PR",
       "type": "link",
       "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr}"
-    },
-    {
-      "targetBlank": true,
-      "title": "Grafana Explore",
-      "type": "link",
-      "url": "/explore?orgId=1"
     }
   ],
   "panels": [
