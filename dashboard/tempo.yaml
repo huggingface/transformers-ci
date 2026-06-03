@@ -19,8 +19,13 @@ distributor:
       protocols:
         grpc:
           endpoint: 0.0.0.0:4317
+          max_recv_msg_size_mib: 64
         http:
           endpoint: 0.0.0.0:4318
+          # CI run traces can be 8 MB+ (10k+ spans per shard). Raise the OTLP
+          # body limit well above Tempo's 4 MiB default so whole traces ingest
+          # (used by the prod->staging trace backfill in aws/sync_prod_to_staging.py).
+          max_request_body_size: 67108864  # 64 MiB
 
 ingester:
   # Cut the head block fairly often so freshly ingested CI traces become
