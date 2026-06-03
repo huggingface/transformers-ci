@@ -626,7 +626,7 @@
     "to": "now"
   },
   "timezone": "browser",
-  "title": "Pytest Observability - Run",
+  "title": "Run",
   "uid": "pytest-observability-by-run",
   "version": 1,
   "timepicker": {

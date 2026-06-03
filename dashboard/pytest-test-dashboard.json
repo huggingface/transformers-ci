@@ -475,7 +475,7 @@
     "to": "now"
   },
   "timezone": "browser",
-  "title": "Pytest Test",
+  "title": "Test",
   "uid": "pytest-test",
   "version": 1
 }

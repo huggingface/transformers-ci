@@ -140,11 +140,23 @@
                 ]
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Title"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 360
+              }
+            ]
           }
         ]
       },
       "gridPos": {
-        "h": 6,
+        "h": 13,
         "w": 24,
         "x": 0,
         "y": 0
@@ -178,6 +190,15 @@
           "legendFormat": "__auto",
           "range": false,
           "refId": "Activity"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (pr, title) (last_over_time(pytest_pr_info{pr=~\"$pr\",pr!=\"main\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Title"
         },
         {
           "editorMode": "code",
@@ -229,15 +250,17 @@
               "Time": true,
               "__name__": true,
               "instance": true,
-              "job": true
+              "job": true,
+              "Value #Title": true
             },
             "indexByName": {
               "pr": 0,
-              "Value #Age": 1,
-              "Value #Activity": 2,
-              "Value #Runs": 3,
-              "Value #Failures": 4,
-              "Value #Rate": 5
+              "title": 1,
+              "Value #Age": 2,
+              "Value #Activity": 3,
+              "Value #Runs": 4,
+              "Value #Failures": 5,
+              "Value #Rate": 6
             },
             "renameByName": {
               "pr": "PR",
@@ -245,7 +268,8 @@
               "Value #Activity": "Last Activity",
               "Value #Runs": "Runs",
               "Value #Failures": "Failures",
-              "Value #Rate": "Failure Rate"
+              "Value #Rate": "Failure Rate",
+              "title": "Title"
             }
           }
         }
@@ -364,10 +388,10 @@
         ]
       },
       "gridPos": {
-        "h": 6,
+        "h": 13,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 13
       },
       "id": 11,
       "options": {
@@ -583,10 +607,10 @@
         ]
       },
       "gridPos": {
-        "h": 8,
+        "h": 13,
         "w": 12,
         "x": 0,
-        "y": 12
+        "y": 26
       },
       "id": 8,
       "options": {
@@ -777,10 +801,10 @@
         ]
       },
       "gridPos": {
-        "h": 8,
+        "h": 13,
         "w": 12,
         "x": 12,
-        "y": 12
+        "y": 26
       },
       "id": 9,
       "options": {
@@ -960,7 +984,7 @@
         "h": 14,
         "w": 24,
         "x": 0,
-        "y": 20
+        "y": 39
       },
       "id": 4,
       "options": {
@@ -1089,7 +1113,7 @@
     "to": "now"
   },
   "timezone": "browser",
-  "title": "Pytest Observability",
+  "title": "Home",
   "uid": "pytest-observability",
   "version": 1
 }

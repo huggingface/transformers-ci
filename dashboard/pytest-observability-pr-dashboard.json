@@ -125,6 +125,30 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
           }
         ]
       },
@@ -163,41 +187,67 @@
       "pluginVersion": "12.0.0",
       "targets": [
         {
+          "refId": "Started",
           "editorMode": "code",
-          "expr": "count by (test_job, status_code) (last_over_time(pytest_test_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\",status_code!=\"UNSET\"}[90d])) or label_replace(0 * count by (test_job) (last_over_time(pytest_test_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\",status_code!=\"UNSET\"}[90d])), \"status_code\", \"ERROR\", \"\", \"\")",
           "format": "table",
           "instant": true,
-          "legendFormat": "__auto",
           "range": false,
-          "refId": "A"
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) ((timestamp(last_over_time(pytest_run_job_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d])) - last_over_time(pytest_run_job_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d])) * 1000)"
+        },
+        {
+          "refId": "Duration",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) (last_over_time(pytest_run_job_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d]))"
+        },
+        {
+          "refId": "Pass",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "count by (test_job) (last_over_time(pytest_test_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\",status_code=\"OK\"}[90d]))"
+        },
+        {
+          "refId": "Fail",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "count by (test_job) (last_over_time(pytest_test_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\",status_code=\"ERROR\"}[90d])) or (0 * count by (test_job) (last_over_time(pytest_test_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\",status_code!=\"UNSET\"}[90d])))"
         }
       ],
       "title": "Latest Run Jobs",
       "transformations": [
         {
-          "id": "groupingToMatrix",
-          "options": {
-            "columnField": "status_code",
-            "rowField": "test_job",
-            "valueField": "Value",
-            "emptyValue": "zero"
-          }
+          "id": "merge",
+          "options": {}
         },
         {
           "id": "organize",
           "options": {
             "excludeByName": {
-              "UNSET": true
+              "Time": true
             },
             "indexByName": {
-              "test_job\\status_code": 0,
-              "OK": 1,
-              "ERROR": 2
+              "test_job": 0,
+              "Value #Started": 1,
+              "Value #Duration": 2,
+              "Value #Pass": 3,
+              "Value #Fail": 4
             },
             "renameByName": {
-              "test_job\\status_code": "Job",
-              "OK": "Pass",
-              "ERROR": "Fail"
+              "test_job": "Job",
+              "Value #Started": "Started",
+              "Value #Duration": "Duration",
+              "Value #Pass": "Pass",
+              "Value #Fail": "Fail"
             }
           }
         }
@@ -361,7 +411,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr) (last_over_time(pytest_run_job_count{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])))",
+          "expr": "count by (run_id, pr) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -687,6 +737,34 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
+        "definition": "query_result(floor((time() - max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d]))) / 3600))",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "pr_last_event_hours",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(floor((time() - max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d]))) / 3600))",
+          "refId": "Prometheus-pr_last_event_hours-Variable-Query"
+        },
+        "regex": "/} (\\d+)/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "query_result(count(count by (run_id) (pytest_run_total_tests{pr=~\"$pr\"})))",
         "hide": 2,
         "includeAll": false,
@@ -824,7 +902,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(group by (pr) (pytest_pr_info{pr=~\"$pr\"}), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days\", \"pr\", \".*\"))",
+        "definition": "query_result(label_replace(group by (pr) (pytest_pr_info{pr=~\"$pr\"}), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days | **Last event:** `${pr_last_event_hours:raw}h ago`\", \"pr\", \".*\"))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -832,7 +910,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[90d])), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days\", \"pr\", \".*\"))",
+          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[90d])), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days | **Last event:** `${pr_last_event_hours:raw}h ago`\", \"pr\", \".*\"))",
           "refId": "Prometheus-pr_metadata_section-Variable-Query"
         },
         "regex": "/m=\"([^\"]+)\"/",
@@ -848,7 +926,7 @@
     "to": "now"
   },
   "timezone": "browser",
-  "title": "Pytest Observability - Branch",
+  "title": "Branch",
   "uid": "pytest-observability-by-pr",
   "version": 1,
   "timepicker": {

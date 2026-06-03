@@ -878,7 +878,7 @@
     "to": "now"
   },
   "timezone": "browser",
-  "title": "Pytest Observability - Stack Health",
+  "title": "CI Health",
   "uid": "pytest-observability-stack-health",
   "version": 2
 }
