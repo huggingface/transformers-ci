@@ -85,7 +85,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))",
+          "expr": "(sum(last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -147,7 +147,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d])) or vector(0)",
+          "expr": "(sum(last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d])) or vector(0))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -216,7 +216,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * (sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])) - (sum(last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d])) or vector(0))) / sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))",
+          "expr": "100 * ((sum(last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))) - (sum(last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d])) or vector(0))) / (sum(last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -421,7 +421,7 @@
         "h": 24,
         "w": 24,
         "x": 0,
-        "y": 5
+        "y": 13
       },
       "id": 5,
       "options": {
@@ -504,6 +504,204 @@
       ],
       "type": "table",
       "description": "Per-test results for the selected run. The query is capped by the Row limit variable so large runs stay responsive."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Job"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View job",
+                    "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${__value.raw}&var-run_id=${run_id}&var-pr=${pr}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Fail"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "id": 6,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Fail"
+          }
+        ]
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "Started",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) ((timestamp(last_over_time(pytest_run_job_duration_seconds{run_id=~\"$run_id\"}[90d])) - last_over_time(pytest_run_job_duration_seconds{run_id=~\"$run_id\"}[90d])) * 1000)"
+        },
+        {
+          "refId": "Duration",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) (last_over_time(pytest_run_job_duration_seconds{run_id=~\"$run_id\"}[90d]))"
+        },
+        {
+          "refId": "Pass",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) (last_over_time(pytest_run_job_passed_tests{run_id=~\"$run_id\"}[90d]))"
+        },
+        {
+          "refId": "Fail",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d]))"
+        }
+      ],
+      "title": "Jobs",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "test_job": 0,
+              "Value #Started": 1,
+              "Value #Duration": 2,
+              "Value #Pass": 3,
+              "Value #Fail": 4
+            },
+            "renameByName": {
+              "test_job": "Job",
+              "Value #Started": "Started",
+              "Value #Duration": "Duration",
+              "Value #Pass": "Pass",
+              "Value #Fail": "Fail"
+            }
+          }
+        }
+      ],
+      "type": "table"
     }
   ],
   "schemaVersion": 41,

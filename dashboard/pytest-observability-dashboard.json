@@ -211,7 +211,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "sum by (pr) (max by (pr, run_id) (last_over_time(pytest_run_failed_tests{pr=~\"$pr\",pr!=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"}[$__range]))))",
+          "expr": "sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_failed_tests{pr=~\"$pr\",pr!=\"main\"}[$__range])) or sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_failed_tests{pr=~\"$pr\",pr!=\"main\"}[$__range]))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"}[$__range]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -220,7 +220,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "100 * sum by (pr) (max by (pr, run_id) (last_over_time(pytest_run_failed_tests{pr=~\"$pr\",pr!=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"}[$__range])))) / sum by (pr) (max by (pr, run_id) (last_over_time(pytest_run_total_tests{pr=~\"$pr\",pr!=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"}[$__range]))))",
+          "expr": "100 * sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_failed_tests{pr=~\"$pr\",pr!=\"main\"}[$__range])) or sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_failed_tests{pr=~\"$pr\",pr!=\"main\"}[$__range]))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"}[$__range])))) / sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_total_tests{pr=~\"$pr\",pr!=\"main\"}[$__range])) or sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_total_tests{pr=~\"$pr\",pr!=\"main\"}[$__range]))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=~\"$pr\",pr!=\"main\"}[$__range]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -425,7 +425,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr) (last_over_time(pytest_run_job_count{pr=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=\"main\"}[$__range])))",
+          "expr": "count by (run_id, pr) (last_over_time(pytest_run_job_member_info{pr=\"main\"}[$__range]))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -434,7 +434,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr) (last_over_time(pytest_run_total_tests{pr=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=\"main\"}[$__range])))",
+          "expr": "max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_total_tests{pr=\"main\"}[$__range])) or sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_total_tests{pr=\"main\"}[$__range]))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=\"main\"}[$__range])))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -443,7 +443,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr) (last_over_time(pytest_run_failed_tests{pr=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=\"main\"}[$__range])))",
+          "expr": "max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_failed_tests{pr=\"main\"}[$__range])) or sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_failed_tests{pr=\"main\"}[$__range]))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=\"main\"}[$__range])))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -461,7 +461,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "100 * max by (run_id, pr) (last_over_time(pytest_run_failed_tests{pr=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=\"main\"}[$__range]))) / max by (run_id, pr) (last_over_time(pytest_run_total_tests{pr=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=\"main\"}[$__range])))",
+          "expr": "100 * max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_failed_tests{pr=\"main\"}[$__range])) or sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_failed_tests{pr=\"main\"}[$__range]))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=\"main\"}[$__range]))) / max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_total_tests{pr=\"main\"}[$__range])) or sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_total_tests{pr=\"main\"}[$__range]))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=\"main\"}[$__range])))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -644,7 +644,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr) (last_over_time(pytest_run_job_count{pr=~\"$pr\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\"$job\",pr=~\"$pr\"}[$__range])))",
+          "expr": "count by (run_id, pr) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\"}[$__range]))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
