@@ -85,7 +85,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[$__range]))",
+          "expr": "sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -147,7 +147,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[$__range])) or vector(0)",
+          "expr": "sum(last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d])) or vector(0)",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -216,7 +216,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * (sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[$__range])) - (sum(last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[$__range])) or vector(0))) / sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[$__range]))",
+          "expr": "100 * (sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])) - (sum(last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d])) or vector(0))) / sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -274,7 +274,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "min(last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\"}[$__range])) * 1000",
+          "expr": "min(last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\"}[90d])) * 1000",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -458,7 +458,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk($test_limit, last_over_time(pytest_test_duration_seconds{run_id=~\"$run_id\",status_code=~\"$status_filter\"}[$__range]))",
+          "expr": "topk($test_limit, last_over_time(pytest_test_duration_seconds{run_id=~\"$run_id\",status_code=~\"$status_filter\"}[90d]))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -622,11 +622,14 @@
     ]
   },
   "time": {
-    "from": "now-24h",
+    "from": "now-90d",
     "to": "now"
   },
   "timezone": "browser",
   "title": "Pytest Observability - Run",
   "uid": "pytest-observability-by-run",
-  "version": 1
+  "version": 1,
+  "timepicker": {
+    "hidden": true
+  }
 }

@@ -164,7 +164,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "count by (test_job, status_code) (last_over_time(pytest_test_duration_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$latest_run_id\"}[$__range]))",
+          "expr": "count by (test_job, status_code) (last_over_time(pytest_test_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\",status_code!=\"UNSET\"}[90d])) or label_replace(0 * count by (test_job) (last_over_time(pytest_test_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\",status_code!=\"UNSET\"}[90d])), \"status_code\", \"ERROR\", \"\", \"\")",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -186,7 +186,9 @@
         {
           "id": "organize",
           "options": {
-            "excludeByName": {},
+            "excludeByName": {
+              "UNSET": true
+            },
             "indexByName": {
               "test_job\\status_code": 0,
               "OK": 1,
@@ -350,7 +352,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(5, max by (run_id, pr) (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range])))) * 1000",
+          "expr": "topk(5, max by (run_id, pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])))) * 1000",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -359,7 +361,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr) (last_over_time(pytest_run_job_count{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range])))",
+          "expr": "max by (run_id, pr) (last_over_time(pytest_run_job_count{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -368,7 +370,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr) (last_over_time(pytest_run_total_tests{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range])))",
+          "expr": "max by (run_id, pr) (last_over_time(pytest_run_total_tests{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -377,7 +379,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr) (last_over_time(pytest_run_duration_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range])))",
+          "expr": "max by (run_id, pr) (last_over_time(pytest_run_duration_seconds{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -386,7 +388,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "100 * (1 - max by (run_id, pr) (last_over_time(pytest_run_failed_tests{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]))) / max by (run_id, pr) (last_over_time(pytest_run_total_tests{service_name=~\"$service\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id!~\"$latest_run_id\"}[$__range]))))",
+          "expr": "100 * (1 - max by (run_id, pr) (last_over_time(pytest_run_failed_tests{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))) / max by (run_id, pr) (last_over_time(pytest_run_total_tests{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -461,32 +463,6 @@
   "templating": {
     "list": [
       {
-        "allValue": ".*",
-        "current": {
-          "selected": true,
-          "text": "All",
-          "value": "$__all"
-        },
-        "datasource": {
-          "type": "prometheus",
-          "uid": "prometheus"
-        },
-        "definition": "label_values(pytest_run_start_time_seconds, service_name)",
-        "includeAll": true,
-        "label": "Service",
-        "multi": false,
-        "name": "service",
-        "options": [],
-        "query": {
-          "qryType": 1,
-          "query": "label_values(pytest_run_start_time_seconds, service_name)",
-          "refId": "Prometheus-service-Variable-Query"
-        },
-        "refresh": 2,
-        "sort": 1,
-        "type": "query"
-      },
-      {
         "current": {
           "selected": false,
           "text": "",
@@ -496,7 +472,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_run_start_time_seconds{service_name=~\"$service\"}, pr)",
+        "definition": "label_values(pytest_run_start_time_seconds{}, pr)",
         "includeAll": false,
         "label": "PR",
         "multi": false,
@@ -504,7 +480,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_run_start_time_seconds{service_name=~\"$service\"}, pr)",
+          "query": "label_values(pytest_run_start_time_seconds{}, pr)",
           "refId": "Prometheus-pr-Variable-Query"
         },
         "refresh": 2,
@@ -521,7 +497,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{service_name=~\"$service\"}, repository)",
+        "definition": "label_values(pytest_pr_info{}, repository)",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -530,7 +506,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_pr_info{service_name=~\"$service\"}, repository)",
+          "query": "label_values(pytest_pr_info{}, repository)",
           "refId": "Prometheus-pr_repository-Variable-Query"
         },
         "refresh": 2,
@@ -548,7 +524,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, author)",
+        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, author)",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -557,7 +533,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, author)",
+          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, author)",
           "refId": "Prometheus-pr_author-Variable-Query"
         },
         "refresh": 2,
@@ -575,7 +551,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, title)",
+        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, title)",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -584,7 +560,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, title)",
+          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, title)",
           "refId": "Prometheus-pr_title-Variable-Query"
         },
         "refresh": 2,
@@ -602,7 +578,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, state)",
+        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, state)",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -611,7 +587,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, state)",
+          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, state)",
           "refId": "Prometheus-pr_state-Variable-Query"
         },
         "refresh": 2,
@@ -629,7 +605,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, html_url)",
+        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, html_url)",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -638,7 +614,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, html_url)",
+          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, html_url)",
           "refId": "Prometheus-pr_html_url-Variable-Query"
         },
         "refresh": 2,
@@ -656,7 +632,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, reviewers)",
+        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, reviewers)",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -665,7 +641,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}, reviewers)",
+          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, reviewers)",
           "refId": "Prometheus-pr_reviewers-Variable-Query"
         },
         "refresh": 2,
@@ -683,7 +659,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(floor((time() - max by (pr) (pytest_pr_created_at_seconds{service_name=~\"$service\",pr=~\"$pr\"})) / 86400))",
+        "definition": "query_result(floor((time() - max by (pr) (pytest_pr_created_at_seconds{pr=~\"$pr\"})) / 86400))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -692,7 +668,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(floor((time() - max by (pr) (last_over_time(pytest_pr_created_at_seconds{service_name=~\"$service\",pr=~\"$pr\"}[$__range]))) / 86400))",
+          "query": "query_result(floor((time() - max by (pr) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$pr\"}[90d]))) / 86400))",
           "refId": "Prometheus-pr_age_days-Variable-Query"
         },
         "regex": "/} (\\d+)/",
@@ -711,7 +687,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(count(count by (run_id) (pytest_run_total_tests{service_name=~\"$service\",pr=~\"$pr\"})))",
+        "definition": "query_result(count(count by (run_id) (pytest_run_total_tests{pr=~\"$pr\"})))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -720,7 +696,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(count(count by (run_id) (last_over_time(pytest_run_total_tests{service_name=~\"$service\",pr=~\"$pr\"}[$__range]))))",
+          "query": "query_result(count(count by (run_id) (last_over_time(pytest_run_total_tests{pr=~\"$pr\"}[90d]))))",
           "refId": "Prometheus-pr_total_runs-Variable-Query"
         },
         "regex": "/} (\\d+)/",
@@ -739,7 +715,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(topk(1, pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"}))",
+        "definition": "query_result(topk(1, pytest_run_start_time_seconds{pr=~\"$pr\"}))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -748,7 +724,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(topk(1, last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"}[$__range])))",
+          "query": "query_result(topk(1, last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d])))",
           "refId": "Prometheus-latest_run_id-Variable-Query"
         },
         "regex": "/.*run_id=\"([^\"]+)\".*/",
@@ -767,7 +743,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(label_replace(group by (pr) (pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"}), \"v\", \"PR #$1\", \"pr\", \"([0-9]+)\"), \"v\", \"Main branch\", \"pr\", \"main\"))",
+        "definition": "query_result(label_replace(label_replace(group by (pr) (pytest_run_start_time_seconds{pr=~\"$pr\"}), \"v\", \"PR #$1\", \"pr\", \"([0-9]+)\"), \"v\", \"Main branch\", \"pr\", \"main\"))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -775,7 +751,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"}[$__range])), \"v\", \"PR #$1\", \"pr\", \"([0-9]+)\"), \"v\", \"Main branch\", \"pr\", \"main\"))",
+          "query": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d])), \"v\", \"PR #$1\", \"pr\", \"([0-9]+)\"), \"v\", \"Main branch\", \"pr\", \"main\"))",
           "refId": "Prometheus-branch_label-Variable-Query"
         },
         "regex": "/v=\"([^\"]+)\"/",
@@ -794,7 +770,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(label_replace(group by (pr) (pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"}), \"u\", \"https://github.com/${pr_repository:raw}/pull/$1\", \"pr\", \"([0-9]+)\"), \"u\", \"https://github.com/${pr_repository:raw}/tree/main\", \"pr\", \"main\"))",
+        "definition": "query_result(label_replace(label_replace(group by (pr) (pytest_run_start_time_seconds{pr=~\"$pr\"}), \"u\", \"https://github.com/${pr_repository:raw}/pull/$1\", \"pr\", \"([0-9]+)\"), \"u\", \"https://github.com/${pr_repository:raw}/tree/main\", \"pr\", \"main\"))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -802,7 +778,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\"}[$__range])), \"u\", \"https://github.com/${pr_repository:raw}/pull/$1\", \"pr\", \"([0-9]+)\"), \"u\", \"https://github.com/${pr_repository:raw}/tree/main\", \"pr\", \"main\"))",
+          "query": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d])), \"u\", \"https://github.com/${pr_repository:raw}/pull/$1\", \"pr\", \"([0-9]+)\"), \"u\", \"https://github.com/${pr_repository:raw}/tree/main\", \"pr\", \"main\"))",
           "refId": "Prometheus-branch_url-Variable-Query"
         },
         "regex": "/u=\"([^\"]+)\"/",
@@ -821,7 +797,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(group by (pr) (pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
+        "definition": "query_result(label_replace(group by (pr) (pytest_pr_info{pr=~\"$pr\"}), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -829,7 +805,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}[$__range])), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
+          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[90d])), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
           "refId": "Prometheus-pr_title_section-Variable-Query"
         },
         "regex": "/t=\"([^\"]+)\"/",
@@ -848,7 +824,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(group by (pr) (pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days\", \"pr\", \".*\"))",
+        "definition": "query_result(label_replace(group by (pr) (pytest_pr_info{pr=~\"$pr\"}), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days\", \"pr\", \".*\"))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -856,7 +832,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{service_name=~\"$service\",pr=~\"$pr\"}[$__range])), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days\", \"pr\", \".*\"))",
+          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[90d])), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days\", \"pr\", \".*\"))",
           "refId": "Prometheus-pr_metadata_section-Variable-Query"
         },
         "regex": "/m=\"([^\"]+)\"/",
@@ -868,11 +844,14 @@
     ]
   },
   "time": {
-    "from": "now-24h",
+    "from": "now-90d",
     "to": "now"
   },
   "timezone": "browser",
   "title": "Pytest Observability - Branch",
   "uid": "pytest-observability-by-pr",
-  "version": 1
+  "version": 1,
+  "timepicker": {
+    "hidden": true
+  }
 }

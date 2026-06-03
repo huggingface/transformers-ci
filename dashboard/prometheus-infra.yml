@@ -1,9 +1,13 @@
 global:
   # Infrastructure Prometheus: scrapes the observability stack itself
   # (tempo, grafana, cadvisor, node_exporter, and both Prometheus instances).
-  # 15s scrape + 14d retention keeps disk usage modest despite ~4000+ series.
   # The Stack Health dashboard queries this datasource via uid prometheus-infra.
-  scrape_interval: 15s
+  #
+  # 60s scrape: these are slow-moving infra gauges (CPU/mem/disk/ingest), so the
+  # dashboard's rate(...[5m]) / increase(...[24h]) queries don't need fine
+  # resolution. At ~4700 series this is ~6.8M samples/day — a 4x cut from the
+  # old 15s interval (~27M/day), which dominated total ingest. 14d retention.
+  scrape_interval: 60s
 
 scrape_configs:
   # Scrape both Prometheus instances so the Stack Health dashboard can show
