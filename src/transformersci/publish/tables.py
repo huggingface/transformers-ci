@@ -109,75 +109,89 @@ def _epoch_to_date(epoch_seconds: int) -> str:
     return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
+def shape_trace_rows(trace: dict) -> list[dict]:
+    """Build the per-test rows for a single trace (deduped by test_nodeid).
+
+    Pulled out of :func:`build_test_rows` so the publisher can shape one trace
+    at a time and never hold the whole window of (large) traces in memory.
+    """
+    trace_info, rows = extract_trace_rows(trace)
+    if not rows:
+        return []
+    ts = _micros_to_epoch_seconds(trace_info.get("start_time", 0))
+    date = _epoch_to_date(ts)
+
+    # nodeid -> full (untruncated) exception message + stacktrace
+    failures = {d["test_nodeid"]: d for d in extract_failure_details(trace)}
+
+    by_node: dict[str, dict] = {}
+    for row in rows:
+        nodeid = str(row.get("test_nodeid", ""))
+        detail = failures.get(nodeid, {})
+        by_node[nodeid] = {
+            "ts": ts,
+            "date": date,
+            "service_name": str(row.get("service_name", "unknown")),
+            "provider": str(row.get("provider", "unknown")),
+            "pr": str(row.get("pr", "none")),
+            "run_id": str(row.get("run_id", "")),
+            "trace_id": str(row.get("trace_id", "")),
+            "test_job": str(row.get("test_job", "unknown")),
+            "test_nodeid": nodeid,
+            "test_module": str(row.get("test_module", "")),
+            "test_class": str(row.get("test_class", "")),
+            "test_function": str(row.get("test_function", "")),
+            "test_line": str(row.get("test_line", "")),
+            "model": model_from_nodeid(nodeid),
+            "gpu": gpu_from_job(str(row.get("test_job", ""))),
+            "status_code": str(row.get("status_code", "UNSET")),
+            "duration_seconds": float(row.get("duration_seconds", 0.0)),
+            "exception_type": str(
+                detail.get("exception_type", row.get("exception_type", ""))
+            ),
+            # Full, untruncated message + traceback (the metric path caps
+            # the stacktrace at 4000 chars; we publish everything).
+            "exception_message": str(detail.get("exception_message", "")),
+            "exception_stacktrace": str(
+                detail.get("exception_stacktrace", "")
+                or row.get("exception_stacktrace", "")
+            ),
+        }
+    return list(by_node.values())
+
+
 def build_test_rows(traces: list[dict]) -> list[dict]:
     """Build deduped per-test rows from Jaeger-shaped traces.
 
     Deduped by (trace_id, test_nodeid); later traces win, which keeps the most
     complete copy when the same settled trace appears across overlapping
-    windows.
+    windows. (The streaming publisher uses :func:`shape_trace_rows` directly.)
     """
     by_key: dict[tuple[str, str], dict] = {}
     for trace in traces:
-        trace_info, rows = extract_trace_rows(trace)
-        if not rows:
-            continue
-        ts = _micros_to_epoch_seconds(trace_info.get("start_time", 0))
-        date = _epoch_to_date(ts)
-
-        # nodeid -> full (untruncated) exception message + stacktrace
-        failures = {d["test_nodeid"]: d for d in extract_failure_details(trace)}
-
-        for row in rows:
-            nodeid = str(row.get("test_nodeid", ""))
-            detail = failures.get(nodeid, {})
-            record = {
-                "ts": ts,
-                "date": date,
-                "service_name": str(row.get("service_name", "unknown")),
-                "provider": str(row.get("provider", "unknown")),
-                "pr": str(row.get("pr", "none")),
-                "run_id": str(row.get("run_id", "")),
-                "trace_id": str(row.get("trace_id", "")),
-                "test_job": str(row.get("test_job", "unknown")),
-                "test_nodeid": nodeid,
-                "test_module": str(row.get("test_module", "")),
-                "test_class": str(row.get("test_class", "")),
-                "test_function": str(row.get("test_function", "")),
-                "test_line": str(row.get("test_line", "")),
-                "model": model_from_nodeid(nodeid),
-                "gpu": gpu_from_job(str(row.get("test_job", ""))),
-                "status_code": str(row.get("status_code", "UNSET")),
-                "duration_seconds": float(row.get("duration_seconds", 0.0)),
-                "exception_type": str(
-                    detail.get("exception_type", row.get("exception_type", ""))
-                ),
-                # Full, untruncated message + traceback (the metric path caps
-                # the stacktrace at 4000 chars; we publish everything).
-                "exception_message": str(detail.get("exception_message", "")),
-                "exception_stacktrace": str(
-                    detail.get("exception_stacktrace", "")
-                    or row.get("exception_stacktrace", "")
-                ),
-            }
-            by_key[(record["trace_id"], nodeid)] = record
+        for record in shape_trace_rows(trace):
+            by_key[(record["trace_id"], record["test_nodeid"])] = record
     return list(by_key.values())
 
 
-def build_run_rollups(traces: list[dict]) -> list[dict]:
-    """Aggregate traces into one row per (run_id, test_job).
+class RunRollupAccumulator:
+    """Incrementally aggregate traces into one rollup row per (run_id, test_job).
 
-    ``job_count`` is the number of distinct jobs that contributed tests to the
-    *run* (carried onto every job row of that run), mirroring the exporter's
-    run-level rollup semantics.
+    Folding traces in one at a time (``add``) keeps the publisher's memory flat
+    regardless of window size — only the small aggregates are retained, not the
+    traces. ``job_count`` (distinct jobs that contributed tests to the run) is
+    resolved at the end in :meth:`rows`.
     """
-    # (service, provider, pr, run_id, test_job) -> aggregate
-    job_agg: dict[tuple[str, str, str, str, str], dict] = {}
-    run_jobs: dict[tuple[str, str, str, str], set[str]] = {}
 
-    for trace in traces:
+    def __init__(self) -> None:
+        # (service, provider, pr, run_id, test_job) -> aggregate
+        self._job_agg: dict[tuple[str, str, str, str, str], dict] = {}
+        self._run_jobs: dict[tuple[str, str, str, str], set[str]] = {}
+
+    def add(self, trace: dict) -> None:
         trace_info, rows = extract_trace_rows(trace)
         if not rows:
-            continue
+            return
         service = str(trace_info.get("service_name", "unknown"))
         provider = str(trace_info.get("provider", "unknown"))
         pr = str(trace_info.get("pr", "none"))
@@ -190,10 +204,10 @@ def build_run_rollups(traces: list[dict]) -> list[dict]:
         failed = sum(1 for r in rows if str(r.get("status_code")) == "ERROR")
         duration = sum(float(r.get("duration_seconds", 0.0)) for r in rows)
 
-        run_jobs.setdefault((service, provider, pr, run_id), set()).add(job)
+        self._run_jobs.setdefault((service, provider, pr, run_id), set()).add(job)
 
         key = (service, provider, pr, run_id, job)
-        agg = job_agg.get(key)
+        agg = self._job_agg.get(key)
         if agg is None:
             agg = {
                 "date": _epoch_to_date(start),
@@ -208,7 +222,7 @@ def build_run_rollups(traces: list[dict]) -> list[dict]:
                 "start_time": start,
                 "end_time": end,
             }
-            job_agg[key] = agg
+            self._job_agg[key] = agg
         agg["total_tests"] += total
         agg["failed_tests"] += failed
         agg["duration_seconds"] += duration
@@ -217,14 +231,29 @@ def build_run_rollups(traces: list[dict]) -> list[dict]:
             agg["date"] = _epoch_to_date(start)
         agg["end_time"] = max(agg["end_time"], end)
 
-    rollups: list[dict] = []
-    for agg in job_agg.values():
-        agg = dict(agg)
-        agg["passed_tests"] = agg["total_tests"] - agg["failed_tests"]
-        run_key = (agg["service_name"], agg["provider"], agg["pr"], agg["run_id"])
-        agg["job_count"] = len(run_jobs.get(run_key, set()))
-        rollups.append({col: agg[col] for col in RUN_ROLLUP_COLUMNS})
-    return rollups
+    def rows(self) -> list[dict]:
+        rollups: list[dict] = []
+        for agg in self._job_agg.values():
+            agg = dict(agg)
+            agg["passed_tests"] = agg["total_tests"] - agg["failed_tests"]
+            run_key = (agg["service_name"], agg["provider"], agg["pr"], agg["run_id"])
+            agg["job_count"] = len(self._run_jobs.get(run_key, set()))
+            rollups.append({col: agg[col] for col in RUN_ROLLUP_COLUMNS})
+        return rollups
+
+
+def build_run_rollups(traces: list[dict]) -> list[dict]:
+    """Aggregate traces into one row per (run_id, test_job).
+
+    ``job_count`` is the number of distinct jobs that contributed tests to the
+    *run* (carried onto every job row of that run), mirroring the exporter's
+    run-level rollup semantics. (The streaming publisher uses
+    :class:`RunRollupAccumulator` directly.)
+    """
+    acc = RunRollupAccumulator()
+    for trace in traces:
+        acc.add(trace)
+    return acc.rows()
 
 
 def group_by_day(rows: list[dict]) -> dict[str, list[dict]]:

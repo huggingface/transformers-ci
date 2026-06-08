@@ -28,13 +28,12 @@ from .manifest import write_manifest
 from .tables import (
     RUN_ROLLUP_COLUMNS,
     TEST_ROW_COLUMNS,
-    build_run_rollups,
-    build_test_rows,
+    RunRollupAccumulator,
     group_by_day,
-    group_traces_by_day,
+    shape_trace_rows,
     write_parquet,
 )
-from .tempo_window import fetch_window
+from .tempo_window import iter_window_traces
 
 DEFAULT_STAGING_DIR = "/staging"
 DEFAULT_BUCKET_URI = "hf://buckets/huggingface/transformers-ci-telemetry"
@@ -44,64 +43,72 @@ def _log(message: str) -> None:
     print(f"[ci-data-publisher] {message}", file=sys.stderr, flush=True)
 
 
-def write_day_partition(
-    staging: Path,
-    day: str,
-    test_rows: list[dict],
-    rollups: list[dict],
-    raw_traces: list[tuple[str, dict]],
-) -> None:
-    """Write (overwrite) one ``daily/<day>/`` partition."""
-    day_dir = staging / "daily" / day
-    day_dir.mkdir(parents=True, exist_ok=True)
-
-    if test_rows:
-        write_parquet(test_rows, TEST_ROW_COLUMNS, day_dir / "test_rows.parquet")
-    if rollups:
-        write_parquet(rollups, RUN_ROLLUP_COLUMNS, day_dir / "run_rollups.parquet")
-
-    if raw_traces:
-        trace_dir = day_dir / "traces"
-        trace_dir.mkdir(parents=True, exist_ok=True)
-        for trace_id, trace in raw_traces:
-            (trace_dir / f"{trace_id}.json").write_text(
-                json.dumps(trace, separators=(",", ":")), encoding="utf-8"
-            )
+def _write_raw_trace(staging: Path, day: str, trace_id: str, trace: dict) -> None:
+    trace_dir = staging / "daily" / day / "traces"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    (trace_dir / f"{trace_id}.json").write_text(
+        json.dumps(trace, separators=(",", ":")), encoding="utf-8"
+    )
 
 
 def run_cycle(staging_dir: str, bucket_uri: str) -> dict:
-    """Build all partitions for the current window into ``staging_dir``."""
+    """Build all partitions for the current window into ``staging_dir``.
+
+    Streams traces one at a time: each trace's raw JSON is written to its day
+    partition immediately and the trace is then dropped, so peak memory stays
+    flat regardless of how many (large) traces the window holds — this is what
+    keeps the sidecar under its memory cap. Only the small derived rows and
+    rollup aggregates are retained until the per-day Parquet is written.
+    """
     staging = Path(staging_dir)
     staging.mkdir(parents=True, exist_ok=True)
 
-    traces = fetch_window()
-    _log(f"fetched {len(traces)} trace(s) from Tempo over the publish window")
+    test_rows_by_day: dict[str, list[dict]] = {}
+    rollups = RunRollupAccumulator()
+    n_traces = 0
 
-    test_rows = build_test_rows(traces)
-    rollups = build_run_rollups(traces)
-    test_by_day = group_by_day(test_rows)
-    roll_by_day = group_by_day(rollups)
-    traces_by_day = group_traces_by_day(traces)
+    for trace in iter_window_traces():
+        rows = shape_trace_rows(trace)
+        if not rows:
+            continue
+        n_traces += 1
+        rollups.add(trace)
+        day = str(rows[0]["date"])
+        trace_id = str(rows[0]["trace_id"])
+        if not day or day == "unknown":
+            continue
+        test_rows_by_day.setdefault(day, []).extend(rows)
+        if trace_id:
+            _write_raw_trace(staging, day, trace_id, trace)
+        # `trace` (potentially many MB) is now free to be reclaimed.
 
-    days = sorted(set(test_by_day) | set(roll_by_day) | set(traces_by_day))
-    days = [d for d in days if d and d != "unknown"]
+    _log(f"fetched {n_traces} trace(s) from Tempo over the publish window")
+
+    rollup_rows = rollups.rows()
+    roll_by_day = group_by_day(rollup_rows)
+    days = sorted(
+        d for d in (set(test_rows_by_day) | set(roll_by_day)) if d and d != "unknown"
+    )
+    n_rows = 0
     for day in days:
-        write_day_partition(
-            staging,
-            day,
-            test_by_day.get(day, []),
-            roll_by_day.get(day, []),
-            traces_by_day.get(day, []),
-        )
+        day_dir = staging / "daily" / day
+        day_dir.mkdir(parents=True, exist_ok=True)
+        day_rows = test_rows_by_day.get(day, [])
+        if day_rows:
+            write_parquet(day_rows, TEST_ROW_COLUMNS, day_dir / "test_rows.parquet")
+            n_rows += len(day_rows)
+        day_rolls = roll_by_day.get(day, [])
+        if day_rolls:
+            write_parquet(
+                day_rolls, RUN_ROLLUP_COLUMNS, day_dir / "run_rollups.parquet"
+            )
     _log(
-        f"wrote {len(test_rows)} test row(s), {len(rollups)} rollup(s) "
+        f"wrote {n_rows} test row(s), {len(rollup_rows)} rollup(s) "
         f"across {len(days)} day partition(s)"
     )
 
     # Data card + manifest reflect the whole bucket, not just this window.
-    (staging / "README.md").write_text(
-        render_data_card(bucket_uri), encoding="utf-8"
-    )
+    (staging / "README.md").write_text(render_data_card(bucket_uri), encoding="utf-8")
     manifest = write_manifest(staging)
     _log(
         f"manifest: {manifest['partition_count']} partition(s), "

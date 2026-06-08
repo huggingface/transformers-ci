@@ -58,22 +58,15 @@ def publish_service_names() -> list[str]:
     return [os.getenv("PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME)]
 
 
-def fetch_window(
+def window_trace_ids(
     *,
     base_url: str | None = None,
     service_names: list[str] | None = None,
     window_seconds: int | None = None,
     limit: int | None = None,
     now: int | None = None,
-) -> list[dict]:
-    """Return all settled traces seen in the lookback window, Jaeger-shaped.
-
-    Searches every configured service name and merges the results (deduped by
-    trace_id). Each element is the dict produced by ``tempo_trace_to_jaeger``
-    (via ``get_trace``); pass it straight to ``extract_trace_rows`` /
-    ``build_test_rows``. Traces that fail to fetch are skipped, matching the
-    exporter's best-effort behaviour.
-    """
+) -> list[str]:
+    """Distinct trace_ids seen in the lookback window across all service names."""
     base_url = base_url or tempo_base_url()
     service_names = service_names or publish_service_names()
     window_seconds = window_seconds or publish_window_seconds()
@@ -89,10 +82,53 @@ def fetch_window(
             if trace_id not in seen:
                 seen.add(trace_id)
                 trace_ids.append(trace_id)
+    return trace_ids
 
-    traces: list[dict] = []
-    for trace_id in trace_ids:
+
+def iter_window_traces(
+    *,
+    base_url: str | None = None,
+    service_names: list[str] | None = None,
+    window_seconds: int | None = None,
+    limit: int | None = None,
+    now: int | None = None,
+):
+    """Yield settled traces in the window one at a time, Jaeger-shaped.
+
+    Streaming (vs. returning a list) keeps the publisher's memory flat: a single
+    CI trace can be many MB, so materialising a whole window of them at once is
+    what OOM-killed the sidecar. Each yielded item is the dict produced by
+    ``tempo_trace_to_jaeger`` (via ``get_trace``); traces that fail to fetch are
+    skipped, matching the exporter's best-effort behaviour.
+    """
+    base_url = base_url or tempo_base_url()
+    for trace_id in window_trace_ids(
+        base_url=base_url,
+        service_names=service_names,
+        window_seconds=window_seconds,
+        limit=limit,
+        now=now,
+    ):
         trace = get_trace(trace_id, base_url)
         if trace is not None:
-            traces.append(trace)
-    return traces
+            yield trace
+
+
+def fetch_window(
+    *,
+    base_url: str | None = None,
+    service_names: list[str] | None = None,
+    window_seconds: int | None = None,
+    limit: int | None = None,
+    now: int | None = None,
+) -> list[dict]:
+    """Eager list form of :func:`iter_window_traces` (kept for callers/tests)."""
+    return list(
+        iter_window_traces(
+            base_url=base_url,
+            service_names=service_names,
+            window_seconds=window_seconds,
+            limit=limit,
+            now=now,
+        )
+    )

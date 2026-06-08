@@ -207,7 +207,7 @@ def test_write_parquet_roundtrip(tmp_path):
 
 def test_run_cycle_writes_partitions(tmp_path, monkeypatch):
     pytest.importorskip("pyarrow")
-    monkeypatch.setattr(main, "fetch_window", lambda: _sample_traces())
+    monkeypatch.setattr(main, "iter_window_traces", lambda: iter(_sample_traces()))
 
     manifest_result = main.run_cycle(str(tmp_path), main.DEFAULT_BUCKET_URI)
 
@@ -232,7 +232,7 @@ def test_run_cycle_writes_partitions(tmp_path, monkeypatch):
 
 def test_main_dry_run_does_not_sync(tmp_path, monkeypatch):
     pytest.importorskip("pyarrow")
-    monkeypatch.setattr(main, "fetch_window", lambda: _sample_traces())
+    monkeypatch.setattr(main, "iter_window_traces", lambda: iter(_sample_traces()))
     called = {"sync": False}
     monkeypatch.setattr(
         main, "sync_to_bucket", lambda *a, **k: called.__setitem__("sync", True)

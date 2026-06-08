@@ -168,11 +168,19 @@ services:
   ci-data-publisher:
     build: ./ci-data-publisher
     restart: unless-stopped
-    mem_limit: ${PUBLISHER_MEM_LIMIT:-768m}
+    # Traces are streamed (one at a time) so memory is roughly the largest day's
+    # rows + its Parquet table, not the whole window of raw traces. 1g is ample
+    # headroom; the earlier 768m OOM was from materialising all traces at once.
+    mem_limit: ${PUBLISHER_MEM_LIMIT:-1024m}
     cpus: ${PUBLISHER_CPUS:-0.30}
     environment:
       - PYTHONPATH=/app/src
       - PYTEST_TRACE_EXPORTER_TEMPO_URL=http://tempo:3200
+      # Disable get_trace()'s in-process trace memoization. That cache exists for
+      # the live exporter's repeated scrapes, but here it would retain every
+      # (large) trace in the window and defeat streaming — it OOM'd the sidecar.
+      # A huge settle window means no trace is ever "settled enough" to cache.
+      - PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS=999999999999
       # Publish every emitter's traces: real CI (pytest-observability) plus the
       # demo / sample-run name (pytest-observability-demo).
       - PUBLISH_SERVICE_NAMES=${PUBLISH_SERVICE_NAMES:-pytest-observability,pytest-observability-demo}
