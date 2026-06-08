@@ -490,12 +490,12 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_failed_tests{pr=\"main\"}[$__range])) or sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_failed_tests{pr=\"main\"}[$__range]))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=\"main\"}[$__range])))",
+          "expr": "max by (run_id, pr, commit_message) (last_over_time(pytest_run_info{pr=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=\"main\"}[$__range])))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
-          "refId": "Failures"
+          "refId": "Commit"
         },
         {
           "editorMode": "code",
@@ -532,23 +532,26 @@
               "job": true,
               "provider": true,
               "service_name": true,
-              "pr": true
+              "pr": true,
+              "Value #Commit": true,
+              "commit_sha": true,
+              "html_url": true
             },
             "indexByName": {
               "run_id": 0,
-              "Value #Jobs": 1,
-              "Value #Total": 2,
-              "Value #Failures": 3,
+              "commit_message": 1,
+              "Value #Jobs": 2,
+              "Value #Total": 3,
               "Value #Start": 4,
               "Value #Duration": 5,
               "Value #Rate": 6
             },
             "renameByName": {
               "run_id": "Run ID",
+              "commit_message": "Commit",
               "Value #Start": "Started",
               "Value #Jobs": "Job Count",
               "Value #Total": "Total",
-              "Value #Failures": "Failures",
               "Value #Duration": "Duration",
               "Value #Rate": "Failure Rate"
             }

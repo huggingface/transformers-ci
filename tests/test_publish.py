@@ -50,17 +50,30 @@ def _test_span(
     }
 
 
-def _trace(*, trace_id: str, run_id: str, job: str, spans: list[dict]) -> dict:
+def _trace(
+    *,
+    trace_id: str,
+    run_id: str,
+    job: str,
+    spans: list[dict],
+    commit_sha: str = "",
+    repository: str = "",
+) -> dict:
+    tags = [
+        _tag("transformers.test.provider", "github_actions"),
+        _tag("transformers.test.run.id", run_id),
+        _tag("transformers.test.job", job),
+        _tag("vcs.change.id", "4321"),
+    ]
+    if commit_sha:
+        tags.append(_tag("vcs.ref.head.revision", commit_sha))
+    if repository:
+        tags.append(_tag("vcs.repository.name", repository))
     return {
         "processes": {
             "p0": {
                 "serviceName": "transformers-tests",
-                "tags": [
-                    _tag("transformers.test.provider", "github_actions"),
-                    _tag("transformers.test.run.id", run_id),
-                    _tag("transformers.test.job", job),
-                    _tag("vcs.change.id", "4321"),
-                ],
+                "tags": tags,
             }
         },
         "spans": spans,
@@ -104,6 +117,19 @@ def _sample_traces() -> list[dict]:
             ],
         ),
     ]
+
+
+def _sample_traces_with_commit() -> list[dict]:
+    """Two job traces for one run, tagged with a head commit SHA + repo."""
+    traces = _sample_traces()
+    for trace in traces:
+        trace["processes"]["p0"]["tags"].extend(
+            [
+                _tag("vcs.ref.head.revision", "cafef00d1234"),
+                _tag("vcs.repository.name", "huggingface/transformers"),
+            ]
+        )
+    return traces
 
 
 # --- pure helpers ------------------------------------------------------------
@@ -174,6 +200,31 @@ def test_build_run_rollups():
     assert multi["total_tests"] == 1
     assert multi["failed_tests"] == 0
     assert multi["job_count"] == 2
+
+    # No commit SHA on these fixtures -> commit columns stay empty (no fetch).
+    assert single["commit_sha"] == ""
+    assert single["commit_message"] == ""
+
+
+def test_run_rollups_carry_commit_message_resolved_once_per_run():
+    calls: list[tuple[str, str]] = []
+
+    def commit_fetcher(repository: str, sha: str) -> str:
+        calls.append((repository, sha))
+        return "Drop the legacy shim"
+
+    acc = tables.RunRollupAccumulator(commit_message_fetcher=commit_fetcher)
+    for trace in _sample_traces_with_commit():
+        acc.add(trace)
+    rollups = acc.rows()
+
+    # Two job rows for the one run, both carrying the same run-level commit data.
+    assert {r["test_job"] for r in rollups} == {"single-gpu", "multi-gpu"}
+    for row in rollups:
+        assert row["commit_sha"] == "cafef00d1234"
+        assert row["commit_message"] == "Drop the legacy shim"
+    # One run -> a single GitHub lookup despite multiple job traces.
+    assert calls == [("huggingface/transformers", "cafef00d1234")]
 
 
 def test_group_by_day():

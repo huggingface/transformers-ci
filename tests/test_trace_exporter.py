@@ -61,19 +61,23 @@ def make_trace(
     repository: str = "huggingface/transformers",
     service_name: str = "transformers-tests",
     job_tag_key: str = "transformers.test.job",
+    commit_sha: str = "",
 ) -> dict:
+    tags = [
+        make_tag("transformers.test.provider", provider),
+        make_tag("transformers.test.run.id", run_id),
+        make_tag(job_tag_key, job),
+        make_tag("vcs.change.id", pr),
+        make_tag("vcs.change.url", pr_url),
+        make_tag("vcs.repository.name", repository),
+    ]
+    if commit_sha:
+        tags.append(make_tag("vcs.ref.head.revision", commit_sha))
     return {
         "processes": {
             "pytest-process": {
                 "serviceName": service_name,
-                "tags": [
-                    make_tag("transformers.test.provider", provider),
-                    make_tag("transformers.test.run.id", run_id),
-                    make_tag(job_tag_key, job),
-                    make_tag("vcs.change.id", pr),
-                    make_tag("vcs.change.url", pr_url),
-                    make_tag("vcs.repository.name", repository),
-                ],
+                "tags": tags,
             }
         },
         "spans": spans,
@@ -405,6 +409,132 @@ def test_extract_pr_info_metrics_defaults_commit_sha_to_main() -> None:
     info_lines = metric_lines(metrics, "pytest_pr_info")
     assert len(info_lines) == 1
     assert 'commit_sha="main"' in info_lines[0]
+
+
+def test_extract_trace_rows_promotes_commit_sha_from_head_revision() -> None:
+    trace = make_trace(
+        trace_id="trace-main",
+        run_id="run-main",
+        job="tests_torch",
+        commit_sha="cafef00d1234",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_main.py::TestMain::test_one",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    trace_info, _rows = trace_exporter.extract_trace_rows(trace)
+    assert trace_info["commit_sha"] == "cafef00d1234"
+
+
+def test_fetch_github_commit_message_returns_subject_line() -> None:
+    payload = FakeResponse(
+        '{"commit": {"message": "Fix the flaky test\\n\\nLong body here."}}'
+    )
+    with patch.dict(
+        "os.environ",
+        {"PYTEST_GITHUB_API_URL": "https://api.github.example"},
+        clear=False,
+    ):
+        with patch(
+            "transformersci.otel.trace_exporter.urlopen",
+            side_effect=[payload],
+        ) as mocked_urlopen:
+            message = trace_exporter.fetch_github_commit_message(
+                "huggingface/transformers", "cafef00d1234"
+            )
+
+    request = mocked_urlopen.call_args_list[0].args[0]
+    assert request.full_url == (
+        "https://api.github.example/repos/huggingface/transformers/commits/cafef00d1234"
+    )
+    assert message == "Fix the flaky test"
+
+
+def test_fetch_github_commit_message_returns_empty_on_error() -> None:
+    with patch(
+        "transformersci.otel.trace_exporter.urlopen",
+        side_effect=OSError("boom"),
+    ):
+        assert (
+            trace_exporter.fetch_github_commit_message(
+                "huggingface/transformers", "abc"
+            )
+            == ""
+        )
+
+
+def test_extract_run_info_metrics_resolves_commit_message_once_per_run() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def commit_fetcher(repository: str, sha: str) -> str:
+        calls.append((repository, sha))
+        return "Bump version to 5.0"
+
+    traces = [
+        make_trace(
+            trace_id="trace-a",
+            run_id="run-main",
+            job="tests_torch",
+            pr="main",
+            commit_sha="cafef00d1234",
+            spans=[
+                make_test_span(
+                    process_id="pytest-process",
+                    nodeid="tests/test_main.py::TestMain::test_one",
+                    start_time=1_000_000,
+                    duration=1_000_000,
+                )
+            ],
+        ),
+        make_trace(
+            trace_id="trace-b",
+            run_id="run-main",
+            job="tests_tf",
+            pr="main",
+            commit_sha="cafef00d1234",
+            spans=[
+                make_test_span(
+                    process_id="pytest-process",
+                    nodeid="tests/test_main.py::TestMain::test_two",
+                    start_time=2_000_000,
+                    duration=1_000_000,
+                )
+            ],
+        ),
+    ]
+
+    metrics = trace_exporter.extract_run_info_metrics(
+        traces, _commit_fetcher=commit_fetcher
+    )
+    info_lines = metric_lines(metrics, "pytest_run_info")
+    assert len(info_lines) == 1
+    # One run identity -> one GitHub lookup, even across multiple job traces.
+    assert calls == [("huggingface/transformers", "cafef00d1234")]
+    assert 'commit_message="Bump version to 5.0"' in info_lines[0]
+    assert 'commit_sha="cafef00d1234"' in info_lines[0]
+    assert 'run_id="run-main"' in info_lines[0]
+    assert (
+        'html_url="https://github.com/huggingface/transformers/commit/cafef00d1234"'
+        in info_lines[0]
+    )
+
+
+def test_extract_run_info_metrics_skips_github_when_no_commit_sha() -> None:
+    def commit_fetcher(repository: str, sha: str) -> str:
+        raise AssertionError("should not fetch without a commit sha")
+
+    metrics = trace_exporter.extract_run_info_metrics(
+        workflow_split_across_three_jobs(),
+        _commit_fetcher=commit_fetcher,
+    )
+    info_lines = metric_lines(metrics, "pytest_run_info")
+    assert len(info_lines) == 1
+    assert 'commit_message=""' in info_lines[0]
+    assert 'commit_sha=""' in info_lines[0]
 
 
 def test_extract_test_line_returns_first_test_file_line_number() -> None:

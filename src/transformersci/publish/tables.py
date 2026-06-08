@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from ..otel.trace_exporter import (
     extract_failure_details,
     extract_trace_rows,
+    fetch_github_commit_message_cached,
+    repository_from_pr_url,
 )
 
 SCHEMA_VERSION = 1
@@ -66,6 +68,8 @@ RUN_ROLLUP_COLUMNS = [
     "start_time",
     "end_time",
     "job_count",
+    "commit_sha",
+    "commit_message",
 ]
 
 
@@ -183,10 +187,16 @@ class RunRollupAccumulator:
     resolved at the end in :meth:`rows`.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, commit_message_fetcher=None) -> None:
         # (service, provider, pr, run_id, test_job) -> aggregate
         self._job_agg: dict[tuple[str, str, str, str, str], dict] = {}
         self._run_jobs: dict[tuple[str, str, str, str], set[str]] = {}
+        # (service, provider, pr, run_id) -> {"commit_sha", "repository"}; commit
+        # metadata is run-level so it's resolved to a message once in `rows`.
+        self._run_commit: dict[tuple[str, str, str, str], dict[str, str]] = {}
+        self._commit_message_fetcher = (
+            commit_message_fetcher or fetch_github_commit_message_cached
+        )
 
     def add(self, trace: dict) -> None:
         trace_info, rows = extract_trace_rows(trace)
@@ -204,7 +214,22 @@ class RunRollupAccumulator:
         failed = sum(1 for r in rows if str(r.get("status_code")) == "ERROR")
         duration = sum(float(r.get("duration_seconds", 0.0)) for r in rows)
 
-        self._run_jobs.setdefault((service, provider, pr, run_id), set()).add(job)
+        run_key = (service, provider, pr, run_id)
+        self._run_jobs.setdefault(run_key, set()).add(job)
+
+        commit_sha = str(trace_info.get("commit_sha", ""))
+        if commit_sha:
+            existing = self._run_commit.get(run_key)
+            if existing is None or not existing.get("commit_sha"):
+                repository = str(trace_info.get("repository", ""))
+                if not repository:
+                    repository = repository_from_pr_url(
+                        str(trace_info.get("pr_url", ""))
+                    )
+                self._run_commit[run_key] = {
+                    "commit_sha": commit_sha,
+                    "repository": repository,
+                }
 
         key = (service, provider, pr, run_id, job)
         agg = self._job_agg.get(key)
@@ -232,12 +257,27 @@ class RunRollupAccumulator:
         agg["end_time"] = max(agg["end_time"], end)
 
     def rows(self) -> list[dict]:
+        # Resolve each run's commit subject once (cached + deduped by run) so the
+        # GitHub lookup doesn't repeat per job row.
+        commit_messages: dict[tuple[str, str, str, str], str] = {}
+        for run_key, commit in self._run_commit.items():
+            sha = commit.get("commit_sha", "")
+            repository = commit.get("repository", "")
+            commit_messages[run_key] = (
+                self._commit_message_fetcher(repository, sha)
+                if sha and repository
+                else ""
+            )
+
         rollups: list[dict] = []
         for agg in self._job_agg.values():
             agg = dict(agg)
             agg["passed_tests"] = agg["total_tests"] - agg["failed_tests"]
             run_key = (agg["service_name"], agg["provider"], agg["pr"], agg["run_id"])
             agg["job_count"] = len(self._run_jobs.get(run_key, set()))
+            commit = self._run_commit.get(run_key, {})
+            agg["commit_sha"] = commit.get("commit_sha", "")
+            agg["commit_message"] = commit_messages.get(run_key, "")
             rollups.append({col: agg[col] for col in RUN_ROLLUP_COLUMNS})
         return rollups
 

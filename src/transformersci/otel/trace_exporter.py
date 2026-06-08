@@ -694,6 +694,63 @@ def fetch_github_pr_info_cached(repository: str, pr: str) -> dict[str, str]:
     return dict(payload)
 
 
+def github_commit_html_url(repository: str, sha: str) -> str:
+    if not repository or not sha:
+        return ""
+    return f"https://github.com/{repository}/commit/{quote(sha, safe='')}"
+
+
+def fetch_github_commit_message(repository: str, sha: str) -> str:
+    """Return the first line (subject) of a commit's message from GitHub.
+
+    Mirrors :func:`fetch_github_pr_info` but hits the commits endpoint so the
+    overview's main-branch run table can show a human-readable commit subject
+    instead of a bare run id. Returns "" when the lookup fails.
+    """
+    api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip(
+        "/"
+    )
+    api_url = (
+        f"{api_base_url}/repos/{quote(repository, safe='/')}/commits/"
+        f"{quote(sha, safe='')}"
+    )
+    try:
+        payload = _github_api_get(api_url)
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    commit = payload.get("commit")
+    message = commit.get("message") if isinstance(commit, dict) else ""
+    if not isinstance(message, str):
+        return ""
+    # Commit messages are multi-line (subject + body); the table only wants the
+    # subject, so keep the first non-empty line.
+    return message.strip().splitlines()[0] if message.strip() else ""
+
+
+_commit_msg_cache_lock = threading.Lock()
+_cached_commit_msg: dict[tuple[str, str], tuple[float, str]] = {}
+
+
+def fetch_github_commit_message_cached(repository: str, sha: str) -> str:
+    key = (repository, sha)
+    ttl = github_cache_ttl_seconds()
+    now = time.monotonic()
+    with _commit_msg_cache_lock:
+        cached = _cached_commit_msg.get(key)
+        if cached is not None and ttl > 0:
+            cached_at, message = cached
+            if now - cached_at < ttl:
+                return message
+
+    message = fetch_github_commit_message(repository, sha)
+
+    with _commit_msg_cache_lock:
+        _cached_commit_msg[key] = (now, message)
+    return message
+
+
 def latest_trace(traces: list[dict]) -> dict | None:
     if not traces:
         return None
@@ -726,6 +783,7 @@ def extract_trace_rows(
     process_pr = ""
     process_pr_url = ""
     process_repository = ""
+    process_commit_sha = ""
     service_name = ""
     end_time = 0
     start_time = 0
@@ -773,6 +831,12 @@ def extract_trace_rows(
             process_pr = process_tags.get("vcs.ref.head.name", process_pr)
         process_pr_url = process_tags.get("vcs.change.url", process_pr_url)
         process_repository = process_tags.get("vcs.repository.name", process_repository)
+        # The head commit SHA (GITHUB_SHA) rides along on every span's process
+        # tags. We promote it to run scope so the run-info metric can resolve a
+        # commit message from GitHub for main-branch (push) runs.
+        process_commit_sha = process_tags.get(
+            "vcs.ref.head.revision", process_commit_sha
+        )
 
         span_tags = tag_map(span.get("tags", []))
         nodeid = span_tags.get("pytest.nodeid")
@@ -809,6 +873,7 @@ def extract_trace_rows(
         process_pr_url = github_pr_html_url(process_repository, process_pr)
 
     return {
+        "commit_sha": process_commit_sha,
         "end_time": end_time,
         "latest_start_time": latest_start_time,
         "pr": process_pr or "none",
@@ -1022,6 +1087,80 @@ def extract_pr_info_metrics(
         )
         lines.append("# TYPE pytest_pr_created_at_seconds gauge")
         lines.extend(created_lines)
+    return lines
+
+
+def extract_run_info_metrics(
+    traces: list[dict] | None = None,
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
+    _commit_fetcher: Callable[[str, str], str] | None = None,
+) -> list[str]:
+    """Emit one ``pytest_run_info`` series per run carrying its commit subject.
+
+    The run roll-up metrics are intentionally network-free and keyed only by the
+    stable run identity, so commit metadata lives here instead. We resolve the
+    head commit SHA (promoted from each run's trace tags) to a one-line commit
+    subject via the GitHub API (cached), letting the overview's main-branch run
+    table show a human-readable message column next to the run id.
+    """
+    extracted = (
+        _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
+    )
+    commit_fetcher = _commit_fetcher or fetch_github_commit_message_cached
+
+    # One candidate per run identity, preferring the trace with both a commit SHA
+    # and a repository (needed for the GitHub lookup) and the latest start time.
+    best_by_run: dict[tuple[str, str, str, str], tuple[int, dict[str, str]]] = {}
+    for trace_info, rows in extracted:
+        if not rows:
+            continue
+        run_key = (
+            str(trace_info.get("service_name", "unknown")),
+            str(trace_info.get("provider", "unknown")),
+            str(trace_info.get("pr", "none")),
+            str(trace_info.get("run_id", trace_info.get("trace_id", "unknown"))),
+        )
+        repository = str(trace_info.get("repository", ""))
+        pr_url = str(trace_info.get("pr_url", ""))
+        if not repository and pr_url:
+            repository = repository_from_pr_url(pr_url)
+        candidate = {
+            "commit_sha": str(trace_info.get("commit_sha", "")),
+            "repository": repository,
+        }
+        score = int(trace_info.get("latest_start_time", 0) or 0)
+        if candidate["commit_sha"]:
+            score += 1
+        if repository:
+            score += 1
+        existing = best_by_run.get(run_key)
+        if existing is None or score >= existing[0]:
+            best_by_run[run_key] = (score, candidate)
+
+    lines = [
+        "# HELP pytest_run_info Commit metadata for a pytest run.",
+        "# TYPE pytest_run_info gauge",
+    ]
+    for (service_name, provider, pr, run_id), (_score, candidate) in sorted(
+        best_by_run.items()
+    ):
+        commit_sha = candidate["commit_sha"]
+        repository = candidate["repository"]
+        commit_message = ""
+        if repository and commit_sha:
+            commit_message = commit_fetcher(repository, commit_sha)
+        labels = {
+            "commit_message": commit_message,
+            "commit_sha": commit_sha,
+            "html_url": github_commit_html_url(repository, commit_sha),
+            "pr": pr,
+            "provider": provider,
+            "run_id": run_id,
+            "service_name": service_name,
+        }
+        lines.append(f"pytest_run_info{metric_labels(labels)} 1")
     return lines
 
 
@@ -1561,6 +1700,7 @@ def _render_metrics_uncached() -> str:
     ]
     rendered.extend(extract_per_test_duration_metrics(_extracted=extracted))
     rendered.extend(extract_run_rollup_metrics(_extracted=rollup_extracted))
+    rendered.extend(extract_run_info_metrics(traces, _extracted=rollup_extracted))
     rendered.extend(extract_pr_info_metrics(traces, _extracted=extracted))
     rendered.extend(extract_pr_last_failure_metrics(traces, _extracted=extracted))
     rendered.extend(extract_average_metrics(traces, _extracted=extracted))
