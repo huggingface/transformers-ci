@@ -231,6 +231,65 @@ class ConfigureCiOtelTests(TestCase):
             "Authorization=Bearer cli-token",
         )
 
+    def test_prepare_environment_sets_staging_endpoint(self):
+        env, export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel.example:4317",
+            },
+            staging_endpoint="http://10.90.52.50:4317",
+        )
+
+        self.assertTrue(export_traces)
+        self.assertEqual(
+            env["TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT"],
+            "http://10.90.52.50:4317",
+        )
+
+    def test_prepare_environment_sets_staging_headers_from_token(self):
+        env, _export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel.example:4317",
+            },
+            staging_endpoint="http://10.90.52.50:4317",
+            staging_token="stage-secret",
+        )
+
+        self.assertEqual(
+            env["TRANSFORMERS_TEST_OTEL_STAGING_HEADERS"],
+            "Authorization=Bearer stage-secret",
+        )
+        # Staging auth must not bleed into the primary headers.
+        self.assertNotIn("OTEL_EXPORTER_OTLP_HEADERS", env)
+
+    def test_prepare_environment_staging_token_from_env(self):
+        env, _export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel.example:4317",
+                "TRANSFORMERS_TEST_OTEL_STAGING_TOKEN": "env-stage-token",
+            },
+            staging_endpoint="http://10.90.52.50:4317",
+        )
+
+        self.assertEqual(
+            env["TRANSFORMERS_TEST_OTEL_STAGING_HEADERS"],
+            "Authorization=Bearer env-stage-token",
+        )
+
+    def test_prepare_environment_staging_token_cli_overrides_env(self):
+        env, _export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel.example:4317",
+                "TRANSFORMERS_TEST_OTEL_STAGING_TOKEN": "env-stage-token",
+            },
+            staging_endpoint="http://10.90.52.50:4317",
+            staging_token="cli-stage-token",
+        )
+
+        self.assertEqual(
+            env["TRANSFORMERS_TEST_OTEL_STAGING_HEADERS"],
+            "Authorization=Bearer cli-stage-token",
+        )
+
     def test_prepare_environment_normalizes_https_protocol_alias(self):
         env, export_traces = cli.prepare_environment(
             {
@@ -388,6 +447,10 @@ class ConfigureCiOtelTests(TestCase):
                 "secret-token",
                 "--otlp-endpoint",
                 "https://otel.example",
+                "--staging-endpoint",
+                "http://10.90.52.50:4317",
+                "--staging-token",
+                "stage-secret",
                 "--job",
                 "my_job",
                 "--",
@@ -398,6 +461,8 @@ class ConfigureCiOtelTests(TestCase):
         self.assertEqual(args.protocol, "http")
         self.assertEqual(args.token, "secret-token")
         self.assertEqual(args.otlp_endpoint, "https://otel.example")
+        self.assertEqual(args.staging_endpoint, "http://10.90.52.50:4317")
+        self.assertEqual(args.staging_token, "stage-secret")
         self.assertEqual(args.job, "my_job")
 
     def test_parse_args_accepts_suite_alias_for_back_compat(self):

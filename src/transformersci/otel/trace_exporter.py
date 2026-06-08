@@ -1151,6 +1151,12 @@ def extract_run_info_metrics(
         commit_message = ""
         if repository and commit_sha:
             commit_message = commit_fetcher(repository, commit_sha)
+        # Fall back to the short SHA when no message is available (no GitHub
+        # token, lookup failure, or missing repository) so the dashboard's
+        # Commit column always shows something clickable rather than rendering
+        # empty. The html_url label still points at the commit either way.
+        if not commit_message and commit_sha:
+            commit_message = commit_sha[:12]
         labels = {
             "commit_message": commit_message,
             "commit_sha": commit_sha,

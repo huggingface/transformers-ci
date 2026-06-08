@@ -164,6 +164,114 @@ def write_resource_record(item: pytest.Item, metrics: dict[str, float | int]) ->
         output.write(json.dumps(record, sort_keys=True) + "\n")
 
 
+def _parse_otlp_headers(raw: str | None) -> dict[str, str] | None:
+    """Parse an ``OTEL_EXPORTER_OTLP_HEADERS``-style string into a dict.
+
+    The value is a comma-separated list of ``key=value`` pairs (e.g.
+    ``Authorization=Bearer abc``), matching the W3C Baggage format the SDK uses.
+    Returns ``None`` when there is nothing usable, so the exporter falls back to
+    its own defaults.
+    """
+    if not raw:
+        return None
+    headers: dict[str, str] = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair or "=" not in pair:
+            continue
+        key, value = pair.split("=", 1)
+        headers[key.strip()] = value.strip()
+    return headers or None
+
+
+def _build_staging_exporter(endpoint: str, protocol: str, headers):
+    """Build an OTLP span exporter for the staging mirror.
+
+    Mirrors the primary transport so spans land in the same shape on staging:
+    HTTP/protobuf uses the http exporter (which wants the full ``/v1/traces``
+    signal path), everything else uses gRPC. A plaintext (``http://`` or
+    scheme-less) gRPC endpoint is exported insecurely; ``https://`` keeps TLS.
+    """
+    if protocol in ("http/protobuf", "http", "https"):
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
+
+        url = endpoint.rstrip("/")
+        if not url.endswith("/v1/traces"):
+            url = f"{url}/v1/traces"
+        return OTLPSpanExporter(endpoint=url, headers=headers)
+
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+        OTLPSpanExporter,
+    )
+
+    insecure = not endpoint.lower().startswith("https://")
+    return OTLPSpanExporter(endpoint=endpoint, headers=headers, insecure=insecure)
+
+
+def _install_staging_span_processor() -> None:
+    """Mirror every span to a staging backend via a second span processor.
+
+    The primary export pipeline is configured by pytest-opentelemetry from
+    ``OTEL_EXPORTER_OTLP_*`` env vars (a single exporter). When
+    ``TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT`` is set (by
+    ``configure-ci-otel --staging-endpoint``), we attach a SECOND
+    ``BatchSpanProcessor`` to the live SDK tracer provider so the same spans are
+    also exported to staging. Staging auth comes from its own headers env
+    (``TRANSFORMERS_TEST_OTEL_STAGING_HEADERS``), falling back to the primary's.
+    """
+    endpoint = os.getenv("TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT")
+    if not endpoint:
+        return
+
+    try:
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    except ImportError as error:  # pragma: no cover
+        print(
+            f"OTEL STAGING SDK unavailable, not mirroring to {endpoint}: {error!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+
+    provider = trace.get_tracer_provider()
+    add_span_processor = getattr(provider, "add_span_processor", None)
+    if add_span_processor is None:
+        # No real SDK tracer provider is active (primary trace export is off),
+        # so there is nothing to mirror.
+        print(
+            f"OTEL STAGING no active SDK tracer provider; not mirroring to {endpoint}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+
+    protocol = (os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL") or "grpc").lower()
+    headers = _parse_otlp_headers(
+        os.getenv("TRANSFORMERS_TEST_OTEL_STAGING_HEADERS")
+        or os.getenv("OTEL_EXPORTER_OTLP_HEADERS")
+    )
+    try:
+        exporter = _build_staging_exporter(endpoint, protocol, headers)
+    except ImportError as error:  # pragma: no cover
+        print(
+            f"OTEL STAGING exporter unavailable for protocol={protocol}, "
+            f"not mirroring to {endpoint}: {error!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+
+    add_span_processor(BatchSpanProcessor(exporter))
+    print(
+        f"OTEL STAGING mirroring spans to {endpoint} (protocol={protocol})",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def _wrap_active_tracer_exporters() -> None:
     if os.getenv("TRANSFORMERSCI_OTEL_DEBUG") != "1":
         return
@@ -196,6 +304,7 @@ def _wrap_active_tracer_exporters() -> None:
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
+    _install_staging_span_processor()
     _wrap_active_tracer_exporters()
 
 

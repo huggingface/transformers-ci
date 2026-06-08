@@ -15,6 +15,13 @@ DEFAULT_SERVICE_NAME = "transformers-tests"
 DEFAULT_LOCAL_JOB = "local_pytest"
 LOCAL_PROVIDER = "local"
 OTEL_PING_TIMEOUT_SECONDS = 2.0
+# Read by the pytest plugin (resource_plugin) to attach a SECOND span processor
+# so every span is mirrored to a staging backend on top of the primary export.
+STAGING_ENDPOINT_ENV = "TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT"
+# Bearer header for the staging mirror. Kept separate from the primary's
+# OTEL_EXPORTER_OTLP_HEADERS so staging can authenticate with its own token.
+STAGING_HEADERS_ENV = "TRANSFORMERS_TEST_OTEL_STAGING_HEADERS"
+STAGING_TOKEN_ENV = "TRANSFORMERS_TEST_OTEL_STAGING_TOKEN"
 OTEL_TRACES_EXPORTER_BY_PROTOCOL = {
     "grpc": "otlp_proto_grpc",
     "http/protobuf": "otlp_proto_http",
@@ -116,9 +123,14 @@ def endpoint_target(endpoint: str, env: Mapping[str, str]) -> tuple[str, int] | 
 
 
 def ping_server(
-    env: Mapping[str, str], *, timeout_seconds: float = OTEL_PING_TIMEOUT_SECONDS
+    env: Mapping[str, str],
+    *,
+    timeout_seconds: float = OTEL_PING_TIMEOUT_SECONDS,
+    endpoint: str | None = None,
+    endpoint_source: str | None = None,
 ) -> bool:
-    endpoint_source, endpoint = resolve_otel_endpoint(env)
+    if endpoint is None:
+        endpoint_source, endpoint = resolve_otel_endpoint(env)
     if endpoint is None:
         print("OTEL PING SKIPPED endpoint is not configured", flush=True)
         return False
@@ -521,18 +533,30 @@ def prepare_environment(
     force_export_traces: bool = False,
     protocol: str | None = None,
     otlp_endpoint: str | None = None,
+    staging_endpoint: str | None = None,
     token: str | None = None,
+    staging_token: str | None = None,
     pr: str | None = None,
 ) -> tuple[dict[str, str], bool]:
     updated_env = dict(env)
     if otlp_endpoint:
         updated_env["OTEL_EXPORTER_OTLP_ENDPOINT"] = otlp_endpoint
         updated_env.pop("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", None)
+    if staging_endpoint:
+        # The pytest plugin reads this to add a second span processor pointing
+        # at the staging backend, mirroring every span the primary exporter
+        # sends. Inherits the primary's protocol.
+        updated_env[STAGING_ENDPOINT_ENV] = staging_endpoint
     resolved_token = token or updated_env.get("OTEL_EXPORTER_OTLP_TOKEN")
     if resolved_token:
         headers = bearer_auth_header(resolved_token)
         updated_env["OTEL_EXPORTER_OTLP_HEADERS"] = headers
         updated_env["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = headers
+    resolved_staging_token = staging_token or updated_env.get(STAGING_TOKEN_ENV)
+    if resolved_staging_token:
+        # Staging gets its own bearer header so it can authenticate
+        # independently of the primary backend's token.
+        updated_env[STAGING_HEADERS_ENV] = bearer_auth_header(resolved_staging_token)
 
     should_export_traces = force_export_traces or has_otel_endpoint(updated_env)
 
@@ -625,6 +649,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Override the OTLP endpoint URL without setting OTEL_EXPORTER_OTLP_ENDPOINT manually.",
     )
     parser.add_argument(
+        "--staging-endpoint",
+        dest="staging_endpoint",
+        help=(
+            "Additionally mirror every span to this second OTLP endpoint (e.g. a "
+            "staging backend) on top of the primary --otlp-endpoint. Uses the same "
+            "protocol as the primary."
+        ),
+    )
+    parser.add_argument(
+        "--staging-token",
+        dest="staging_token",
+        help=(
+            "Bearer token for the --staging-endpoint. Falls back to the primary "
+            "token if omitted. Set independently so staging can use its own auth."
+        ),
+    )
+    parser.add_argument(
         "--ping-server",
         action="store_true",
         help="Best-effort TCP connectivity check for the configured OTLP endpoint. Prints a log line and never fails the command.",
@@ -658,7 +699,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         force_export_traces=args.force_export_traces,
         protocol=args.protocol,
         otlp_endpoint=args.otlp_endpoint,
+        staging_endpoint=args.staging_endpoint,
         token=args.token,
+        staging_token=args.staging_token,
         pr=args.pr,
     )
     command = augment_pytest_command(command, export_traces=export_traces)
@@ -672,6 +715,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "job": env.get("TRANSFORMERS_TEST_OTEL_JOB"),
                     "service_name": env.get("OTEL_SERVICE_NAME"),
                     "protocol": env.get("OTEL_EXPORTER_OTLP_PROTOCOL"),
+                    "staging_endpoint": env.get(STAGING_ENDPOINT_ENV),
                     "traces_exporter": env.get("OTEL_TRACES_EXPORTER"),
                     "resource_attributes": env.get("OTEL_RESOURCE_ATTRIBUTES"),
                     "trace_id": trace_id,
@@ -683,6 +727,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.ping_server:
         ping_server(env)
+        staging_endpoint = env.get(STAGING_ENDPOINT_ENV)
+        if staging_endpoint:
+            ping_server(
+                env, endpoint=staging_endpoint, endpoint_source=STAGING_ENDPOINT_ENV
+            )
 
     if not command:
         if args.print_config or args.ping_server:

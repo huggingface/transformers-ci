@@ -93,6 +93,37 @@ jobs:
           OTEL_EXPORTER_OTLP_TOKEN: ${{ secrets.OTEL_EXPORTER_OTLP_TOKEN }}
 ```
 
+### Mirroring to a staging backend
+
+To send every span to a second (staging) backend in addition to the primary,
+add `--staging-endpoint` (and `--staging-token` if staging uses its own auth).
+This attaches a second span processor inside the pytest run, so each span is
+exported to both backends; a flaky staging box does not affect the primary
+export. The staging endpoint reuses the primary `--protocol`.
+
+```yaml
+      - name: Run tests with OpenTelemetry tracing (mirrored to staging)
+        run: >-
+          configure-ci-otel
+          --service-name transformers-tests
+          --protocol http
+          --otlp-endpoint "${OTEL_EXPORTER_OTLP_ENDPOINT}"
+          --token "${OTEL_EXPORTER_OTLP_TOKEN}"
+          --staging-endpoint "${OTEL_STAGING_OTLP_ENDPOINT}"
+          --staging-token "${OTEL_STAGING_OTLP_TOKEN}"
+          -- pytest tests/ -v
+        env:
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_TOKEN: ${{ secrets.OTEL_EXPORTER_OTLP_TOKEN }}
+          OTEL_STAGING_OTLP_ENDPOINT: ${{ secrets.OTEL_STAGING_OTLP_ENDPOINT }}
+          OTEL_STAGING_OTLP_TOKEN: ${{ secrets.OTEL_STAGING_OTLP_TOKEN }}
+```
+
+The endpoint/token can also come from the environment instead of flags via
+`TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT` and
+`TRANSFORMERS_TEST_OTEL_STAGING_TOKEN`. If `--staging-token` is omitted, staging
+falls back to the primary token.
+
 ### Local Testing (No Endpoint Required)
 
 To test the instrumentation locally without sending traces to a remote endpoint:

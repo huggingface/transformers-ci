@@ -431,6 +431,36 @@
                 "value": "s"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Commit"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View commit on GitHub",
+                    "url": "${__data.fields.html_url}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "html_url"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
           }
         ]
       },
@@ -490,7 +520,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr, commit_message) (last_over_time(pytest_run_info{pr=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=\"main\"}[$__range])))",
+          "expr": "max by (run_id, pr, commit_message, html_url) (last_over_time(pytest_run_info{pr=\"main\"}[$__range]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=\"main\"}[$__range])))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -534,8 +564,7 @@
               "service_name": true,
               "pr": true,
               "Value #Commit": true,
-              "commit_sha": true,
-              "html_url": true
+              "commit_sha": true
             },
             "indexByName": {
               "run_id": 0,
@@ -544,7 +573,8 @@
               "Value #Total": 3,
               "Value #Start": 4,
               "Value #Duration": 5,
-              "Value #Rate": 6
+              "Value #Rate": 6,
+              "html_url": 7
             },
             "renameByName": {
               "run_id": "Run ID",

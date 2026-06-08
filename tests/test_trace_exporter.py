@@ -537,6 +537,42 @@ def test_extract_run_info_metrics_skips_github_when_no_commit_sha() -> None:
     assert 'commit_sha=""' in info_lines[0]
 
 
+def test_extract_run_info_metrics_falls_back_to_short_sha_when_no_message() -> None:
+    """When GitHub yields no message (no token / lookup failure), the Commit
+    column should still show the short SHA, and html_url still links the commit."""
+
+    def commit_fetcher(repository: str, sha: str) -> str:
+        return ""  # e.g. unauthenticated + rate-limited
+
+    trace = make_trace(
+        trace_id="trace-main",
+        run_id="run-main",
+        job="tests_torch",
+        pr="main",
+        commit_sha="cafef00d1234deadbeef",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_main.py::TestMain::test_one",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    metrics = trace_exporter.extract_run_info_metrics(
+        [trace], _commit_fetcher=commit_fetcher
+    )
+    info_lines = metric_lines(metrics, "pytest_run_info")
+    assert len(info_lines) == 1
+    # Short SHA (first 12 chars) used as the display message.
+    assert 'commit_message="cafef00d1234"' in info_lines[0]
+    assert 'commit_sha="cafef00d1234deadbeef"' in info_lines[0]
+    assert (
+        'html_url="https://github.com/huggingface/transformers/commit/'
+        'cafef00d1234deadbeef"' in info_lines[0]
+    )
+
+
 def test_extract_test_line_returns_first_test_file_line_number() -> None:
     nodeid = "tests/pipelines/test_x.py::TestX::test_one"
     stacktrace = (
