@@ -157,6 +157,36 @@ services:
     volumes:
       - /:/host:ro,rslave
 
+  # Publishes the CI telemetry to a PUBLIC HF bucket on an hourly cron. Reads
+  # raw traces from Tempo, shapes them into daily-partitioned Parquet (+ the raw
+  # trace JSON), and `hf sync`s the staging volume to the bucket. Needs pyarrow
+  # + the hf CLI + cron, so it builds its own image (the exporter is stdlib-only
+  # and can't host this). App code is bind-mounted from ../src like the exporter.
+  #
+  # Requires HF_TOKEN (write scope on the bucket) in dashboard/.env — it is a
+  # secret and is deliberately NOT written by deploy.sh.
+  ci-data-publisher:
+    build: ./ci-data-publisher
+    restart: unless-stopped
+    mem_limit: ${PUBLISHER_MEM_LIMIT:-768m}
+    cpus: ${PUBLISHER_CPUS:-0.30}
+    environment:
+      - PYTHONPATH=/app/src
+      - PYTEST_TRACE_EXPORTER_TEMPO_URL=http://tempo:3200
+      # Publish every emitter's traces: real CI (pytest-observability) plus the
+      # demo / sample-run name (pytest-observability-demo).
+      - PUBLISH_SERVICE_NAMES=${PUBLISH_SERVICE_NAMES:-pytest-observability,pytest-observability-demo}
+      - HF_BUCKET_URI=${HF_BUCKET_URI:-hf://buckets/huggingface/transformers-ci-telemetry}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - PUBLISH_STAGING_DIR=/staging
+      - PUBLISH_WINDOW=${PUBLISH_WINDOW:-48h}
+      - PUBLISH_LIMIT=${PUBLISH_LIMIT:-5000}
+    volumes:
+      - ../src:/app/src:ro
+      - ci-publisher-data:/staging
+    depends_on:
+      - tempo
+
   # Front-door reverse proxy so Grafana and the exporter are reachable on the
   # same origin. The /failure traceback iframe in pytest-test-dashboard needs
   # this — the public hostname only forwards one port, so the exporter has to
@@ -183,3 +213,7 @@ volumes:
   prometheus-data:
   prometheus-infra-data:
   grafana-data:
+  # Staging mirror of the HF bucket; the publisher writes daily partitions here
+  # and `hf sync`s it. Persisted so day partitions outside the publish window
+  # are kept and not re-derived (the bucket is the long-term archive).
+  ci-publisher-data:

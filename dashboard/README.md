@@ -34,6 +34,50 @@ previous otelcol-fronted setup, so emitters need no reconfiguration.
 Image versions are pinned. Trace data survives a `tempo` container restart
 because it lives in the `tempo-data` named volume.
 
+## Public Data Publisher
+
+The `ci-data-publisher` sidecar publishes the CI telemetry to a **public HF
+bucket** (`hf://buckets/huggingface/transformers-ci-telemetry`) on an hourly
+cron, so anyone can build apps on top of the CI test data without access to
+this stack.
+
+Each cycle reads the last `PUBLISH_WINDOW` (default 48h) of traces from Tempo,
+shapes them into daily-partitioned Parquet, writes the raw trace JSON alongside,
+refreshes a data card + manifest, and `hf sync`s the staging volume to the
+bucket:
+
+```
+daily/<YYYY-MM-DD>/test_rows.parquet     one row per (trace_id, test_nodeid)
+daily/<YYYY-MM-DD>/run_rollups.parquet   one row per (run_id, test_job)
+daily/<YYYY-MM-DD>/traces/<trace_id>.json  raw Jaeger-shaped trace
+current_view.json                        manifest (schema, partitions, totals)
+README.md                                data card
+```
+
+Source of truth is **Tempo** (raw rows), not Prometheus. The publisher reuses
+the exporter's Tempo client and `extract_trace_rows`; `model`/`gpu` are derived
+from the nodeid/job. Published exception messages and stacktraces are **full and
+untruncated** — this bucket is public, so the privacy review (no secrets in
+failure text) applies.
+
+Config (env, all overridable via `dashboard/.env`):
+
+- `HF_TOKEN` — **write-scoped** token for the bucket. A **secret**: not written
+  by `deploy.sh` (it appends an empty `HF_TOKEN=` placeholder to fill in) and
+  never committed.
+- `HF_BUCKET_URI` — `hf://buckets/...` destination (default above).
+- `PUBLISH_WINDOW` (default `48h`), `PUBLISH_LIMIT` (default `5000`).
+
+Run one cycle locally without syncing (writes Parquet under `./out`):
+
+```sh
+PUBLISH_STAGING_DIR=./out \
+PYTEST_TRACE_EXPORTER_TEMPO_URL=http://localhost:3200 \
+  python -m transformersci.publish.main --dry-run
+```
+
+Logs surface via `docker compose -f dashboard/docker-compose.yml logs ci-data-publisher`.
+
 ## Start The Stack
 
 From the package root:

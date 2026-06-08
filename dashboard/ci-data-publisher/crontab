@@ -1,0 +1,4 @@
+# Hourly CI-telemetry publish. /etc/cron.d format: the 6th field is the user.
+# stdout/stderr go to PID 1's fds so logs surface via `docker compose logs`.
+# Env is sourced inside run-publish.sh (cron starts with a near-empty env).
+0 * * * * root /usr/local/bin/run-publish.sh >> /proc/1/fd/1 2>> /proc/1/fd/2

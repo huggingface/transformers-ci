@@ -21,6 +21,10 @@ pytest-plugin = [
   "psutil",
   "pytest>=8.0",
 ]
+publish = [
+  "huggingface_hub[cli,hf_xet]",
+  "pyarrow",
+]
 test = [
   "psutil",
   "pytest>=8.0",
