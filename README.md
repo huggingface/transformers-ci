@@ -99,7 +99,9 @@ To send every span to a second (staging) backend in addition to the primary,
 add `--staging-endpoint` (and `--staging-token` if staging uses its own auth).
 This attaches a second span processor inside the pytest run, so each span is
 exported to both backends; a flaky staging box does not affect the primary
-export. The staging endpoint reuses the primary `--protocol`.
+export. Staging reuses the primary `--protocol` unless you override it with
+`--staging-protocol` (e.g. prod over `http` but the stage box only speaks
+`grpc`).
 
 ```yaml
       - name: Run tests with OpenTelemetry tracing (mirrored to staging)
@@ -110,6 +112,7 @@ export. The staging endpoint reuses the primary `--protocol`.
           --otlp-endpoint "${OTEL_EXPORTER_OTLP_ENDPOINT}"
           --token "${OTEL_EXPORTER_OTLP_TOKEN}"
           --staging-endpoint "${OTEL_STAGING_OTLP_ENDPOINT}"
+          --staging-protocol grpc
           --staging-token "${OTEL_STAGING_OTLP_TOKEN}"
           -- pytest tests/ -v
         env:
@@ -119,10 +122,12 @@ export. The staging endpoint reuses the primary `--protocol`.
           OTEL_STAGING_OTLP_TOKEN: ${{ secrets.OTEL_STAGING_OTLP_TOKEN }}
 ```
 
-The endpoint/token can also come from the environment instead of flags via
-`TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT` and
-`TRANSFORMERS_TEST_OTEL_STAGING_TOKEN`. If `--staging-token` is omitted, staging
-falls back to the primary token.
+The endpoint/token/protocol can also come from the environment instead of flags
+via `TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT`,
+`TRANSFORMERS_TEST_OTEL_STAGING_TOKEN`, and
+`TRANSFORMERS_TEST_OTEL_STAGING_PROTOCOL`. If `--staging-token` is omitted,
+staging falls back to the primary token; if `--staging-protocol` is omitted, it
+falls back to the primary protocol.
 
 ### Local Testing (No Endpoint Required)
 

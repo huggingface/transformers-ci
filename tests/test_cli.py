@@ -290,6 +290,66 @@ class ConfigureCiOtelTests(TestCase):
             "Authorization=Bearer cli-stage-token",
         )
 
+    def test_prepare_environment_sets_staging_protocol(self):
+        env, _export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel.example:4317",
+            },
+            staging_endpoint="http://10.90.52.50:4317",
+            staging_protocol="grpc",
+        )
+
+        self.assertEqual(env["TRANSFORMERS_TEST_OTEL_STAGING_PROTOCOL"], "grpc")
+
+    def test_prepare_environment_normalizes_staging_http_protocol(self):
+        env, _export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "otel.example:4317",
+                "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+            },
+            staging_endpoint="http://10.90.52.50:4318",
+            staging_protocol="http",
+        )
+
+        # "http" normalizes to the SDK's "http/protobuf", independent of the
+        # primary protocol (grpc here).
+        self.assertEqual(
+            env["TRANSFORMERS_TEST_OTEL_STAGING_PROTOCOL"], "http/protobuf"
+        )
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "grpc")
+
+    def test_prepare_environment_omits_staging_protocol_when_unset(self):
+        env, _export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel.example:4317",
+            },
+            staging_endpoint="http://10.90.52.50:4317",
+        )
+
+        # No override → plugin falls back to the primary protocol at runtime.
+        self.assertNotIn("TRANSFORMERS_TEST_OTEL_STAGING_PROTOCOL", env)
+
+    def test_prepare_environment_empty_staging_protocol_is_noop(self):
+        # CI passes --staging-protocol from a possibly-empty env var; an empty
+        # value must be tolerated (inherit primary), not stored or rejected.
+        env, _export_traces = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel.example:4317",
+            },
+            staging_endpoint="http://10.90.52.50:4317",
+            staging_protocol="",
+        )
+
+        self.assertNotIn("TRANSFORMERS_TEST_OTEL_STAGING_PROTOCOL", env)
+
+    def test_parse_args_accepts_empty_staging_protocol(self):
+        # Empty string must parse (no `choices` constraint) so the CI eval with
+        # an unset env var does not abort the whole command.
+        args = cli.parse_args(
+            ["--staging-protocol", "", "--", "pytest"],
+        )
+        self.assertEqual(args.staging_protocol, "")
+
     def test_prepare_environment_normalizes_https_protocol_alias(self):
         env, export_traces = cli.prepare_environment(
             {
@@ -449,6 +509,8 @@ class ConfigureCiOtelTests(TestCase):
                 "https://otel.example",
                 "--staging-endpoint",
                 "http://10.90.52.50:4317",
+                "--staging-protocol",
+                "grpc",
                 "--staging-token",
                 "stage-secret",
                 "--job",
@@ -462,6 +524,7 @@ class ConfigureCiOtelTests(TestCase):
         self.assertEqual(args.token, "secret-token")
         self.assertEqual(args.otlp_endpoint, "https://otel.example")
         self.assertEqual(args.staging_endpoint, "http://10.90.52.50:4317")
+        self.assertEqual(args.staging_protocol, "grpc")
         self.assertEqual(args.staging_token, "stage-secret")
         self.assertEqual(args.job, "my_job")
 

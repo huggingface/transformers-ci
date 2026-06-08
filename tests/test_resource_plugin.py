@@ -93,6 +93,30 @@ def test_install_staging_span_processor_attaches_processor(monkeypatch) -> None:
     assert exporter._endpoint == "10.90.52.50:4317"
 
 
+def test_install_staging_span_processor_uses_staging_protocol_override(
+    monkeypatch,
+) -> None:
+    from opentelemetry import trace
+
+    monkeypatch.setenv(
+        "TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT", "http://10.90.52.50:4318"
+    )
+    # Primary is grpc, but staging overrides to http/protobuf.
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+    monkeypatch.setenv("TRANSFORMERS_TEST_OTEL_STAGING_PROTOCOL", "http/protobuf")
+
+    added: list[object] = []
+    provider = _StubProvider(added.append)
+    monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
+
+    resource_plugin._install_staging_span_processor()
+
+    assert len(added) == 1
+    exporter = added[0].span_exporter  # type: ignore[attr-defined]
+    assert "http" in type(exporter).__module__
+    assert exporter._endpoint == "http://10.90.52.50:4318/v1/traces"
+
+
 def test_install_staging_span_processor_skips_without_sdk_provider(monkeypatch) -> None:
     from opentelemetry import trace
 

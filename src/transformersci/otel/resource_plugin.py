@@ -248,7 +248,11 @@ def _install_staging_span_processor() -> None:
         )
         return
 
-    protocol = (os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL") or "grpc").lower()
+    protocol = (
+        os.getenv("TRANSFORMERS_TEST_OTEL_STAGING_PROTOCOL")
+        or os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL")
+        or "grpc"
+    ).lower()
     headers = _parse_otlp_headers(
         os.getenv("TRANSFORMERS_TEST_OTEL_STAGING_HEADERS")
         or os.getenv("OTEL_EXPORTER_OTLP_HEADERS")

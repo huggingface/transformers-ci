@@ -22,6 +22,10 @@ STAGING_ENDPOINT_ENV = "TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT"
 # OTEL_EXPORTER_OTLP_HEADERS so staging can authenticate with its own token.
 STAGING_HEADERS_ENV = "TRANSFORMERS_TEST_OTEL_STAGING_HEADERS"
 STAGING_TOKEN_ENV = "TRANSFORMERS_TEST_OTEL_STAGING_TOKEN"
+# OTLP transport for the staging mirror. Falls back to the primary protocol
+# (OTEL_EXPORTER_OTLP_PROTOCOL) when unset, so staging can use a different
+# transport than prod (e.g. grpc to a stage box that only speaks gRPC).
+STAGING_PROTOCOL_ENV = "TRANSFORMERS_TEST_OTEL_STAGING_PROTOCOL"
 OTEL_TRACES_EXPORTER_BY_PROTOCOL = {
     "grpc": "otlp_proto_grpc",
     "http/protobuf": "otlp_proto_http",
@@ -534,6 +538,7 @@ def prepare_environment(
     protocol: str | None = None,
     otlp_endpoint: str | None = None,
     staging_endpoint: str | None = None,
+    staging_protocol: str | None = None,
     token: str | None = None,
     staging_token: str | None = None,
     pr: str | None = None,
@@ -545,8 +550,14 @@ def prepare_environment(
     if staging_endpoint:
         # The pytest plugin reads this to add a second span processor pointing
         # at the staging backend, mirroring every span the primary exporter
-        # sends. Inherits the primary's protocol.
+        # sends.
         updated_env[STAGING_ENDPOINT_ENV] = staging_endpoint
+    resolved_staging_protocol = normalize_protocol_override(staging_protocol)
+    if resolved_staging_protocol:
+        # Stored normalized ("http/protobuf"/"grpc") so the plugin can pick the
+        # matching exporter without re-parsing. Independent of the primary so
+        # staging can speak a different transport.
+        updated_env[STAGING_PROTOCOL_ENV] = resolved_staging_protocol
     resolved_token = token or updated_env.get("OTEL_EXPORTER_OTLP_TOKEN")
     if resolved_token:
         headers = bearer_auth_header(resolved_token)
@@ -658,6 +669,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--staging-protocol",
+        dest="staging_protocol",
+        # No `choices` (unlike --protocol): CI passes this from a possibly-empty
+        # env var, and an empty string must be tolerated as "inherit primary"
+        # rather than rejected. Accepts "http"/"grpc"; empty/unset is a no-op.
+        help=(
+            "OTLP transport (http/grpc) for the --staging-endpoint. Falls back to "
+            "the primary --protocol if omitted, so staging can use a different "
+            "transport."
+        ),
+    )
+    parser.add_argument(
         "--staging-token",
         dest="staging_token",
         help=(
@@ -700,6 +723,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         protocol=args.protocol,
         otlp_endpoint=args.otlp_endpoint,
         staging_endpoint=args.staging_endpoint,
+        staging_protocol=args.staging_protocol,
         token=args.token,
         staging_token=args.staging_token,
         pr=args.pr,
@@ -716,6 +740,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "service_name": env.get("OTEL_SERVICE_NAME"),
                     "protocol": env.get("OTEL_EXPORTER_OTLP_PROTOCOL"),
                     "staging_endpoint": env.get(STAGING_ENDPOINT_ENV),
+                    "staging_protocol": env.get(STAGING_PROTOCOL_ENV),
                     "traces_exporter": env.get("OTEL_TRACES_EXPORTER"),
                     "resource_attributes": env.get("OTEL_RESOURCE_ATTRIBUTES"),
                     "trace_id": trace_id,
