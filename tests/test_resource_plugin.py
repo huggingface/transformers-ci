@@ -117,6 +117,31 @@ def test_install_staging_span_processor_uses_staging_protocol_override(
     assert exporter._endpoint == "http://10.90.52.50:4318/v1/traces"
 
 
+def test_install_staging_span_processor_swallows_build_errors(
+    monkeypatch, capsys
+) -> None:
+    from opentelemetry import trace
+
+    monkeypatch.setenv(
+        "TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT", "http://10.90.52.50:5317"
+    )
+
+    added: list[object] = []
+    provider = _StubProvider(added.append)
+    monkeypatch.setattr(trace, "get_tracer_provider", lambda: provider)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("staging box unreachable")
+
+    monkeypatch.setattr(resource_plugin, "_build_staging_exporter", boom)
+
+    # Must not raise — a staging failure cannot break the prod export / test run.
+    resource_plugin._install_staging_span_processor()
+
+    assert added == []  # nothing attached
+    assert "OTEL STAGING WARNING" in capsys.readouterr().err
+
+
 def test_install_staging_span_processor_skips_without_sdk_provider(monkeypatch) -> None:
     from opentelemetry import trace
 

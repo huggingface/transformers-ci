@@ -184,6 +184,13 @@ def _parse_otlp_headers(raw: str | None) -> dict[str, str] | None:
     return headers or None
 
 
+# Staging is a best-effort mirror: bound each export attempt so a dead/black-holed
+# staging box can't make the end-of-session flush hang the CI job for long. A
+# healthy same-network mirror exports well under a second, so a few seconds is
+# plenty; when staging is down this caps the extra teardown delay per shard.
+STAGING_EXPORT_TIMEOUT_SECONDS = 5
+
+
 def _build_staging_exporter(endpoint: str, protocol: str, headers):
     """Build an OTLP span exporter for the staging mirror.
 
@@ -200,14 +207,21 @@ def _build_staging_exporter(endpoint: str, protocol: str, headers):
         url = endpoint.rstrip("/")
         if not url.endswith("/v1/traces"):
             url = f"{url}/v1/traces"
-        return OTLPSpanExporter(endpoint=url, headers=headers)
+        return OTLPSpanExporter(
+            endpoint=url, headers=headers, timeout=STAGING_EXPORT_TIMEOUT_SECONDS
+        )
 
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
         OTLPSpanExporter,
     )
 
     insecure = not endpoint.lower().startswith("https://")
-    return OTLPSpanExporter(endpoint=endpoint, headers=headers, insecure=insecure)
+    return OTLPSpanExporter(
+        endpoint=endpoint,
+        headers=headers,
+        insecure=insecure,
+        timeout=STAGING_EXPORT_TIMEOUT_SECONDS,
+    )
 
 
 def _install_staging_span_processor() -> None:
@@ -257,18 +271,21 @@ def _install_staging_span_processor() -> None:
         os.getenv("TRANSFORMERS_TEST_OTEL_STAGING_HEADERS")
         or os.getenv("OTEL_EXPORTER_OTLP_HEADERS")
     )
+    # Staging is best-effort: any failure building/attaching the mirror must
+    # only warn, never break the primary export or the test run. (Runtime
+    # export failures are already swallowed by the SDK's BatchSpanProcessor.)
     try:
         exporter = _build_staging_exporter(endpoint, protocol, headers)
-    except ImportError as error:  # pragma: no cover
+        add_span_processor(BatchSpanProcessor(exporter))
+    except Exception as error:
         print(
-            f"OTEL STAGING exporter unavailable for protocol={protocol}, "
-            f"not mirroring to {endpoint}: {error!r}",
+            f"OTEL STAGING WARNING could not attach mirror to {endpoint} "
+            f"(protocol={protocol}); primary export unaffected: {error!r}",
             file=sys.stderr,
             flush=True,
         )
         return
 
-    add_span_processor(BatchSpanProcessor(exporter))
     print(
         f"OTEL STAGING mirroring spans to {endpoint} (protocol={protocol})",
         file=sys.stderr,
@@ -308,7 +325,18 @@ def _wrap_active_tracer_exporters() -> None:
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
-    _install_staging_span_processor()
+    # The staging mirror is strictly best-effort. Guard the whole call so no
+    # staging-related error can abort session start (which would break the
+    # primary trace export and the test run for prod).
+    try:
+        _install_staging_span_processor()
+    except Exception as error:  # pragma: no cover - defensive belt-and-suspenders
+        print(
+            f"OTEL STAGING WARNING staging mirror setup failed; "
+            f"primary export unaffected: {error!r}",
+            file=sys.stderr,
+            flush=True,
+        )
     _wrap_active_tracer_exporters()
 
 
