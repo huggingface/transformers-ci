@@ -324,6 +324,32 @@ def group_traces_by_day(traces: list[dict]) -> dict[str, list[tuple[str, dict]]]
     return buckets
 
 
+def _arrow_schema(columns: list[str]):
+    """Explicit Arrow schema for ``columns`` (everything is a string but a few).
+
+    A fixed schema is required when streaming row groups (see
+    :class:`StreamingPartitionWriter`): each batch must share one schema, so we
+    can't rely on per-batch type inference. The two non-string columns match
+    what ``pa.table`` would otherwise infer from the shaped rows.
+    """
+    import pyarrow as pa
+
+    # Numeric columns across both tables; everything else is a string. These
+    # match what `pa.table` infers from the shaped rows, so switching to an
+    # explicit schema doesn't change any published file's types.
+    overrides = {
+        "ts": pa.int64(),
+        "duration_seconds": pa.float64(),
+        "total_tests": pa.int64(),
+        "passed_tests": pa.int64(),
+        "failed_tests": pa.int64(),
+        "job_count": pa.int64(),
+        "start_time": pa.int64(),
+        "end_time": pa.int64(),
+    }
+    return pa.schema([pa.field(c, overrides.get(c, pa.string())) for c in columns])
+
+
 def write_parquet(rows: list[dict], columns: list[str], path) -> int:
     """Write ``rows`` to ``path`` as Parquet with an explicit column order.
 
@@ -333,6 +359,75 @@ def write_parquet(rows: list[dict], columns: list[str], path) -> int:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    table = pa.table({col: [row.get(col) for row in rows] for col in columns})
+    table = pa.table(
+        {col: [row.get(col) for row in rows] for col in columns},
+        schema=_arrow_schema(columns),
+    )
     pq.write_table(table, str(path))
     return len(rows)
+
+
+class StreamingPartitionWriter:
+    """Stream rows to per-day Parquet files, flushing in bounded batches.
+
+    The publisher used to accumulate every shaped test row for the whole window
+    in a single dict and write each day's Parquet in one shot at the end. During
+    heavy CI activity that dict — each row carrying a *full, untruncated*
+    exception stacktrace — grew large enough to OOM the sidecar even though the
+    raw traces themselves are already streamed and dropped.
+
+    This writer instead opens one ``pyarrow.parquet.ParquetWriter`` per day and
+    appends row groups of at most ``batch_size`` rows, then drops them. Peak
+    memory is therefore bounded by the batch size (times the handful of days a
+    window spans), not the window's total row count. Writing the file via a
+    fresh ParquetWriter overwrites any prior copy, preserving the "re-derive the
+    whole day partition" semantics of a publish cycle.
+    """
+
+    def __init__(self, root, columns: list[str], batch_size: int = 2000) -> None:
+        self._root = root
+        self._columns = columns
+        self._batch_size = max(1, batch_size)
+        self._buffers: dict[str, list[dict]] = {}
+        self._writers: dict = {}  # day -> pyarrow.parquet.ParquetWriter
+        self._counts: dict[str, int] = {}
+        self._schema = None
+
+    def add(self, day: str, rows: list[dict]) -> None:
+        buf = self._buffers.setdefault(day, [])
+        buf.extend(rows)
+        if len(buf) >= self._batch_size:
+            self._flush(day)
+
+    def _flush(self, day: str) -> None:
+        buf = self._buffers.get(day)
+        if not buf:
+            return
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        if self._schema is None:
+            self._schema = _arrow_schema(self._columns)
+        batch = pa.record_batch(
+            {col: [row.get(col) for row in buf] for col in self._columns},
+            schema=self._schema,
+        )
+        writer = self._writers.get(day)
+        if writer is None:
+            day_dir = self._root / day
+            day_dir.mkdir(parents=True, exist_ok=True)
+            writer = pq.ParquetWriter(str(day_dir / "test_rows.parquet"), self._schema)
+            self._writers[day] = writer
+        writer.write_batch(batch)
+        self._counts[day] = self._counts.get(day, 0) + len(buf)
+        buf.clear()
+
+    def close(self) -> dict[str, int]:
+        """Flush remaining buffers, close all writers, return rows-per-day."""
+        for day in list(self._buffers):
+            self._flush(day)
+        for writer in self._writers.values():
+            writer.close()
+        self._writers.clear()
+        self._buffers.clear()
+        return dict(self._counts)

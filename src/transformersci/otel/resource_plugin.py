@@ -216,9 +216,15 @@ def _build_staging_exporter(endpoint: str, protocol: str, headers):
     )
 
     insecure = not endpoint.lower().startswith("https://")
+    # gRPC metadata keys must be lowercase (HTTP/2 rule). The OTLP gRPC exporter
+    # passes headers through verbatim, so a capitalized key like "Authorization"
+    # — valid over HTTP, and exactly what the primary OTEL_EXPORTER_OTLP_HEADERS
+    # carries (and the staging mirror falls back to) — is rejected by gRPC core
+    # with "Illegal header key", failing the whole export before any span ships.
+    grpc_headers = {k.lower(): v for k, v in headers.items()} if headers else headers
     return OTLPSpanExporter(
         endpoint=endpoint,
-        headers=headers,
+        headers=grpc_headers,
         insecure=insecure,
         timeout=STAGING_EXPORT_TIMEOUT_SECONDS,
     )

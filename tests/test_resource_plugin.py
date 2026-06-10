@@ -58,6 +58,17 @@ def test_build_staging_exporter_grpc_strips_scheme_and_is_insecure() -> None:
     assert exporter._endpoint == "10.90.52.50:4317"
 
 
+def test_build_staging_exporter_grpc_lowercases_header_keys() -> None:
+    # gRPC metadata keys must be lowercase: a capitalized "Authorization"
+    # (valid over HTTP, inherited from the primary OTEL_EXPORTER_OTLP_HEADERS)
+    # is rejected by gRPC core with "Illegal header key" and the whole staging
+    # export fails. The builder must normalize keys for the gRPC transport.
+    exporter = resource_plugin._build_staging_exporter(
+        "10.90.52.50:5317", "grpc", {"Authorization": "Bearer x", "X-Foo": "y"}
+    )
+    assert dict(exporter._headers) == {"authorization": "Bearer x", "x-foo": "y"}
+
+
 def test_build_staging_exporter_http_appends_signal_path() -> None:
     exporter = resource_plugin._build_staging_exporter(
         "http://10.90.52.50:4318", "http/protobuf", None

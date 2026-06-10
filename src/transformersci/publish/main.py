@@ -29,6 +29,7 @@ from .tables import (
     RUN_ROLLUP_COLUMNS,
     TEST_ROW_COLUMNS,
     RunRollupAccumulator,
+    StreamingPartitionWriter,
     group_by_day,
     shape_trace_rows,
     write_parquet,
@@ -37,6 +38,20 @@ from .tempo_window import iter_window_traces
 
 DEFAULT_STAGING_DIR = "/staging"
 DEFAULT_BUCKET_URI = "hf://buckets/huggingface/transformers-ci-telemetry"
+DEFAULT_ROW_BATCH = 2000
+
+
+def _row_batch_size() -> int:
+    """Rows buffered per day before a Parquet row group is flushed.
+
+    Bounds the publisher's peak memory: smaller = flatter memory, more (smaller)
+    row groups. Override with ``PUBLISH_ROW_BATCH`` on the box if needed.
+    """
+    raw = os.getenv("PUBLISH_ROW_BATCH", "")
+    try:
+        return int(raw) if raw else DEFAULT_ROW_BATCH
+    except ValueError:
+        return DEFAULT_ROW_BATCH
 
 
 def _log(message: str) -> None:
@@ -63,8 +78,13 @@ def run_cycle(staging_dir: str, bucket_uri: str) -> dict:
     staging = Path(staging_dir)
     staging.mkdir(parents=True, exist_ok=True)
 
-    test_rows_by_day: dict[str, list[dict]] = {}
     rollups = RunRollupAccumulator()
+    # Test rows are streamed straight to per-day Parquet in bounded batches
+    # rather than accumulated for the whole window — each row can carry a full
+    # untruncated stacktrace, and holding them all is what OOM'd the sidecar.
+    test_writer = StreamingPartitionWriter(
+        staging / "daily", TEST_ROW_COLUMNS, batch_size=_row_batch_size()
+    )
     n_traces = 0
 
     for trace in iter_window_traces():
@@ -77,28 +97,25 @@ def run_cycle(staging_dir: str, bucket_uri: str) -> dict:
         trace_id = str(rows[0]["trace_id"])
         if not day or day == "unknown":
             continue
-        test_rows_by_day.setdefault(day, []).extend(rows)
+        test_writer.add(day, rows)
         if trace_id:
             _write_raw_trace(staging, day, trace_id, trace)
-        # `trace` (potentially many MB) is now free to be reclaimed.
+        # `trace` and its shaped `rows` are now free to be reclaimed.
 
+    test_counts = test_writer.close()
+    n_rows = sum(test_counts.values())
     _log(f"fetched {n_traces} trace(s) from Tempo over the publish window")
 
     rollup_rows = rollups.rows()
     roll_by_day = group_by_day(rollup_rows)
     days = sorted(
-        d for d in (set(test_rows_by_day) | set(roll_by_day)) if d and d != "unknown"
+        d for d in (set(test_counts) | set(roll_by_day)) if d and d != "unknown"
     )
-    n_rows = 0
     for day in days:
-        day_dir = staging / "daily" / day
-        day_dir.mkdir(parents=True, exist_ok=True)
-        day_rows = test_rows_by_day.get(day, [])
-        if day_rows:
-            write_parquet(day_rows, TEST_ROW_COLUMNS, day_dir / "test_rows.parquet")
-            n_rows += len(day_rows)
         day_rolls = roll_by_day.get(day, [])
         if day_rolls:
+            day_dir = staging / "daily" / day
+            day_dir.mkdir(parents=True, exist_ok=True)
             write_parquet(
                 day_rolls, RUN_ROLLUP_COLUMNS, day_dir / "run_rollups.parquet"
             )
