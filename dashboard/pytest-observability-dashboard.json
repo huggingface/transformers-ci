@@ -215,7 +215,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (pr, title) (last_over_time(pytest_pr_info{pr=~\".*\",pr!=\"main\"}[$__range]))",
+          "expr": "max by (pr, title) (topk(1, last_over_time(pytest_pr_info{pr=~\".*\",pr!=\"main\",title!=\"\"}[$__range])) by (pr))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",

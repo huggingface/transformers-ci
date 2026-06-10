@@ -42,6 +42,10 @@ services:
       - PYTEST_TRACE_EXPORTER_PORT=8000
       - PYTEST_RESOURCE_METRICS_FILE=/data/pytest-resource-metrics.jsonl
       - PYTEST_TRACE_EXPORTER_SERVICE_NAME=${PYTEST_TRACE_EXPORTER_SERVICE_NAME:-pytest-observability-demo}
+      # Authenticate GitHub PR-title / commit-message lookups. Unauthenticated
+      # is 60 req/hr, which the box exhausts — so the newest PRs/commits resolve
+      # to empty titles. A token raises this to 5000/hr. Set in dashboard/.env.
+      - PYTEST_GITHUB_TOKEN=${PYTEST_GITHUB_TOKEN:-}
     volumes:
       - ../src:/app/src:ro
       - ./data:/data
@@ -186,6 +190,8 @@ services:
       - PUBLISH_SERVICE_NAMES=${PUBLISH_SERVICE_NAMES:-pytest-observability,pytest-observability-demo}
       - HF_BUCKET_URI=${HF_BUCKET_URI:-hf://buckets/huggingface/transformers-ci-telemetry}
       - HF_TOKEN=${HF_TOKEN:-}
+      # Same GitHub auth as the exporter, for commit-message enrichment.
+      - PYTEST_GITHUB_TOKEN=${PYTEST_GITHUB_TOKEN:-}
       - PUBLISH_STAGING_DIR=/staging
       - PUBLISH_WINDOW=${PUBLISH_WINDOW:-48h}
       - PUBLISH_LIMIT=${PUBLISH_LIMIT:-5000}
