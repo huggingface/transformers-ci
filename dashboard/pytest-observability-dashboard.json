@@ -294,6 +294,24 @@
               "title": "Title"
             }
           }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Last Activity",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "limit",
+          "options": {
+            "limitField": 10
+          }
         }
       ],
       "type": "table"
@@ -914,7 +932,7 @@
           "range": false,
           "legendFormat": "__auto",
           "refId": "A",
-          "expr": "topk(10, count by (test_job, test_class, test_function, test_module) (last_over_time(pytest_test_duration_seconds{pr=\"main\",status_code=\"ERROR\"}[$__range]))) * on (test_job, test_class, test_function, test_module) group_left(exception_type, trace_id) max by (test_job, test_class, test_function, test_module, exception_type, trace_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\"}[$__range]))"
+          "expr": "topk(10, count by (test_job, test_class, test_function, test_module) (last_over_time(pytest_test_duration_seconds{pr=\"main\",status_code=\"ERROR\"}[$__range]))) * on (test_job, test_class, test_function, test_module) group_left(exception_type, trace_id) ((topk by (test_job, test_class, test_function, test_module) (1, timestamp(last_over_time(pytest_test_last_failure_info{pr=\"main\"}[$__range])))) >= bool 0)"
         }
       ],
       "title": "Top 10 Failing Tests",

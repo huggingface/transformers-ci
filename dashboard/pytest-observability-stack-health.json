@@ -33,6 +33,24 @@
   ],
   "panels": [
     {
+      "datasource": null,
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 100,
+      "options": {
+        "mode": "markdown",
+        "content": "### CI Health — dashboards [`v$dashboard_version`](https://github.com/huggingface/transformers-ci/releases/tag/v$dashboard_version)\n_Released dashboard version (see dashboard/VERSION). If this differs from the latest tag, prod is stale — bump dashboard/VERSION and this constant together, then tag the release._"
+      },
+      "pluginVersion": "12.0.0",
+      "title": "",
+      "transparent": true,
+      "type": "text"
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-infra"
@@ -77,7 +95,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 3
       },
       "id": 1,
       "options": {
@@ -98,14 +116,14 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "max by (job) (up)",
+          "expr": "max by (job) (up{job!=\"otelcol-metrics\"})",
           "instant": true,
           "legendFormat": "{{job}}",
           "range": false,
           "refId": "A"
         }
       ],
-      "title": "Scrape targets \u2014 up/down",
+      "title": "Scrape targets — up/down",
       "type": "stat"
     },
     {
@@ -134,7 +152,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 4
+        "y": 7
       },
       "id": 2,
       "options": {
@@ -172,258 +190,6 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "axisLabel": "% used",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 70
-              },
-              {
-                "color": "red",
-                "value": 85
-              }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 4
-      },
-      "id": 3,
-      "options": {
-        "legend": {
-          "calcs": [
-            "last",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "100 * (1 - (node_filesystem_avail_bytes{fstype=~\"xfs|ext4|btrfs|zfs\"} / node_filesystem_size_bytes{fstype=~\"xfs|ext4|btrfs|zfs\"}))",
-          "legendFormat": "{{mountpoint}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Host disk usage",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "CPU cores",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "never",
-            "stacking": {
-              "group": "A",
-              "mode": "normal"
-            }
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 12
-      },
-      "id": 4,
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "sum by (name) (rate(container_cpu_usage_seconds_total{name=~\".+\"}[1m]))",
-          "legendFormat": "{{name}}",
-          "refId": "A"
-        }
-      ],
-      "title": "CPU usage by container",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "bytes",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "never",
-            "stacking": {
-              "group": "A",
-              "mode": "normal"
-            }
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 12
-      },
-      "id": 5,
-      "options": {
-        "legend": {
-          "calcs": [
-            "last",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "sum by (name) (container_memory_working_set_bytes{name=~\".+\"})",
-          "legendFormat": "{{name}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Memory usage by container (working set)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "bytes/sec",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "unit": "Bps"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 20
-      },
-      "id": 6,
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "sum by (name) (rate(container_network_receive_bytes_total{name=~\".+\"}[1m]))",
-          "legendFormat": "rx {{name}}",
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
-          "expr": "-sum by (name) (rate(container_network_transmit_bytes_total{name=~\".+\"}[1m]))",
-          "legendFormat": "tx {{name}}",
-          "refId": "B"
-        }
-      ],
-      "title": "Container network I/O (rx +, tx \u2212)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
             "mode": "palette-classic"
           },
           "custom": {
@@ -441,7 +207,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 20
+        "y": 7
       },
       "id": 7,
       "options": {
@@ -502,7 +268,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 28
+        "y": 15
       },
       "id": 8,
       "options": {
@@ -563,7 +329,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 15
       },
       "id": 9,
       "options": {
@@ -586,7 +352,7 @@
         {
           "editorMode": "code",
           "expr": "prometheus_target_interval_length_seconds{quantile=\"0.99\"}",
-          "legendFormat": "p99 \u2014 {{interval}}",
+          "legendFormat": "p99 — {{interval}}",
           "refId": "A"
         }
       ],
@@ -598,165 +364,7 @@
         "type": "prometheus",
         "uid": "prometheus-infra"
       },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "axisLabel": "load avg",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 2
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 36
-      },
-      "id": 10,
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "node_load1",
-          "legendFormat": "1m",
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
-          "expr": "node_load5",
-          "legendFormat": "5m",
-          "refId": "B"
-        },
-        {
-          "editorMode": "code",
-          "expr": "node_load15",
-          "legendFormat": "15m",
-          "refId": "C"
-        }
-      ],
-      "title": "Host load average",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "axisLabel": "% used",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 70
-              },
-              {
-                "color": "red",
-                "value": 85
-              }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 36
-      },
-      "id": 11,
-      "options": {
-        "legend": {
-          "calcs": [
-            "last",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))",
-          "legendFormat": "host memory used",
-          "refId": "A"
-        }
-      ],
-      "title": "Host memory usage",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "description": "Trace payload bytes ingested by Tempo's distributor over the trailing 24h at each point. Primary 'data received by the system' signal \u2014 watch the trend to judge whether ingest volume stays within the Tempo storage budget.",
+      "description": "Trace payload bytes ingested by Tempo's distributor over the trailing 24h at each point. Primary 'data received by the system' signal — watch the trend to judge whether ingest volume stays within the Tempo storage budget.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -777,7 +385,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 44
+        "y": 23
       },
       "id": 12,
       "options": {
@@ -833,7 +441,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 44
+        "y": 23
       },
       "id": 13,
       "options": {
@@ -871,7 +479,27 @@
     "infra"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "dashboard_version",
+        "type": "constant",
+        "label": "Dashboard version",
+        "query": "0.1.0",
+        "current": {
+          "text": "0.1.0",
+          "value": "0.1.0"
+        },
+        "options": [
+          {
+            "text": "0.1.0",
+            "value": "0.1.0",
+            "selected": true
+          }
+        ],
+        "hide": 2,
+        "skipUrlSync": true
+      }
+    ]
   },
   "time": {
     "from": "now-24h",
