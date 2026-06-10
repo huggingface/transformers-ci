@@ -174,6 +174,41 @@
                 "value": 360
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "State"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "open",
+                        "color": "green",
+                        "index": 0
+                      },
+                      "0": {
+                        "text": "closed",
+                        "color": "#808080",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              }
+            ]
           }
         ]
       },
@@ -257,6 +292,15 @@
           "legendFormat": "__auto",
           "range": false,
           "refId": "Age"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (pr) (last_over_time(pytest_pr_state{pr=~\".*\",pr!=\"main\"}[$__range]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "State"
         }
       ],
       "title": "Last 10 PRs",
@@ -282,7 +326,8 @@
               "Value #Activity": 3,
               "Value #Runs": 4,
               "Value #Failures": 5,
-              "Value #Rate": 6
+              "Value #Rate": 6,
+              "Value #State": 7
             },
             "renameByName": {
               "pr": "PR",
@@ -291,7 +336,8 @@
               "Value #Runs": "Runs",
               "Value #Failures": "Failures",
               "Value #Rate": "Failure Rate",
-              "title": "Title"
+              "title": "Title",
+              "Value #State": "State"
             }
           }
         },

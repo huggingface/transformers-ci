@@ -1106,6 +1106,7 @@ def extract_pr_info_metrics(
         "# TYPE pytest_pr_info gauge",
     ]
     created_lines: list[str] = []
+    state_lines: list[str] = []
     best_by_pr: dict[tuple[str, str], tuple[int, dict[str, str]]] = {}
     for trace_info, _rows in extracted:
         pr = str(trace_info.get("pr", "none"))
@@ -1162,6 +1163,23 @@ def extract_pr_info_metrics(
         }
         lines.append(f"pytest_pr_info{metric_labels(labels)} 1")
 
+        # Numeric state gauge: ONE series per PR whose VALUE is the state
+        # (open=1, closed=0), so the dashboard can last_over_time() it to get the
+        # current state without juggling a multi-valued `state` label. Skipped
+        # when the state is unknown (GitHub lookup failed) so the column stays
+        # blank rather than implying a state.
+        state = str(metadata.get("state", "")).lower()
+        if state in ("open", "closed"):
+            state_labels = {
+                "pr": pr,
+                "repository": repository,
+                "service_name": service_name,
+            }
+            state_lines.append(
+                f"pytest_pr_state{metric_labels(state_labels)} "
+                f"{1 if state == 'open' else 0}"
+            )
+
         created_ts = parse_github_timestamp(str(metadata.get("created_at", "")))
         if created_ts is not None:
             created_labels = {
@@ -1179,6 +1197,10 @@ def extract_pr_info_metrics(
         )
         lines.append("# TYPE pytest_pr_created_at_seconds gauge")
         lines.extend(created_lines)
+    if state_lines:
+        lines.append("# HELP pytest_pr_state PR state as a value: open=1, closed=0.")
+        lines.append("# TYPE pytest_pr_state gauge")
+        lines.extend(state_lines)
     return lines
 
 

@@ -390,6 +390,33 @@ def test_extract_pr_info_metrics_fetches_metadata_once_per_pr() -> None:
     # 2024-01-02T03:04:05Z == 1704164645
     assert created_lines[0].endswith(" 1704164645")
 
+    # Numeric state gauge: one series per PR, open -> 1 (closed -> 0). Lets the
+    # dashboard last_over_time() the current state without a multi-valued label.
+    state_lines = metric_lines(metrics, "pytest_pr_state")
+    assert len(state_lines) == 1
+    assert 'pr="4321"' in state_lines[0]
+    assert state_lines[0].endswith(" 1")
+
+
+def test_extract_pr_info_metrics_state_gauge_closed_is_zero() -> None:
+    metrics = trace_exporter.extract_pr_info_metrics(
+        workflow_split_across_three_jobs(),
+        _metadata_fetcher=lambda repo, pr: {"state": "closed"},
+    )
+    state_lines = metric_lines(metrics, "pytest_pr_state")
+    assert len(state_lines) == 1
+    assert state_lines[0].endswith(" 0")
+
+
+def test_extract_pr_info_metrics_state_gauge_omitted_when_unknown() -> None:
+    # Unknown state (GitHub lookup failed) -> no gauge, so the column stays blank
+    # rather than implying open/closed.
+    metrics = trace_exporter.extract_pr_info_metrics(
+        workflow_split_across_three_jobs(),
+        _metadata_fetcher=lambda repo, pr: {"state": ""},
+    )
+    assert metric_lines(metrics, "pytest_pr_state") == []
+
 
 def test_extract_pr_info_metrics_defaults_commit_sha_to_main() -> None:
     def metadata_fetcher(repository: str, pr: str) -> dict[str, str]:
