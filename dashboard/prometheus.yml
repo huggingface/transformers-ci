@@ -8,6 +8,13 @@ global:
 
 scrape_configs:
   - job_name: pytest_trace_exporter
+    # The exporter renders synchronously inside the scrape: a cache-miss runs a
+    # ~5s Tempo search and builds a large payload, which blew past the default
+    # 5s scrape timeout (target went down with "context deadline exceeded", so
+    # NO metrics landed). Give the scrape room; 30s also matches the dashboard
+    # refresh and cuts Tempo query load.
+    scrape_interval: 30s
+    scrape_timeout: 25s
     static_configs:
       - targets:
           - pytest-trace-exporter:8000
