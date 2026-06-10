@@ -818,6 +818,33 @@ def test_render_emits_exporter_self_metrics(monkeypatch) -> None:
         assert "pytest_trace_exporter_process_resident_bytes " in out
 
 
+def test_render_metrics_serves_cached_payload(monkeypatch) -> None:
+    # Background-render model: render_metrics serves the last payload the
+    # refresher produced and never renders inline, so a scrape can't block on the
+    # multi-second Tempo fetch (which had been timing out Prometheus scrapes).
+    trace_exporter._cached_payload = None
+    try:
+        assert (
+            "pytest_trace_exporter_up 1" in trace_exporter.render_metrics()
+        )  # warming
+        payload = make_otlp_trace(
+            nodeid="tests/test_torch.py::TestTorch::test_one",
+            start_nano=1_000_000_000,
+            end_nano=2_000_000_000,
+            status_code="STATUS_CODE_OK",
+        )
+        trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
+        monkeypatch.setattr(
+            trace_exporter, "iter_traces", lambda *a, **k: iter([trace])
+        )
+        trace_exporter._refresh_cache_once()
+        out = trace_exporter.render_metrics()
+        assert "pytest_trace_exporter_render_duration_seconds " in out
+        assert "pytest_test_duration_seconds{" in out
+    finally:
+        trace_exporter._cached_payload = None
+
+
 class _UrlResponse(io.StringIO):
     def __enter__(self) -> "_UrlResponse":
         return self
@@ -927,6 +954,32 @@ def test_iter_traces_skips_failed_fetches() -> None:
     # The failing fetch is dropped; all 20 healthy traces still come through.
     assert len(traces) == 20
     assert {t["traceID"] for t in traces} == {f"ok-{i}" for i in range(20)}
+
+
+def test_trace_cache_is_bounded_lru(monkeypatch) -> None:
+    # The settled-trace cache must not grow without bound (it holds full
+    # multi-MB traces; unbounded growth crept the exporter RSS toward its cap).
+    trace_exporter._trace_cache.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX", "3")
+    # Old timestamps -> "settled" -> memoized; same payload shape for every id.
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    with patch(
+        "transformersci.otel.trace_exporter.urlopen",
+        side_effect=lambda url, timeout=None: _UrlResponse(json.dumps(payload)),
+    ):
+        for i in range(6):
+            trace_exporter.get_trace(f"t{i}", "http://tempo:3200")
+    try:
+        assert len(trace_exporter._trace_cache) == 3
+        # Oldest three evicted; the three most-recently inserted remain.
+        assert set(trace_exporter._trace_cache) == {"t3", "t4", "t5"}
+    finally:
+        trace_exporter._trace_cache.clear()
 
 
 def test_last_failure_metrics_omit_stacktrace_but_keep_pointers() -> None:

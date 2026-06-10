@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from itertools import islice
@@ -455,8 +456,21 @@ def search_trace_ids(
     return trace_ids
 
 
+# LRU cache of settled (immutable) traces, bounded so it can't grow without
+# limit. It previously kept every trace ever seen — full multi-MB Jaeger dicts —
+# which crept the exporter RSS up toward its memory cap over time. Capping it to
+# roughly the lookback window keeps the live working set cached (no re-fetch
+# thrash) while evicting traces that have aged out and will never be requested
+# again. Default comfortably exceeds the fetch LIMIT so a full window fits.
 _trace_cache_lock = threading.Lock()
-_trace_cache: dict[str, dict] = {}
+_trace_cache: "OrderedDict[str, dict]" = OrderedDict()
+DEFAULT_TRACE_CACHE_MAX = 256  # just above the fetch LIMIT (default 200)
+
+
+def _trace_cache_max() -> int:
+    return max(
+        1, env_int("PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX", DEFAULT_TRACE_CACHE_MAX)
+    )
 
 
 def _trace_settle_seconds() -> float:
@@ -478,6 +492,8 @@ def get_trace(trace_id: str, base_url: str | None = None) -> dict | None:
     """
     with _trace_cache_lock:
         cached = _trace_cache.get(trace_id)
+        if cached is not None:
+            _trace_cache.move_to_end(trace_id)  # mark most-recently-used
     if cached is not None:
         return cached
 
@@ -500,6 +516,10 @@ def get_trace(trace_id: str, base_url: str | None = None) -> dict | None:
     ):
         with _trace_cache_lock:
             _trace_cache[trace_id] = trace
+            _trace_cache.move_to_end(trace_id)
+            max_entries = _trace_cache_max()
+            while len(_trace_cache) > max_entries:
+                _trace_cache.popitem(last=False)  # evict least-recently-used
     return trace
 
 
@@ -1865,18 +1885,49 @@ def _cache_ttl_seconds() -> float:
         return DEFAULT_CACHE_SECONDS
 
 
+_WARMING_PAYLOAD = (
+    "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.\n"
+    "# TYPE pytest_trace_exporter_up gauge\n"
+    "pytest_trace_exporter_up 1\n"
+)
+
+
 def render_metrics() -> str:
-    global _cached_payload
-    ttl = _cache_ttl_seconds()
+    """Return the most recently rendered payload instantly (never renders inline).
+
+    Rendering runs in a background thread (:func:`_refresh_loop`) because a single
+    render does a multi-second Tempo search + fetch/shape of the whole window —
+    doing that inside the scrape handler made scrapes exceed Prometheus's
+    scrape_timeout (target went down with "context deadline exceeded", so nothing
+    landed). Serving the cached payload keeps every scrape sub-millisecond
+    regardless of how long a render takes. Until the first render lands the
+    endpoint reports ``up 1`` so the target stays healthy while warming.
+    """
     with _cache_lock:
-        now = time.monotonic()
-        if _cached_payload is not None and ttl > 0:
-            cached_at, body = _cached_payload
-            if now - cached_at < ttl:
-                return body
-        body = _render_metrics_uncached()
-        _cached_payload = (now, body)
-        return body
+        if _cached_payload is not None:
+            return _cached_payload[1]
+    return _WARMING_PAYLOAD
+
+
+def _refresh_cache_once() -> None:
+    global _cached_payload
+    body = _render_metrics_uncached()
+    with _cache_lock:
+        _cached_payload = (time.monotonic(), body)
+
+
+def _refresh_loop(interval: float) -> None:
+    """Re-render the payload in the background: render, then sleep `interval`.
+
+    Renders immediately on start (so the cache fills within one render) and never
+    holds the lock during the slow render — only the quick payload swap is locked.
+    """
+    while True:
+        try:
+            _refresh_cache_once()
+        except Exception:  # never let the refresher thread die
+            pass
+        time.sleep(max(1.0, interval))
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
@@ -1921,6 +1972,11 @@ class MetricsHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     port = env_int("PYTEST_TRACE_EXPORTER_PORT", DEFAULT_PORT)
+    # Render in the background so scrapes serve the cached payload instantly.
+    refresher = threading.Thread(
+        target=_refresh_loop, args=(_cache_ttl_seconds(),), daemon=True
+    )
+    refresher.start()
     server = ThreadingHTTPServer(("0.0.0.0", port), MetricsHandler)
     server.serve_forever()
 
