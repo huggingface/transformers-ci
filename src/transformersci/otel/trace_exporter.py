@@ -1820,21 +1820,29 @@ def _render_metrics_uncached() -> str:
             # All other traces fall out of scope here and are reclaimed.
         resource_records = fetch_resource_records()
     except Exception as error:
-        return (
-            "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.\n"
-            "# TYPE pytest_trace_exporter_up gauge\n"
-            "pytest_trace_exporter_up 0\n"
-            "# HELP pytest_trace_exporter_last_error Last exporter error.\n"
-            "# TYPE pytest_trace_exporter_last_error gauge\n"
-            f"pytest_trace_exporter_last_error{{message={json.dumps(str(error))}}} 1\n"
-        )
+        lines = [
+            "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.",
+            "# TYPE pytest_trace_exporter_up gauge",
+            "pytest_trace_exporter_up 0",
+            "# HELP pytest_trace_exporter_last_error Last exporter error.",
+            "# TYPE pytest_trace_exporter_last_error gauge",
+            f"pytest_trace_exporter_last_error{{message={json.dumps(str(error))}}} 1",
+        ]
+        # Emit self-metrics on the error path too, so the exporter's own health
+        # panels (render time, RSS) stay populated rather than going "no data".
+        lines.extend(_exporter_self_metric_lines(time.monotonic() - started))
+        return "\n".join(lines) + "\n"
 
     if not extracted:
-        return (
-            "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.\n"
-            "# TYPE pytest_trace_exporter_up gauge\n"
-            "pytest_trace_exporter_up 1\n"
-        )
+        # Empty window (no CI activity) is still a healthy exporter — emit the
+        # self-metrics so the dashboard shows it idling, not "no data".
+        lines = [
+            "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.",
+            "# TYPE pytest_trace_exporter_up gauge",
+            "pytest_trace_exporter_up 1",
+        ]
+        lines.extend(_exporter_self_metric_lines(time.monotonic() - started))
+        return "\n".join(lines) + "\n"
 
     # Track which traces belong to which run, then build the run roll-ups over
     # each run's COMPLETE (settled) trace set rather than just the in-window
