@@ -123,7 +123,7 @@
           "refId": "A"
         }
       ],
-      "title": "Scrape targets — up/down",
+      "title": "Scrape targets \u2014 up/down",
       "type": "stat"
     },
     {
@@ -352,7 +352,7 @@
         {
           "editorMode": "code",
           "expr": "prometheus_target_interval_length_seconds{quantile=\"0.99\"}",
-          "legendFormat": "p99 — {{interval}}",
+          "legendFormat": "p99 \u2014 {{interval}}",
           "refId": "A"
         }
       ],
@@ -364,7 +364,7 @@
         "type": "prometheus",
         "uid": "prometheus-infra"
       },
-      "description": "Trace payload bytes ingested by Tempo's distributor over the trailing 24h at each point. Primary 'data received by the system' signal — watch the trend to judge whether ingest volume stays within the Tempo storage budget.",
+      "description": "Trace payload bytes ingested by Tempo's distributor over the trailing 24h at each point. Primary 'data received by the system' signal \u2014 watch the trend to judge whether ingest volume stays within the Tempo storage budget.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -469,6 +469,330 @@
         }
       ],
       "title": "Metric samples ingested per day",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "id": 101,
+      "panels": [],
+      "title": "Exporter self-metrics (pytest-trace-exporter)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "text": "DOWN"
+                },
+                "1": {
+                  "color": "green",
+                  "text": "UP"
+                }
+              },
+              "type": "value"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 32
+      },
+      "id": 102,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "pytest_trace_exporter_up",
+          "instant": true,
+          "legendFormat": "up",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Exporter up",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 32
+      },
+      "id": 103,
+      "options": {
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "pytest_trace_exporter_render_duration_seconds",
+          "instant": true,
+          "legendFormat": "render",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Last render duration",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 32
+      },
+      "id": 104,
+      "options": {
+        "colorMode": "none",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "rate(pytest_trace_exporter_traces_processed_total[5m])",
+          "instant": true,
+          "legendFormat": "traces/s",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Traces processed / sec",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "decbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "id": 105,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "pytest_trace_exporter_process_resident_bytes",
+          "legendFormat": "RSS",
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "671088640",
+          "legendFormat": "limit (640 MiB)",
+          "refId": "B"
+        }
+      ],
+      "title": "Exporter memory (RSS) vs 640 MiB limit",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "id": 106,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "pytest_trace_exporter_render_duration_seconds",
+          "legendFormat": "render seconds",
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "pytest_trace_exporter_trace_count",
+          "legendFormat": "traces in window",
+          "refId": "B"
+        }
+      ],
+      "title": "Render duration & traces fetched",
       "type": "timeseries"
     }
   ],

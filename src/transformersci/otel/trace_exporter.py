@@ -6,7 +6,9 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from itertools import islice
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from math import fsum
 from pathlib import Path
@@ -28,6 +30,11 @@ DEFAULT_GITHUB_CACHE_SECONDS = 300.0
 # every scrape. Younger traces may still be receiving spans, so they are left
 # uncached and refreshed each cycle.
 DEFAULT_TRACE_SETTLE_SECONDS = 120.0
+# Each get_trace() is an independent, blocking Tempo round-trip. With a cold
+# cache (after a restart) or during heavy CI, fetch_traces() faces up to
+# DEFAULT_LIMIT of them; fetched sequentially that is minutes of wall-clock. A
+# bounded thread pool fans them out so the loop costs roughly its slowest batch.
+DEFAULT_FETCH_CONCURRENCY = 12
 
 
 def env_int(name: str, default: int) -> int:
@@ -404,7 +411,24 @@ def tempo_trace_to_jaeger(trace_id: str, payload: dict) -> dict:
     return {"processes": processes, "spans": spans, "traceID": trace_id}
 
 
-def _http_get_json(url: str, timeout: float = 5.0) -> object:
+# Tempo search/get_trace latency over real CI-volume blocks is ~4–8s and rises
+# under ingest/flush load; the old 5.0s default sat right on top of that, so
+# whole fetches were intermittently cancelled and the exporter served zero
+# metrics. Default to a comfortable 30s, overridable for heavier windows.
+DEFAULT_HTTP_TIMEOUT = 30.0
+
+
+def _http_timeout() -> float:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_HTTP_TIMEOUT", "")
+    try:
+        return max(1.0, float(raw)) if raw else DEFAULT_HTTP_TIMEOUT
+    except ValueError:
+        return DEFAULT_HTTP_TIMEOUT
+
+
+def _http_get_json(url: str, timeout: float | None = None) -> object:
+    if timeout is None:
+        timeout = _http_timeout()
     with urlopen(url, timeout=timeout) as response:
         return json.load(response)
 
@@ -479,8 +503,22 @@ def get_trace(trace_id: str, base_url: str | None = None) -> dict | None:
     return trace
 
 
-def fetch_traces() -> list[dict]:
-    base_url = tempo_base_url()
+def iter_traces(base_url: str | None = None) -> Iterator[dict]:
+    """Yield the window's traces one at a time, fetched concurrently with a
+    bounded number in flight.
+
+    Streaming (rather than returning the whole list) is what keeps the exporter
+    memory-flat: the caller shapes each trace into small rows and drops it, so
+    peak residency is the in-flight window plus the small shaped rows — never
+    every (multi-MB) trace at once. A bounded sliding window of `concurrency`
+    outstanding fetches both parallelizes Tempo's I/O waits (get_trace is I/O
+    bound and thread-safe) AND caps how many fetched-but-unconsumed traces
+    buffer up while the caller shapes each one. A slow/failing trace drops to
+    None instead of sinking the render; result order doesn't matter (metrics
+    aggregate).
+    """
+    if base_url is None:
+        base_url = tempo_base_url()
     limit = env_int("PYTEST_TRACE_EXPORTER_LIMIT", DEFAULT_LIMIT)
     lookback = os.getenv("PYTEST_TRACE_EXPORTER_LOOKBACK", DEFAULT_LOOKBACK)
     service_name = os.getenv("PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME)
@@ -488,13 +526,44 @@ def fetch_traces() -> list[dict]:
     end = int(time.time())
     start = end - parse_lookback_seconds(lookback)
     trace_ids = search_trace_ids(base_url, service_name, start, end, limit)
+    if not trace_ids:
+        return
 
-    traces: list[dict] = []
-    for trace_id in trace_ids:
-        trace = get_trace(trace_id, base_url)
-        if trace is not None:
-            traces.append(trace)
-    return traces
+    workers = max(
+        1,
+        min(
+            env_int(
+                "PYTEST_TRACE_EXPORTER_FETCH_CONCURRENCY", DEFAULT_FETCH_CONCURRENCY
+            ),
+            len(trace_ids),
+        ),
+    )
+    pending = iter(trace_ids)
+    with ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="trace-fetch"
+    ) as pool:
+        inflight = {
+            pool.submit(get_trace, tid, base_url) for tid in islice(pending, workers)
+        }
+        while inflight:
+            done, inflight = wait(inflight, return_when=FIRST_COMPLETED)
+            for future in done:
+                # Refill the window before yielding so a fetch is always running.
+                nxt = next(pending, None)
+                if nxt is not None:
+                    inflight.add(pool.submit(get_trace, nxt, base_url))
+                try:
+                    trace = future.result()
+                except Exception:
+                    trace = None
+                if trace is not None:
+                    yield trace
+
+
+def fetch_traces() -> list[dict]:
+    """Eager list of the window's traces. Kept for callers/tests; the metrics
+    render streams via :func:`iter_traces` to avoid materialising them all."""
+    return list(iter_traces())
 
 
 def fetch_resource_records() -> list[dict[str, str | float | int]]:
@@ -851,7 +920,10 @@ def extract_trace_rows(
             {
                 "duration_seconds": int(span.get("duration", 0)) / 1_000_000,
                 "exception_type": exc_type,
-                "exception_stacktrace": exc_stacktrace,
+                # The capped stacktrace is consumed here for test_line only; no
+                # metric emits it, so it is deliberately not retained in the row
+                # (it would otherwise bloat the kept rows under high failure
+                # volume — the exporter must stay under ~1G at high volume).
                 "pr": process_pr or "none",
                 "provider": process_provider or "unknown",
                 "run_id": process_run_id or trace_id,
@@ -1663,9 +1735,69 @@ def extract_average_resource_metrics(
     return lines
 
 
-def _render_metrics_uncached() -> str:
+# Cumulative traces fetched+shaped since process start; only mutated under the
+# render cache lock (one render at a time), so a plain int is safe. Exposed as a
+# counter so the dashboard can take rate() for throughput.
+_traces_processed_total = 0
+
+
+def _process_resident_bytes() -> int | None:
+    """Current resident set size (RSS) of this process in bytes.
+
+    Reads ``/proc/self/statm`` (Linux, stdlib, no deps). Returns None where it
+    isn't available (e.g. a non-Linux dev box) so callers just omit the metric.
+    """
     try:
-        traces = fetch_traces()
+        with open("/proc/self/statm", encoding="ascii") as statm:
+            rss_pages = int(statm.read().split()[1])
+        return rss_pages * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _exporter_self_metric_lines(render_seconds: float) -> list[str]:
+    """Self-observability metrics for the exporter itself (speed, throughput,
+    memory) — surfaced on the CI stack-health dashboard."""
+    lines = [
+        "# HELP pytest_trace_exporter_render_duration_seconds Wall-clock to fetch+shape the window on the last refresh.",
+        "# TYPE pytest_trace_exporter_render_duration_seconds gauge",
+        f"pytest_trace_exporter_render_duration_seconds {render_seconds:.6f}",
+        "# HELP pytest_trace_exporter_traces_processed_total Traces fetched and shaped since start.",
+        "# TYPE pytest_trace_exporter_traces_processed_total counter",
+        f"pytest_trace_exporter_traces_processed_total {_traces_processed_total}",
+    ]
+    rss = _process_resident_bytes()
+    if rss is not None:
+        lines.extend(
+            [
+                "# HELP pytest_trace_exporter_process_resident_bytes Resident memory of the exporter process.",
+                "# TYPE pytest_trace_exporter_process_resident_bytes gauge",
+                f"pytest_trace_exporter_process_resident_bytes {rss}",
+            ]
+        )
+    return lines
+
+
+def _render_metrics_uncached() -> str:
+    started = time.monotonic()
+    # Stream the window's traces: shape each into small rows and drop the
+    # (multi-MB) raw trace immediately, so peak memory is the shaped rows + the
+    # fetch window + a single retained "latest" trace — never every raw trace at
+    # once (the pattern that OOM'd the publisher). Only `latest` keeps one raw
+    # trace, for extract_latest_trace_metrics.
+    extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] = []
+    latest: dict | None = None
+    latest_start = -1
+    trace_count = 0
+    try:
+        for trace in iter_traces():
+            trace_count += 1
+            extracted.append(extract_trace_rows(trace))
+            start = trace_start_time(trace)
+            if start > latest_start:
+                latest_start = start
+                latest = trace
+            # All other traces fall out of scope here and are reclaimed.
         resource_records = fetch_resource_records()
     except Exception as error:
         return (
@@ -1677,14 +1809,12 @@ def _render_metrics_uncached() -> str:
             f"pytest_trace_exporter_last_error{{message={json.dumps(str(error))}}} 1\n"
         )
 
-    if not traces:
+    if not extracted:
         return (
             "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.\n"
             "# TYPE pytest_trace_exporter_up gauge\n"
             "pytest_trace_exporter_up 1\n"
         )
-
-    extracted = _precompute_trace_rows(traces)
 
     # Track which traces belong to which run, then build the run roll-ups over
     # each run's COMPLETE (settled) trace set rather than just the in-window
@@ -1702,17 +1832,20 @@ def _render_metrics_uncached() -> str:
         "pytest_trace_exporter_up 1",
         "# HELP pytest_trace_exporter_trace_count Number of traces fetched from Tempo for aggregation.",
         "# TYPE pytest_trace_exporter_trace_count gauge",
-        f"pytest_trace_exporter_trace_count {len(traces)}",
+        f"pytest_trace_exporter_trace_count {trace_count}",
     ]
     rendered.extend(extract_per_test_duration_metrics(_extracted=extracted))
     rendered.extend(extract_run_rollup_metrics(_extracted=rollup_extracted))
-    rendered.extend(extract_run_info_metrics(traces, _extracted=rollup_extracted))
-    rendered.extend(extract_pr_info_metrics(traces, _extracted=extracted))
-    rendered.extend(extract_pr_last_failure_metrics(traces, _extracted=extracted))
-    rendered.extend(extract_average_metrics(traces, _extracted=extracted))
+    rendered.extend(extract_run_info_metrics(_extracted=rollup_extracted))
+    rendered.extend(extract_pr_info_metrics([], _extracted=extracted))
+    rendered.extend(extract_pr_last_failure_metrics([], _extracted=extracted))
+    rendered.extend(extract_average_metrics([], _extracted=extracted))
     rendered.extend(extract_average_resource_metrics(resource_records))
 
-    latest = latest_trace(traces)
+    global _traces_processed_total
+    _traces_processed_total += trace_count
+    rendered.extend(_exporter_self_metric_lines(time.monotonic() - started))
+
     if latest is not None:
         rendered.extend(extract_latest_trace_metrics(latest))
     return "\n".join(rendered) + "\n"

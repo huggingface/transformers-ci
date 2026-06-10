@@ -780,6 +780,44 @@ def test_adapted_tempo_trace_flows_through_extract_trace_rows() -> None:
     assert rows[0]["test_function"] == "test_fail"
 
 
+def test_extract_trace_rows_does_not_retain_stacktrace_in_metric_row() -> None:
+    # The capped stacktrace is consumed only to derive test_line during shaping;
+    # no metric emits it, so it must NOT be retained in the row (keeps the kept
+    # rows small under high failure volume — the exporter must stay under ~1G).
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_fail",
+        start_nano=4_000_000_000,
+        end_nano=5_000_000_000,
+        status_code="STATUS_CODE_ERROR",
+        exception_type="AssertionError",
+    )
+    trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
+    _info, rows = trace_exporter.extract_trace_rows(trace)
+    assert rows and rows[0]["exception_type"] == "AssertionError"
+    assert "exception_stacktrace" not in rows[0]
+
+
+def test_render_emits_exporter_self_metrics(monkeypatch) -> None:
+    # Speed / throughput / memory self-metrics for the stack-health dashboard.
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
+    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([trace]))
+
+    out = trace_exporter._render_metrics_uncached()
+
+    assert "pytest_trace_exporter_render_duration_seconds " in out
+    assert "pytest_trace_exporter_traces_processed_total " in out
+    assert "pytest_trace_exporter_trace_count 1" in out
+    # RSS is Linux-only (/proc); assert it only where the helper can read it.
+    if trace_exporter._process_resident_bytes() is not None:
+        assert "pytest_trace_exporter_process_resident_bytes " in out
+
+
 class _UrlResponse(io.StringIO):
     def __enter__(self) -> "_UrlResponse":
         return self
@@ -856,6 +894,39 @@ def test_fetch_traces_caches_settled_traces() -> None:
     # because the settled trace is served from the in-memory cache.
     assert first_calls == 2
     assert second_calls == 3
+
+
+def test_iter_traces_skips_failed_fetches() -> None:
+    # A slow/failing trace must drop out (None) without sinking the others, so
+    # the streaming render still gets every healthy trace. Also exercises the
+    # bounded-window fan-out across more ids than the default concurrency.
+    trace_exporter._trace_cache.clear()
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    ids = [f"ok-{i}" for i in range(20)] + ["boom"]
+
+    def opener(url, timeout=None):
+        if "/api/search" in url:
+            return _UrlResponse(json.dumps({"traces": [{"traceID": t} for t in ids]}))
+        if "boom" in url:
+            raise OSError("connection reset by peer")
+        return _UrlResponse(json.dumps(payload))
+
+    with patch.dict(
+        "os.environ",
+        {"PYTEST_TRACE_EXPORTER_TEMPO_URL": "http://tempo:3200"},
+        clear=False,
+    ):
+        with patch("transformersci.otel.trace_exporter.urlopen", side_effect=opener):
+            traces = list(trace_exporter.iter_traces())
+
+    # The failing fetch is dropped; all 20 healthy traces still come through.
+    assert len(traces) == 20
+    assert {t["traceID"] for t in traces} == {f"ok-{i}" for i in range(20)}
 
 
 def test_last_failure_metrics_omit_stacktrace_but_keep_pointers() -> None:
