@@ -43,7 +43,7 @@
       "id": 100,
       "options": {
         "mode": "markdown",
-        "content": "### CI Health — dashboards [`v$dashboard_version`](https://github.com/huggingface/transformers-ci/releases/tag/v$dashboard_version)\n_Released dashboard version (see dashboard/VERSION). If this differs from the latest tag, prod is stale — bump dashboard/VERSION and this constant together, then tag the release._"
+        "content": "### CI Health - [v$dashboard_version](https://github.com/huggingface/transformers-ci/releases/tag/v$dashboard_version)"
       },
       "pluginVersion": "12.0.0",
       "title": "",
