@@ -18,12 +18,14 @@ from urllib.request import Request, urlopen
 
 
 DEFAULT_TEMPO_URL = "http://tempo:3200"
-DEFAULT_LIMIT = 200
+DEFAULT_LIMIT = 100
 DEFAULT_LOOKBACK = "1h"
 DEFAULT_PORT = 8000
 DEFAULT_RESOURCE_METRICS_FILE = "/data/pytest-resource-metrics.jsonl"
 DEFAULT_SERVICE_NAME = "pytest-observability-demo"
 DEFAULT_CACHE_SECONDS = 10.0
+DEFAULT_REFRESH_COOLDOWN_SECONDS = 60.0
+DEFAULT_REFRESH_SLOW_SECONDS = 30.0
 DEFAULT_GITHUB_API_URL = "https://api.github.com"
 DEFAULT_GITHUB_CACHE_SECONDS = 300.0
 # A completed CI trace is immutable, so once it is this many seconds old we
@@ -31,11 +33,10 @@ DEFAULT_GITHUB_CACHE_SECONDS = 300.0
 # every scrape. Younger traces may still be receiving spans, so they are left
 # uncached and refreshed each cycle.
 DEFAULT_TRACE_SETTLE_SECONDS = 120.0
-# Each get_trace() is an independent, blocking Tempo round-trip. With a cold
-# cache (after a restart) or during heavy CI, fetch_traces() faces up to
-# DEFAULT_LIMIT of them; fetched sequentially that is minutes of wall-clock. A
-# bounded thread pool fans them out so the loop costs roughly its slowest batch.
-DEFAULT_FETCH_CONCURRENCY = 12
+# Each get_trace() is an independent, blocking Tempo round-trip. Keep this low:
+# fetching several multi-MB traces in parallel can make small single-node Tempo
+# instances spike hard enough to hit their container memory limit.
+DEFAULT_FETCH_CONCURRENCY = 4
 
 
 def env_int(name: str, default: int) -> int:
@@ -412,11 +413,10 @@ def tempo_trace_to_jaeger(trace_id: str, payload: dict) -> dict:
     return {"processes": processes, "spans": spans, "traceID": trace_id}
 
 
-# Tempo search/get_trace latency over real CI-volume blocks is ~4–8s and rises
-# under ingest/flush load; the old 5.0s default sat right on top of that, so
-# whole fetches were intermittently cancelled and the exporter served zero
-# metrics. Default to a comfortable 30s, overridable for heavier windows.
-DEFAULT_HTTP_TIMEOUT = 30.0
+# Tempo search/get_trace latency over real CI-volume blocks is usually several
+# seconds. Keep a firm timeout so slow traces are retried on a later refresh
+# instead of letting many blocked requests pile pressure onto Tempo.
+DEFAULT_HTTP_TIMEOUT = 10.0
 
 
 def _http_timeout() -> float:
@@ -1915,6 +1915,26 @@ def _cache_ttl_seconds() -> float:
         return DEFAULT_CACHE_SECONDS
 
 
+def _refresh_cooldown_seconds() -> float:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_REFRESH_COOLDOWN_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_REFRESH_COOLDOWN_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return DEFAULT_REFRESH_COOLDOWN_SECONDS
+
+
+def _refresh_slow_seconds() -> float:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_REFRESH_SLOW_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_REFRESH_SLOW_SECONDS
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return DEFAULT_REFRESH_SLOW_SECONDS
+
+
 _WARMING_PAYLOAD = (
     "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.\n"
     "# TYPE pytest_trace_exporter_up gauge\n"
@@ -1953,11 +1973,17 @@ def _refresh_loop(interval: float) -> None:
     holds the lock during the slow render — only the quick payload swap is locked.
     """
     while True:
+        started = time.monotonic()
+        failed = False
         try:
             _refresh_cache_once()
         except Exception:  # never let the refresher thread die
-            pass
-        time.sleep(max(1.0, interval))
+            failed = True
+        elapsed = time.monotonic() - started
+        if failed or elapsed >= _refresh_slow_seconds():
+            time.sleep(max(1.0, _refresh_cooldown_seconds()))
+        else:
+            time.sleep(max(1.0, interval))
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
