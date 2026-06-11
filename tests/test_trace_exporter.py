@@ -1064,12 +1064,24 @@ def test_trace_cache_is_bounded_lru(monkeypatch) -> None:
         trace_exporter._trace_cache.clear()
 
 
+def test_trace_cache_entry_bytes_counts_resident_overhead() -> None:
+    # The cap is a memory budget, so an entry's cost must exceed its raw
+    # serialized size (parsed dicts are several times larger in RAM).
+    trace = {"data": [{"k": "v" * 100} for _ in range(20)]}
+    serialized = len(json.dumps(trace, ensure_ascii=False, separators=(",", ":")))
+    assert trace_exporter._trace_cache_entry_bytes(trace) == (
+        serialized * trace_exporter._TRACE_RAM_OVERHEAD
+    )
+
+
 def test_trace_cache_is_bounded_by_bytes(monkeypatch) -> None:
     trace_exporter._trace_cache.clear()
     trace_exporter._trace_cache_sizes.clear()
     trace_exporter._trace_cache_bytes = 0
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX", "10")
-    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX_BYTES", "1200")
+    # The byte budget counts ~4x serialized size (resident-memory estimate), so
+    # the cap is scaled accordingly to keep this exercising partial eviction.
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX_BYTES", "4800")
     payload = make_otlp_trace(
         nodeid="tests/test_torch.py::TestTorch::test_one",
         start_nano=1_000_000_000,
@@ -1092,7 +1104,7 @@ def test_trace_cache_is_bounded_by_bytes(monkeypatch) -> None:
 
     try:
         assert len(trace_exporter._trace_cache) < 3
-        assert trace_exporter._trace_cache_bytes <= 1200
+        assert trace_exporter._trace_cache_bytes <= 4800
     finally:
         trace_exporter._trace_cache.clear()
         trace_exporter._trace_cache_sizes.clear()

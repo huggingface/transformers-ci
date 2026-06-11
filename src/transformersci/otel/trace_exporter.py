@@ -520,6 +520,13 @@ _trace_cache_sizes: dict[str, int] = {}
 _trace_cache_bytes = 0
 DEFAULT_TRACE_CACHE_MAX = 256  # just above the fetch LIMIT (default 200)
 DEFAULT_TRACE_CACHE_MAX_BYTES = 128 * 1024 * 1024
+# A parsed Jaeger trace dict occupies far more RAM than its compact JSON: nested
+# dicts/lists/str objects each carry per-object overhead. Measured ~4x on real
+# transformers-CI traces (0.89 MB serialized -> 3.54 MB resident). The cap is a
+# *memory* budget, so scale the serialized size by this factor — otherwise a
+# 128 MiB cap silently admitted ~520 MiB of resident traces and pinned the
+# exporter against its 640 MiB container limit.
+_TRACE_RAM_OVERHEAD = 4
 
 
 def _trace_cache_max() -> int:
@@ -539,12 +546,19 @@ def _trace_cache_max_bytes() -> int:
 
 
 def _trace_cache_entry_bytes(trace: dict) -> int:
+    """Estimate a trace's *resident* memory cost for the cache byte budget.
+
+    json.dumps gives a cheap, deterministic size proxy; multiply by
+    :data:`_TRACE_RAM_OVERHEAD` to approximate the in-RAM footprint the cache
+    actually holds (a full getsizeof walk per insert would be far costlier).
+    """
     try:
-        return len(
+        serialized = len(
             json.dumps(trace, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         )
     except (TypeError, ValueError):
         return 0
+    return serialized * _TRACE_RAM_OVERHEAD
 
 
 def _trace_settle_seconds() -> float:
