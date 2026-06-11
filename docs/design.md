@@ -1,13 +1,8 @@
 # Design Overview — transformers CI observability
 
 How a pytest run becomes a Grafana dashboard (and a public dataset), and where
-each piece of code sits. This is the high-level map; for operational detail see
-[`dashboard-operations.md`](dashboard-operations.md) and
-[`ci-data-publish-plan.md`](ci-data-publish-plan.md), and for module-internal
-detail read the docstring at the top of each file in
+each piece of code sits. For module-internal detail read the docstring at the top of each file in
 `src/transformersci/otel/` and `src/transformersci/publish/`.
-
----
 
 ## 1. The shape of the system
 
@@ -20,7 +15,7 @@ public dataset.
 
 ```
    CI job (pytest)                  observability stack
- ┌──────────────────┐         ┌──────────────────────────────┐
+ ┌───────────────────┐         ┌──────────────────────────────┐
  │ cli.py wraps      │  OTLP   │ Tempo (trace store, durable) │
  │ pytest, sets OTel │ ───────▶│                              │
  │ resource attrs +  │         └───────┬──────────────┬───────┘
@@ -31,16 +26,14 @@ public dataset.
  │ GPU per test, and │       │  │ trace_exporter│  │ publish/main.py  │
  │ mirrors spans to  │       └─▶│ render Prom   │  │ shape → Parquet  │
  │ a staging backend │ (on box) │ /metrics      │  │ + raw trace JSON │
- └──────────────────┘          └──────┬────────┘  └────────┬─────────┘
+ └───────────────────┘          └──────┬────────┘  └────────┬─────────┘
                                        │ scrape             │ hf sync
                                        ▼                    ▼
                                ┌───────────────┐   ┌──────────────────┐
-                               │ Prometheus →  │   │ HF bucket         │
-                               │ Grafana       │   │ (public dataset)  │
+                               │ Prometheus →  │   │ HF bucket        │
+                               │ Grafana       │   │ (public dataset) │
                                └───────────────┘   └──────────────────┘
 ```
-
----
 
 ## 2. Producer side — emitting telemetry
 
@@ -78,8 +71,6 @@ Monkeypatches the span exporter's `export()` to log every attempt (span count,
 result/exception, duration, protocol, endpoint) to stderr. Used only while
 debugging "are spans actually leaving the box"; off in steady state.
 
----
-
 ## 3. Backends in the middle
 
 - **Tempo** is the durable trace store and the single source of truth for the
@@ -88,8 +79,6 @@ debugging "are spans actually leaving the box"; off in steady state.
   per-test resource samples the plugin wrote.
 - **Prometheus** scrapes the exporter's `/metrics`; its TSDB is the durable
   store of the derived time-series. **Grafana** renders the dashboards.
-
----
 
 ## 4. Consumer side — `trace_exporter.py`
 
@@ -139,8 +128,6 @@ makes observable (alert on `time() - that`).
 A secondary endpoint that renders a single trace's failure details (stack trace,
 GitHub source links) as HTML, for drill-down from the dashboard.
 
----
-
 ## 5. Second consumer — `transformersci.publish`
 
 The other thing that reads Tempo is the **public data publisher**: a one-shot
@@ -172,8 +159,6 @@ One cycle (`main.run_cycle`):
 The cycle is **idempotent**: re-deriving and overwriting whole day partitions is
 safe because settled traces are immutable, so a day stabilises once it ages past
 the window and is never rewritten.
-
----
 
 ## 6. Tuning knobs
 
