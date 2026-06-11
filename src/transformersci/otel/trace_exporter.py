@@ -4,6 +4,8 @@ import html
 import json
 import os
 import re
+import shutil
+import tempfile
 import threading
 import time
 from collections import OrderedDict
@@ -22,6 +24,14 @@ DEFAULT_LIMIT = 100
 DEFAULT_LOOKBACK = "1h"
 DEFAULT_PORT = 8000
 DEFAULT_RESOURCE_METRICS_FILE = "/data/pytest-resource-metrics.jsonl"
+# The rendered Prometheus payload is written here instead of being held in the
+# Python heap. It lives on the persistent /data volume so the last complete
+# payload survives a crash/restart and /metrics can serve it immediately while
+# the background thread re-renders, rather than falling back to a bare warming
+# payload. Publishing is atomic (temp file + os.replace), so a crash mid-write
+# can never expose a torn body.
+DEFAULT_PAYLOAD_FILE = "/data/pytest-metrics-payload.prom"
+METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 DEFAULT_SERVICE_NAME = "pytest-observability-demo"
 DEFAULT_CACHE_SECONDS = 10.0
 DEFAULT_REFRESH_COOLDOWN_SECONDS = 60.0
@@ -469,7 +479,9 @@ DEFAULT_TRACE_CACHE_MAX_BYTES = 128 * 1024 * 1024
 
 
 def _trace_cache_max() -> int:
-    return max(0, env_int("PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX", DEFAULT_TRACE_CACHE_MAX))
+    return max(
+        0, env_int("PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX", DEFAULT_TRACE_CACHE_MAX)
+    )
 
 
 def _trace_cache_max_bytes() -> int:
@@ -485,9 +497,7 @@ def _trace_cache_max_bytes() -> int:
 def _trace_cache_entry_bytes(trace: dict) -> int:
     try:
         return len(
-            json.dumps(trace, ensure_ascii=False, separators=(",", ":")).encode(
-                "utf-8"
-            )
+            json.dumps(trace, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         )
     except (TypeError, ValueError):
         return 0
@@ -1841,6 +1851,13 @@ def _exporter_self_metric_lines(render_seconds: float) -> list[str]:
         "# HELP pytest_trace_exporter_traces_processed_total Traces fetched and shaped since start.",
         "# TYPE pytest_trace_exporter_traces_processed_total counter",
         f"pytest_trace_exporter_traces_processed_total {_traces_processed_total}",
+        # Wall-clock time of this render, baked into the payload. Because the
+        # payload is served from disk and survives a restart, a stuck/crashed
+        # exporter keeps serving an old file with an old timestamp — alert on
+        # time() - this gauge to catch a payload that has gone stale.
+        "# HELP pytest_trace_exporter_last_render_timestamp_seconds Unix time this payload was rendered.",
+        "# TYPE pytest_trace_exporter_last_render_timestamp_seconds gauge",
+        f"pytest_trace_exporter_last_render_timestamp_seconds {time.time():.3f}",
     ]
     rss = _process_resident_bytes()
     if rss is not None:
@@ -1935,8 +1952,44 @@ def _render_metrics_uncached() -> str:
     return "\n".join(rendered) + "\n"
 
 
-_cache_lock = threading.Lock()
-_cached_payload: tuple[float, str] | None = None
+def _payload_path() -> Path:
+    return Path(os.getenv("PYTEST_TRACE_EXPORTER_PAYLOAD_FILE", DEFAULT_PAYLOAD_FILE))
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Publish ``data`` to ``path`` atomically.
+
+    Writes a sibling temp file in the destination directory, fsyncs it, then
+    ``os.replace()``s it into place. The temp file shares the directory so the
+    replace is a same-filesystem rename (atomic) rather than a cross-device copy.
+    A crash mid-write leaves the previous complete file intact — a concurrent
+    reader sees the old-or-new file, never a torn one — and the trailing
+    directory fsync makes the rename itself durable across an OS-level crash.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    # Persist the rename itself, not just the file contents. Best-effort: some
+    # filesystems/platforms don't support directory fsync.
+    try:
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
 
 
 def _cache_ttl_seconds() -> float:
@@ -1983,21 +2036,20 @@ def render_metrics() -> str:
     render does a multi-second Tempo search + fetch/shape of the whole window —
     doing that inside the scrape handler made scrapes exceed Prometheus's
     scrape_timeout (target went down with "context deadline exceeded", so nothing
-    landed). Serving the cached payload keeps every scrape sub-millisecond
-    regardless of how long a render takes. Until the first render lands the
-    endpoint reports ``up 1`` so the target stays healthy while warming.
+    landed). The payload is published to disk (:func:`_refresh_cache_once`) and
+    served from there, so it never sits in the Python heap between scrapes and
+    survives a restart. Until the first render lands the endpoint reports
+    ``up 1`` so the target stays healthy while warming.
     """
-    with _cache_lock:
-        if _cached_payload is not None:
-            return _cached_payload[1]
-    return _WARMING_PAYLOAD
+    try:
+        return _payload_path().read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _WARMING_PAYLOAD
 
 
 def _refresh_cache_once() -> None:
-    global _cached_payload
     body = _render_metrics_uncached()
-    with _cache_lock:
-        _cached_payload = (time.monotonic(), body)
+    _atomic_write_bytes(_payload_path(), body.encode("utf-8"))
 
 
 def _refresh_loop(interval: float) -> None:
@@ -2027,14 +2079,32 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._serve_failure(parse_qs(parsed.query))
             return
         if parsed.path in {"/metrics", "/"}:
-            self._send(
-                200,
-                "text/plain; version=0.0.4; charset=utf-8",
-                render_metrics().encode("utf-8"),
-            )
+            self._serve_metrics()
             return
         self.send_response(404)
         self.end_headers()
+
+    def _serve_metrics(self) -> None:
+        """Stream the published payload file straight to the socket.
+
+        Opening the file first pins that inode: if the refresher os.replace()s a
+        new payload in mid-response, this handler keeps streaming the complete
+        file it opened (and Content-Length still matches), so a scrape can never
+        see a torn body. Streaming also keeps the multi-MB payload off the heap —
+        we never materialize it as a single Python string per request.
+        """
+        try:
+            handle = open(_payload_path(), "rb")
+        except FileNotFoundError:
+            self._send(200, METRICS_CONTENT_TYPE, _WARMING_PAYLOAD.encode("utf-8"))
+            return
+        with handle:
+            size = os.fstat(handle.fileno()).st_size
+            self.send_response(200)
+            self.send_header("Content-Type", METRICS_CONTENT_TYPE)
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            shutil.copyfileobj(handle, self.wfile, 64 * 1024)
 
     def _serve_failure(self, params: dict[str, list[str]]) -> None:
         trace_id = (params.get("trace_id") or [""])[0].strip()

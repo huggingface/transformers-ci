@@ -4,6 +4,8 @@ import io
 import json
 from unittest.mock import patch
 
+import pytest
+
 from transformersci.otel import trace_exporter
 
 
@@ -856,31 +858,73 @@ def test_render_emits_self_metrics_on_empty_window(monkeypatch) -> None:
     assert "pytest_trace_exporter_traces_processed_total " in out
 
 
-def test_render_metrics_serves_cached_payload(monkeypatch) -> None:
+def test_render_metrics_serves_cached_payload(monkeypatch, tmp_path) -> None:
     # Background-render model: render_metrics serves the last payload the
-    # refresher produced and never renders inline, so a scrape can't block on the
-    # multi-second Tempo fetch (which had been timing out Prometheus scrapes).
-    trace_exporter._cached_payload = None
-    try:
-        assert (
-            "pytest_trace_exporter_up 1" in trace_exporter.render_metrics()
-        )  # warming
-        payload = make_otlp_trace(
-            nodeid="tests/test_torch.py::TestTorch::test_one",
-            start_nano=1_000_000_000,
-            end_nano=2_000_000_000,
-            status_code="STATUS_CODE_OK",
-        )
-        trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
-        monkeypatch.setattr(
-            trace_exporter, "iter_traces", lambda *a, **k: iter([trace])
-        )
+    # refresher published to disk and never renders inline, so a scrape can't
+    # block on the multi-second Tempo fetch (which had been timing out scrapes).
+    payload_file = tmp_path / "payload.prom"
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PAYLOAD_FILE", str(payload_file))
+    assert (
+        "pytest_trace_exporter_up 1" in trace_exporter.render_metrics()
+    )  # warming: no file yet
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
+    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([trace]))
+    trace_exporter._refresh_cache_once()
+    out = trace_exporter.render_metrics()
+    assert "pytest_trace_exporter_render_duration_seconds " in out
+    assert "pytest_trace_exporter_last_render_timestamp_seconds " in out
+    assert "pytest_test_duration_seconds{" in out
+
+
+def test_refresh_cache_once_publishes_atomically(monkeypatch, tmp_path) -> None:
+    # The published file must always be a complete payload, never a half-written
+    # temp file, and no .tmp siblings may be left behind.
+    payload_file = tmp_path / "payload.prom"
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PAYLOAD_FILE", str(payload_file))
+    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([]))
+    trace_exporter._refresh_cache_once()
+    body = payload_file.read_text(encoding="utf-8")
+    assert body.endswith("\n")
+    assert "pytest_trace_exporter_up 1" in body
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name != payload_file.name]
+    assert leftovers == []
+
+
+def test_payload_survives_crash_and_serves_last_good(monkeypatch, tmp_path) -> None:
+    # Simulate a crash: the next render raises *after* a good payload was already
+    # published. The on-disk file from before the crash must still be served
+    # intact (it is derived/cacheable data, but a stale-complete payload beats a
+    # torn one), and the failed render must not corrupt it.
+    payload_file = tmp_path / "payload.prom"
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PAYLOAD_FILE", str(payload_file))
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
+    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([trace]))
+    trace_exporter._refresh_cache_once()
+    good = payload_file.read_text(encoding="utf-8")
+    assert "pytest_test_duration_seconds{" in good
+
+    def boom(*_a, **_k):
+        raise RuntimeError("render crashed")
+
+    monkeypatch.setattr(trace_exporter, "_render_metrics_uncached", boom)
+    with pytest.raises(RuntimeError):
         trace_exporter._refresh_cache_once()
-        out = trace_exporter.render_metrics()
-        assert "pytest_trace_exporter_render_duration_seconds " in out
-        assert "pytest_test_duration_seconds{" in out
-    finally:
-        trace_exporter._cached_payload = None
+    # Last-good payload still intact, no torn body, no leftover temp files.
+    assert payload_file.read_text(encoding="utf-8") == good
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name != payload_file.name]
+    assert leftovers == []
 
 
 class _UrlResponse(io.StringIO):
