@@ -456,21 +456,41 @@ def search_trace_ids(
     return trace_ids
 
 
-# LRU cache of settled (immutable) traces, bounded so it can't grow without
-# limit. It previously kept every trace ever seen — full multi-MB Jaeger dicts —
-# which crept the exporter RSS up toward its memory cap over time. Capping it to
-# roughly the lookback window keeps the live working set cached (no re-fetch
-# thrash) while evicting traces that have aged out and will never be requested
-# again. Default comfortably exceeds the fetch LIMIT so a full window fits.
+# LRU cache of settled (immutable) traces, bounded by both entry count and an
+# approximate serialized byte budget. The cache holds full multi-MB Jaeger dicts,
+# so count-only bounds are not enough when a replay/search window contains a few
+# very large traces.
 _trace_cache_lock = threading.Lock()
 _trace_cache: "OrderedDict[str, dict]" = OrderedDict()
+_trace_cache_sizes: dict[str, int] = {}
+_trace_cache_bytes = 0
 DEFAULT_TRACE_CACHE_MAX = 256  # just above the fetch LIMIT (default 200)
+DEFAULT_TRACE_CACHE_MAX_BYTES = 128 * 1024 * 1024
 
 
 def _trace_cache_max() -> int:
+    return max(0, env_int("PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX", DEFAULT_TRACE_CACHE_MAX))
+
+
+def _trace_cache_max_bytes() -> int:
     return max(
-        1, env_int("PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX", DEFAULT_TRACE_CACHE_MAX)
+        0,
+        env_int(
+            "PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX_BYTES",
+            DEFAULT_TRACE_CACHE_MAX_BYTES,
+        ),
     )
+
+
+def _trace_cache_entry_bytes(trace: dict) -> int:
+    try:
+        return len(
+            json.dumps(trace, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        )
+    except (TypeError, ValueError):
+        return 0
 
 
 def _trace_settle_seconds() -> float:
@@ -514,12 +534,26 @@ def get_trace(trace_id: str, base_url: str | None = None) -> dict | None:
         latest_micros
         and time.time() - (latest_micros / 1_000_000) > _trace_settle_seconds()
     ):
+        max_entries = _trace_cache_max()
+        max_bytes = _trace_cache_max_bytes()
+        if max_entries == 0 or max_bytes == 0:
+            return trace
+        entry_bytes = _trace_cache_entry_bytes(trace)
         with _trace_cache_lock:
+            global _trace_cache_bytes
+            if not _trace_cache:
+                _trace_cache_sizes.clear()
+                _trace_cache_bytes = 0
+            previous_size = _trace_cache_sizes.pop(trace_id, 0)
+            _trace_cache_bytes = max(0, _trace_cache_bytes - previous_size)
             _trace_cache[trace_id] = trace
+            _trace_cache_sizes[trace_id] = entry_bytes
+            _trace_cache_bytes += entry_bytes
             _trace_cache.move_to_end(trace_id)
-            max_entries = _trace_cache_max()
-            while len(_trace_cache) > max_entries:
-                _trace_cache.popitem(last=False)  # evict least-recently-used
+            while len(_trace_cache) > max_entries or _trace_cache_bytes > max_bytes:
+                evicted_id, _ = _trace_cache.popitem(last=False)
+                evicted_size = _trace_cache_sizes.pop(evicted_id, 0)
+                _trace_cache_bytes = max(0, _trace_cache_bytes - evicted_size)
     return trace
 
 

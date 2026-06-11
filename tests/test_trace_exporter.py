@@ -1020,6 +1020,41 @@ def test_trace_cache_is_bounded_lru(monkeypatch) -> None:
         trace_exporter._trace_cache.clear()
 
 
+def test_trace_cache_is_bounded_by_bytes(monkeypatch) -> None:
+    trace_exporter._trace_cache.clear()
+    trace_exporter._trace_cache_sizes.clear()
+    trace_exporter._trace_cache_bytes = 0
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX", "10")
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX_BYTES", "1200")
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+
+    def opener(url, timeout=None):
+        payload["resourceSpans"][0]["resource"]["attributes"].append(
+            {
+                "key": "large.attr",
+                "value": {"stringValue": "x" * 900},
+            }
+        )
+        return _UrlResponse(json.dumps(payload))
+
+    with patch("transformersci.otel.trace_exporter.urlopen", side_effect=opener):
+        for i in range(3):
+            trace_exporter.get_trace(f"t{i}", "http://tempo:3200")
+
+    try:
+        assert len(trace_exporter._trace_cache) < 3
+        assert trace_exporter._trace_cache_bytes <= 1200
+    finally:
+        trace_exporter._trace_cache.clear()
+        trace_exporter._trace_cache_sizes.clear()
+        trace_exporter._trace_cache_bytes = 0
+
+
 def test_last_failure_metrics_omit_stacktrace_but_keep_pointers() -> None:
     metrics = trace_exporter.extract_average_metrics(workflow_split_across_three_jobs())
     pointer_lines = metric_lines(metrics, "pytest_test_last_failure_info")
