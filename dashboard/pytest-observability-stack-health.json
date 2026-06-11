@@ -364,17 +364,18 @@
         "type": "prometheus",
         "uid": "prometheus-infra"
       },
-      "description": "Trace payload bytes ingested by Tempo's distributor over the trailing 24h at each point. Primary 'data received by the system' signal \u2014 watch the trend to judge whether ingest volume stays within the Tempo storage budget.",
+      "description": "Trace payload bytes ingested by Tempo's distributor, one bar per UTC calendar day (increase over a 1d step). Primary 'data received by the system' signal \u2014 watch daily volume against the Tempo storage budget. The current day's bar is partial and grows until UTC midnight.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisLabel": "received / day",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
+            "axisLabel": "received / day (UTC)",
+            "drawStyle": "bars",
+            "barAlignment": -1,
+            "fillOpacity": 70,
+            "lineWidth": 1,
             "showPoints": "never"
           },
           "unit": "decbytes"
@@ -407,7 +408,8 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(increase(tempo_distributor_bytes_received_total[24h]))",
+          "expr": "sum(increase(tempo_distributor_bytes_received_total[$__interval]))",
+          "interval": "1d",
           "legendFormat": "trace bytes received / day",
           "refId": "A"
         }
@@ -420,17 +422,18 @@
         "type": "prometheus",
         "uid": "prometheus-infra"
       },
-      "description": "Metric samples appended to each Prometheus TSDB over the trailing 24h. job=prometheus is CI data (90d retention), job=prometheus-infra is stack self-metrics (14d). Tracks the metric-side ingest load that drives TSDB disk growth.",
+      "description": "Metric samples appended to each Prometheus TSDB, one bar per UTC calendar day (increase over a 1d step). job=prometheus is CI data (90d retention), job=prometheus-infra is stack self-metrics (14d). Tracks the metric-side ingest load that drives TSDB disk growth. The current day's bar is partial and grows until UTC midnight.",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisLabel": "samples / day",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
+            "axisLabel": "samples / day (UTC)",
+            "drawStyle": "bars",
+            "barAlignment": -1,
+            "fillOpacity": 70,
+            "lineWidth": 1,
             "showPoints": "never"
           },
           "unit": "short"
@@ -463,7 +466,8 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (job) (increase(prometheus_tsdb_head_samples_appended_total[24h]))",
+          "expr": "sum by (job) (increase(prometheus_tsdb_head_samples_appended_total[$__interval]))",
+          "interval": "1d",
           "legendFormat": "{{job}} samples / day",
           "refId": "A"
         }
