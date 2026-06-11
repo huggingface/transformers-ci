@@ -124,6 +124,20 @@ def directory_bytes(path: Path) -> int:
     return total
 
 
+def _format_value(value: float) -> str:
+    """Full-precision Prometheus float rendering.
+
+    ``%g`` would collapse large values to 6 significant figures (a unix
+    timestamp became ``1.78117e+09``, losing ~hundreds of seconds and breaking
+    ``time() - last_run``). Emit whole numbers as plain integers and everything
+    else via ``repr`` (shortest round-trippable form).
+    """
+    f = float(value)
+    if f.is_integer():
+        return str(int(f))
+    return repr(f)
+
+
 def render_self_metrics(values: dict[str, float]) -> str:
     """Render the Prometheus text-exposition body for the given metric values.
 
@@ -134,10 +148,9 @@ def render_self_metrics(values: dict[str, float]) -> str:
     for name, (mtype, help_text) in _METRICS.items():
         if name not in values:
             continue
-        value = values[name]
         lines.append(f"# HELP {name} {help_text}")
         lines.append(f"# TYPE {name} {mtype}")
-        lines.append(f"{name} {value:g}")
+        lines.append(f"{name} {_format_value(values[name])}")
     return "\n".join(lines) + "\n"
 
 
@@ -157,6 +170,10 @@ def write_self_metrics(values: dict[str, float], path: Path | None = None) -> No
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(body)
+            # mkstemp creates 0600; node-exporter runs as an unprivileged user
+            # and must be able to read the file, or its textfile collector
+            # reports node_textfile_scrape_error and drops every sample.
+            os.chmod(tmp, 0o644)
             os.replace(tmp, target)
         except BaseException:
             tmp.unlink(missing_ok=True)

@@ -318,12 +318,28 @@ def test_render_self_metrics_emits_known_skips_unknown():
     assert body.endswith("\n")
 
 
-def test_write_self_metrics_atomic_no_leftovers(tmp_path):
+def test_render_self_metrics_full_precision_no_scientific():
+    # A unix timestamp must render at full precision, not %g's 6-sig-fig
+    # "1.78117e+09" (which would break time() - last_run on the dashboard).
+    body = self_metrics.render_self_metrics(
+        {"ci_publisher_last_run_timestamp_seconds": 1781170123.456}
+    )
+    assert "ci_publisher_last_run_timestamp_seconds 1781170123.456" in body
+    assert "e+" not in body
+    # Whole numbers render as plain integers, not floats.
+    assert "ci_publisher_peak_rss_bytes 27205632" in self_metrics.render_self_metrics(
+        {"ci_publisher_peak_rss_bytes": 27205632}
+    )
+
+
+def test_write_self_metrics_atomic_and_world_readable(tmp_path):
     target = tmp_path / "ci_publisher.prom"
     self_metrics.write_self_metrics({"ci_publisher_up": 1}, path=target)
     assert "ci_publisher_up 1" in target.read_text()
     # No half-written .tmp siblings left behind.
     assert [p.name for p in tmp_path.iterdir()] == ["ci_publisher.prom"]
+    # node-exporter (unprivileged) must be able to read it.
+    assert (target.stat().st_mode & 0o777) == 0o644
 
 
 def test_write_self_metrics_best_effort_on_bad_path(tmp_path):
