@@ -1,4 +1,4 @@
-# Design Overview — transformers CI observability
+# Design Overview
 
 How a pytest run becomes a Grafana dashboard (and a public dataset), and where
 each piece of code sits. For module-internal detail read the docstring at the top of each file in
