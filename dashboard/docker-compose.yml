@@ -9,6 +9,12 @@ services:
     user: root
     mem_limit: ${TEMPO_MEM_LIMIT:-1200m}
     cpus: ${TEMPO_CPUS:-0.70}
+    environment:
+      # Go soft-memory limit so Tempo's GC runs hard as it approaches the cap
+      # instead of growing to the cgroup mem_limit and getting OOM-killed (it was
+      # pegging 1.99/2 GiB and timing out queries). Keep this BELOW TEMPO_MEM_LIMIT
+      # — ~85% of the box's 2 GiB. Trades some CPU for a bounded heap; no extra RAM.
+      - GOMEMLIMIT=${TEMPO_GOMEMLIMIT:-1750MiB}
     command:
       - "-config.file=/etc/tempo/tempo.yaml"
     volumes:

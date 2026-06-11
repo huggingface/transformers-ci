@@ -9,6 +9,18 @@
 # Lets Grafana stream search/trace results over HTTP from a single binary.
 stream_over_http_enabled: true
 
+# Bound search memory. Scanning blocks to answer /api/search is the main driver
+# of Tempo's RAM spikes (the exporter polls a 1h window every render; the
+# publisher searches 24h). Defaults (1000 concurrent jobs, unbounded duration)
+# let a single wide search balloon the heap toward the 2 GiB limit and time out
+# every other query. Cap the search range (the publisher needs 24h, so allow
+# 26h) and the per-search parallelism; slightly slower searches, far flatter
+# memory.
+query_frontend:
+  search:
+    max_duration: 26h
+    concurrent_jobs: 200
+
 server:
   http_listen_port: 3200
   log_level: info
