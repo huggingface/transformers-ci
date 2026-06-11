@@ -1699,13 +1699,16 @@ def extract_average_metrics(
     | None = None,
 ) -> list[str]:
     extracted = _extracted if _extracted is not None else _precompute_trace_rows(traces)
+    # Only pytest_test_last_failure_info is emitted here. The per-test
+    # pytest_test_{average_duration_seconds,run_count,failure_count} gauges used
+    # to be emitted too, but at real transformers-CI scale (~44k distinct tests
+    # per window) they were ~133k series / ~50 MiB of the payload and NO
+    # dashboard ever queried them — Grafana already derives the same numbers
+    # from pytest_test_duration_seconds (count by status_code, avg by test) and
+    # the pytest_run_* rollups. Dropping them keeps the payload (and exporter
+    # RSS) bounded. The failure aggregation below is still needed for the
+    # last-failure pointer.
     lines = [
-        "# HELP pytest_test_average_duration_seconds Average duration of pytest test spans across fetched traces.",
-        "# TYPE pytest_test_average_duration_seconds gauge",
-        "# HELP pytest_test_run_count Number of fetched traces that contained a given pytest test span.",
-        "# TYPE pytest_test_run_count gauge",
-        "# HELP pytest_test_failure_count Number of fetched traces where this pytest test span failed.",
-        "# TYPE pytest_test_failure_count gauge",
         "# HELP pytest_test_last_failure_info Pointer to the most recent failing trace for this pytest test span.",
         "# TYPE pytest_test_last_failure_info gauge",
     ]
@@ -1746,7 +1749,10 @@ def extract_average_metrics(
     for (service_name, test_job, pr, provider, test_nodeid), aggregate in sorted(
         aggregates.items()
     ):
-        durations = aggregate["durations"]
+        # Only failing tests produce a line now, so skip the (expensive at ~44k
+        # tests) label-building entirely for the passing majority.
+        if int(aggregate["failure_count"]) <= 0:
+            continue
         labels = {
             "pr": pr,
             "test_job": test_job,
@@ -1756,26 +1762,12 @@ def extract_average_metrics(
             "test_function": str(aggregate["test_function"]),
             "test_module": str(aggregate["test_module"]),
             "test_nodeid": test_nodeid,
+            "trace_id": str(aggregate["last_failure_trace_id"]),
+            # No stacktrace label here — the trace_id pointer is enough for the
+            # dashboard to deep-link into the Tempo trace view.
+            "exception_type": str(aggregate["last_failure_exception_type"]),
         }
-        lines.append(
-            f"pytest_test_average_duration_seconds{metric_labels(labels)} {fsum(durations) / len(durations):.9f}"
-        )
-        lines.append(f"pytest_test_run_count{metric_labels(labels)} {len(durations)}")
-        failure_count = int(aggregate["failure_count"])
-        lines.append(
-            f"pytest_test_failure_count{metric_labels(labels)} {failure_count}"
-        )
-        if failure_count > 0:
-            pointer_labels = dict(labels)
-            pointer_labels["trace_id"] = str(aggregate["last_failure_trace_id"])
-            pointer_labels["exception_type"] = str(
-                aggregate["last_failure_exception_type"]
-            )
-            # No stacktrace label here either — the trace_id pointer is enough
-            # for the dashboard to deep-link into the Tempo trace view.
-            lines.append(
-                f"pytest_test_last_failure_info{metric_labels(pointer_labels)} 1"
-            )
+        lines.append(f"pytest_test_last_failure_info{metric_labels(labels)} 1")
 
     return lines
 

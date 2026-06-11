@@ -1107,6 +1107,14 @@ def test_last_failure_metrics_omit_stacktrace_but_keep_pointers() -> None:
     assert 'exception_type="AssertionError"' in pointer_lines[0]
     assert 'trace_id="trace-torch"' in pointer_lines[0]
 
+    # The per-test aggregate gauges were dropped (no dashboard consumed them and
+    # at real scale they were ~75% of the payload / RSS). Only the tiny
+    # last_failure_info pointer is emitted now. Guard against regressing that.
+    body = "\n".join(metrics)
+    assert "pytest_test_average_duration_seconds" not in body
+    assert "pytest_test_run_count" not in body
+    assert "pytest_test_failure_count" not in body
+
     pr_metrics = trace_exporter.extract_pr_last_failure_metrics(
         workflow_split_across_three_jobs()
     )
