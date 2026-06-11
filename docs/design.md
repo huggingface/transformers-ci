@@ -1,41 +1,43 @@
 # Design Overview — transformers CI observability
 
-How a pytest run becomes a Grafana dashboard, and where each piece of code sits.
-This is the high-level map; for operational detail see
-[`dashboard-operations.md`](dashboard-operations.md), and for module-internal
+How a pytest run becomes a Grafana dashboard (and a public dataset), and where
+each piece of code sits. This is the high-level map; for operational detail see
+[`dashboard-operations.md`](dashboard-operations.md) and
+[`ci-data-publish-plan.md`](ci-data-publish-plan.md), and for module-internal
 detail read the docstring at the top of each file in
-`src/transformersci/otel/`.
+`src/transformersci/otel/` and `src/transformersci/publish/`.
 
 ---
 
 ## 1. The shape of the system
 
 The system is split into a **producer** side (runs inside the CI job, emits
-telemetry) and a **consumer** side (runs as a service, turns telemetry into
-dashboards). Nothing is shared between them except the backends in the middle —
-the producer writes to Tempo, the consumer reads from Tempo.
+telemetry) and **consumer** side(s) that read it back out. Nothing is shared
+between them except the backends in the middle — the producer writes to Tempo;
+the consumers read from Tempo. There are two consumers: the live exporter
+(`otel/`) that drives Grafana, and the data publisher (`publish/`) that ships a
+public dataset.
 
 ```
-   CI job (pytest)                         observability stack
- ┌──────────────────┐                 ┌──────────────────────────────┐
- │ cli.py wraps      │   OTLP spans    │ Tempo (trace store, durable) │
- │ pytest, sets OTel │ ───────────────▶│                              │
- │ resource attrs +  │                 └──────────────┬───────────────┘
- │ trace context     │                                │ /api/search
- │                   │                                │ /api/traces/<id>
- │ resource_plugin   │   resource JSONL               ▼
- │ samples CPU/mem/  │ ──────────┐         ┌────────────────────────┐
- │ GPU per test, and │           │         │ trace_exporter.py       │
- │ mirrors spans to  │           └────────▶│ • fetch + shape traces  │
- │ a staging backend │  (file on the box)  │ • enrich via GitHub API │
- └──────────────────┘                      │ • render Prom metrics   │
-                                            │ • /metrics (disk-backed)│
-                                            └────────────┬────────────┘
-                                                         │ scrape
-                                                         ▼
-                                            ┌────────────────────────┐
-                                            │ Prometheus → Grafana    │
-                                            └────────────────────────┘
+   CI job (pytest)                  observability stack
+ ┌──────────────────┐         ┌──────────────────────────────┐
+ │ cli.py wraps      │  OTLP   │ Tempo (trace store, durable) │
+ │ pytest, sets OTel │ ───────▶│                              │
+ │ resource attrs +  │         └───────┬──────────────┬───────┘
+ │ trace context     │                 │ /api/search  │ (same client,
+ │                   │                 │ /api/traces  │  wider window)
+ │ resource_plugin   │  JSONL          ▼              ▼
+ │ samples CPU/mem/  │ ──────┐  ┌───────────────┐  ┌──────────────────┐
+ │ GPU per test, and │       │  │ trace_exporter│  │ publish/main.py  │
+ │ mirrors spans to  │       └─▶│ render Prom   │  │ shape → Parquet  │
+ │ a staging backend │ (on box) │ /metrics      │  │ + raw trace JSON │
+ └──────────────────┘          └──────┬────────┘  └────────┬─────────┘
+                                       │ scrape             │ hf sync
+                                       ▼                    ▼
+                               ┌───────────────┐   ┌──────────────────┐
+                               │ Prometheus →  │   │ HF bucket         │
+                               │ Grafana       │   │ (public dataset)  │
+                               └───────────────┘   └──────────────────┘
 ```
 
 ---
@@ -139,10 +141,46 @@ GitHub source links) as HTML, for drill-down from the dashboard.
 
 ---
 
-## 5. Tuning knobs
+## 5. Second consumer — `transformersci.publish`
 
-The exporter is configured entirely via environment (see `docker-compose.yml`
-for the deployed defaults). The notable ones:
+The other thing that reads Tempo is the **public data publisher**: a one-shot
+job (run hourly by a docker sidecar's cron) that turns the same raw traces into
+a public, daily-partitioned dataset on the `transformers-ci-telemetry` HF
+bucket, so anyone can build apps on CI test data without access to the internal
+stack. Tempo — *not* Prometheus — is the source: it wants raw per-test rows, not
+pre-aggregated series, and it reuses the exporter's Tempo client
+(`search_trace_ids` / `get_trace`) over a much wider window than the live scrape.
+
+One cycle (`main.run_cycle`):
+
+1. **Fetch the window** — `tempo_window.iter_window_traces` streams settled
+   traces over a wide lookback (default 48h, across one or more service names).
+2. **Shape** — `tables.shape_trace_rows` derives two daily-partitioned tables:
+   `test_rows` (one row per test, carrying the *full untruncated* stacktrace) and
+   `run_rollups` (one row per run/job). Row building is pure-python; only
+   `write_parquet` touches pyarrow, lazily.
+3. **Write partitions** — rows stream straight to per-day Parquet via a bounded
+   `StreamingPartitionWriter`, and each raw trace JSON is written to its day
+   partition then dropped. Streaming write-and-drop is what keeps the sidecar
+   under its memory cap (materialising a whole window of multi-MB traces is what
+   OOM-killed it).
+4. **Document** — `data_card.render_data_card` writes the bucket's `README.md`
+   and `manifest.write_manifest` writes the machine-readable `current_view.json`.
+5. **Sync** — with `--sync`, push the staging dir to the bucket via `hf sync`
+   (auth from `HF_TOKEN`); only changed files upload.
+
+The cycle is **idempotent**: re-deriving and overwriting whole day partitions is
+safe because settled traces are immutable, so a day stabilises once it ages past
+the window and is never rewritten.
+
+---
+
+## 6. Tuning knobs
+
+Both services are configured entirely via environment (see `docker-compose.yml`
+for the deployed defaults).
+
+**Exporter (`otel/`):**
 
 | Env var | Purpose |
 |---|---|
@@ -154,3 +192,14 @@ for the deployed defaults). The notable ones:
 | `PYTEST_TRACE_EXPORTER_PAYLOAD_FILE` | Where the rendered `/metrics` payload is published (persistent volume). |
 | `PYTEST_TRACE_EXPORTER_CACHE_SECONDS` | Background render interval. |
 | `PYTEST_GITHUB_TOKEN` | Authenticates GitHub enrichment (raises rate limit 60→5000/hr). |
+
+**Publisher (`publish/`):**
+
+| Env var | Purpose |
+|---|---|
+| `PUBLISH_WINDOW` | Tempo lookback per cycle (default `48h`). |
+| `PUBLISH_LIMIT` | Max traces fetched per cycle (default 5000). |
+| `PUBLISH_SERVICE_NAMES` | Comma-separated service names to publish (one publisher can cover several emitters). |
+| `PUBLISH_ROW_BATCH` | Rows buffered per day before a Parquet row group is flushed (bounds peak memory). |
+| `PUBLISH_STAGING_DIR` / `HF_BUCKET_URI` | Local staging dir and `hf://` destination. |
+| `HF_TOKEN` | Auth for `hf sync`. |
