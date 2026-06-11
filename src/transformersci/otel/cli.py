@@ -1,4 +1,38 @@
 #!/usr/bin/env python3
+# Copyright 2026 The HuggingFace Inc. team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""``transformersci-otel`` — run pytest with OpenTelemetry trace export wired up.
+
+This is the producer-side entry point. It wraps a pytest invocation so that each
+CI run emits a trace whose spans carry enough metadata (provider, repo, PR,
+run/job IDs) for the dashboards to group and label runs downstream.
+
+Organization (top to bottom):
+
+- OTLP endpoint/protocol/transport resolution — read the standard ``OTEL_*``
+  env vars, normalize them, and pick the right exporter, with an optional
+  reachability ``ping_server`` preflight.
+- CI-provider detection and metadata — GitHub Actions and CircleCI helpers that
+  dig the repository, PR number/URL, and workflow/job run IDs out of the
+  provider's environment, plus :func:`build_resource_attributes` which folds
+  them into OTel resource attributes.
+- Trace context — generate or inherit a W3C ``traceparent`` so a run's spans
+  share one trace id (:func:`configure_trace_context`).
+- Command assembly — :func:`prepare_environment` and
+  :func:`augment_pytest_command` build the child environment and argv, and
+  :func:`main` parses args and execs pytest.
+"""
 
 from __future__ import annotations
 

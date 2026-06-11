@@ -1,3 +1,47 @@
+# Copyright 2026 The HuggingFace Inc. team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Consumer-side service: turn Tempo traces into Prometheus metrics for Grafana.
+
+This is a long-running HTTP server. Prometheus scrapes ``/metrics``; the body is
+derived entirely from traces stored in Tempo, so the exporter holds no durable
+state of its own — it renders a fresh snapshot of the lookback window each cycle.
+``/failure`` serves an HTML view of a single trace's failure details for
+dashboard drill-down.
+
+Pipeline (and roughly the order functions appear in the file):
+
+1. Fetch & shape — :func:`search_trace_ids` / :func:`get_trace` / :func:`iter_traces`
+   pull traces from Tempo and :func:`tempo_trace_to_jaeger` converts OTLP JSON
+   into the Jaeger-shaped dicts the extractors expect. A dual-bounded (count +
+   byte) LRU memoizes settled (immutable) traces so a replay can't grow RSS
+   without limit.
+2. GitHub enrichment — cached lookups of PR title/state/reviews and commit
+   messages, used to label runs (rate-limited, so authenticated when a token is
+   set).
+3. Metric extraction — a family of ``extract_*`` functions that roll the shaped
+   traces up into per-test durations, per-run summaries, PR info/state, averages,
+   and resource metrics (the last read from the plugin's JSONL file).
+4. Self-observability — :func:`_exporter_self_metric_lines` reports the
+   exporter's own up/render-time/RSS/last-render-timestamp so its health shows on
+   the CI dashboard even when CI is idle.
+5. Render, publish & serve — :func:`_render_metrics_uncached` builds the body in a
+   background thread (:func:`_refresh_loop`) so scrapes never block on Tempo;
+   :func:`_refresh_cache_once` publishes it atomically to a disk file, and
+   :class:`MetricsHandler` streams that file so the multi-MB payload stays off the
+   Python heap and survives a restart. See ``docs/design.md`` for the rationale.
+"""
+
 from __future__ import annotations
 
 import html

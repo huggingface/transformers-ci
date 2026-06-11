@@ -1,3 +1,27 @@
+# Copyright 2026 The HuggingFace Inc. team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Opt-in diagnostic that logs every OTLP span export to stderr.
+
+When traces silently fail to reach the backend (wrong endpoint, auth rejected,
+transport mismatch), nothing surfaces — the export just drops. This module
+monkeypatches the active span exporter's ``export()`` so each attempt prints a
+one-line record: span count, result/exception, duration, protocol, and the
+resolved endpoint. A module-level flag keeps the patch idempotent so repeated
+installs don't stack wrappers. Intended to be enabled only while debugging
+export connectivity, never in steady-state CI.
+"""
+
 from __future__ import annotations
 
 import os
