@@ -165,9 +165,13 @@ services:
       - "--path.rootfs=/host"
       - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker/.+)($$|/)"
       - "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$"
+      # Expose the publisher's batch-job metrics: it writes ci_publisher.prom to
+      # this shared volume each cycle and node-exporter serves it under its job.
+      - "--collector.textfile.directory=/textfile"
     pid: host
     volumes:
       - /:/host:ro,rslave
+      - publisher-metrics:/textfile:ro
 
   # Publishes the CI telemetry to a PUBLIC HF bucket on an hourly cron. Reads
   # raw traces from Tempo, shapes them into daily-partitioned Parquet (+ the raw
@@ -203,9 +207,13 @@ services:
       - PUBLISH_STAGING_DIR=/staging
       - PUBLISH_WINDOW=${PUBLISH_WINDOW:-48h}
       - PUBLISH_LIMIT=${PUBLISH_LIMIT:-5000}
+      # Self-metrics: written each cycle to the shared volume node-exporter's
+      # textfile collector scrapes (the publisher is a cron job, not scrapable).
+      - PUBLISH_METRICS_FILE=${PUBLISH_METRICS_FILE:-/textfile/ci_publisher.prom}
     volumes:
       - ../src:/app/src:ro
       - ci-publisher-data:/staging
+      - publisher-metrics:/textfile
     depends_on:
       - tempo
 
@@ -239,3 +247,6 @@ volumes:
   # and `hf sync`s it. Persisted so day partitions outside the publish window
   # are kept and not re-derived (the bucket is the long-term archive).
   ci-publisher-data:
+  # Shared drop for the publisher's self-metrics .prom file: written by
+  # ci-data-publisher, read by node-exporter's textfile collector.
+  publisher-metrics:

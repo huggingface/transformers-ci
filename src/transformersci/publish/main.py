@@ -34,8 +34,10 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
+from . import self_metrics
 from .data_card import render_data_card
 from .manifest import write_manifest
 from .tables import (
@@ -79,7 +81,7 @@ def _write_raw_trace(staging: Path, day: str, trace_id: str, trace: dict) -> Non
     )
 
 
-def run_cycle(staging_dir: str, bucket_uri: str) -> dict:
+def run_cycle(staging_dir: str, bucket_uri: str, *, stats: dict | None = None) -> dict:
     """Build all partitions for the current window into ``staging_dir``.
 
     Streams traces one at a time: each trace's raw JSON is written to its day
@@ -87,6 +89,10 @@ def run_cycle(staging_dir: str, bucket_uri: str) -> dict:
     flat regardless of how many (large) traces the window holds — this is what
     keeps the sidecar under its memory cap. Only the small derived rows and
     rollup aggregates are retained until the per-day Parquet is written.
+
+    If ``stats`` is passed it is populated with this cycle's throughput counts
+    (``traces`` / ``test_rows`` / ``run_rollups`` / ``days``) for self-metrics;
+    the return value stays the manifest so existing callers are unaffected.
     """
     staging = Path(staging_dir)
     staging.mkdir(parents=True, exist_ok=True)
@@ -144,6 +150,15 @@ def run_cycle(staging_dir: str, bucket_uri: str) -> dict:
         f"manifest: {manifest['partition_count']} partition(s), "
         f"{manifest['total_test_rows']} total test rows"
     )
+    if stats is not None:
+        stats.update(
+            {
+                "traces": n_traces,
+                "test_rows": n_rows,
+                "run_rollups": len(rollup_rows),
+                "days": len(days),
+            }
+        )
     return manifest
 
 
@@ -181,14 +196,31 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    run_cycle(args.staging_dir, args.bucket_uri)
-
-    if args.dry_run:
-        _log("--dry-run: built locally, not syncing")
-        return 0
-    if args.sync:
-        sync_to_bucket(args.staging_dir, args.bucket_uri)
-        _log("synced to bucket")
+    # Time the whole cycle and always publish self-metrics — even on failure, so
+    # the dashboard can tell a crashed/stalled publisher from an idle one. The
+    # write is best-effort and never masks the real outcome.
+    started = time.monotonic()
+    stats: dict = {}
+    manifest: dict | None = None
+    success = False
+    try:
+        manifest = run_cycle(args.staging_dir, args.bucket_uri, stats=stats)
+        if args.dry_run:
+            _log("--dry-run: built locally, not syncing")
+        elif args.sync:
+            sync_to_bucket(args.staging_dir, args.bucket_uri)
+            _log("synced to bucket")
+        success = True
+    finally:
+        self_metrics.write_self_metrics(
+            self_metrics.collect_values(
+                success=success,
+                duration_seconds=time.monotonic() - started,
+                stats=stats,
+                manifest=manifest,
+                dataset_bytes=self_metrics.directory_bytes(Path(args.staging_dir)),
+            )
+        )
     return 0
 
 

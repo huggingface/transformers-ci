@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from transformersci.publish import main, manifest, tables
+from transformersci.publish import main, manifest, self_metrics, tables
 
 
 # --- trace fixtures (mirrors tests/test_trace_exporter.py's shape) -----------
@@ -298,3 +298,53 @@ def test_build_manifest_empty(tmp_path):
     m = manifest.build_manifest(str(tmp_path))
     assert m["partition_count"] == 0
     assert m["partitions"] == []
+
+
+# --- publisher self-metrics --------------------------------------------------
+
+
+def test_render_self_metrics_emits_known_skips_unknown():
+    body = self_metrics.render_self_metrics(
+        {
+            "ci_publisher_traces_published": 12,
+            "ci_publisher_traces_per_second": 1.5,
+            "not_a_real_metric": 99,  # unknown keys are dropped
+        }
+    )
+    assert "# TYPE ci_publisher_traces_published gauge" in body
+    assert "ci_publisher_traces_published 12" in body
+    assert "ci_publisher_traces_per_second 1.5" in body
+    assert "not_a_real_metric" not in body
+    assert body.endswith("\n")
+
+
+def test_write_self_metrics_atomic_no_leftovers(tmp_path):
+    target = tmp_path / "ci_publisher.prom"
+    self_metrics.write_self_metrics({"ci_publisher_up": 1}, path=target)
+    assert "ci_publisher_up 1" in target.read_text()
+    # No half-written .tmp siblings left behind.
+    assert [p.name for p in tmp_path.iterdir()] == ["ci_publisher.prom"]
+
+
+def test_write_self_metrics_best_effort_on_bad_path(tmp_path):
+    # A missing directory must not raise — metrics never break a publish.
+    self_metrics.write_self_metrics(
+        {"ci_publisher_up": 1}, path=tmp_path / "missing" / "x.prom"
+    )
+
+
+def test_main_writes_self_metrics(tmp_path, monkeypatch):
+    pytest.importorskip("pyarrow")
+    monkeypatch.setattr(main, "iter_window_traces", lambda: iter(_sample_traces()))
+    metrics_file = tmp_path / "ci_publisher.prom"
+    monkeypatch.setenv("PUBLISH_METRICS_FILE", str(metrics_file))
+
+    rc = main.main(["--staging-dir", str(tmp_path), "--dry-run"])
+    assert rc == 0
+
+    body = metrics_file.read_text()
+    assert "ci_publisher_last_run_success 1" in body
+    assert "ci_publisher_traces_published 2" in body
+    assert "ci_publisher_test_rows_published 3" in body
+    assert "ci_publisher_dataset_bytes " in body
+    assert "ci_publisher_peak_rss_bytes " in body
