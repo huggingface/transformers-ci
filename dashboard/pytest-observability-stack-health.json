@@ -174,7 +174,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (route) (rate(tempo_request_duration_seconds_count{job=\"tempo\",route!~\".*[Hh]ealth.*\"}[1m]))",
+          "expr": "sum by (route) (rate(tempo_request_duration_seconds_count{job=\"tempo\",route!~\".*[Hh]ealth.*\"}[5m]))",
           "legendFormat": "{{route}}",
           "refId": "A"
         }
