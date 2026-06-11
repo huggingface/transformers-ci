@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from transformersci.publish import main, manifest, self_metrics, tables
+from transformersci.publish import main, manifest, self_metrics, tables, tempo_window
 
 
 # --- trace fixtures (mirrors tests/test_trace_exporter.py's shape) -----------
@@ -298,6 +298,48 @@ def test_build_manifest_empty(tmp_path):
     m = manifest.build_manifest(str(tmp_path))
     assert m["partition_count"] == 0
     assert m["partitions"] == []
+
+
+# --- publisher search resilience ---------------------------------------------
+
+
+def test_search_retries_then_succeeds(monkeypatch):
+    monkeypatch.setenv("PUBLISH_SEARCH_RETRIES", "3")
+    monkeypatch.setattr(tempo_window.time, "sleep", lambda *_: None)  # no real backoff
+    calls = {"n": 0}
+
+    def flaky(base_url, service_name, start, end, limit):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise TimeoutError("timed out")
+        return ["t1", "t2"]
+
+    monkeypatch.setattr(tempo_window, "search_trace_ids", flaky)
+    ids = tempo_window.window_trace_ids(
+        base_url="http://tempo:3200",
+        service_names=["svc"],
+        window_seconds=3600,
+        limit=10,
+    )
+    assert ids == ["t1", "t2"]
+    assert calls["n"] == 3  # failed twice, succeeded on the third
+
+
+def test_search_reraises_after_exhausting_retries(monkeypatch):
+    monkeypatch.setenv("PUBLISH_SEARCH_RETRIES", "2")
+    monkeypatch.setattr(tempo_window.time, "sleep", lambda *_: None)
+
+    def always_fail(*a, **k):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(tempo_window, "search_trace_ids", always_fail)
+    with pytest.raises(TimeoutError):
+        tempo_window.window_trace_ids(
+            base_url="http://tempo:3200",
+            service_names=["svc"],
+            window_seconds=3600,
+            limit=10,
+        )
 
 
 # --- publisher self-metrics --------------------------------------------------

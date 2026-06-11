@@ -36,10 +36,19 @@ from ..otel.trace_exporter import (
     tempo_base_url,
 )
 
-# The live exporter caps its scrape at 200 traces over 1h. A 48h publish window
-# spans many more runs, so the publisher gets its own, larger ceiling.
-DEFAULT_PUBLISH_WINDOW = "48h"
+# The live exporter caps its scrape at 200 traces over 1h. The publisher spans
+# many more runs, so it gets its own, larger ceiling. The window was 48h but
+# halved to 24h to cut the cost of the /api/search against a memory-pressured
+# single-node Tempo (the search was timing out and aborting the cycle); 24h
+# still comfortably covers whole runs and late-arriving traces.
+DEFAULT_PUBLISH_WINDOW = "24h"
 DEFAULT_PUBLISH_LIMIT = 5000
+# The wide search is the heaviest single Tempo call and the first thing to fail
+# when Tempo is slow. Retry it a few times with backoff so a transient blip
+# doesn't lose the whole hourly cycle (a longer HTTP timeout is set via
+# PYTEST_TRACE_EXPORTER_HTTP_TIMEOUT in the publisher's environment).
+DEFAULT_SEARCH_RETRIES = 3
+DEFAULT_SEARCH_RETRY_BACKOFF = 5.0
 
 
 def publish_window_seconds() -> int:
@@ -47,6 +56,43 @@ def publish_window_seconds() -> int:
         os.getenv("PUBLISH_WINDOW", DEFAULT_PUBLISH_WINDOW),
         default=DEFAULT_PUBLISH_WINDOW,
     )
+
+
+def _search_retries() -> int:
+    try:
+        return max(
+            1, int(os.getenv("PUBLISH_SEARCH_RETRIES", "") or DEFAULT_SEARCH_RETRIES)
+        )
+    except ValueError:
+        return DEFAULT_SEARCH_RETRIES
+
+
+def _search_with_retry(
+    base_url: str, service_name: str, start: int, end: int, limit: int
+) -> list[str]:
+    """search_trace_ids with bounded retries + backoff.
+
+    A search timeout/connection error used to propagate straight out of the
+    cycle (unlike per-trace get_trace failures, which are skipped), so one slow
+    Tempo moment lost the entire hourly publish. Retrying absorbs transient
+    blips; if every attempt fails the error is re-raised so the cycle still
+    reports failure rather than silently publishing a partial window.
+    """
+    attempts = _search_retries()
+    for attempt in range(1, attempts + 1):
+        try:
+            return search_trace_ids(base_url, service_name, start, end, limit)
+        except Exception as error:  # noqa: BLE001 — Tempo can fail many ways
+            if attempt >= attempts:
+                raise
+            delay = DEFAULT_SEARCH_RETRY_BACKOFF * attempt
+            print(
+                f"[ci-data-publisher] search for {service_name!r} failed "
+                f"(attempt {attempt}/{attempts}): {error}; retrying in {delay:.0f}s",
+                flush=True,
+            )
+            time.sleep(delay)
+    return []
 
 
 def publish_limit() -> int:
@@ -91,7 +137,7 @@ def window_trace_ids(
     seen: set[str] = set()
     trace_ids: list[str] = []
     for service_name in service_names:
-        for trace_id in search_trace_ids(base_url, service_name, start, end, limit):
+        for trace_id in _search_with_retry(base_url, service_name, start, end, limit):
             if trace_id not in seen:
                 seen.add(trace_id)
                 trace_ids.append(trace_id)

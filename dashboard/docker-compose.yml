@@ -197,6 +197,11 @@ services:
       # (large) trace in the window and defeat streaming — it OOM'd the sidecar.
       # A huge settle window means no trace is ever "settled enough" to cache.
       - PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS=999999999999
+      # The 24h /api/search is the heaviest Tempo call and was timing out at the
+      # default 10s when Tempo is under memory pressure, aborting the cycle. As a
+      # batch job the publisher can afford to wait longer; pair with the search
+      # retries in tempo_window.py.
+      - PYTEST_TRACE_EXPORTER_HTTP_TIMEOUT=${PUBLISH_HTTP_TIMEOUT:-30}
       # Publish every emitter's traces: real CI (pytest-observability) plus the
       # demo / sample-run name (pytest-observability-demo).
       - PUBLISH_SERVICE_NAMES=${PUBLISH_SERVICE_NAMES:-pytest-observability,pytest-observability-demo}
@@ -205,7 +210,7 @@ services:
       # Same GitHub auth as the exporter, for commit-message enrichment.
       - PYTEST_GITHUB_TOKEN=${PYTEST_GITHUB_TOKEN:-}
       - PUBLISH_STAGING_DIR=/staging
-      - PUBLISH_WINDOW=${PUBLISH_WINDOW:-48h}
+      - PUBLISH_WINDOW=${PUBLISH_WINDOW:-24h}
       - PUBLISH_LIMIT=${PUBLISH_LIMIT:-5000}
       # Self-metrics: written each cycle to the shared volume node-exporter's
       # textfile collector scrapes (the publisher is a cron job, not scrapable).
