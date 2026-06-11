@@ -108,6 +108,10 @@
                       "value": null
                     },
                     {
+                      "color": "#94B45F",
+                      "value": 0.0001
+                    },
+                    {
                       "color": "orange",
                       "value": 1
                     },
@@ -427,6 +431,10 @@
                     {
                       "color": "green",
                       "value": null
+                    },
+                    {
+                      "color": "#94B45F",
+                      "value": 0.0001
                     },
                     {
                       "color": "orange",
