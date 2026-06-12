@@ -62,6 +62,9 @@ _TEST_SPAN_TYPE = "test"
 
 _INSTRUMENTATION_SCOPE = "transformersci.otel.instrument"
 
+# Cap the captured checker output recorded on a failing span's exception event.
+_MAX_OUTPUT_CHARS = 8000
+
 
 def is_configured(env: Mapping[str, str] | None = None) -> bool:
     """Return True when an OTLP traces endpoint is configured in ``env``."""
@@ -170,19 +173,42 @@ class _Step:
     def set_attribute(self, key: str, value: object) -> None:
         self._span.set_attribute(key, value)
 
-    def set_exit_code(self, returncode: int) -> None:
+    def set_exit_code(
+        self,
+        returncode: int,
+        *,
+        command: str | None = None,
+        output: str | None = None,
+    ) -> None:
         """Record the step's exit code; non-zero marks the span ERROR.
 
         The exporter reads the synthesized ``otel.status_code`` tag to decide
         pass/fail, so a non-zero code surfaces this step as a failing "test".
+
+        On failure, the ``command`` and captured ``output`` are recorded as an
+        ``"exception"`` span event using the same ``exception.message`` /
+        ``exception.stacktrace`` fields a pytest traceback uses. This lets the
+        trace exporter's ``/failure`` page render the checker's output with no
+        exporter-side changes (it already reads that event).
         """
         from opentelemetry.trace import Status, StatusCode
 
         self._span.set_attribute("transformers.check.exit_code", int(returncode))
         if returncode != 0:
             self._span.set_status(Status(StatusCode.ERROR))
+            self._record_failure_event(command, output)
         else:
             self._span.set_status(Status(StatusCode.OK))
+
+    def _record_failure_event(self, command: str | None, output: str | None) -> None:
+        attributes: dict[str, str] = {"exception.type": "CheckFailed"}
+        if command:
+            attributes["exception.message"] = command
+        if output:
+            # Bound the payload so a noisy checker can't bloat the span; the
+            # tail holds the actual errors (ruff summaries, diffs, tracebacks).
+            attributes["exception.stacktrace"] = output[-_MAX_OUTPUT_CHARS:]
+        self._span.add_event("exception", attributes)
 
 
 class _NoRun:
@@ -203,5 +229,11 @@ class _NoStep:
     def set_attribute(self, key: str, value: object) -> None:
         pass
 
-    def set_exit_code(self, returncode: int) -> None:
+    def set_exit_code(
+        self,
+        returncode: int,
+        *,
+        command: str | None = None,
+        output: str | None = None,
+    ) -> None:
         pass

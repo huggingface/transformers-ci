@@ -56,7 +56,11 @@ def _emit(env):
             "utils/checkers.py::copies",
             attributes={"transformers.check.name": "copies"},
         ) as step:
-            step.set_exit_code(1)
+            step.set_exit_code(
+                1,
+                command="python utils/checkers.py copies",
+                output="some checker error output",
+            )
 
 
 def test_steps_are_tagged_as_test_spans(captured_spans) -> None:
@@ -75,6 +79,25 @@ def test_steps_are_tagged_as_test_spans(captured_spans) -> None:
         spans["utils/checkers.py::copies"].attributes["transformers.check.exit_code"]
         == 1
     )
+
+
+def test_failing_step_records_exception_event(captured_spans) -> None:
+    # A failing checker records its command + output as the same "exception"
+    # event the trace exporter's /failure page reads for pytest tracebacks.
+    _emit({"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318"})
+    spans = {s.name: s for s in captured_spans.get_finished_spans()}
+
+    fail = spans["utils/checkers.py::copies"]
+    events = {e.name: e for e in fail.events}
+    assert "exception" in events
+    attrs = events["exception"].attributes
+    assert attrs["exception.type"] == "CheckFailed"
+    assert attrs["exception.message"] == "python utils/checkers.py copies"
+    assert attrs["exception.stacktrace"] == "some checker error output"
+
+    # A passing checker records no exception event.
+    ok = spans["utils/checkers.py::ruff_check"]
+    assert not any(e.name == "exception" for e in ok.events)
 
 
 def test_root_span_is_not_a_test_span(captured_spans) -> None:

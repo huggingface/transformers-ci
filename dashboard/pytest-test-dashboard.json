@@ -52,12 +52,32 @@
         "y": 0
       },
       "id": 1,
+      "repeat": "pytest_indicator",
+      "repeatDirection": "v",
       "options": {
         "content": "```\npytest -svx ${test_nodeid:raw}\n```\n\n**Module:** `${test_module:raw}` | **Class:** `${test_class:raw}` | **Status:** `${status_code:raw}`\n\n**Job:** [${test_job:raw}](/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${run_id:raw}&var-pr=${pr:raw}) | **Run:** [${run_id:raw}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id:raw}) | **PR:** [${pr:raw}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr:raw}) | <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"14\" height=\"14\" alt=\"GH\"/> [Full logs](https://github.com/${repository:raw}/actions/runs/${gh_run_id:raw}) | [Open trace in Tempo](/explore?schemaVersion=1&orgId=1&panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22query%22:%22${trace_id:raw}%22,%22queryType%22:%22traceql%22,%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22tempo%22,%22uid%22:%22tempo%22%7D%7D%5D,%22range%22:%7B%22from%22:%22now-24h%22,%22to%22:%22now%22%7D%7D%7D)\n\n<sub>The panel below shows this failure's exception message and full traceback in readable monospace, served by the trace exporter. Use <b>Open trace in Tempo</b> for the span waterfall / timing.</sub>",
         "mode": "markdown"
       },
       "pluginVersion": "12.0.0",
       "title": "Test",
+      "type": "text"
+    },
+    {
+      "gridPos": {
+        "h": 5,
+        "w": 18,
+        "x": 0,
+        "y": 0
+      },
+      "id": 4,
+      "repeat": "check_indicator",
+      "repeatDirection": "v",
+      "options": {
+        "content": "```\npython utils/checkers.py ${test_function:raw}\n```\n\n**Checker:** `${test_function:raw}` | **Status:** `${status_code:raw}`\n\n**Job:** [${test_job:raw}](/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${run_id:raw}&var-pr=${pr:raw}) | **Run:** [${run_id:raw}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id:raw}) | **PR:** [${pr:raw}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr:raw}) | <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"14\" height=\"14\" alt=\"GH\"/> [Full logs](https://github.com/${repository:raw}/actions/runs/${gh_run_id:raw}) | [Open trace in Tempo](/explore?schemaVersion=1&orgId=1&panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22query%22:%22${trace_id:raw}%22,%22queryType%22:%22traceql%22,%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22tempo%22,%22uid%22:%22tempo%22%7D%7D%5D,%22range%22:%7B%22from%22:%22now-24h%22,%22to%22:%22now%22%7D%7D%7D)\n\n<sub>This is a non-pytest QA checker (utils/checkers.py). The panel below shows its captured command output, served by the trace exporter. Use <b>Open trace in Tempo</b> for the span timing.</sub>",
+        "mode": "markdown"
+      },
+      "pluginVersion": "12.0.0",
+      "title": "Checker",
       "type": "text"
     },
     {
@@ -463,6 +483,58 @@
           "refId": "Prometheus-gh_run_id-Variable-Query"
         },
         "regex": "/.*run_id=\"([^:\"]+).*/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": [],
+          "value": []
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\",test_module!~\"checkers\\.py\"}, trace_id)",
+        "hide": 2,
+        "includeAll": false,
+        "multi": true,
+        "name": "pytest_indicator",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\",test_module!~\"checkers\\.py\"}, trace_id)",
+          "refId": "Prometheus-pytest_indicator-Variable-Query"
+        },
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": [],
+          "value": []
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\",test_module=~\"checkers\\.py\"}, trace_id)",
+        "hide": 2,
+        "includeAll": false,
+        "multi": true,
+        "name": "check_indicator",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_test_duration_seconds{trace_id=~\"$trace_id\",test_nodeid=~\"$test_nodeid\",test_module=~\"checkers\\.py\"}, trace_id)",
+          "refId": "Prometheus-check_indicator-Variable-Query"
+        },
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
