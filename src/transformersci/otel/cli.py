@@ -532,7 +532,11 @@ def configure_trace_context(
 ) -> tuple[dict[str, str], str | None]:
     updated_env = dict(env)
 
-    if not export_traces or not is_pytest_command(command):
+    # Generate/inherit a traceparent whenever we are exporting, not just for
+    # pytest: a non-pytest command (e.g. `make check-code-quality`, which runs
+    # checkers.py instrumented via transformersci.otel.instrument) needs the
+    # same TRACEPARENT so its in-process spans share one trace id.
+    if not export_traces:
         return updated_env, None
 
     traceparent = traceparent_from_command(command) or env.get("TRACEPARENT")

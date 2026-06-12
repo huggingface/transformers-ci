@@ -197,70 +197,14 @@ def write_resource_record(item: pytest.Item, metrics: dict[str, float | int]) ->
         output.write(json.dumps(record, sort_keys=True) + "\n")
 
 
-def _parse_otlp_headers(raw: str | None) -> dict[str, str] | None:
-    """Parse an ``OTEL_EXPORTER_OTLP_HEADERS``-style string into a dict.
-
-    The value is a comma-separated list of ``key=value`` pairs (e.g.
-    ``Authorization=Bearer abc``), matching the W3C Baggage format the SDK uses.
-    Returns ``None`` when there is nothing usable, so the exporter falls back to
-    its own defaults.
-    """
-    if not raw:
-        return None
-    headers: dict[str, str] = {}
-    for pair in raw.split(","):
-        pair = pair.strip()
-        if not pair or "=" not in pair:
-            continue
-        key, value = pair.split("=", 1)
-        headers[key.strip()] = value.strip()
-    return headers or None
-
-
-# Staging is a best-effort mirror: bound each export attempt so a dead/black-holed
-# staging box can't make the end-of-session flush hang the CI job for long. A
-# healthy same-network mirror exports well under a second, so a few seconds is
-# plenty; when staging is down this caps the extra teardown delay per shard.
-STAGING_EXPORT_TIMEOUT_SECONDS = 5
-
-
-def _build_staging_exporter(endpoint: str, protocol: str, headers):
-    """Build an OTLP span exporter for the staging mirror.
-
-    Mirrors the primary transport so spans land in the same shape on staging:
-    HTTP/protobuf uses the http exporter (which wants the full ``/v1/traces``
-    signal path), everything else uses gRPC. A plaintext (``http://`` or
-    scheme-less) gRPC endpoint is exported insecurely; ``https://`` keeps TLS.
-    """
-    if protocol in ("http/protobuf", "http", "https"):
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
-        )
-
-        url = endpoint.rstrip("/")
-        if not url.endswith("/v1/traces"):
-            url = f"{url}/v1/traces"
-        return OTLPSpanExporter(
-            endpoint=url, headers=headers, timeout=STAGING_EXPORT_TIMEOUT_SECONDS
-        )
-
-    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-        OTLPSpanExporter,
-    )
-
-    insecure = not endpoint.lower().startswith("https://")
-    # gRPC metadata keys must be lowercase (HTTP/2 rule). The OTLP gRPC exporter
-    # passes headers through verbatim, so a capitalized key like "Authorization"
-    # — valid over HTTP, and exactly what the primary OTEL_EXPORTER_OTLP_HEADERS
-    # carries (and the staging mirror falls back to) — is rejected by gRPC core
-    # with "Illegal header key", failing the whole export before any span ships.
-    grpc_headers = {k.lower(): v for k, v in headers.items()} if headers else headers
-    return OTLPSpanExporter(
-        endpoint=endpoint,
-        headers=grpc_headers,
-        insecure=insecure,
-        timeout=STAGING_EXPORT_TIMEOUT_SECONDS,
-    )
+# Exporter construction lives in ._export so the pytest staging mirror and the
+# non-pytest in-process tracer (._instrument) share one code path (and one copy
+# of the HTTP signal-path / gRPC lowercase-header handling). The private aliases
+# below preserve this module's existing names so tests and monkeypatching of
+# ``_build_staging_exporter`` keep working.
+from ._export import STAGING_EXPORT_TIMEOUT_SECONDS  # noqa: E402,F401
+from ._export import build_exporter as _build_staging_exporter  # noqa: E402
+from ._export import parse_otlp_headers as _parse_otlp_headers  # noqa: E402
 
 
 def _install_staging_span_processor() -> None:

@@ -486,6 +486,29 @@ class ConfigureCiOtelTests(TestCase):
         self.assertIn("TRACEPARENT", env)
         self.assertEqual(trace_id, cli.trace_id_from_traceparent(env["TRACEPARENT"]))
 
+    def test_configure_trace_context_generates_traceparent_for_non_pytest(self):
+        # checkers.py (run via `make`) is not a pytest command but self-instruments
+        # via transformersci.otel.instrument, so it still needs a TRACEPARENT to
+        # share one trace id.
+        env, trace_id = cli.configure_trace_context(
+            {},
+            ["make", "check-code-quality"],
+            export_traces=True,
+        )
+
+        self.assertIsNotNone(trace_id)
+        self.assertIn("TRACEPARENT", env)
+
+    def test_configure_trace_context_no_traceparent_when_not_exporting(self):
+        env, trace_id = cli.configure_trace_context(
+            {},
+            ["make", "check-code-quality"],
+            export_traces=False,
+        )
+
+        self.assertIsNone(trace_id)
+        self.assertNotIn("TRACEPARENT", env)
+
     def test_configure_trace_context_preserves_existing_traceparent(self):
         traceparent = "00-1234567890abcdef1234567890abcdef-fedcba0987654321-01"
 
