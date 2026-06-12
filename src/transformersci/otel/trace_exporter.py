@@ -49,6 +49,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -76,6 +77,11 @@ DEFAULT_RESOURCE_METRICS_FILE = "/data/pytest-resource-metrics.jsonl"
 # can never expose a torn body.
 DEFAULT_PAYLOAD_FILE = "/data/pytest-metrics-payload.prom"
 METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+# Soft RSS ceiling (MiB). When a render is about to run and RSS is already above
+# this, the reclaimable trace cache is dropped first so the render doesn't tip
+# the process into the hard container limit (an OOM-kill). ~88% of the 640 MiB
+# cap; set to 0 to disable.
+DEFAULT_MEM_SOFT_MB = 560
 DEFAULT_SERVICE_NAME = "pytest-observability-demo"
 DEFAULT_CACHE_SECONDS = 10.0
 DEFAULT_REFRESH_COOLDOWN_SECONDS = 60.0
@@ -1921,13 +1927,22 @@ def _exporter_self_metric_lines(render_seconds: float) -> list[str]:
     return lines
 
 
-def _render_metrics_uncached() -> str:
+def _iter_metric_lines() -> Iterator[str]:
+    """Yield the Prometheus payload one line at a time (no trailing newline).
+
+    Generating lines lazily lets the publisher (:func:`_write_payload_atomic`)
+    stream them straight to disk, so the full multi-MB payload is never
+    materialised in the heap as a joined string *and* its encoded bytes — the
+    render's transient memory stays roughly flat regardless of how many test
+    series the window produces. Each ``extract_*`` group is consumed and freed
+    before the next, so peak is one group plus the shaped rows, not all lines at
+    once.
+    """
+    global _traces_processed_total
     started = time.monotonic()
-    # Stream the window's traces: shape each into small rows and drop the
-    # (multi-MB) raw trace immediately, so peak memory is the shaped rows + the
-    # fetch window + a single retained "latest" trace — never every raw trace at
-    # once (the pattern that OOM'd the publisher). Only `latest` keeps one raw
-    # trace, for extract_latest_trace_metrics.
+    # Shape each trace into small rows and drop the (multi-MB) raw trace
+    # immediately, so peak memory is the shaped rows + the fetch window + a
+    # single retained "latest" trace — never every raw trace at once.
     extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] = []
     latest: dict | None = None
     latest_start = -1
@@ -1943,29 +1958,25 @@ def _render_metrics_uncached() -> str:
             # All other traces fall out of scope here and are reclaimed.
         resource_records = fetch_resource_records()
     except Exception as error:
-        lines = [
-            "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.",
-            "# TYPE pytest_trace_exporter_up gauge",
-            "pytest_trace_exporter_up 0",
-            "# HELP pytest_trace_exporter_last_error Last exporter error.",
-            "# TYPE pytest_trace_exporter_last_error gauge",
-            f"pytest_trace_exporter_last_error{{message={json.dumps(str(error))}}} 1",
-        ]
+        yield "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo."
+        yield "# TYPE pytest_trace_exporter_up gauge"
+        yield "pytest_trace_exporter_up 0"
+        yield "# HELP pytest_trace_exporter_last_error Last exporter error."
+        yield "# TYPE pytest_trace_exporter_last_error gauge"
+        yield f"pytest_trace_exporter_last_error{{message={json.dumps(str(error))}}} 1"
         # Emit self-metrics on the error path too, so the exporter's own health
         # panels (render time, RSS) stay populated rather than going "no data".
-        lines.extend(_exporter_self_metric_lines(time.monotonic() - started))
-        return "\n".join(lines) + "\n"
+        yield from _exporter_self_metric_lines(time.monotonic() - started)
+        return
 
     if not extracted:
         # Empty window (no CI activity) is still a healthy exporter — emit the
         # self-metrics so the dashboard shows it idling, not "no data".
-        lines = [
-            "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.",
-            "# TYPE pytest_trace_exporter_up gauge",
-            "pytest_trace_exporter_up 1",
-        ]
-        lines.extend(_exporter_self_metric_lines(time.monotonic() - started))
-        return "\n".join(lines) + "\n"
+        yield "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo."
+        yield "# TYPE pytest_trace_exporter_up gauge"
+        yield "pytest_trace_exporter_up 1"
+        yield from _exporter_self_metric_lines(time.monotonic() - started)
+        return
 
     # Track which traces belong to which run, then build the run roll-ups over
     # each run's COMPLETE (settled) trace set rather than just the in-window
@@ -1977,44 +1988,47 @@ def _render_metrics_uncached() -> str:
         extracted, now, _run_settle_seconds()
     )
 
-    rendered = [
-        "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo.",
-        "# TYPE pytest_trace_exporter_up gauge",
-        "pytest_trace_exporter_up 1",
-        "# HELP pytest_trace_exporter_trace_count Number of traces fetched from Tempo for aggregation.",
-        "# TYPE pytest_trace_exporter_trace_count gauge",
-        f"pytest_trace_exporter_trace_count {trace_count}",
-    ]
-    rendered.extend(extract_per_test_duration_metrics(_extracted=extracted))
-    rendered.extend(extract_run_rollup_metrics(_extracted=rollup_extracted))
-    rendered.extend(extract_run_info_metrics(_extracted=rollup_extracted))
-    rendered.extend(extract_pr_info_metrics([], _extracted=extracted))
-    rendered.extend(extract_pr_last_failure_metrics([], _extracted=extracted))
-    rendered.extend(extract_average_metrics([], _extracted=extracted))
-    rendered.extend(extract_average_resource_metrics(resource_records))
+    yield "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo."
+    yield "# TYPE pytest_trace_exporter_up gauge"
+    yield "pytest_trace_exporter_up 1"
+    yield "# HELP pytest_trace_exporter_trace_count Number of traces fetched from Tempo for aggregation."
+    yield "# TYPE pytest_trace_exporter_trace_count gauge"
+    yield f"pytest_trace_exporter_trace_count {trace_count}"
+    yield from extract_per_test_duration_metrics(_extracted=extracted)
+    yield from extract_run_rollup_metrics(_extracted=rollup_extracted)
+    yield from extract_run_info_metrics(_extracted=rollup_extracted)
+    yield from extract_pr_info_metrics([], _extracted=extracted)
+    yield from extract_pr_last_failure_metrics([], _extracted=extracted)
+    yield from extract_average_metrics([], _extracted=extracted)
+    yield from extract_average_resource_metrics(resource_records)
 
-    global _traces_processed_total
     _traces_processed_total += trace_count
-    rendered.extend(_exporter_self_metric_lines(time.monotonic() - started))
+    yield from _exporter_self_metric_lines(time.monotonic() - started)
 
     if latest is not None:
-        rendered.extend(extract_latest_trace_metrics(latest))
-    return "\n".join(rendered) + "\n"
+        yield from extract_latest_trace_metrics(latest)
+
+
+def _render_metrics_uncached() -> str:
+    """Full payload as one string. Production publishing streams to disk via
+    :func:`_write_payload_atomic`; this whole-body form is for callers/tests."""
+    return "\n".join(_iter_metric_lines()) + "\n"
 
 
 def _payload_path() -> Path:
     return Path(os.getenv("PYTEST_TRACE_EXPORTER_PAYLOAD_FILE", DEFAULT_PAYLOAD_FILE))
 
 
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    """Publish ``data`` to ``path`` atomically.
+def _write_payload_atomic(path: Path) -> None:
+    """Render and publish the payload to ``path`` atomically, streaming.
 
-    Writes a sibling temp file in the destination directory, fsyncs it, then
-    ``os.replace()``s it into place. The temp file shares the directory so the
-    replace is a same-filesystem rename (atomic) rather than a cross-device copy.
-    A crash mid-write leaves the previous complete file intact — a concurrent
-    reader sees the old-or-new file, never a torn one — and the trailing
-    directory fsync makes the rename itself durable across an OS-level crash.
+    Folds rendering and publishing: lines from :func:`_iter_metric_lines` are
+    written to a sibling temp file as they are produced — so the full payload
+    never exists in the heap as a joined string plus its encoded bytes — then
+    fsync + ``os.replace`` publish it atomically. The temp file shares the
+    directory so the replace is a same-filesystem rename; a crash mid-write
+    leaves the previous complete payload intact (a reader sees old-or-new, never
+    torn), and the trailing directory fsync makes the rename durable.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
@@ -2022,8 +2036,10 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
     )
     tmp = Path(tmp_name)
     try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            for line in _iter_metric_lines():
+                handle.write(line)
+                handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
@@ -2097,9 +2113,48 @@ def render_metrics() -> str:
         return _WARMING_PAYLOAD
 
 
+def _mem_soft_limit_bytes() -> int:
+    """Soft RSS ceiling in bytes (0 = disabled). Default ~88% of the 640 MiB
+    container limit."""
+    return (
+        max(0, env_int("PYTEST_TRACE_EXPORTER_MEM_SOFT_MB", DEFAULT_MEM_SOFT_MB))
+        * 1024
+        * 1024
+    )
+
+
+def _relieve_memory_pressure() -> None:
+    """Before a render, if RSS is over the soft limit, drop the settled-trace
+    cache so the render reuses freed heap instead of stacking new allocations on
+    a near-full process and tipping into the hard cgroup limit (an OOM-kill).
+
+    The cache is the only large *reclaimable* state the exporter holds; Tempo is
+    its durable source, so a dropped trace is just re-fetched. Best-effort — a
+    pure safety valve under load, off when MEM_SOFT_MB <= 0.
+    """
+    soft = _mem_soft_limit_bytes()
+    if soft <= 0:
+        return
+    rss = _process_resident_bytes()
+    if rss is None or rss < soft:
+        return
+    global _trace_cache_bytes
+    with _trace_cache_lock:
+        dropped = len(_trace_cache)
+        _trace_cache.clear()
+        _trace_cache_sizes.clear()
+        _trace_cache_bytes = 0
+    print(
+        f"[pytest-trace-exporter] RSS {rss // (1024 * 1024)}MiB over soft limit "
+        f"{soft // (1024 * 1024)}MiB; dropped {dropped} cached traces to cap growth",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
 def _refresh_cache_once() -> None:
-    body = _render_metrics_uncached()
-    _atomic_write_bytes(_payload_path(), body.encode("utf-8"))
+    _relieve_memory_pressure()
+    _write_payload_atomic(_payload_path())
 
 
 def _refresh_loop(interval: float) -> None:
@@ -2180,7 +2235,35 @@ class MetricsHandler(BaseHTTPRequestHandler):
         return
 
 
+def _limit_malloc_arenas() -> None:
+    """Cap glibc malloc arenas before threads start.
+
+    Threaded use (the fetch pool + the per-request HTTP server) otherwise lets
+    glibc spin up to ~8*nproc arenas, inflating RSS far above live heap. We set
+    this in code via ``mallopt`` rather than relying on a ``MALLOC_ARENA_MAX``
+    env from the launcher, so the protection holds however the exporter is run
+    (bare ``python -m ...``, systemd, docker, ...). A ``MALLOC_ARENA_MAX`` env,
+    if present, still applies (glibc honours it at startup) and is respected
+    here as an override. No-op on non-glibc platforms (e.g. macOS).
+    """
+    try:
+        max_arenas = int(os.getenv("MALLOC_ARENA_MAX", "") or 2)
+    except ValueError:
+        max_arenas = 2
+    if max_arenas <= 0:
+        return
+    try:
+        import ctypes
+
+        m_arena_max = -8  # glibc mallopt M_ARENA_MAX
+        ctypes.CDLL(None).mallopt(m_arena_max, max_arenas)
+    except (OSError, AttributeError, ValueError):
+        pass  # mallopt unavailable (not glibc) — fine, just skip
+
+
 def main() -> None:
+    # Bound malloc arenas before any worker threads are created.
+    _limit_malloc_arenas()
     port = env_int("PYTEST_TRACE_EXPORTER_PORT", DEFAULT_PORT)
     # Render in the background so scrapes serve the cached payload instantly.
     refresher = threading.Thread(

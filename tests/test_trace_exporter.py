@@ -896,6 +896,88 @@ def test_refresh_cache_once_publishes_atomically(monkeypatch, tmp_path) -> None:
     assert leftovers == []
 
 
+def test_streamed_payload_matches_full_render(monkeypatch, tmp_path) -> None:
+    # The streaming writer must produce the same metric data as the whole-string
+    # render — streaming is purely a memory optimisation. Self-metric lines that
+    # vary per render (timing, RSS, cumulative counter) are filtered before
+    # comparison so two separate renders can be compared.
+    volatile = (
+        "pytest_trace_exporter_render_duration_seconds",
+        "pytest_trace_exporter_last_render_timestamp_seconds",
+        "pytest_trace_exporter_traces_processed_total",
+        "pytest_trace_exporter_process_resident_bytes",
+    )
+
+    def stable(text: str) -> list[str]:
+        return [ln for ln in text.splitlines() if not ln.startswith(volatile)]
+
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
+    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([trace]))
+    expected = trace_exporter._render_metrics_uncached()
+
+    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([trace]))
+    out = tmp_path / "payload.prom"
+    trace_exporter._write_payload_atomic(out)
+    streamed = out.read_text(encoding="utf-8")
+
+    assert streamed.endswith("\n")
+    assert stable(streamed) == stable(expected)
+    assert "pytest_test_duration_seconds{" in streamed
+
+
+def test_memory_guard_drops_cache_over_soft_limit(monkeypatch) -> None:
+    trace_exporter._trace_cache.clear()
+    trace_exporter._trace_cache_sizes.clear()
+    trace_exporter._trace_cache_bytes = 0
+    trace_exporter._trace_cache["t0"] = {"traceID": "t0"}
+    trace_exporter._trace_cache_sizes["t0"] = 100
+    trace_exporter._trace_cache_bytes = 100
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_MEM_SOFT_MB", "500")
+
+    # Under the soft limit -> cache untouched.
+    monkeypatch.setattr(
+        trace_exporter, "_process_resident_bytes", lambda: 100 * 1024 * 1024
+    )
+    trace_exporter._relieve_memory_pressure()
+    assert len(trace_exporter._trace_cache) == 1
+
+    # Over the soft limit -> cache dropped so the next render can't grow past it.
+    monkeypatch.setattr(
+        trace_exporter, "_process_resident_bytes", lambda: 600 * 1024 * 1024
+    )
+    trace_exporter._relieve_memory_pressure()
+    assert len(trace_exporter._trace_cache) == 0
+    assert trace_exporter._trace_cache_bytes == 0
+
+
+def test_limit_malloc_arenas_is_safe_everywhere(monkeypatch) -> None:
+    # Must never raise — it's a best-effort glibc tweak that no-ops elsewhere
+    # (e.g. macOS), so the feature works without any launcher-set env.
+    trace_exporter._limit_malloc_arenas()
+    monkeypatch.setenv("MALLOC_ARENA_MAX", "1")
+    trace_exporter._limit_malloc_arenas()
+    monkeypatch.setenv("MALLOC_ARENA_MAX", "0")  # disabled
+    trace_exporter._limit_malloc_arenas()
+
+
+def test_memory_guard_disabled_when_zero(monkeypatch) -> None:
+    trace_exporter._trace_cache.clear()
+    trace_exporter._trace_cache["t0"] = {"traceID": "t0"}
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_MEM_SOFT_MB", "0")
+    monkeypatch.setattr(
+        trace_exporter, "_process_resident_bytes", lambda: 999 * 1024 * 1024
+    )
+    trace_exporter._relieve_memory_pressure()
+    assert len(trace_exporter._trace_cache) == 1  # disabled: never drops
+    trace_exporter._trace_cache.clear()
+
+
 def test_payload_survives_crash_and_serves_last_good(monkeypatch, tmp_path) -> None:
     # Simulate a crash: the next render raises *after* a good payload was already
     # published. The on-disk file from before the crash must still be served
@@ -918,7 +1000,9 @@ def test_payload_survives_crash_and_serves_last_good(monkeypatch, tmp_path) -> N
     def boom(*_a, **_k):
         raise RuntimeError("render crashed")
 
-    monkeypatch.setattr(trace_exporter, "_render_metrics_uncached", boom)
+    # Crash mid-stream (after the writer has opened its temp file): the streaming
+    # writer must clean up the temp file and leave the previous payload intact.
+    monkeypatch.setattr(trace_exporter, "extract_per_test_duration_metrics", boom)
     with pytest.raises(RuntimeError):
         trace_exporter._refresh_cache_once()
     # Last-good payload still intact, no torn body, no leftover temp files.

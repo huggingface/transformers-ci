@@ -55,6 +55,11 @@ services:
       - PYTEST_TRACE_EXPORTER_PORT=8000
       - PYTEST_RESOURCE_METRICS_FILE=/data/pytest-resource-metrics.jsonl
       - PYTEST_TRACE_EXPORTER_PAYLOAD_FILE=${PYTEST_TRACE_EXPORTER_PAYLOAD_FILE:-/data/pytest-metrics-payload.prom}
+      # Soft RSS ceiling (MiB): over this, a render drops the reclaimable trace
+      # cache first so it can't tip the process into the hard mem_limit. The
+      # exporter also caps malloc arenas itself (mallopt) regardless of launcher,
+      # so no MALLOC_ARENA_MAX env is required here.
+      - PYTEST_TRACE_EXPORTER_MEM_SOFT_MB=${PYTEST_TRACE_EXPORTER_MEM_SOFT_MB:-560}
       - PYTEST_TRACE_EXPORTER_SERVICE_NAME=${PYTEST_TRACE_EXPORTER_SERVICE_NAME:-pytest-observability-demo}
       # Authenticate GitHub PR-title / commit-message lookups. Unauthenticated
       # is 60 req/hr, which the box exhausts — so the newest PRs/commits resolve
