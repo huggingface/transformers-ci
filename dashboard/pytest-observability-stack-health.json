@@ -351,13 +351,14 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "prometheus_target_interval_length_seconds{quantile=\"0.99\"}",
-          "legendFormat": "p99 — {{interval}}",
+          "expr": "scrape_duration_seconds",
+          "legendFormat": "{{job}}",
           "refId": "A"
         }
       ],
-      "title": "Prometheus scrape interval (p99)",
-      "type": "timeseries"
+      "title": "Scrape duration by job",
+      "type": "timeseries",
+      "description": "How long each scrape takes, per job. Rises when a target (e.g. the trace exporter) gets slow under load — an early warning before scrapes start failing."
     },
     {
       "datasource": {
@@ -1243,14 +1244,14 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "ci_publisher_traces_per_second",
+          "expr": "ci_publisher_traces_per_second * 60",
           "legendFormat": "traces/sec",
           "refId": "A"
         }
       ],
-      "title": "Traces published / sec",
+      "title": "Traces published / min",
       "type": "timeseries",
-      "description": "Throughput of the last cycle: traces shaped per second."
+      "description": "Throughput of the last cycle: traces shaped per minute."
     },
     {
       "datasource": {
