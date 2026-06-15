@@ -123,7 +123,7 @@
           "refId": "A"
         }
       ],
-      "title": "Scrape targets \u2014 up/down",
+      "title": "Scrape targets — up/down",
       "type": "stat"
     },
     {
@@ -352,7 +352,7 @@
         {
           "editorMode": "code",
           "expr": "prometheus_target_interval_length_seconds{quantile=\"0.99\"}",
-          "legendFormat": "p99 \u2014 {{interval}}",
+          "legendFormat": "p99 — {{interval}}",
           "refId": "A"
         }
       ],
@@ -364,7 +364,7 @@
         "type": "prometheus",
         "uid": "prometheus-infra"
       },
-      "description": "Trace payload bytes ingested by Tempo's distributor, one bar per UTC calendar day (increase over a 1d step). Primary 'data received by the system' signal \u2014 watch daily volume against the Tempo storage budget. The current day's bar is partial and grows until UTC midnight.",
+      "description": "Trace payload bytes ingested by Tempo's distributor, one bar per UTC calendar day (increase over a 1d step). Primary 'data received by the system' signal — watch daily volume against the Tempo storage budget. The current day's bar is partial and grows until UTC midnight.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -415,7 +415,8 @@
         }
       ],
       "title": "Trace data received per day",
-      "type": "timeseries"
+      "type": "timeseries",
+      "timeFrom": "7d"
     },
     {
       "datasource": {
@@ -473,7 +474,8 @@
         }
       ],
       "title": "Metric samples ingested per day",
-      "type": "timeseries"
+      "type": "timeseries",
+      "timeFrom": "7d"
     },
     {
       "collapsed": false,
@@ -809,7 +811,7 @@
       },
       "id": 107,
       "panels": [],
-      "title": "Live ingest \u2014 last 24h (today so far)",
+      "title": "Live ingest — last 24h (today so far)",
       "type": "row"
     },
     {
@@ -868,7 +870,7 @@
       ],
       "title": "Trace bytes received (last 24h)",
       "type": "stat",
-      "description": "Rolling 24h companion to the per-day bars \u2014 grows live through the current day."
+      "description": "Rolling 24h companion to the per-day bars — grows live through the current day."
     },
     {
       "datasource": {
@@ -926,7 +928,7 @@
       ],
       "title": "Metric samples ingested (last 24h)",
       "type": "stat",
-      "description": "Rolling 24h companion to the per-day bars \u2014 grows live through the current day."
+      "description": "Rolling 24h companion to the per-day bars — grows live through the current day."
     },
     {
       "collapsed": false,
@@ -1005,7 +1007,7 @@
       ],
       "title": "Time since last publish",
       "type": "stat",
-      "description": "Age of the last publish cycle. Yellow >75m (cron is hourly), red >2h \u2014 stale means the sidecar stopped publishing."
+      "description": "Age of the last publish cycle. Yellow >75m (cron is hourly), red >2h — stale means the sidecar stopped publishing."
     },
     {
       "datasource": {
