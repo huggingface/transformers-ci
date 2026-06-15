@@ -135,6 +135,7 @@ services:
       - ./pytest-observability-stack-health.json:/etc/grafana/provisioning/dashboards/pytest-observability-stack-health.json:ro
       - ./grafana-dashboard.yaml:/etc/grafana/provisioning/dashboards/grafana-dashboard.yaml:ro
       - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./grafana-alerting.yaml:/etc/grafana/provisioning/alerting/ci-publisher.yaml:ro
       - grafana-data:/var/lib/grafana
     depends_on:
       - tempo

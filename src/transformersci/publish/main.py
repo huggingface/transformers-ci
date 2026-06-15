@@ -1,4 +1,4 @@
-# Copyright 2026 The HuggingFace Inc. team.
+git# Copyright 2026 The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -32,9 +32,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import self_metrics
@@ -54,6 +56,47 @@ from .tempo_window import iter_window_traces
 DEFAULT_STAGING_DIR = "/staging"
 DEFAULT_BUCKET_URI = "hf://buckets/huggingface/transformers-ci-telemetry"
 DEFAULT_ROW_BATCH = 2000
+# Days of raw trace JSON to keep in the local staging mirror. The raw traces are
+# the bulk of the mirror and the only thing that grows unbounded; everything
+# older than this (and so already settled past the 24h publish window) is pruned
+# locally after a successful sync. The small Parquet partitions are always kept,
+# so the manifest's headline row counts stay exact, and `hf sync --no-delete`
+# means the bucket retains every uploaded trace regardless.
+DEFAULT_TRACE_RETENTION_DAYS = 2
+
+
+def _trace_retention_days() -> int:
+    raw = os.getenv("PUBLISH_TRACE_RETENTION_DAYS", "")
+    try:
+        return max(1, int(raw)) if raw else DEFAULT_TRACE_RETENTION_DAYS
+    except ValueError:
+        return DEFAULT_TRACE_RETENTION_DAYS
+
+
+def prune_old_trace_partitions(staging_dir: str, keep_days: int) -> int:
+    """Delete ``daily/<day>/traces/`` for partitions older than ``keep_days``.
+
+    Returns the number of day partitions whose raw traces were removed. Only the
+    bulky raw JSON is dropped; the Parquet files (and the partition dir) stay, so
+    derived data and the manifest's row counts are untouched. Call only after a
+    successful sync, so the pruned traces are safely in the bucket first.
+    """
+    daily = Path(staging_dir) / "daily"
+    if not daily.is_dir():
+        return 0
+    cutoff = (
+        datetime.now(tz=timezone.utc).date() - timedelta(days=keep_days)
+    ).isoformat()
+    pruned = 0
+    for day_dir in daily.iterdir():
+        # Day dirs are named YYYY-MM-DD, so lexicographic order == chronological.
+        if not day_dir.is_dir() or day_dir.name >= cutoff:
+            continue
+        traces = day_dir / "traces"
+        if traces.is_dir():
+            shutil.rmtree(traces, ignore_errors=True)
+            pruned += 1
+    return pruned
 
 
 def _row_batch_size() -> int:
@@ -210,6 +253,15 @@ def main(argv: list[str] | None = None) -> int:
         elif args.sync:
             sync_to_bucket(args.staging_dir, args.bucket_uri)
             _log("synced to bucket")
+            # Reclaim local disk only after the sync succeeded, so the bucket
+            # holds the traces before we drop the local copies.
+            keep = _trace_retention_days()
+            pruned = prune_old_trace_partitions(args.staging_dir, keep)
+            if pruned:
+                _log(
+                    f"pruned raw traces for {pruned} partition(s) older than "
+                    f"{keep}d (kept Parquet; bucket retains them)"
+                )
         success = True
     finally:
         self_metrics.write_self_metrics(

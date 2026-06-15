@@ -300,6 +300,46 @@ def test_build_manifest_empty(tmp_path):
     assert m["partitions"] == []
 
 
+def test_prune_old_trace_partitions(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(tz=timezone.utc).date()
+    old = (today - timedelta(days=5)).isoformat()
+    recent = today.isoformat()
+    daily = tmp_path / "daily"
+    for day in (old, recent):
+        traces = daily / day / "traces"
+        traces.mkdir(parents=True)
+        (traces / "a.json").write_text("{}", encoding="utf-8")
+        (daily / day / "test_rows.parquet").write_text("x", encoding="utf-8")
+
+    pruned = main.prune_old_trace_partitions(str(tmp_path), keep_days=2)
+
+    assert pruned == 1
+    # Old partition: raw traces gone, Parquet (and the partition dir) kept.
+    assert not (daily / old / "traces").exists()
+    assert (daily / old / "test_rows.parquet").exists()
+    # Recent partition fully intact.
+    assert (daily / recent / "traces" / "a.json").exists()
+
+
+def test_main_prunes_old_traces_after_sync(tmp_path, monkeypatch):
+    pytest.importorskip("pyarrow")
+    monkeypatch.setattr(main, "iter_window_traces", lambda: iter(_sample_traces()))
+    monkeypatch.setattr(main, "sync_to_bucket", lambda *a, **k: None)
+    seen = {}
+    monkeypatch.setattr(
+        main,
+        "prune_old_trace_partitions",
+        lambda staging, keep: seen.update(staging=staging, keep=keep) or 0,
+    )
+    monkeypatch.setenv("PUBLISH_TRACE_RETENTION_DAYS", "3")
+
+    rc = main.main(["--staging-dir", str(tmp_path), "--sync"])
+    assert rc == 0
+    assert seen == {"staging": str(tmp_path), "keep": 3}
+
+
 # --- publisher search resilience ---------------------------------------------
 
 

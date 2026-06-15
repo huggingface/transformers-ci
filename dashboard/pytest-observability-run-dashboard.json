@@ -187,7 +187,8 @@
               }
             ]
           },
-          "unit": "percent"
+          "unit": "percent",
+          "decimals": 2
         },
         "overrides": []
       },
@@ -216,7 +217,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "100 * ((sum(last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))) - (sum(last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d])) or vector(0))) / (sum(last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])))",
+          "expr": "floor((100 * ((sum(last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))) - (sum(last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d])) or vector(0))) / (sum(last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])))) * 100) / 100",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,

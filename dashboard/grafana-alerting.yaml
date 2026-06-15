@@ -1,0 +1,110 @@
+# Provisioned Grafana unified-alerting rules for the CI data publisher.
+#
+# Mounted at /etc/grafana/provisioning/alerting/. Two rules, because the two
+# failure modes need different signals:
+#   - "failed": the publisher ran but a cycle errored. It still stamps
+#     ci_publisher_last_run_timestamp_seconds in its finally block, so staleness
+#     would NOT catch this — we watch ci_publisher_last_run_success == 0.
+#   - "stalled": the publisher isn't producing fresh metrics at all (crashed,
+#     container down, or a disk-full so severe even the metric write failed).
+#     Caught by the age of the last-run timestamp.
+#
+# Rules evaluate against the `prometheus-infra` datasource (where node-exporter's
+# textfile collector lands the publisher self-metrics). With no contact point
+# configured they route to the default policy and surface as Firing in Grafana's
+# Alerting UI; wire a Slack/email contact point to also notify externally.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: ci-data-publisher
+    folder: CI Alerts
+    interval: 1m
+    rules:
+      - uid: ci-publisher-cycle-failed
+        title: CI data publisher cycle failed
+        condition: C
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: warning
+          service: ci-data-publisher
+        annotations:
+          summary: The last CI data publisher cycle did not finish successfully.
+          description: >
+            ci_publisher_last_run_success is 0 — the hourly publish cycle errored
+            (e.g. Tempo search failure or disk full). Check the
+            dashboard-ci-data-publisher container logs on the box.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus-infra
+            model:
+              refId: A
+              instant: true
+              editorMode: code
+              expr: ci_publisher_last_run_success
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              reducer: last
+              expression: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+
+      - uid: ci-publisher-stalled
+        title: CI data publisher stalled
+        condition: C
+        for: 0m
+        noDataState: Alerting
+        execErrState: Error
+        labels:
+          severity: critical
+          service: ci-data-publisher
+        annotations:
+          summary: The CI data publisher has not produced fresh metrics.
+          description: >
+            time() - ci_publisher_last_run_timestamp_seconds exceeds 2h — the
+            publisher cron has not completed a cycle (crashed, container down, or
+            could not even write its self-metrics). Check the box.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus-infra
+            model:
+              refId: A
+              instant: true
+              editorMode: code
+              expr: time() - ci_publisher_last_run_timestamp_seconds
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              reducer: last
+              expression: A
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [7200]
