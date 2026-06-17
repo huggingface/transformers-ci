@@ -352,6 +352,51 @@ def test_fetch_github_pr_info_uses_github_api_response() -> None:
     }
 
 
+def test_fetch_github_pr_info_expands_emoji_shortcodes_in_title() -> None:
+    pr_payload = FakeResponse(
+        '{"html_url": "https://github.com/huggingface/transformers/pull/4321", '
+        '"state": "open", "title": ":rotating_light: Fix flaky test :fire:", '
+        '"user": {"login": "octocat"}, '
+        '"head": {"sha": "deadbeef"}, "created_at": "2024-01-02T03:04:05Z"}'
+    )
+    reviews_payload = FakeResponse("[]")
+    with patch(
+        "transformersci.otel.trace_exporter.urlopen",
+        side_effect=[pr_payload, reviews_payload],
+    ):
+        metadata = trace_exporter.fetch_github_pr_info(
+            "huggingface/transformers", "4321"
+        )
+
+    # Grafana renders GitHub shortcodes verbatim, so the exporter expands them
+    # to real glyphs at the source.
+    assert metadata["title"] == "🚨 Fix flaky test 🔥"
+
+
+def test_fetch_github_commit_message_expands_emoji_shortcodes() -> None:
+    payload = FakeResponse(
+        '{"commit": {"message": ":bug: Fix the flaky test\\n\\nLong body."}}'
+    )
+    with patch(
+        "transformersci.otel.trace_exporter.urlopen",
+        side_effect=[payload],
+    ):
+        message = trace_exporter.fetch_github_commit_message(
+            "huggingface/transformers", "cafef00d1234"
+        )
+
+    assert message == "🐛 Fix the flaky test"
+
+
+def test_emojize_is_a_noop_without_shortcodes_or_dependency() -> None:
+    assert trace_exporter._emojize("plain title with no codes") == (
+        "plain title with no codes"
+    )
+    assert trace_exporter._emojize("") == ""
+    # Unknown shortcodes are left untouched rather than dropped.
+    assert trace_exporter._emojize(":not_a_real_emoji:") == ":not_a_real_emoji:"
+
+
 def test_extract_pr_info_metrics_fetches_metadata_once_per_pr() -> None:
     calls: list[tuple[str, str]] = []
 

@@ -12,6 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 otel = [
+  "emoji",
   "opentelemetry-api",
   "opentelemetry-exporter-otlp",
   "opentelemetry-sdk",
@@ -26,10 +27,12 @@ publish = [
   "pyarrow",
 ]
 test = [
+  "emoji",
   "psutil",
   "pytest>=8.0",
 ]
 dev = [
+  "emoji",
   "opentelemetry-api",
   "opentelemetry-exporter-otlp",
   "opentelemetry-sdk",

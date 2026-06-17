@@ -63,6 +63,16 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
+try:
+    # Optional: only present with the ``otel`` extra. Used to turn GitHub-style
+    # emoji shortcodes (":rotating_light:") embedded in PR titles and commit
+    # subjects into real Unicode glyphs, since Grafana renders shortcodes
+    # literally. Absent in the dependency-free core, where it degrades to a
+    # no-op (see :func:`_emojize`).
+    import emoji as _emoji
+except ImportError:  # pragma: no cover - exercised only without the otel extra
+    _emoji = None
+
 
 DEFAULT_TEMPO_URL = "http://tempo:3200"
 DEFAULT_LIMIT = 100
@@ -807,6 +817,20 @@ def fetch_github_pr_reviews(repository: str, pr: str) -> list[str]:
     return logins
 
 
+def _emojize(text: str) -> str:
+    """Convert GitHub-style emoji shortcodes to Unicode glyphs.
+
+    PR titles and commit subjects come straight from GitHub, which stores
+    aliases like ``:rotating_light:``. Grafana has no shortcode parser and
+    renders them verbatim, so we expand them here — at the source — meaning
+    every panel and all stored history show the real 🚨. No-ops when the
+    optional ``emoji`` dependency is missing or there's no shortcode to expand.
+    """
+    if not text or _emoji is None or ":" not in text:
+        return text
+    return _emoji.emojize(text, language="alias")
+
+
 def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
     api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip(
         "/"
@@ -853,7 +877,7 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
         else github_pr_html_url(repository, pr),
         "reviewers": reviewers,
         "state": state if isinstance(state, str) else "",
-        "title": title if isinstance(title, str) else "",
+        "title": _emojize(title) if isinstance(title, str) else "",
     }
 
 
@@ -923,7 +947,7 @@ def fetch_github_commit_message(repository: str, sha: str) -> str:
         return ""
     # Commit messages are multi-line (subject + body); the table only wants the
     # subject, so keep the first non-empty line.
-    return message.strip().splitlines()[0] if message.strip() else ""
+    return _emojize(message.strip().splitlines()[0]) if message.strip() else ""
 
 
 _commit_msg_cache_lock = threading.Lock()
