@@ -87,6 +87,8 @@ DEFAULT_RESOURCE_METRICS_FILE = "/data/pytest-resource-metrics.jsonl"
 # can never expose a torn body.
 DEFAULT_PAYLOAD_FILE = "/data/pytest-metrics-payload.prom"
 METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+SVG_CONTENT_TYPE = "image/svg+xml; charset=utf-8"
+JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 # Soft RSS ceiling (MiB). When a render is about to run and RSS is already above
 # this, the reclaimable trace cache is dropped first so the render doesn't tip
 # the process into the hard container limit (an OOM-kill). ~88% of the 640 MiB
@@ -2137,6 +2139,146 @@ def render_metrics() -> str:
         return _WARMING_PAYLOAD
 
 
+def _parse_metric_labels(raw: str) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    index = 0
+    while index < len(raw):
+        match = re.match(r'\s*([a-zA-Z_:][a-zA-Z0-9_:]*)="', raw[index:])
+        if match is None:
+            break
+        key = match.group(1)
+        index += match.end()
+        value_chars = []
+        while index < len(raw):
+            char = raw[index]
+            if char == "\\" and index + 1 < len(raw):
+                escaped = raw[index + 1]
+                value_chars.append("\n" if escaped == "n" else escaped)
+                index += 2
+                continue
+            if char == '"':
+                index += 1
+                break
+            value_chars.append(char)
+            index += 1
+        labels[key] = "".join(value_chars)
+        if index < len(raw) and raw[index] == ",":
+            index += 1
+    return labels
+
+
+def _iter_metric_samples(metric_name: str) -> Iterator[tuple[dict[str, str], float]]:
+    pattern = re.compile(
+        rf"^{re.escape(metric_name)}(?:{{([^}}]*)}})?\s+([-+0-9.eE]+)(?:\s|$)"
+    )
+    for line in render_metrics().splitlines():
+        match = pattern.match(line)
+        if match is None:
+            continue
+        labels = _parse_metric_labels(match.group(1) or "")
+        try:
+            value = float(match.group(2))
+        except ValueError:
+            continue
+        yield labels, value
+
+
+def _latest_pr_run_summary(pr: str) -> dict[str, str | float | int | None] | None:
+    runs: dict[tuple[str, str, str, str], dict[str, str | float | int | None]] = {}
+    metric_to_field = {
+        "pytest_run_start_time_seconds": "started_at_seconds",
+        "pytest_run_end_time_seconds": "ended_at_seconds",
+        "pytest_run_total_tests": "total_tests",
+        "pytest_run_failed_tests": "failed_tests",
+        "pytest_run_duration_seconds": "duration_seconds",
+        "pytest_run_job_count": "job_count",
+    }
+    for metric_name, field_name in metric_to_field.items():
+        for labels, value in _iter_metric_samples(metric_name):
+            if labels.get("pr") != pr:
+                continue
+            key = (
+                labels.get("service_name", ""),
+                labels.get("provider", ""),
+                labels.get("pr", ""),
+                labels.get("run_id", ""),
+            )
+            summary = runs.setdefault(
+                key,
+                {
+                    "duration_seconds": None,
+                    "ended_at_seconds": None,
+                    "failed_tests": None,
+                    "job_count": None,
+                    "pr": pr,
+                    "provider": labels.get("provider", ""),
+                    "run_id": labels.get("run_id", ""),
+                    "service_name": labels.get("service_name", ""),
+                    "started_at_seconds": None,
+                    "total_tests": None,
+                },
+            )
+            summary[field_name] = value
+
+    if not runs:
+        return None
+    return max(
+        runs.values(), key=lambda item: float(item.get("started_at_seconds") or 0)
+    )
+
+
+def _format_badge_count(value: object) -> str:
+    if not isinstance(value, (int, float)):
+        return "n/a"
+    return f"{int(value):,}"
+
+
+def render_pr_badge_svg(pr: str) -> bytes:
+    summary = _latest_pr_run_summary(pr)
+    if summary is None:
+        message = "no data"
+        color = "9f9f9f"
+    else:
+        failed = int(float(summary.get("failed_tests") or 0))
+        total = _format_badge_count(summary.get("total_tests"))
+        jobs = _format_badge_count(summary.get("job_count"))
+        message = f"{failed} failed / {total} tests / {jobs} jobs"
+        color = "e05d44" if failed else "4c1"
+
+    label = f"PR {pr} CI"
+    label_width = max(70, 7 * len(label) + 10)
+    message_width = max(120, 7 * len(message) + 10)
+    width = label_width + message_width
+    escaped_label = html.escape(label)
+    escaped_message = html.escape(message)
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="20" role="img" aria-label="{escaped_label}: {escaped_message}">
+  <linearGradient id="s" x2="0" y2="100%">
+    <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
+    <stop offset="1" stop-opacity=".1"/>
+  </linearGradient>
+  <clipPath id="r"><rect width="{width}" height="20" rx="3" fill="#fff"/></clipPath>
+  <g clip-path="url(#r)">
+    <rect width="{label_width}" height="20" fill="#555"/>
+    <rect x="{label_width}" width="{message_width}" height="20" fill="#{color}"/>
+    <rect width="{width}" height="20" fill="url(#s)"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="11">
+    <text x="{label_width / 2:.1f}" y="15" fill="#010101" fill-opacity=".3">{escaped_label}</text>
+    <text x="{label_width / 2:.1f}" y="14">{escaped_label}</text>
+    <text x="{label_width + message_width / 2:.1f}" y="15" fill="#010101" fill-opacity=".3">{escaped_message}</text>
+    <text x="{label_width + message_width / 2:.1f}" y="14">{escaped_message}</text>
+  </g>
+</svg>
+'''
+    return svg.encode("utf-8")
+
+
+def render_pr_summary_json(pr: str) -> bytes:
+    summary = _latest_pr_run_summary(pr)
+    payload = {"pr": pr, "available": summary is not None, "latest_run": summary}
+    return json.dumps(payload, sort_keys=True).encode("utf-8") + b"\n"
+
+
 def _mem_soft_limit_bytes() -> int:
     """Soft RSS ceiling in bytes (0 = disabled). Default ~88% of the 640 MiB
     container limit."""
@@ -2204,6 +2346,12 @@ def _refresh_loop(interval: float) -> None:
 class MetricsHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/badge/pr":
+            self._serve_pr_badge(parse_qs(parsed.query))
+            return
+        if parsed.path == "/summary/pr":
+            self._serve_pr_summary(parse_qs(parsed.query))
+            return
         if parsed.path == "/failure":
             self._serve_failure(parse_qs(parsed.query))
             return
@@ -2234,6 +2382,20 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(size))
             self.end_headers()
             shutil.copyfileobj(handle, self.wfile, 64 * 1024)
+
+    def _serve_pr_badge(self, params: dict[str, list[str]]) -> None:
+        pr = (params.get("pr") or [""])[0].strip()
+        if not pr.isdigit():
+            self._send(400, SVG_CONTENT_TYPE, render_pr_badge_svg("unknown"))
+            return
+        self._send(200, SVG_CONTENT_TYPE, render_pr_badge_svg(pr))
+
+    def _serve_pr_summary(self, params: dict[str, list[str]]) -> None:
+        pr = (params.get("pr") or [""])[0].strip()
+        if not pr.isdigit():
+            self._send(400, JSON_CONTENT_TYPE, b'{"error":"missing numeric pr"}\n')
+            return
+        self._send(200, JSON_CONTENT_TYPE, render_pr_summary_json(pr))
 
     def _serve_failure(self, params: dict[str, list[str]]) -> None:
         trace_id = (params.get("trace_id") or [""])[0].strip()

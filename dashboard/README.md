@@ -148,6 +148,19 @@ The PR dashboard can enrich its top panel from the GitHub API. For higher rate
 limits, export `PYTEST_GITHUB_TOKEN` before starting the stack. Optional knobs:
 `PYTEST_GITHUB_API_URL` and `PYTEST_TRACE_EXPORTER_GITHUB_CACHE_SECONDS`.
 
+### GitHub PR Integration
+
+Caddy exposes the trace exporter under `/exporter/*`. The exporter serves a
+small live SVG badge and JSON summary for a PR from its cached metrics payload:
+
+```md
+[![CI](https://transformers-ci.lor-e.huggingface.cool/exporter/badge/pr?pr=46767)](https://transformers-ci.lor-e.huggingface.cool/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=46767)
+```
+
+```sh
+curl -fsS "https://transformers-ci.lor-e.huggingface.cool/exporter/summary/pr?pr=46767"
+```
+
 ## Tempo
 
 - API: `http://localhost:3200`
