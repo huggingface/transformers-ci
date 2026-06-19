@@ -1514,3 +1514,89 @@ def test_run_rollup_resists_lookback_window_decay() -> None:
     # Without the complete-set fix (window-only) the failure would vanish.
     window_only = trace_exporter.extract_run_rollup_metrics(_extracted=window2)
     assert metric_lines(window_only, "pytest_run_failed_tests")[0].endswith(" 0")
+
+
+# ---------------------------------------------------------------------------
+# Badge / summary on-demand PR fallback
+# ---------------------------------------------------------------------------
+
+
+def test_pr_badge_uses_payload_fast_path_without_querying_tempo(monkeypatch) -> None:
+    """When the live payload already has the PR, the badge reads it directly and
+    never falls back to a Tempo search."""
+    trace_exporter._pr_summary_cache.clear()
+    payload = "\n".join(
+        trace_exporter.extract_run_rollup_metrics(workflow_split_across_three_jobs())
+    )
+    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: payload)
+
+    def _must_not_search(*args, **kwargs):
+        raise AssertionError("Tempo search must not run when the payload has the PR")
+
+    monkeypatch.setattr(trace_exporter, "search_trace_ids", _must_not_search)
+
+    svg = trace_exporter.render_pr_badge_svg("4321").decode()
+    assert "1 failed" in svg
+    assert "4 tests" in svg
+    assert "3 jobs" in svg
+    assert "no data" not in svg
+
+
+def test_pr_badge_falls_back_to_tempo_when_payload_has_no_pr(monkeypatch) -> None:
+    """A PR aged out of the render window is no longer in the payload; the badge
+    falls back to a per-PR Tempo search and still reports its latest run."""
+    trace_exporter._pr_summary_cache.clear()
+    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")  # payload miss
+
+    traces = workflow_split_across_three_jobs()
+    by_id = {trace["traceID"]: trace for trace in traces}
+    monkeypatch.setattr(
+        trace_exporter,
+        "search_trace_ids",
+        lambda *a, **k: list(by_id),
+    )
+    monkeypatch.setattr(
+        trace_exporter, "get_trace", lambda tid, base_url=None: by_id.get(tid)
+    )
+
+    svg = trace_exporter.render_pr_badge_svg("4321").decode()
+    assert "1 failed" in svg
+    assert "4 tests" in svg
+    assert "3 jobs" in svg
+    assert "no data" not in svg
+
+
+def test_pr_badge_scopes_fallback_search_to_requested_pr(monkeypatch) -> None:
+    """The fallback search is filtered to the requested PR via vcs.change.id, and
+    an empty result renders a graceful 'no data' badge rather than erroring."""
+    trace_exporter._pr_summary_cache.clear()
+    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
+    captured: dict[str, str] = {}
+
+    def _search(base_url, service_name, start, end, limit, extra_selector=""):
+        captured["selector"] = extra_selector
+        return []
+
+    monkeypatch.setattr(trace_exporter, "search_trace_ids", _search)
+
+    svg = trace_exporter.render_pr_badge_svg("46180").decode()
+    assert 'vcs.change.id = "46180"' in captured["selector"]
+    assert "no data" in svg
+
+
+def test_pr_fallback_result_is_memoized_per_pr(monkeypatch) -> None:
+    """A miss (including 'no data') is cached, so a hammered badge does not
+    re-search Tempo on every hit."""
+    trace_exporter._pr_summary_cache.clear()
+    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
+    calls = {"n": 0}
+
+    def _search(*a, **k):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(trace_exporter, "search_trace_ids", _search)
+
+    trace_exporter.render_pr_badge_svg("999")
+    trace_exporter.render_pr_badge_svg("999")
+    assert calls["n"] == 1

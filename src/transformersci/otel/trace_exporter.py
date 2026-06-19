@@ -109,6 +109,18 @@ DEFAULT_TRACE_SETTLE_SECONDS = 120.0
 # fetching several multi-MB traces in parallel can make small single-node Tempo
 # instances spike hard enough to hit their container memory limit.
 DEFAULT_FETCH_CONCURRENCY = 4
+# The PR badge/summary endpoints answer for a *specific* PR, whose last run is
+# often hours old — outside the live render's lookback window. So they fall back
+# to a targeted Tempo search scoped to that one PR over this wider window,
+# independent of PYTEST_TRACE_EXPORTER_LOOKBACK. The window is bounded by Tempo's
+# query_frontend.search.max_duration (26h in this deployment) — a larger value is
+# rejected by Tempo and the fallback degrades to "no data", so keep this under
+# that ceiling. To persist badges beyond ~a day you must also raise Tempo's
+# max_duration (or add windowed paging). The per-PR result is memoized for
+# DEFAULT_BADGE_CACHE_SECONDS so a hammered badge does not pound Tempo.
+DEFAULT_BADGE_LOOKBACK = "24h"
+DEFAULT_BADGE_TRACE_LIMIT = 100
+DEFAULT_BADGE_CACHE_SECONDS = 120.0
 
 
 def env_int(name: str, default: int) -> int:
@@ -507,9 +519,17 @@ def _http_get_json(url: str, timeout: float | None = None) -> object:
 
 
 def search_trace_ids(
-    base_url: str, service_name: str, start: int, end: int, limit: int
+    base_url: str,
+    service_name: str,
+    start: int,
+    end: int,
+    limit: int,
+    extra_selector: str = "",
 ) -> list[str]:
-    traceql = quote(f'{{ resource.service.name = "{service_name}" }}', safe="")
+    selector = f'resource.service.name = "{service_name}"'
+    if extra_selector:
+        selector = f"{selector} && {extra_selector}"
+    traceql = quote(f"{{ {selector} }}", safe="")
     search_url = (
         f"{base_url}/api/search?q={traceql}&start={start}&end={end}&limit={limit}"
     )
@@ -2167,11 +2187,20 @@ def _parse_metric_labels(raw: str) -> dict[str, str]:
     return labels
 
 
-def _iter_metric_samples(metric_name: str) -> Iterator[tuple[dict[str, str], float]]:
+def _iter_metric_samples(
+    metric_name: str, source: str | None = None
+) -> Iterator[tuple[dict[str, str], float]]:
+    """Yield (labels, value) for every sample of ``metric_name``.
+
+    Reads the published payload (``render_metrics()``) by default, or a caller-
+    supplied Prometheus-text blob — used by the badge fallback to parse freshly
+    rendered roll-up lines for a single PR without touching the global payload.
+    """
+    text = source if source is not None else render_metrics()
     pattern = re.compile(
         rf"^{re.escape(metric_name)}(?:{{([^}}]*)}})?\s+([-+0-9.eE]+)(?:\s|$)"
     )
-    for line in render_metrics().splitlines():
+    for line in text.splitlines():
         match = pattern.match(line)
         if match is None:
             continue
@@ -2183,7 +2212,9 @@ def _iter_metric_samples(metric_name: str) -> Iterator[tuple[dict[str, str], flo
         yield labels, value
 
 
-def _latest_pr_run_summary(pr: str) -> dict[str, str | float | int | None] | None:
+def _latest_pr_run_summary(
+    pr: str, source: str | None = None
+) -> dict[str, str | float | int | None] | None:
     runs: dict[tuple[str, str, str, str], dict[str, str | float | int | None]] = {}
     metric_to_field = {
         "pytest_run_start_time_seconds": "started_at_seconds",
@@ -2194,7 +2225,7 @@ def _latest_pr_run_summary(pr: str) -> dict[str, str | float | int | None] | Non
         "pytest_run_job_count": "job_count",
     }
     for metric_name, field_name in metric_to_field.items():
-        for labels, value in _iter_metric_samples(metric_name):
+        for labels, value in _iter_metric_samples(metric_name, source):
             if labels.get("pr") != pr:
                 continue
             key = (
@@ -2233,8 +2264,140 @@ def _format_badge_count(value: object) -> str:
     return f"{int(value):,}"
 
 
-def render_pr_badge_svg(pr: str) -> bytes:
+# ---------------------------------------------------------------------------
+# On-demand per-PR lookup (badge / summary fallback)
+#
+# A PR's last CI run is frequently older than the live render's lookback window,
+# so the payload the badge normally reads holds nothing for it — and the badge
+# would read "no data" even for a perfectly valid PR. When the payload misses,
+# we search Tempo directly, scoped to just that one PR over a wider window,
+# re-aggregate its runs with the same roll-up code the render uses, and pick the
+# latest run. The result (including a negative "no data") is memoized per PR so a
+# hammered badge does not pound Tempo.
+# ---------------------------------------------------------------------------
+
+
+def _badge_lookback_seconds() -> int:
+    return parse_lookback_seconds(
+        os.getenv("PYTEST_TRACE_EXPORTER_BADGE_LOOKBACK", DEFAULT_BADGE_LOOKBACK),
+        DEFAULT_BADGE_LOOKBACK,
+    )
+
+
+def _badge_cache_seconds() -> float:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_BADGE_CACHE_SECONDS", "")
+    try:
+        return max(0.0, float(raw)) if raw else DEFAULT_BADGE_CACHE_SECONDS
+    except ValueError:
+        return DEFAULT_BADGE_CACHE_SECONDS
+
+
+_pr_summary_cache_lock = threading.Lock()
+# pr -> (expiry_monotonic, summary-or-None). None (a genuinely-unknown PR) is
+# cached too, so a miss doesn't re-search Tempo on every single badge hit.
+_pr_summary_cache: dict[
+    str, tuple[float, dict[str, str | float | int | None] | None]
+] = {}
+
+
+def _pr_extracted_rows(
+    pr: str,
+) -> list[tuple[dict[str, str | int], list[dict[str, str | float]]]]:
+    """Search Tempo for this PR's traces and shape them into (trace_info, rows).
+
+    Streams exactly like :func:`iter_traces`: each fetched trace is shaped into
+    its small row set and then dropped, so the multi-MB traces never pile up on
+    the heap (a single PR can return the full search limit of large traces, and a
+    materialise-then-aggregate approach would spike the process toward its OOM
+    ceiling). Returns [] on any search/fetch failure, which the caller renders as
+    "no data" rather than erroring the badge.
+    """
+    base_url = tempo_base_url()
+    service_name = os.getenv("PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME)
+    limit = env_int(
+        "PYTEST_TRACE_EXPORTER_BADGE_TRACE_LIMIT", DEFAULT_BADGE_TRACE_LIMIT
+    )
+    end = int(time.time())
+    start = end - _badge_lookback_seconds()
+    # Handlers validate `pr` as digits-only before we get here; quote() in the
+    # search keeps the TraceQL well-formed regardless.
+    selector = f'resource.vcs.change.id = "{pr}"'
+    try:
+        trace_ids = search_trace_ids(
+            base_url, service_name, start, end, limit, extra_selector=selector
+        )
+    except Exception:
+        return []
+    if not trace_ids:
+        return []
+
+    workers = max(
+        1,
+        min(
+            env_int(
+                "PYTEST_TRACE_EXPORTER_FETCH_CONCURRENCY", DEFAULT_FETCH_CONCURRENCY
+            ),
+            len(trace_ids),
+        ),
+    )
+    extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] = []
+    pending = iter(trace_ids)
+    with ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="badge-fetch"
+    ) as pool:
+        inflight = {
+            pool.submit(get_trace, tid, base_url) for tid in islice(pending, workers)
+        }
+        while inflight:
+            done, inflight = wait(inflight, return_when=FIRST_COMPLETED)
+            for future in done:
+                nxt = next(pending, None)
+                if nxt is not None:
+                    inflight.add(pool.submit(get_trace, nxt, base_url))
+                try:
+                    trace = future.result()
+                except Exception:
+                    trace = None
+                if trace is not None:
+                    # Shape into small rows; the full trace is then dropped.
+                    extracted.append(extract_trace_rows(trace))
+    return extracted
+
+
+def _pr_run_summary_cached(pr: str) -> dict[str, str | float | int | None] | None:
+    """Latest-run summary for a PR: fast payload read, else a memoized Tempo search.
+
+    The live payload is the cheap path — a PR that ran inside the render window
+    is already there. Otherwise fall back to a per-PR Tempo search (memoized for
+    :func:`_badge_cache_seconds`) so the badge keeps reporting a PR's latest run
+    long after it has aged out of the render window.
+    """
     summary = _latest_pr_run_summary(pr)
+    if summary is not None:
+        return summary
+
+    now = time.monotonic()
+    with _pr_summary_cache_lock:
+        hit = _pr_summary_cache.get(pr)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+
+    extracted = _pr_extracted_rows(pr)
+    summary = (
+        _latest_pr_run_summary(
+            pr,
+            source="\n".join(extract_run_rollup_metrics(_extracted=extracted)),
+        )
+        if extracted
+        else None
+    )
+    with _pr_summary_cache_lock:
+        _pr_summary_cache[pr] = (time.monotonic() + _badge_cache_seconds(), summary)
+    return summary
+
+
+def render_pr_badge_svg(pr: str) -> bytes:
+    summary = _pr_run_summary_cached(pr)
     if summary is None:
         message = "no data"
         color = "9f9f9f"
@@ -2274,7 +2437,7 @@ def render_pr_badge_svg(pr: str) -> bytes:
 
 
 def render_pr_summary_json(pr: str) -> bytes:
-    summary = _latest_pr_run_summary(pr)
+    summary = _pr_run_summary_cached(pr)
     payload = {"pr": pr, "available": summary is not None, "latest_run": summary}
     return json.dumps(payload, sort_keys=True).encode("utf-8") + b"\n"
 
