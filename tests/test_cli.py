@@ -576,3 +576,54 @@ class ConfigureCiOtelTests(TestCase):
         self.assertEqual(
             cli.job_run_id(env, "github_actions", "my_job"), "999:1:my_job"
         )
+
+    def test_main_errors_when_export_disabled_without_endpoint(self):
+        # No OTLP endpoint anywhere -> export disabled. By default the wrapper
+        # must fail loudly (and NOT run the command) so a misconfigured CI job
+        # is caught instead of silently producing no telemetry.
+        run_result = MagicMock(returncode=0)
+        with (
+            patch.object(cli.subprocess, "run", return_value=run_result) as run,
+            patch.dict(cli.os.environ, {}, clear=True),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(["--", "make", "check-code-quality"])
+
+        self.assertIn("OTEL EXPORT DISABLED", str(ctx.exception))
+        run.assert_not_called()
+
+    def test_main_allows_missing_endpoint_with_flag(self):
+        # --allow-missing-endpoint opts out of the failure: warn and run anyway
+        # (local runs with no collector).
+        run_result = MagicMock(returncode=0)
+        stdout = io.StringIO()
+        with (
+            patch.object(cli.subprocess, "run", return_value=run_result) as run,
+            patch.dict(cli.os.environ, {}, clear=True),
+            contextlib.redirect_stdout(stdout),
+        ):
+            exit_code = cli.main(
+                ["--allow-missing-endpoint", "--", "make", "check-code-quality"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        run.assert_called_once()
+        output = stdout.getvalue()
+        self.assertIn("OTEL EXPORT DISABLED", output)
+        self.assertNotIn("OTEL TRACE START", output)
+
+    def test_main_emits_trace_log_when_endpoint_present(self):
+        run_result = MagicMock(returncode=0)
+        stdout = io.StringIO()
+        env = {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector:4318"}
+        with (
+            patch.object(cli.subprocess, "run", return_value=run_result),
+            patch.dict(cli.os.environ, env, clear=True),
+            contextlib.redirect_stdout(stdout),
+        ):
+            exit_code = cli.main(["--", "make", "check-code-quality"])
+
+        self.assertEqual(exit_code, 0)
+        output = stdout.getvalue()
+        self.assertIn("OTEL TRACE START", output)
+        self.assertNotIn("OTEL EXPORT DISABLED", output)

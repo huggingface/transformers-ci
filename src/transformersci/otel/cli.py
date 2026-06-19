@@ -737,6 +737,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Enable pytest trace exporting even without an explicit OTLP endpoint env var.",
     )
     parser.add_argument(
+        "--allow-missing-endpoint",
+        action="store_true",
+        help=(
+            "Run the command without tracing instead of failing when no OTLP "
+            "endpoint is configured. By default the wrapper exits non-zero so a "
+            "misconfigured CI job is caught; pass this for local runs with no "
+            "collector."
+        ),
+    )
+    parser.add_argument(
         "--print-config",
         action="store_true",
         help="Print the resolved OpenTelemetry configuration as JSON before running the command.",
@@ -800,6 +810,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.print_config or args.ping_server:
             return 0
         raise SystemExit("A command is required after '--'.")
+
+    if trace_id is None:
+        # No traceparent means prepare_environment disabled export because no
+        # OTLP endpoint resolved (e.g. OTEL_EXPORTER_OTLP_ENDPOINT empty/unset
+        # and --otlp-endpoint passed an empty value, as happens when a CI job
+        # runs on a runner that doesn't inject the endpoint). By default we fail
+        # loudly so a misconfigured CI job is caught immediately instead of
+        # silently degrading to a plain pass-through that produces no telemetry.
+        diagnosis = (
+            "OTEL EXPORT DISABLED no OTLP endpoint configured (set "
+            "OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, "
+            "pass --otlp-endpoint, or use --force-export-traces)"
+        )
+        if not args.allow_missing_endpoint:
+            raise SystemExit(
+                f"{diagnosis}. Refusing to run without tracing; pass "
+                "--allow-missing-endpoint to run anyway (e.g. local runs with "
+                "no collector)."
+            )
+        print(f"{diagnosis}; running command without tracing", flush=True)
 
     if trace_id is not None:
         emit_trace_log("start", trace_id, env, command)
