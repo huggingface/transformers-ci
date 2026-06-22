@@ -1,0 +1,100 @@
+name: Integration-failure triage (daily Serge auto-fix)
+
+# Reusable workflow. Computes the integration-test failure triage report from
+# the daily CI dataset, then asks Serge to open a PR per ordered failure group.
+# The Markdown report is kept as a build artifact.
+#
+# Lives in huggingface/transformers-ci and is called from a nightly caller in
+# the transformers repo (see pr-ci-caller.yml for the caller pattern). The
+# triage logic ships in this same `transformers-ci` package and is invoked via
+# its `integration-failure-triage` console script, so this workflow installs the
+# package rather than checking out a repo tree.
+on:
+  workflow_call:
+    inputs:
+      repo:
+        description: "Target repo for the Serge PR (defaults to the calling repo)"
+        type: string
+        default: ""
+      base_ref:
+        description: "Branch the fix PR starts from"
+        type: string
+        default: main
+      serge_url:
+        description: "Serge base URL"
+        type: string
+        default: ""
+      serge_timeout:
+        description: "Seconds to wait for Serge to accept each task"
+        type: string
+        default: ""
+      transformersci_ref:
+        description: "Ref of huggingface/transformers-ci to install the triage tooling from"
+        type: string
+        default: main
+      dry_run:
+        description: "Compute the report but do not dispatch to Serge"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: read # required to find an existing Serge task PR for the same failure fingerprint
+  issues: write       # required to open/update the per-run tracking issue that PRs link back to
+  id-token: write     # required to mint the GitHub Actions OIDC token for Serge
+
+jobs:
+  triage:
+    runs-on:
+      group: aws-general-8-plus
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install triage tooling
+        run: pip install "transformers-ci[agentic] @ git+https://github.com/huggingface/transformers-ci@${TRANSFORMERSCI_REF}"
+        env:
+          TRANSFORMERSCI_REF: ${{ inputs.transformersci_ref || 'main' }}
+
+      - name: Mint Serge OIDC token
+        id: oidc
+        run: |
+          set -euo pipefail
+          TOKEN=$(curl -sS --fail \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=serge" | jq -r .value)
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "::error::failed to mint OIDC token" >&2
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Compute triage report and dispatch to Serge
+        run: |
+          integration-failure-triage \
+            --repo "$TRIAGE_REPO" \
+            --base-ref "$BASE_REF" \
+            --serge-url "$SERGE_URL" \
+            --serge-timeout "$SERGE_TIMEOUT" \
+            --report-out triage-report.md \
+            $DRY_RUN_ARG
+        env:
+          TRIAGE_REPO: ${{ inputs.repo || github.repository }}
+          BASE_REF: ${{ inputs.base_ref || 'main' }}
+          SERGE_URL: ${{ inputs.serge_url || vars.SERGE_URL || 'https://serge.huggingface.tech' }}
+          SERGE_TIMEOUT: ${{ inputs.serge_timeout || vars.SERGE_TIMEOUT || '240' }}
+          SERGE_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DRY_RUN_ARG: ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: Upload triage report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-failure-triage-report
+          path: triage-report.md
+          retention-days: 90
+          if-no-files-found: warn
