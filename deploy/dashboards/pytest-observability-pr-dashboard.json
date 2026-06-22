@@ -153,7 +153,7 @@
         ]
       },
       "gridPos": {
-        "h": 8,
+        "h": 12,
         "w": 24,
         "x": 0,
         "y": 5
@@ -417,10 +417,10 @@
         ]
       },
       "gridPos": {
-        "h": 8,
+        "h": 12,
         "w": 24,
         "x": 0,
-        "y": 13
+        "y": 17
       },
       "id": 5,
       "options": {
@@ -445,7 +445,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(5, max by (run_id, pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])))) * 1000",
+          "expr": "topk(10, max by (run_id, pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])))) * 1000",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -552,7 +552,7 @@
         {
           "id": "limit",
           "options": {
-            "limitField": 5
+            "limitField": 10
           }
         }
       ],
