@@ -172,6 +172,17 @@ def test_extract_per_run_metrics_aggregates_job_traces_into_one_run() -> None:
     assert 'run_id="12345:2"' in job_count_lines[0]
     assert job_count_lines[0].endswith(" 3")
 
+    runner_execution_lines = metric_lines(
+        trace_exporter.extract_ci_runner_execution_metrics(
+            workflow_split_across_three_jobs()
+        ),
+        "pytest_ci_runner_execution_info",
+    )
+    assert len(runner_execution_lines) == 3
+    assert any('trace_id="trace-torch"' in line for line in runner_execution_lines)
+    assert any('trace_id="trace-tf"' in line for line in runner_execution_lines)
+    assert any('trace_id="trace-flax"' in line for line in runner_execution_lines)
+
     run_end_lines = metric_lines(metrics, "pytest_run_end_time_seconds")
     assert len(run_end_lines) == 1
     assert 'run_id="12345:2"' in run_end_lines[0]

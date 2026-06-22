@@ -1478,6 +1478,43 @@ def extract_per_test_duration_metrics(
     return lines
 
 
+def extract_ci_runner_execution_metrics(
+    traces: list[dict] | None = None,
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
+) -> list[str]:
+    """Emit one low-cardinality series per pytest trace / runner execution.
+
+    GitHub Actions matrix shards share the same workflow run id and logical job
+    name, but each shard produces a distinct trace. Counting this metric is much
+    cheaper than scanning every per-test duration series and deduplicating back
+    to trace ids in Grafana.
+    """
+    extracted = (
+        _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
+    )
+    lines = [
+        "# HELP pytest_ci_runner_execution_info One observed CI runner execution that emitted a pytest trace.",
+        "# TYPE pytest_ci_runner_execution_info gauge",
+    ]
+    for trace_info, rows in extracted:
+        if not rows:
+            continue
+        labels = {
+            "pr": str(trace_info.get("pr", "none")),
+            "provider": str(trace_info.get("provider", "unknown")),
+            "run_id": str(
+                trace_info.get("run_id", trace_info.get("trace_id", "unknown"))
+            ),
+            "service_name": str(trace_info.get("service_name", "unknown")),
+            "test_job": str(trace_info.get("test_job", "unknown")),
+            "trace_id": str(trace_info.get("trace_id", "unknown")),
+        }
+        lines.append(f"pytest_ci_runner_execution_info{metric_labels(labels)} 1")
+    return lines
+
+
 def extract_run_rollup_metrics(
     traces: list[dict] | None = None,
     *,
@@ -2040,6 +2077,7 @@ def _iter_metric_lines() -> Iterator[str]:
     yield "# HELP pytest_trace_exporter_trace_count Number of traces fetched from Tempo for aggregation."
     yield "# TYPE pytest_trace_exporter_trace_count gauge"
     yield f"pytest_trace_exporter_trace_count {trace_count}"
+    yield from extract_ci_runner_execution_metrics(_extracted=extracted)
     yield from extract_per_test_duration_metrics(_extracted=extracted)
     yield from extract_run_rollup_metrics(_extracted=rollup_extracted)
     yield from extract_run_info_metrics(_extracted=rollup_extracted)
