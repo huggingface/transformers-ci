@@ -1,0 +1,274 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: {{ include "transformers-ci.namespace" . }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: {{ .Values.prometheus.scrapeInterval }}
+      evaluation_interval: 15s
+
+    scrape_configs:
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
+      # CI-data Prometheus: only scrapes pytest_trace_exporter. Long retention
+      # (90d) preserves a quarter of CI history.
+      - job_name: 'trace-exporter'
+        # The exporter renders synchronously inside the scrape: a cache-miss runs a
+        # ~5s Tempo search and builds a large payload, which blew past the default
+        # 5s scrape timeout. Give the scrape room; 30s also matches the dashboard
+        # refresh and cuts Tempo query load.
+        scrape_interval: 30s
+        scrape_timeout: 25s
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - {{ include "transformers-ci.namespace" . }}
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: trace-exporter
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            action: keep
+            regex: {{ .Values.traceExporter.config.port | quote }}
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            target_label: __address__
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+
+      # Infrastructure metrics: observability stack itself (tempo, grafana,
+      # otelcol). These are high-cardinality but the single Prometheus in k8s
+      # handles both CI and infra metrics (unlike docker-compose which splits
+      # to preserve disk budget on VM hosts).
+      - job_name: 'tempo'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - {{ include "transformers-ci.namespace" . }}
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: tempo
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            action: keep
+            regex: "3200"
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            target_label: __address__
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: "tempo_(request|response)_message_bytes_bucket"
+            action: drop
+          - source_labels: [__name__]
+            regex: "tempo_kv_request_duration_seconds_bucket"
+            action: drop
+
+      - job_name: 'grafana'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - {{ include "transformers-ci.namespace" . }}
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: grafana
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            action: keep
+            regex: "3000"
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            target_label: __address__
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: "grafana_feature_toggles_info"
+            action: drop
+          - source_labels: [__name__]
+            regex: "grafana_http_request_duration_seconds_bucket"
+            action: drop
+
+      - job_name: 'otelcol-metrics'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - {{ include "transformers-ci.namespace" . }}
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: otelcol
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            action: keep
+            regex: "8889"
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            target_label: __address__
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: prometheus
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  serviceName: prometheus
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "transformers-ci.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: prometheus
+  template:
+    metadata:
+      labels:
+        {{- include "transformers-ci.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: prometheus
+    spec:
+      serviceAccountName: prometheus
+      securityContext:
+        fsGroup: 65534
+      initContainers:
+        - name: fix-permissions
+          image: busybox:latest
+          command: ['sh', '-c', 'chmod 777 /prometheus']
+          volumeMounts:
+            - name: storage
+              mountPath: /prometheus
+          securityContext:
+            runAsUser: 0
+      containers:
+        - name: prometheus
+          image: "{{ .Values.prometheus.image.repository }}:{{ .Values.prometheus.image.tag }}"
+          imagePullPolicy: {{ .Values.prometheus.image.pullPolicy }}
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time={{ .Values.prometheus.retention }}
+            - --web.enable-lifecycle
+            - --web.console.libraries=/usr/share/prometheus/console_libraries
+            - --web.console.templates=/usr/share/prometheus/consoles
+          ports:
+            - name: http
+              containerPort: 9090
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.prometheus.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: storage
+              mountPath: /prometheus
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+  volumeClaimTemplates:
+    - metadata:
+        name: storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.prometheus.storage.storageClass }}
+        storageClassName: {{ .Values.prometheus.storage.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.prometheus.storage.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+  selector:
+    {{- include "transformers-ci.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus

@@ -1,0 +1,990 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "target": {
+          "limit": 100,
+          "matchAny": false,
+          "tags": [],
+          "type": "dashboard"
+        },
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "graphTooltip": 0,
+  "links": [
+    {
+      "targetBlank": false,
+      "title": "Back to Overview",
+      "type": "link",
+      "url": "/d/pytest-observability/pytest-observability"
+    }
+  ],
+  "panels": [
+    {
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 9,
+      "options": {
+        "content": "### <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"18\" height=\"18\" alt=\"GH\"/> [${branch_label:raw}](${branch_url:raw})${pr_title_section:raw}\n\n**Repo:** `${pr_repository:raw}` | **Runs:** `${pr_total_runs:raw}`${pr_metadata_section:raw}",
+        "mode": "markdown"
+      },
+      "pluginVersion": "12.0.0",
+      "title": "Branch",
+      "type": "text"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Per-job breakdown of the most recent run for this PR. Each row is one job; columns count tests by pass/fail status.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Job"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View job",
+                    "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${__value.raw}&var-run_id=${latest_run_id}&var-pr=${pr}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Fail"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "id": 13,
+      "links": [
+        {
+          "title": "View this run",
+          "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${latest_run_id}",
+          "targetBlank": false
+        }
+      ],
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Fail"
+          }
+        ]
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "Started",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d]) * on (run_id) group_left() max by (run_id)(last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d]))) * 1000"
+        },
+        {
+          "refId": "Duration",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) (last_over_time(pytest_run_job_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d]))"
+        },
+        {
+          "refId": "Pass",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "count by (test_job) (last_over_time(pytest_test_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\",status_code=\"OK\"}[90d]))"
+        },
+        {
+          "refId": "Fail",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "count by (test_job) (last_over_time(pytest_test_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\",status_code=\"ERROR\"}[90d])) or (0 * count by (test_job) (last_over_time(pytest_test_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\",status_code!=\"UNSET\"}[90d])))"
+        }
+      ],
+      "title": "Latest Run Jobs",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "test_job": 0,
+              "Value #Started": 1,
+              "Value #Duration": 2,
+              "Value #Pass": 3,
+              "Value #Fail": 4
+            },
+            "renameByName": {
+              "test_job": "Job",
+              "Value #Started": "Started",
+              "Value #Duration": "Duration",
+              "Value #Pass": "Pass",
+              "Value #Fail": "Fail"
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Result"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 90
+                    },
+                    {
+                      "color": "green",
+                      "value": 99
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Run ID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View this run",
+                    "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${__value.raw}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failures"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "id": 5,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Started"
+          }
+        ]
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "topk(5, max by (run_id, pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])))) * 1000",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Start"
+        },
+        {
+          "editorMode": "code",
+          "expr": "count by (run_id, pr) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Jobs"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_total_tests{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])) or sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_total_tests{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Total"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (run_id, pr) (last_over_time(pytest_run_duration_seconds{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Duration"
+        },
+        {
+          "editorMode": "code",
+          "expr": "floor((100 * (1 - max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_failed_tests{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])) or sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_failed_tests{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))) / max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_total_tests{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])) or sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_total_tests{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))))) * 100) / 100",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Result"
+        },
+        {
+          "datasource": null,
+          "editorMode": "code",
+          "expr": "max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_failed_tests{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])) or sum by (service_name, provider, pr, run_id) (last_over_time(pytest_run_failed_tests{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Failures"
+        }
+      ],
+      "title": "Past Runs",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "provider": true,
+              "service_name": true,
+              "pr": true
+            },
+            "indexByName": {
+              "run_id": 0,
+              "Value #Start": 1,
+              "Value #Jobs": 2,
+              "Value #Total": 3,
+              "Value #Failures": 4,
+              "Value #Result": 5,
+              "Value #Duration": 6
+            },
+            "renameByName": {
+              "run_id": "Run ID",
+              "Value #Jobs": "Job Count",
+              "Value #Total": "Tests",
+              "Value #Start": "Started",
+              "Value #Duration": "Duration",
+              "Value #Result": "Result",
+              "Value #Failures": "Failures"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Started",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "limit",
+          "options": {
+            "limitField": 5
+          }
+        }
+      ],
+      "type": "table"
+    }
+  ],
+  "schemaVersion": 41,
+  "tags": [
+    "pytest",
+    "observability",
+    "otel"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(pytest_run_start_time_seconds{}, pr)",
+        "includeAll": false,
+        "label": "PR",
+        "multi": false,
+        "name": "pr",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_run_start_time_seconds{}, pr)",
+          "refId": "Prometheus-pr-Variable-Query"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(pytest_pr_info{}, repository)",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "pr_repository",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_pr_info{}, repository)",
+          "refId": "Prometheus-pr_repository-Variable-Query"
+        },
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, author)",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "pr_author",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, author)",
+          "refId": "Prometheus-pr_author-Variable-Query"
+        },
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, title)",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "pr_title",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, title)",
+          "refId": "Prometheus-pr_title-Variable-Query"
+        },
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, state)",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "pr_state",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, state)",
+          "refId": "Prometheus-pr_state-Variable-Query"
+        },
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, html_url)",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "pr_html_url",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, html_url)",
+          "refId": "Prometheus-pr_html_url-Variable-Query"
+        },
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, reviewers)",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "pr_reviewers",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, reviewers)",
+          "refId": "Prometheus-pr_reviewers-Variable-Query"
+        },
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(floor((time() - max by (pr) (pytest_pr_created_at_seconds{pr=~\"$pr\"})) / 86400))",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "pr_age_days",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(floor((time() - max by (pr) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$pr\"}[90d]))) / 86400))",
+          "refId": "Prometheus-pr_age_days-Variable-Query"
+        },
+        "regex": "/} (\\d+)/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(floor((time() - max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d]))) / 3600))",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "pr_last_event_hours",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(floor((time() - max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d]))) / 3600))",
+          "refId": "Prometheus-pr_last_event_hours-Variable-Query"
+        },
+        "regex": "/} (\\d+)/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(count(count by (run_id) (pytest_run_total_tests{pr=~\"$pr\"})))",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "pr_total_runs",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(count(count by (run_id) (last_over_time(pytest_run_total_tests{pr=~\"$pr\"}[90d]))))",
+          "refId": "Prometheus-pr_total_runs-Variable-Query"
+        },
+        "regex": "/} (\\d+)/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(topk(1, pytest_run_start_time_seconds{pr=~\"$pr\"}))",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "latest_run_id",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(topk(1, last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d])))",
+          "refId": "Prometheus-latest_run_id-Variable-Query"
+        },
+        "regex": "/.*run_id=\"([^\"]+)\".*/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(label_replace(label_replace(group by (pr) (pytest_run_start_time_seconds{pr=~\"$pr\"}), \"v\", \"PR #$1\", \"pr\", \"([0-9]+)\"), \"v\", \"Main branch\", \"pr\", \"main\"))",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "name": "branch_label",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d])), \"v\", \"PR #$1\", \"pr\", \"([0-9]+)\"), \"v\", \"Main branch\", \"pr\", \"main\"))",
+          "refId": "Prometheus-branch_label-Variable-Query"
+        },
+        "regex": "/v=\"([^\"]+)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(label_replace(label_replace(group by (pr) (pytest_run_start_time_seconds{pr=~\"$pr\"}), \"u\", \"https://github.com/${pr_repository:raw}/pull/$1\", \"pr\", \"([0-9]+)\"), \"u\", \"https://github.com/${pr_repository:raw}/tree/main\", \"pr\", \"main\"))",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "name": "branch_url",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d])), \"u\", \"https://github.com/${pr_repository:raw}/pull/$1\", \"pr\", \"([0-9]+)\"), \"u\", \"https://github.com/${pr_repository:raw}/tree/main\", \"pr\", \"main\"))",
+          "refId": "Prometheus-branch_url-Variable-Query"
+        },
+        "regex": "/u=\"([^\"]+)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(label_replace(group by (pr) (pytest_pr_info{pr=~\"$pr\"}), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "name": "pr_title_section",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[90d])), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
+          "refId": "Prometheus-pr_title_section-Variable-Query"
+        },
+        "regex": "/t=\"([^\"]+)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(label_replace(group by (pr) (pytest_pr_info{pr=~\"$pr\"}), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days | **Last event:** `${pr_last_event_hours:raw}h ago`\", \"pr\", \".*\"))",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "name": "pr_metadata_section",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[90d])), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days | **Last event:** `${pr_last_event_hours:raw}h ago`\", \"pr\", \".*\"))",
+          "refId": "Prometheus-pr_metadata_section-Variable-Query"
+        },
+        "regex": "/m=\"([^\"]+)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "Branch",
+  "uid": "pytest-observability-by-pr",
+  "version": 1,
+  "timepicker": {
+    "hidden": true
+  }
+}

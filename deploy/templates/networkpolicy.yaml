@@ -1,0 +1,74 @@
+{{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.allowedCIDRs) }}
+{{- fail "networkPolicy.enabled requires at least one entry in networkPolicy.allowedCIDRs" }}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: transformers-ci-cluster-boundary
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "transformers-ci.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Permit traffic originating from explicitly configured cluster/VPC address
+    # space. This keeps public-facing workloads reachable through in-cluster
+    # ingress/load-balancer paths while denying sources outside these CIDRs.
+    - from:
+        {{- range .Values.networkPolicy.allowedCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+    {{- if .Values.networkPolicy.allowSameReleasePods }}
+    # Keep same-release pod-to-pod traffic working even on CNIs that do not apply
+    # ipBlock rules to pod IPs consistently.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "transformers-ci.selectorLabels" . | nindent 14 }}
+    {{- end }}
+    {{- with .Values.networkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    {{- if .Values.networkPolicy.allowDNS }}
+    # Allow selected pods to resolve Kubernetes service names. This permits DNS
+    # only to kube-system DNS pods, not arbitrary cross-cluster traffic.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- end }}
+    # Deny egress to anything outside the configured cluster/VPC address space.
+    # This is intended to reduce blast radius if a public endpoint is compromised,
+    # especially preventing hops to other clusters or public networks.
+    - to:
+        {{- range .Values.networkPolicy.allowedCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+    {{- if .Values.networkPolicy.allowSameReleasePods }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "transformers-ci.selectorLabels" . | nindent 14 }}
+    {{- end }}
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

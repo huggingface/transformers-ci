@@ -1,0 +1,107 @@
+{{- if .Values.ciDataPublisher.enabled }}
+#------------------------------------------------------------------------------
+# CI Data Publisher
+# Hourly CronJob that shapes settled Tempo traces into Parquet partitions and
+# pushes them to the public HF bucket via `hf sync`.
+# Mirrors the ci-data-publisher sidecar in dashboard/docker-compose.yml.
+#
+# Requires the configured publishing token key in the deployment Secret when
+# `hf sync` upload is enabled.
+#------------------------------------------------------------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ci-data-publisher
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ci-data-publisher
+spec:
+  schedule: {{ .Values.ciDataPublisher.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            {{- include "transformers-ci.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: ci-data-publisher
+          annotations:
+            rollout/source-revision: {{ .Values.ciDataPublisher.sourceRevision | quote }}
+        spec:
+          restartPolicy: OnFailure
+          initContainers:
+            - name: clone-src
+              image: alpine/git:latest
+              command:
+                - sh
+                - -c
+                - |
+                  git clone --depth 1 https://github.com/huggingface/transformers-ci.git /app/src
+              volumeMounts:
+                - name: src
+                  mountPath: /app/src
+              resources:
+                limits:
+                  memory: 128Mi
+                  cpu: 100m
+          containers:
+            - name: ci-data-publisher
+              image: "{{ .Values.ciDataPublisher.image.repository }}:{{ .Values.ciDataPublisher.image.tag }}"
+              imagePullPolicy: {{ .Values.ciDataPublisher.image.pullPolicy }}
+              command:
+                - sh
+                - -c
+                - |
+                  pip install --no-cache-dir --quiet "huggingface_hub[cli,hf_xet]" pyarrow && \
+                  python -m transformersci.publish.main --sync
+              env:
+                - name: PYTHONPATH
+                  value: /app/src/src
+                - name: PYTEST_TRACE_EXPORTER_TEMPO_URL
+                  value: {{ .Values.ciDataPublisher.tempoUrl }}
+                - name: PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS
+                  value: "{{ .Values.ciDataPublisher.config.traceSettleSeconds }}"
+                # The 24h /api/search is the heaviest Tempo call and was timing out at
+                # the default 10s when Tempo is under memory pressure. As a batch job
+                # the publisher can afford to wait longer.
+                - name: PYTEST_TRACE_EXPORTER_HTTP_TIMEOUT
+                  value: "{{ .Values.ciDataPublisher.config.httpTimeout }}"
+                - name: PYTEST_GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.secrets.name }}
+                      key: {{ .Values.secrets.keys.githubToken }}
+                      optional: true
+                - name: PUBLISH_SERVICE_NAMES
+                  value: {{ .Values.ciDataPublisher.config.serviceNames }}
+                - name: HF_BUCKET_URI
+                  value: {{ .Values.ciDataPublisher.config.bucketUri }}
+                - name: PUBLISH_STAGING_DIR
+                  value: /staging
+                - name: PUBLISH_WINDOW
+                  value: {{ .Values.ciDataPublisher.config.window }}
+                - name: PUBLISH_LIMIT
+                  value: "{{ .Values.ciDataPublisher.config.limit }}"
+                - name: HF_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.secrets.name }}
+                      key: {{ .Values.secrets.keys.hfToken }}
+                      optional: true
+              resources:
+                {{- toYaml .Values.ciDataPublisher.resources | nindent 16 }}
+              volumeMounts:
+                - name: src
+                  mountPath: /app/src
+                - name: staging
+                  mountPath: /staging
+          volumes:
+            - name: src
+              emptyDir: {}
+            - name: staging
+              emptyDir:
+                sizeLimit: {{ .Values.ciDataPublisher.staging.sizeLimit }}
+{{- end }}

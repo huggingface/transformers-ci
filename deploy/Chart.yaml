@@ -1,0 +1,6 @@
+apiVersion: v2
+name: transformers-ci
+description: Transformers CI Public Grafana - Trace ingestion and observability dashboards
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

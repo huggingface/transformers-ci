@@ -1,0 +1,146 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trace-exporter-config
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: trace-exporter
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+
+    scrape_configs:
+      - job_name: pytest_trace_exporter
+        static_configs:
+          - targets:
+              - localhost:8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trace-exporter
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: trace-exporter
+spec:
+  replicas: {{ .Values.traceExporter.replicas }}
+  selector:
+    matchLabels:
+      {{- include "transformers-ci.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: trace-exporter
+  template:
+    metadata:
+      labels:
+        {{- include "transformers-ci.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: trace-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.traceExporter.config.port }}"
+        rollout/source-revision: {{ .Values.traceExporter.sourceRevision | quote }}
+    spec:
+      initContainers:
+        - name: clone-src
+          image: alpine/git:latest
+          command:
+            - sh
+            - -c
+            - |
+              git clone --depth 1 https://github.com/huggingface/transformers-ci.git /app/src
+          volumeMounts:
+            - name: src
+              mountPath: /app/src
+          resources:
+            limits:
+              memory: 128Mi
+              cpu: 100m
+      containers:
+        - name: trace-exporter
+          image: "{{ .Values.traceExporter.image.repository }}:{{ .Values.traceExporter.image.tag }}"
+          imagePullPolicy: {{ .Values.traceExporter.image.pullPolicy }}
+          command:
+            - python
+            - -m
+            - transformersci.otel.trace_exporter
+          env:
+            - name: PYTHONPATH
+              value: /app/src/src
+            - name: PYTEST_TRACE_EXPORTER_TEMPO_URL
+              value: {{ .Values.traceExporter.tempo.url }}
+            - name: PYTEST_TRACE_EXPORTER_LIMIT
+              value: "{{ .Values.traceExporter.config.limit }}"
+            - name: PYTEST_TRACE_EXPORTER_FETCH_CONCURRENCY
+              value: "{{ .Values.traceExporter.config.fetchConcurrency }}"
+            - name: PYTEST_TRACE_EXPORTER_HTTP_TIMEOUT
+              value: "{{ .Values.traceExporter.config.httpTimeout }}"
+            - name: PYTEST_TRACE_EXPORTER_REFRESH_SLOW_SECONDS
+              value: "{{ .Values.traceExporter.config.refreshSlowSeconds }}"
+            - name: PYTEST_TRACE_EXPORTER_REFRESH_COOLDOWN_SECONDS
+              value: "{{ .Values.traceExporter.config.refreshCooldownSeconds }}"
+            - name: PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX
+              value: "{{ .Values.traceExporter.config.traceCacheMax }}"
+            - name: PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX_BYTES
+              value: "{{ .Values.traceExporter.config.traceCacheMaxBytes }}"
+            - name: PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS
+              value: "{{ .Values.traceExporter.config.traceSettleSeconds }}"
+            - name: PYTEST_TRACE_EXPORTER_MEM_SOFT_MB
+              value: "{{ .Values.traceExporter.config.memSoftMb }}"
+            - name: PYTEST_TRACE_EXPORTER_LOOKBACK
+              value: "{{ .Values.traceExporter.config.lookback }}"
+            - name: PYTEST_TRACE_EXPORTER_PORT
+              value: "{{ .Values.traceExporter.config.port }}"
+            - name: PYTEST_TRACE_EXPORTER_SERVICE_NAME
+              value: {{ .Values.traceExporter.config.serviceName }}
+            - name: PYTEST_GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.githubToken }}
+                  optional: true
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.traceExporter.config.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.traceExporter.resources | nindent 12 }}
+          volumeMounts:
+            - name: src
+              mountPath: /app/src
+          livenessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.traceExporter.config.port }}
+            initialDelaySeconds: 60
+            timeoutSeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.traceExporter.config.port }}
+            initialDelaySeconds: 30
+            timeoutSeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: src
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trace-exporter
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: trace-exporter
+spec:
+  type: ClusterIP
+  ports:
+    - name: metrics
+      port: {{ .Values.traceExporter.config.port }}
+      targetPort: {{ .Values.traceExporter.config.port }}
+      protocol: TCP
+  selector:
+    {{- include "transformers-ci.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: trace-exporter

@@ -1,0 +1,338 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-config
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+data:
+  grafana.ini: |
+    [server]
+    root_url = https://{{ .Values.grafana.domain }}
+
+    [auth.anonymous]
+    enabled = {{ .Values.grafana.auth.anonymous.enabled }}
+    org_role = {{ .Values.grafana.auth.anonymous.orgRole }}
+
+    [auth]
+    disable_login_form = {{ .Values.grafana.auth.disableLoginForm }}
+
+    [security]
+    admin_user = admin
+    admin_password = ${GF_SECURITY_ADMIN_PASSWORD}
+
+    [users]
+    viewers_can_edit = false
+
+    [analytics]
+    reporting_enabled = false
+    check_for_updates = false
+
+    [dashboards]
+    default_home_dashboard_path = /var/lib/grafana/dashboards/pytest-observability-dashboard.json
+
+    [explore]
+    enabled = true
+
+    [query_history]
+    enabled = false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        uid: prometheus
+
+      # Stack-health Prometheus (14d retention). The Stack Health dashboard
+      # queries this datasource; CI dashboards keep using the main `prometheus`.
+      - name: Prometheus Infra
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        uid: prometheus-infra
+
+      - name: Tempo
+        type: tempo
+        access: proxy
+        url: http://tempo:3200
+        uid: tempo
+        isDefault: true
+        jsonData:
+          # Let trace links resolve a test failure's run/PR metadata back to the
+          # Prometheus-backed dashboards.
+          tracesToMetrics:
+            datasourceUid: prometheus
+          nodeGraph:
+            enabled: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-providers
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: 'default'
+        orgId: 1
+        folder: ''
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+    grafana_dashboard: "1"
+data:
+{{- if .Values.grafana.dashboards.enabled }}
+{{- range .Values.grafana.dashboards.files }}
+  {{ . }}: |
+{{ $.Files.Get (printf "dashboards/%s" .) | indent 4 }}
+{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-alerting
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+data:
+  ci-publisher.yaml: |
+    # Provisioned Grafana unified-alerting rules for the CI data publisher.
+    #
+    # Two rules:
+    #   - "failed": the publisher ran but a cycle errored. Watches ci_publisher_last_run_success == 0.
+    #   - "stalled": the publisher isn't producing fresh metrics at all (crashed or container down).
+    #     Caught by the age of the last-run timestamp.
+    apiVersion: 1
+
+    groups:
+      - orgId: 1
+        name: ci-data-publisher
+        folder: CI Alerts
+        interval: 1m
+        rules:
+          - uid: ci-publisher-cycle-failed
+            title: CI data publisher cycle failed
+            condition: C
+            for: 5m
+            noDataState: NoData
+            execErrState: Error
+            labels:
+              severity: warning
+              service: ci-data-publisher
+            annotations:
+              summary: The last CI data publisher cycle did not finish successfully.
+              description: >
+                ci_publisher_last_run_success is 0 — the hourly publish cycle errored
+                (e.g. Tempo search failure or disk full). Check the
+                dashboard-ci-data-publisher container logs.
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 600
+                  to: 0
+                datasourceUid: prometheus-infra
+                model:
+                  refId: A
+                  instant: true
+                  editorMode: code
+                  expr: ci_publisher_last_run_success
+              - refId: B
+                datasourceUid: __expr__
+                model:
+                  refId: B
+                  type: reduce
+                  reducer: last
+                  expression: A
+              - refId: C
+                datasourceUid: __expr__
+                model:
+                  refId: C
+                  type: threshold
+                  expression: B
+                  conditions:
+                    - evaluator:
+                        type: lt
+                        params: [1]
+
+          - uid: ci-publisher-stalled
+            title: CI data publisher stalled
+            condition: C
+            for: 0m
+            noDataState: Alerting
+            execErrState: Error
+            labels:
+              severity: critical
+              service: ci-data-publisher
+            annotations:
+              summary: The CI data publisher has not produced fresh metrics.
+              description: >
+                time() - ci_publisher_last_run_timestamp_seconds exceeds 2h — the
+                publisher cron has not completed a cycle (crashed, container down, or
+                could not even write its self-metrics).
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 600
+                  to: 0
+                datasourceUid: prometheus-infra
+                model:
+                  refId: A
+                  instant: true
+                  editorMode: code
+                  expr: time() - ci_publisher_last_run_timestamp_seconds
+              - refId: B
+                datasourceUid: __expr__
+                model:
+                  refId: B
+                  type: reduce
+                  reducer: last
+                  expression: A
+              - refId: C
+                datasourceUid: __expr__
+                model:
+                  refId: C
+                  type: threshold
+                  expression: B
+                  conditions:
+                    - evaluator:
+                        type: gt
+                        params: [7200]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+spec:
+  replicas: {{ .Values.grafana.replicas }}
+  selector:
+    matchLabels:
+      {{- include "transformers-ci.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: grafana
+  template:
+    metadata:
+      labels:
+        {{- include "transformers-ci.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: grafana
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+    spec:
+      containers:
+        - name: grafana
+          image: "{{ .Values.grafana.image.repository }}:{{ .Values.grafana.image.tag }}"
+          imagePullPolicy: {{ .Values.grafana.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "{{ .Values.grafana.auth.anonymous.enabled }}"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: "{{ .Values.grafana.auth.anonymous.orgRole }}"
+            - name: GF_AUTH_DISABLE_LOGIN_FORM
+              value: "{{ .Values.grafana.auth.disableLoginForm }}"
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.grafanaAdminPassword }}
+            - name: GF_PANELS_DISABLE_SANITIZE_HTML
+              value: "true"
+            - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
+              value: /var/lib/grafana/dashboards/pytest-observability-dashboard.json
+          resources:
+            {{- toYaml .Values.grafana.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/grafana/grafana.ini
+              subPath: grafana.ini
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-providers
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+            - name: alerting
+              mountPath: /etc/grafana/provisioning/alerting
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: grafana-config
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-providers
+          configMap:
+            name: grafana-dashboard-providers
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+        - name: alerting
+          configMap:
+            name: grafana-alerting
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      protocol: TCP
+  selector:
+    {{- include "transformers-ci.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
