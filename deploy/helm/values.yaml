@@ -128,6 +128,7 @@ traceExporter:
     # for the retired 640MiB docker box, which forced premature cache drops).
     memSoftMb: 1740
     lookback: 1h
+    prometheusUrl: http://prometheus:9090
     port: 8000
     serviceName: pytest-observability
 

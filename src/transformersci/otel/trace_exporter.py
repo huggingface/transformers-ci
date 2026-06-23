@@ -60,7 +60,7 @@ from itertools import islice
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from math import fsum
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 try:
@@ -121,6 +121,8 @@ DEFAULT_FETCH_CONCURRENCY = 4
 DEFAULT_BADGE_LOOKBACK = "24h"
 DEFAULT_BADGE_TRACE_LIMIT = 100
 DEFAULT_BADGE_CACHE_SECONDS = 120.0
+DEFAULT_BADGE_PROMETHEUS_LOOKBACK = "90d"
+DEFAULT_PROMETHEUS_URL = ""
 
 
 def env_int(name: str, default: int) -> int:
@@ -2250,8 +2252,8 @@ def _iter_metric_samples(
         yield labels, value
 
 
-def _latest_pr_run_summary(
-    pr: str, source: str | None = None
+def _latest_pr_run_summary_from_metrics(
+    pr: str, text: str
 ) -> dict[str, str | float | int | None] | None:
     runs: dict[tuple[str, str, str, str], dict[str, str | float | int | None]] = {}
     metric_to_field = {
@@ -2262,37 +2264,58 @@ def _latest_pr_run_summary(
         "pytest_run_duration_seconds": "duration_seconds",
         "pytest_run_job_count": "job_count",
     }
-    for metric_name, field_name in metric_to_field.items():
-        for labels, value in _iter_metric_samples(metric_name, source):
-            if labels.get("pr") != pr:
-                continue
-            key = (
-                labels.get("service_name", ""),
-                labels.get("provider", ""),
-                labels.get("pr", ""),
-                labels.get("run_id", ""),
-            )
-            summary = runs.setdefault(
-                key,
-                {
-                    "duration_seconds": None,
-                    "ended_at_seconds": None,
-                    "failed_tests": None,
-                    "job_count": None,
-                    "pr": pr,
-                    "provider": labels.get("provider", ""),
-                    "run_id": labels.get("run_id", ""),
-                    "service_name": labels.get("service_name", ""),
-                    "started_at_seconds": None,
-                    "total_tests": None,
-                },
-            )
-            summary[field_name] = value
+    pattern = re.compile(
+        r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:{([^}]*)})?\s+([-+0-9.eE]+)(?:\s|$)"
+    )
+    for line in text.splitlines():
+        match = pattern.match(line)
+        if match is None:
+            continue
+        field_name = metric_to_field.get(match.group(1))
+        if field_name is None:
+            continue
+        labels = _parse_metric_labels(match.group(2) or "")
+        if labels.get("pr") != pr:
+            continue
+        try:
+            value = float(match.group(3))
+        except ValueError:
+            continue
+        key = (
+            labels.get("service_name", ""),
+            labels.get("provider", ""),
+            labels.get("pr", ""),
+            labels.get("run_id", ""),
+        )
+        summary = runs.setdefault(
+            key,
+            {
+                "duration_seconds": None,
+                "ended_at_seconds": None,
+                "failed_tests": None,
+                "job_count": None,
+                "pr": pr,
+                "provider": labels.get("provider", ""),
+                "run_id": labels.get("run_id", ""),
+                "service_name": labels.get("service_name", ""),
+                "started_at_seconds": None,
+                "total_tests": None,
+            },
+        )
+        summary[field_name] = value
 
     if not runs:
         return None
     return max(
         runs.values(), key=lambda item: float(item.get("started_at_seconds") or 0)
+    )
+
+
+def _latest_pr_run_summary(
+    pr: str, source: str | None = None
+) -> dict[str, str | float | int | None] | None:
+    return _latest_pr_run_summary_from_metrics(
+        pr, source if source is not None else render_metrics()
     )
 
 
@@ -2307,11 +2330,12 @@ def _format_badge_count(value: object) -> str:
 #
 # A PR's last CI run is frequently older than the live render's lookback window,
 # so the payload the badge normally reads holds nothing for it — and the badge
-# would read "no data" even for a perfectly valid PR. When the payload misses,
-# we search Tempo directly, scoped to just that one PR over a wider window,
-# re-aggregate its runs with the same roll-up code the render uses, and pick the
-# latest run. The result (including a negative "no data") is memoized per PR so a
-# hammered badge does not pound Tempo.
+# would read "no data" even for a perfectly valid PR. When the payload misses, we
+# first query the cheap Prometheus run rollups. If that is unavailable, we search
+# Tempo directly, scoped to just that one PR over a wider window, re-aggregate its
+# runs with the same roll-up code the render uses, and pick the latest run. The
+# result (including a negative "no data") is memoized per PR so a hammered badge
+# does not pound the backends.
 # ---------------------------------------------------------------------------
 
 
@@ -2330,12 +2354,83 @@ def _badge_cache_seconds() -> float:
         return DEFAULT_BADGE_CACHE_SECONDS
 
 
+def prometheus_base_url() -> str:
+    return os.getenv(
+        "PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", DEFAULT_PROMETHEUS_URL
+    ).rstrip("/")
+
+
+def _badge_prometheus_lookback() -> str:
+    return os.getenv(
+        "PYTEST_TRACE_EXPORTER_BADGE_PROMETHEUS_LOOKBACK",
+        DEFAULT_BADGE_PROMETHEUS_LOOKBACK,
+    )
+
+
 _pr_summary_cache_lock = threading.Lock()
 # pr -> (expiry_monotonic, summary-or-None). None (a genuinely-unknown PR) is
 # cached too, so a miss doesn't re-search Tempo on every single badge hit.
 _pr_summary_cache: dict[
     str, tuple[float, dict[str, str | float | int | None] | None]
 ] = {}
+
+
+def _pr_run_summary_from_prometheus(
+    pr: str,
+) -> dict[str, str | float | int | None] | None:
+    """Read a PR's latest run from Prometheus rollups.
+
+    This is much cheaper than the Tempo fallback: the run-level badge fields are
+    already persisted as low-cardinality series, while Tempo has to scan blocks
+    and fetch full traces.
+    """
+    base_url = prometheus_base_url()
+    if not base_url:
+        return None
+    metric_pattern = (
+        "pytest_run_start_time_seconds|"
+        "pytest_run_end_time_seconds|"
+        "pytest_run_total_tests|"
+        "pytest_run_failed_tests|"
+        "pytest_run_duration_seconds|"
+        "pytest_run_job_count"
+    )
+    query = (
+        f'last_over_time({{__name__=~"{metric_pattern}",pr="{pr}"}}'
+        f"[{_badge_prometheus_lookback()}])"
+    )
+    url = f"{base_url}/api/v1/query?{urlencode({'query': query})}"
+    try:
+        payload = _http_get_json(url)
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("status") != "success":
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    result = data.get("result")
+    if not isinstance(result, list):
+        return None
+
+    lines: list[str] = []
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        metric = item.get("metric")
+        value = item.get("value")
+        if (
+            not isinstance(metric, dict)
+            or not isinstance(value, list)
+            or len(value) < 2
+        ):
+            continue
+        metric_name = metric.get("__name__")
+        if not isinstance(metric_name, str):
+            continue
+        labels = {str(k): str(v) for k, v in metric.items() if k != "__name__"}
+        lines.append(f"{metric_name}{metric_labels(labels)} {value[1]}")
+    return _latest_pr_run_summary(pr, source="\n".join(lines)) if lines else None
 
 
 def _pr_extracted_rows(
@@ -2403,12 +2498,12 @@ def _pr_extracted_rows(
 
 
 def _pr_run_summary_cached(pr: str) -> dict[str, str | float | int | None] | None:
-    """Latest-run summary for a PR: fast payload read, else a memoized Tempo search.
+    """Latest-run summary for a PR: payload, Prometheus, then memoized Tempo.
 
     The live payload is the cheap path — a PR that ran inside the render window
-    is already there. Otherwise fall back to a per-PR Tempo search (memoized for
-    :func:`_badge_cache_seconds`) so the badge keeps reporting a PR's latest run
-    long after it has aged out of the render window.
+    is already there. Otherwise query persisted Prometheus rollups, falling back
+    to a per-PR Tempo search when needed. Misses are memoized for
+    :func:`_badge_cache_seconds`.
     """
     summary = _latest_pr_run_summary(pr)
     if summary is not None:
@@ -2419,6 +2514,15 @@ def _pr_run_summary_cached(pr: str) -> dict[str, str | float | int | None] | Non
         hit = _pr_summary_cache.get(pr)
         if hit is not None and hit[0] > now:
             return hit[1]
+
+    summary = _pr_run_summary_from_prometheus(pr)
+    if summary is not None:
+        with _pr_summary_cache_lock:
+            _pr_summary_cache[pr] = (
+                time.monotonic() + _badge_cache_seconds(),
+                summary,
+            )
+        return summary
 
     extracted = _pr_extracted_rows(pr)
     summary = (

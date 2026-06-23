@@ -1536,6 +1536,7 @@ def test_pr_badge_uses_payload_fast_path_without_querying_tempo(monkeypatch) -> 
     """When the live payload already has the PR, the badge reads it directly and
     never falls back to a Tempo search."""
     trace_exporter._pr_summary_cache.clear()
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
     payload = "\n".join(
         trace_exporter.extract_run_rollup_metrics(workflow_split_across_three_jobs())
     )
@@ -1557,6 +1558,7 @@ def test_pr_badge_falls_back_to_tempo_when_payload_has_no_pr(monkeypatch) -> Non
     """A PR aged out of the render window is no longer in the payload; the badge
     falls back to a per-PR Tempo search and still reports its latest run."""
     trace_exporter._pr_summary_cache.clear()
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
     monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")  # payload miss
 
     traces = workflow_split_across_three_jobs()
@@ -1581,6 +1583,7 @@ def test_pr_badge_scopes_fallback_search_to_requested_pr(monkeypatch) -> None:
     """The fallback search is filtered to the requested PR via vcs.change.id, and
     an empty result renders a graceful 'no data' badge rather than erroring."""
     trace_exporter._pr_summary_cache.clear()
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
     monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
     captured: dict[str, str] = {}
 
@@ -1599,6 +1602,7 @@ def test_pr_fallback_result_is_memoized_per_pr(monkeypatch) -> None:
     """A miss (including 'no data') is cached, so a hammered badge does not
     re-search Tempo on every hit."""
     trace_exporter._pr_summary_cache.clear()
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
     monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
     calls = {"n": 0}
 
@@ -1611,3 +1615,51 @@ def test_pr_fallback_result_is_memoized_per_pr(monkeypatch) -> None:
     trace_exporter.render_pr_badge_svg("999")
     trace_exporter.render_pr_badge_svg("999")
     assert calls["n"] == 1
+
+
+def test_pr_badge_uses_prometheus_rollups_before_tempo(monkeypatch) -> None:
+    """When the live payload misses, query Prometheus rollups before doing the
+    expensive Tempo search+full-trace fetch fallback."""
+    trace_exporter._pr_summary_cache.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
+    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
+    captured: dict[str, str] = {}
+
+    def _query(url):
+        captured["url"] = url
+        labels = {
+            "pr": "4321",
+            "provider": "github_actions",
+            "run_id": "newer",
+            "service_name": "pytest-observability-demo",
+        }
+        values = {
+            "pytest_run_start_time_seconds": "200",
+            "pytest_run_end_time_seconds": "260",
+            "pytest_run_total_tests": "4",
+            "pytest_run_failed_tests": "1",
+            "pytest_run_duration_seconds": "12.5",
+            "pytest_run_job_count": "3",
+        }
+        return {
+            "status": "success",
+            "data": {
+                "result": [
+                    {"metric": {"__name__": name, **labels}, "value": [0, value]}
+                    for name, value in values.items()
+                ]
+            },
+        }
+
+    def _must_not_search(*args, **kwargs):
+        raise AssertionError("Tempo search must not run when Prometheus has rollups")
+
+    monkeypatch.setattr(trace_exporter, "_http_get_json", _query)
+    monkeypatch.setattr(trace_exporter, "search_trace_ids", _must_not_search)
+
+    svg = trace_exporter.render_pr_badge_svg("4321").decode()
+    assert "/api/v1/query?" in captured["url"]
+    assert "last_over_time" in captured["url"]
+    assert "1 failed" in svg
+    assert "4 tests" in svg
+    assert "3 jobs" in svg
