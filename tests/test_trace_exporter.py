@@ -903,6 +903,19 @@ def test_render_emits_exporter_self_metrics(monkeypatch) -> None:
         assert "pytest_trace_exporter_process_resident_bytes " in out
 
 
+def test_render_emits_configured_limits_for_pressure(monkeypatch) -> None:
+    # Dashboards compute exporter "pressure" against the live config, so the
+    # limit and soft-memory ceiling are emitted as gauges (not hardcoded).
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_LIMIT", "321")
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_MEM_SOFT_MB", "1740")
+    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([]))
+
+    out = trace_exporter._render_metrics_uncached()
+
+    assert "pytest_trace_exporter_limit 321" in out
+    assert f"pytest_trace_exporter_mem_soft_bytes {1740 * 1024 * 1024}" in out
+
+
 def test_render_emits_self_metrics_on_empty_window(monkeypatch) -> None:
     # An idle exporter (no traces in the window) is still healthy: its own
     # health metrics must stay populated so the dashboard shows "idle", not

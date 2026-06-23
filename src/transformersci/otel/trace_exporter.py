@@ -1999,6 +1999,15 @@ def _exporter_self_metric_lines(render_seconds: float) -> list[str]:
         "# HELP pytest_trace_exporter_last_render_timestamp_seconds Unix time this payload was rendered.",
         "# TYPE pytest_trace_exporter_last_render_timestamp_seconds gauge",
         f"pytest_trace_exporter_last_render_timestamp_seconds {time.time():.3f}",
+        # Configured limits, emitted so dashboards compute exporter "pressure"
+        # (window saturation, memory headroom) against the live config instead of
+        # hardcoded constants that silently drift when the deployment changes.
+        "# HELP pytest_trace_exporter_limit Configured max traces fetched per render (PYTEST_TRACE_EXPORTER_LIMIT).",
+        "# TYPE pytest_trace_exporter_limit gauge",
+        f"pytest_trace_exporter_limit {env_int('PYTEST_TRACE_EXPORTER_LIMIT', DEFAULT_LIMIT)}",
+        "# HELP pytest_trace_exporter_mem_soft_bytes Soft RSS ceiling in bytes; cache is dropped above this (0 = disabled).",
+        "# TYPE pytest_trace_exporter_mem_soft_bytes gauge",
+        f"pytest_trace_exporter_mem_soft_bytes {_mem_soft_limit_bytes()}",
     ]
     rss = _process_resident_bytes()
     if rss is not None:
