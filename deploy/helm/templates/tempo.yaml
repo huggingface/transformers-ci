@@ -1,0 +1,159 @@
+---
+# Tempo ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-config
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tempo
+data:
+  tempo.yaml: |
+    stream_over_http_enabled: true
+
+    # Bound search memory. Scanning blocks to answer /api/search is the main driver
+    # of Tempo's RAM spikes (the exporter polls a 1h window every render; the
+    # publisher searches 24h). Defaults (1000 concurrent jobs, unbounded duration)
+    # let a single wide search balloon the heap toward the memory limit and time out
+    # every other query. Cap the search range (the publisher needs 24h, so allow
+    # 26h) and the per-search parallelism; slightly slower searches, far flatter
+    # memory.
+    query_frontend:
+      search:
+        max_duration: 26h
+        concurrent_jobs: 200
+
+    server:
+      http_listen_port: 3200
+      log_level: info
+
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+              max_recv_msg_size_mib: 64
+            http:
+              endpoint: 0.0.0.0:4318
+              # CI run traces can be 8 MB+ (10k+ spans per shard). Raise the OTLP
+              # body limit well above Tempo's 4 MiB default so whole traces ingest.
+              max_request_body_size: 67108864  # 64 MiB
+
+    ingester:
+      max_block_duration: 5m
+
+    compactor:
+      compaction:
+        block_retention: 2160h
+
+    storage:
+      trace:
+        backend: local
+        wal:
+          path: /var/tempo/wal
+        local:
+          path: /var/tempo/blocks
+---
+# Tempo StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tempo
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tempo
+spec:
+  serviceName: tempo
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "transformers-ci.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: tempo
+  template:
+    metadata:
+      labels:
+        {{- include "transformers-ci.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: tempo
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3200"
+    spec:
+      nodeSelector:
+        role-tempo: "true"
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: tempo
+          image: "{{ .Values.tempo.image.repository }}:{{ .Values.tempo.image.tag }}"
+          imagePullPolicy: {{ .Values.tempo.image.pullPolicy }}
+          command:
+            - "/tempo"
+            - "-config.file=/etc/tempo/tempo.yaml"
+          env:
+            - name: GOMEMLIMIT
+              value: "{{ .Values.tempo.goMemLimit }}"
+          ports:
+            - name: http
+              containerPort: 3200
+              protocol: TCP
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+            - name: otlp-http
+              containerPort: 4318
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.tempo.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/tempo
+              readOnly: true
+            - name: data
+              mountPath: /var/tempo
+      volumes:
+        - name: config
+          configMap:
+            name: tempo-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "transformers-ci.labels" . | nindent 10 }}
+          app.kubernetes.io/component: tempo
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.tempo.storage.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.tempo.storage.size }}
+---
+# Tempo Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tempo
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3200
+      targetPort: 3200
+      protocol: TCP
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+  selector:
+    {{- include "transformers-ci.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: tempo

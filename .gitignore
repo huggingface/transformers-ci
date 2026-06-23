@@ -5,3 +5,18 @@ dist/
 *.egg-info/
 __pycache__/
 dashboard/data/*.jsonl
+
+# Private Helm deployment values (internal domains, cert ARNs, secret wiring).
+deploy/helm/env/private*.yaml
+# Filled-in copy of deploy/helm/transformers-ci-secrets.example.yaml — never commit real secrets.
+deploy/helm/transformers-ci-secrets.yaml
+
+# Private keys — never commit.
+*.pem
+
+# AWS provisioning scripts/state with internal infra details — never committed.
+dashboard/aws/
+
+# Local editor/agent tooling state.
+.claude/
+.serena/

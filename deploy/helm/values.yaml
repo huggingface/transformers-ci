@@ -1,0 +1,290 @@
+#------------------------------------------------------------------------------
+# Default values for transformers-ci
+# These can be overridden with an environment-specific values file.
+#------------------------------------------------------------------------------
+
+#------------------------------------------------------------------------------
+# Namespace
+#------------------------------------------------------------------------------
+namespace:
+  name: transformers-ci
+  labels:
+    app.kubernetes.io/name: transformers-ci
+    app.kubernetes.io/part-of: open-source
+
+#------------------------------------------------------------------------------
+# Ingress Configuration
+# Provide deployment-specific domains and certificate ARNs in a private values file.
+#------------------------------------------------------------------------------
+ingress:
+  traces:
+    domain: traces.example.com
+    certificateArn: ""
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+      alb.ingress.kubernetes.io/load-balancer-name: transformers-ci-traces
+      alb.ingress.kubernetes.io/group.name: transformers-ci-public
+      external-dns.alpha.kubernetes.io/hostname: traces.example.com
+
+  grafana:
+    domain: grafana.example.com
+    certificateArn: ""
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+      alb.ingress.kubernetes.io/load-balancer-name: transformers-ci-grafana
+      alb.ingress.kubernetes.io/group.name: transformers-ci-public
+      external-dns.alpha.kubernetes.io/hostname: grafana.example.com
+
+#------------------------------------------------------------------------------
+# OpenTelemetry Collector
+#------------------------------------------------------------------------------
+otelcol:
+  replicas: 2
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.96.0"
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+  receivers:
+    otlp:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  service:
+    pipelines:
+      traces:
+        receivers: [otlp]
+        exporters: [tempo]
+
+#------------------------------------------------------------------------------
+# Grafana Tempo (trace storage backend)
+#------------------------------------------------------------------------------
+tempo:
+  image:
+    repository: grafana/tempo
+    tag: "2.10.5"
+    pullPolicy: IfNotPresent
+
+  # Go soft-memory limit so Tempo's GC runs hard as it approaches the cap
+  # instead of growing to the cgroup mem limit and getting OOM-killed.
+  # Keep this below the memory limit — ~85% of the container limit.
+  goMemLimit: "1750MiB"
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 4Gi
+
+  storage:
+    enabled: true
+    size: 50Gi
+    storageClass: ebs-gp3
+
+#------------------------------------------------------------------------------
+# pytest-trace-exporter
+#------------------------------------------------------------------------------
+traceExporter:
+  replicas: 1
+  # Set to a commit SHA or other source identifier to trigger a rollout when
+  # source code changes but the rendered Deployment would otherwise be unchanged.
+  sourceRevision: ""
+  image:
+    repository: python
+    tag: "3.12-slim"
+    pullPolicy: IfNotPresent
+
+  tempo:
+    url: http://tempo:3200
+
+  config:
+    limit: 100
+    fetchConcurrency: 4
+    httpTimeout: 10
+    refreshSlowSeconds: 30
+    refreshCooldownSeconds: 60
+    traceCacheMax: 128
+    traceCacheMaxBytes: 134217728
+    traceSettleSeconds: 120
+    memSoftMb: 560
+    lookback: 1h
+    port: 8000
+    serviceName: pytest-observability
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
+#------------------------------------------------------------------------------
+# Prometheus
+#------------------------------------------------------------------------------
+prometheus:
+  image:
+    repository: prom/prometheus
+    tag: "v3.0.1"
+    pullPolicy: IfNotPresent
+
+  retention: "90d"
+
+  storage:
+    enabled: true
+    size: 50Gi
+    storageClass: ebs-gp3
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1Gi
+    limits:
+      memory: 4Gi
+
+  scrapeInterval: 15s
+
+#------------------------------------------------------------------------------
+# Grafana
+#------------------------------------------------------------------------------
+grafana:
+  replicas: 2
+  image:
+    repository: grafana/grafana
+    tag: "11.4.0"
+    pullPolicy: IfNotPresent
+
+  auth:
+    anonymous:
+      enabled: true
+      orgRole: Viewer
+    disableLoginForm: false
+    adminPassword: ""
+
+  domain: grafana.example.com
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+  dashboards:
+    enabled: true
+    files:
+      - pytest-observability-dashboard.json
+      - pytest-observability-job-dashboard.json
+      - pytest-observability-pr-dashboard.json
+      - pytest-observability-run-dashboard.json
+      - pytest-test-dashboard.json
+      - pytest-observability-stack-health.json
+
+#------------------------------------------------------------------------------
+# CI Data Publisher
+# CronJob that publishes Tempo traces as Parquet partitions to an HF bucket.
+# Disabled by default; enable in private deployment values after configuring credentials.
+#------------------------------------------------------------------------------
+ciDataPublisher:
+  enabled: false
+  schedule: "0 * * * *" # hourly, matching docker-compose crontab
+  # Set to a commit SHA or other source identifier to update the CronJob pod
+  # template when source code changes.
+  sourceRevision: ""
+  image:
+    repository: python
+    tag: "3.12-slim"
+    pullPolicy: IfNotPresent
+
+  tempoUrl: http://tempo:3200
+
+  config:
+    serviceNames: "pytest-observability,pytest-observability-demo"
+    bucketUri: "hf://buckets/<namespace>/<bucket-name>"
+    window: "24h"
+    limit: 5000
+    # The 24h /api/search is the heaviest Tempo call; give the batch job longer
+    # than the interactive exporter's 10s default.
+    httpTimeout: 30
+    # Disable in-process trace memoization so each run streams traces without
+    # retaining them in memory (mirrors PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS
+    # in docker-compose.yml).
+    traceSettleSeconds: 999999999999
+
+  staging:
+    sizeLimit: 10Gi
+
+  resources:
+    requests:
+      cpu: 300m
+      memory: 1Gi
+    limits:
+      memory: 4Gi
+
+#------------------------------------------------------------------------------
+# Network Policies
+# Disabled by default. Enable in private deployment values to constrain chart pods
+# to the cluster/VPC address space and reduce blast radius from public endpoints.
+#------------------------------------------------------------------------------
+networkPolicy:
+  enabled: false
+  # CIDRs that this release may receive traffic from and connect to. Set these to
+  # the deployment's pod/VPC and Kubernetes service CIDRs to prevent egress to
+  # other clusters or public networks if a public-facing pod is compromised.
+  allowedCIDRs: []
+  # Allow selected pods to resolve Kubernetes service names through kube-system DNS.
+  allowDNS: true
+  # Also allow pod-to-pod traffic inside this Helm release via podSelector. This
+  # keeps internal traffic working on CNIs where ipBlock matching pod IPs differs.
+  allowSameReleasePods: true
+  # Additional raw NetworkPolicy ingress rule entries, rendered under spec.ingress.
+  extraIngress: []
+  # Additional raw NetworkPolicy egress rule entries, rendered under spec.egress.
+  # Use sparingly for required external dependencies such as runtime source/package
+  # downloads or publishing endpoints; standard NetworkPolicy only supports CIDRs,
+  # not DNS names.
+  extraEgress: []
+
+#------------------------------------------------------------------------------
+# Secrets
+# For production deployments, set create=false and provide this Secret through
+# your preferred secret-management mechanism.
+#------------------------------------------------------------------------------
+secrets:
+  name: transformers-ci-secrets
+  create: true
+  keys:
+    traceApiKey: trace-api-key
+    grafanaAdminPassword: grafana-admin-password
+    githubToken: github-token
+    hfToken: hf-token
+  placeholder:
+    # Only used when secrets.create is true
+    traceApiKey: ""
+    grafanaAdminPassword: ""
+
+#------------------------------------------------------------------------------
+# External Secret Resource
+# Disabled by default. Private deployment values can enable this to let Helm
+# manage a provider-specific secret-sync CRD without committing provider details.
+#------------------------------------------------------------------------------
+externalSecret:
+  enabled: false
+  # Optional; defaults to secrets.name when empty.
+  name: ""
+  apiVersion: ""
+  kind: ""
+  spec: {}

@@ -1,0 +1,94 @@
+#------------------------------------------------------------------------------
+# Ingress for OTLP Trace Ingestion
+# Receives OTLP traces from CI jobs and forwards to OpenTelemetry Collector
+#------------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: otelcol
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otelcol
+  annotations:
+    alb.ingress.kubernetes.io/scheme: {{ index .Values.ingress.traces.annotations "alb.ingress.kubernetes.io/scheme" }}
+    alb.ingress.kubernetes.io/target-type: {{ index .Values.ingress.traces.annotations "alb.ingress.kubernetes.io/target-type" }}
+    alb.ingress.kubernetes.io/listen-ports: {{ index .Values.ingress.traces.annotations "alb.ingress.kubernetes.io/listen-ports" | quote }}
+    alb.ingress.kubernetes.io/group.name: {{ index .Values.ingress.traces.annotations "alb.ingress.kubernetes.io/group.name" }}
+    {{- if .Values.ingress.traces.certificateArn }}
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.traces.certificateArn }}
+    {{- end }}
+    alb.ingress.kubernetes.io/healthcheck-path: /
+    external-dns.alpha.kubernetes.io/hostname: {{ index .Values.ingress.traces.annotations "external-dns.alpha.kubernetes.io/hostname" }}
+spec:
+  ingressClassName: alb
+  rules:
+    - host: {{ .Values.ingress.traces.domain }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: otelcol
+                port:
+                  number: 4318
+---
+#------------------------------------------------------------------------------
+# Ingress for Grafana Dashboard
+# Public-facing endpoint for read-only Grafana access
+#------------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+  annotations:
+    alb.ingress.kubernetes.io/scheme: {{ index .Values.ingress.grafana.annotations "alb.ingress.kubernetes.io/scheme" }}
+    alb.ingress.kubernetes.io/target-type: {{ index .Values.ingress.grafana.annotations "alb.ingress.kubernetes.io/target-type" }}
+    alb.ingress.kubernetes.io/listen-ports: {{ index .Values.ingress.grafana.annotations "alb.ingress.kubernetes.io/listen-ports" | quote }}
+    alb.ingress.kubernetes.io/group.name: {{ index .Values.ingress.grafana.annotations "alb.ingress.kubernetes.io/group.name" }}
+    {{- if .Values.ingress.grafana.certificateArn }}
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.grafana.certificateArn }}
+    {{- end }}
+    alb.ingress.kubernetes.io/healthcheck-path: /api/health
+    external-dns.alpha.kubernetes.io/hostname: {{ index .Values.ingress.grafana.annotations "external-dns.alpha.kubernetes.io/hostname" }}
+spec:
+  ingressClassName: alb
+  rules:
+    - host: {{ .Values.ingress.grafana.domain }}
+      http:
+        paths:
+          # Route trace-exporter helper endpoints before the Grafana catch-all.
+          # /failure serves traceback HTML; /badge and /summary serve PR status integrations.
+          - path: /failure
+            pathType: Prefix
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
+          - path: /badge
+            pathType: Prefix
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
+          - path: /summary
+            pathType: Prefix
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000

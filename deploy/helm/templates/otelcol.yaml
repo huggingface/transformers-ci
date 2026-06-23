@@ -1,0 +1,146 @@
+{{- define "otelcol-configmap" }}
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  bearertokenauth:
+    token: ${TRACE_API_KEY}
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: {{ .Values.otelcol.receivers.otlp.grpc.endpoint }}
+      http:
+        endpoint: {{ .Values.otelcol.receivers.otlp.http.endpoint }}
+        auth:
+          authenticator: bearertokenauth
+
+processors:
+  batch:
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+service:
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8889
+  extensions: [health_check, bearertokenauth]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo]
+{{- end }}
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otelcol-config
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otelcol
+data:
+  config.yaml: |
+{{ include "otelcol-configmap" . | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otelcol
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otelcol
+spec:
+  replicas: {{ .Values.otelcol.replicas }}
+  selector:
+    matchLabels:
+      {{- include "transformers-ci.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: otelcol
+  template:
+    metadata:
+      labels:
+        {{- include "transformers-ci.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: otelcol
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8889"
+        checksum/config: {{ include "otelcol-configmap" . | sha256sum }}
+    spec:
+      containers:
+        - name: otelcol
+          image: "{{ .Values.otelcol.image.repository }}:{{ .Values.otelcol.image.tag }}"
+          imagePullPolicy: {{ .Values.otelcol.image.pullPolicy }}
+          command:
+            - /otelcol-contrib
+            - --config=/conf/config.yaml
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+            - name: otlp-http
+              containerPort: 4318
+              protocol: TCP
+            - name: metrics
+              containerPort: 8889
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.otelcol.resources | nindent 12 }}
+          env:
+            - name: TRACE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.traceApiKey }}
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: otelcol-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otelcol
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otelcol
+spec:
+  type: ClusterIP
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+    - name: metrics
+      port: 8889
+      targetPort: 8889
+      protocol: TCP
+  selector:
+    {{- include "transformers-ci.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: otelcol

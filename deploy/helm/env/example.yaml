@@ -1,0 +1,210 @@
+#------------------------------------------------------------------------------
+# Example environment-specific values for Transformers CI Public Grafana
+#
+# Copy this file to a private location and replace the placeholder values for
+# your deployment environment.
+#------------------------------------------------------------------------------
+
+#------------------------------------------------------------------------------
+# Ingress Configuration
+# Replace domains and certificate ARNs in your private deployment values.
+#------------------------------------------------------------------------------
+ingress:
+  traces:
+    domain: traces.example.com
+    certificateArn: ""
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+      alb.ingress.kubernetes.io/load-balancer-name: transformers-ci-traces
+      alb.ingress.kubernetes.io/group.name: transformers-ci-public
+      external-dns.alpha.kubernetes.io/hostname: traces.example.com
+
+  grafana:
+    domain: grafana.example.com
+    certificateArn: ""
+    annotations:
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+      alb.ingress.kubernetes.io/load-balancer-name: transformers-ci-grafana
+      alb.ingress.kubernetes.io/group.name: transformers-ci-public
+      external-dns.alpha.kubernetes.io/hostname: grafana.example.com
+
+#------------------------------------------------------------------------------
+# OpenTelemetry Collector
+#------------------------------------------------------------------------------
+otelcol:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+  receivers:
+    otlp:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+#------------------------------------------------------------------------------
+# Grafana Tempo (trace storage backend)
+#------------------------------------------------------------------------------
+tempo:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 4Gi
+
+  storage:
+    enabled: true
+    size: 50Gi
+    storageClass: ebs-gp3
+
+#------------------------------------------------------------------------------
+# pytest-trace-exporter
+#------------------------------------------------------------------------------
+traceExporter:
+  replicas: 1
+  sourceRevision: ""
+
+  tempo:
+    url: http://tempo:3200
+
+  config:
+    limit: 200
+    lookback: 1h
+    port: 8000
+    serviceName: pytest-observability
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
+#------------------------------------------------------------------------------
+# Prometheus
+#------------------------------------------------------------------------------
+prometheus:
+  retention: "90d"
+
+  storage:
+    enabled: true
+    size: 50Gi
+    storageClass: ebs-gp3
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1Gi
+    limits:
+      memory: 4Gi
+
+  scrapeInterval: 15s
+
+#------------------------------------------------------------------------------
+# Grafana
+#------------------------------------------------------------------------------
+grafana:
+  replicas: 2
+
+  auth:
+    anonymous:
+      enabled: true
+      orgRole: Viewer
+    disableLoginForm: false
+
+  domain: grafana.example.com
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+  dashboards:
+    enabled: true
+    files:
+      - pytest-observability-dashboard.json
+      - pytest-observability-job-dashboard.json
+      - pytest-observability-pr-dashboard.json
+      - pytest-observability-run-dashboard.json
+      - pytest-test-dashboard.json
+      - pytest-observability-stack-health.json
+
+#------------------------------------------------------------------------------
+# CI Data Publisher
+# Requires a deployment Secret containing the configured publishing token key.
+#------------------------------------------------------------------------------
+ciDataPublisher:
+  enabled: true
+  sourceRevision: ""
+  config:
+    serviceNames: "pytest-observability,pytest-observability-demo"
+    bucketUri: "hf://buckets/<namespace>/<bucket-name>"
+    window: "48h"
+    limit: 5000
+  staging:
+    sizeLimit: 10Gi
+  resources:
+    requests:
+      cpu: 300m
+      memory: 1Gi
+    limits:
+      memory: 4Gi
+
+#------------------------------------------------------------------------------
+# Network Policies
+# Enable in private values with your deployment's pod/VPC and Kubernetes service
+# CIDRs to restrict egress from public-facing pods to expected cluster networks.
+#------------------------------------------------------------------------------
+networkPolicy:
+  enabled: false
+  allowedCIDRs: []
+  allowDNS: true
+  allowSameReleasePods: true
+  extraIngress: []
+  extraEgress: []
+
+#------------------------------------------------------------------------------
+# Secrets
+# Set create=false when a Secret is provided by your deployment environment.
+#------------------------------------------------------------------------------
+secrets:
+  name: transformers-ci-secrets
+  create: false
+  keys:
+    traceApiKey: trace-api-key
+    grafanaAdminPassword: grafana-admin-password
+    githubToken: github-token
+    hfToken: hf-token
+
+#------------------------------------------------------------------------------
+# External Secret Resource
+# Keep disabled in public example values. Private deployment values can enable
+# this and provide apiVersion, kind, and spec for the secret-sync operator.
+#------------------------------------------------------------------------------
+externalSecret:
+  enabled: false
+  name: ""
+  apiVersion: ""
+  kind: ""
+  spec: {}
+
+#------------------------------------------------------------------------------
+# Namespace
+#------------------------------------------------------------------------------
+namespace:
+  name: transformers-ci
+  labels:
+    app.kubernetes.io/name: transformers-ci
+    app.kubernetes.io/part-of: open-source
