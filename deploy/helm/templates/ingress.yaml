@@ -62,9 +62,23 @@ spec:
     - host: {{ .Values.ingress.grafana.domain }}
       http:
         paths:
-          # Route /failure to trace-exporter for the HTML traceback page
-          # The dashboard iframe loads this endpoint to display test failure details
+          # Route trace-exporter helper endpoints before the Grafana catch-all.
+          # /failure serves traceback HTML; /badge and /summary serve PR status integrations.
           - path: /failure
+            pathType: Prefix
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
+          - path: /badge
+            pathType: Prefix
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
+          - path: /summary
             pathType: Prefix
             backend:
               service:

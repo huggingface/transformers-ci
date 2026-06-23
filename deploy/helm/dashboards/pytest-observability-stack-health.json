@@ -479,12 +479,71 @@
       "timeFrom": "7d"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Observed AWS CI runner executions, one bar per UTC calendar day. Counts each distinct pytest trace once, so a reusable workflow job with parallelism=8 contributes up to 8 runner executions. The current day's bar is partial and grows until UTC midnight.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "runner executions / day (UTC)",
+            "drawStyle": "bars",
+            "barAlignment": -1,
+            "fillOpacity": 70,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "count(count_over_time(pytest_ci_runner_execution_info[$__interval])) or vector(0)",
+          "interval": "1d",
+          "legendFormat": "runner executions / day",
+          "refId": "A"
+        }
+      ],
+      "title": "AWS runner executions per day",
+      "type": "timeseries",
+      "timeFrom": "7d"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 31
+        "y": 39
       },
       "id": 101,
       "panels": [],
@@ -533,7 +592,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 32
+        "y": 40
       },
       "id": 102,
       "options": {
@@ -591,7 +650,7 @@
         "h": 4,
         "w": 8,
         "x": 8,
-        "y": 32
+        "y": 40
       },
       "id": 103,
       "options": {
@@ -649,7 +708,7 @@
         "h": 4,
         "w": 8,
         "x": 16,
-        "y": 32
+        "y": 40
       },
       "id": 104,
       "options": {
@@ -705,7 +764,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 36
+        "y": 44
       },
       "id": 105,
       "options": {
@@ -766,7 +825,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 44
       },
       "id": 106,
       "options": {
@@ -808,7 +867,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 52
       },
       "id": 107,
       "panels": [],
@@ -843,7 +902,7 @@
         "h": 4,
         "w": 12,
         "x": 0,
-        "y": 45
+        "y": 53
       },
       "id": 108,
       "options": {
@@ -901,7 +960,7 @@
         "h": 4,
         "w": 12,
         "x": 12,
-        "y": 45
+        "y": 53
       },
       "id": 109,
       "options": {
@@ -937,7 +996,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 49
+        "y": 57
       },
       "id": 110,
       "panels": [],
@@ -980,7 +1039,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 50
+        "y": 58
       },
       "id": 111,
       "options": {
@@ -1054,7 +1113,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 50
+        "y": 58
       },
       "id": 112,
       "options": {
@@ -1111,7 +1170,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 50
+        "y": 58
       },
       "id": 113,
       "options": {
@@ -1169,7 +1228,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 50
+        "y": 58
       },
       "id": 114,
       "options": {
@@ -1222,7 +1281,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 54
+        "y": 62
       },
       "id": 115,
       "options": {
@@ -1277,7 +1336,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 54
+        "y": 62
       },
       "id": 116,
       "options": {
@@ -1336,7 +1395,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 62
+        "y": 70
       },
       "id": 117,
       "options": {
@@ -1393,7 +1452,7 @@
         "h": 4,
         "w": 8,
         "x": 8,
-        "y": 62
+        "y": 70
       },
       "id": 118,
       "options": {
@@ -1450,7 +1509,7 @@
         "h": 4,
         "w": 8,
         "x": 16,
-        "y": 62
+        "y": 70
       },
       "id": 119,
       "options": {
@@ -1492,15 +1551,15 @@
         "name": "dashboard_version",
         "type": "constant",
         "label": "Dashboard version",
-        "query": "0.1.5",
+        "query": "0.1.8",
         "current": {
-          "text": "0.1.5",
-          "value": "0.1.5"
+          "text": "0.1.8",
+          "value": "0.1.8"
         },
         "options": [
           {
-            "text": "0.1.5",
-            "value": "0.1.5",
+            "text": "0.1.8",
+            "value": "0.1.8",
             "selected": true
           }
         ],

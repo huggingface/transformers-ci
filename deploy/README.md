@@ -1,37 +1,112 @@
-# Transformers CI Public Grafana - Helm Chart
+# Deploying Transformers CI Public Grafana
 
-This directory contains the Helm chart for deploying the Transformers CI public-facing Grafana instance and supporting observability infrastructure.
+This directory packages the Transformers CI public observability stack for
+Kubernetes. The Helm chart is intentionally self-contained and values-driven so
+it can be deployed into a cluster without changing application code. Production
+values (internal domains, certificate ARNs, secret wiring) are **not** committed
+to this public repository — supply them through a private values file.
 
-## Overview
+## Contents
 
-This chart deploys:
+- `helm/` contains the Helm chart. It deploys:
+  - **OpenTelemetry Collector** — receives OTLP traces from CI jobs
+  - **Grafana Tempo** — persistent trace storage (StatefulSet)
+  - **pytest-trace-exporter** — custom Prometheus metrics exporter from traces
+  - **Prometheus** — metrics storage (StatefulSet)
+  - **Grafana** — public read-only dashboards
+  - **CI data publisher** — optional scheduled publisher for trace-derived datasets (CronJob)
+  - **NetworkPolicy** — optional cluster-boundary traffic policy for blast-radius reduction
+- `helm/env/example.yaml` carries public-safe placeholder values. Copy it to a
+  private file (e.g. `helm/env/private.yaml`, git-ignored) for a real deployment.
+- `helm/transformers-ci-secrets.example.yaml` is a template for the sensitive
+  runtime Secret. Copy it to `helm/transformers-ci-secrets.yaml` (git-ignored),
+  fill it locally, and never commit it.
+- `helm/dashboards/` holds the Grafana dashboard JSONs mounted into Grafana.
+- `scripts/deploy.sh` checks the current Kubernetes context, creates the
+  namespace when needed, optionally applies a local Secret file, runs Helm, and
+  waits on each workload's rollout.
+- `scripts/logs.sh` finds the current running pod for a given component and
+  prints recent logs.
 
-- **OpenTelemetry Collector** - Receives OTLP traces from CI jobs
-- **Grafana Tempo** - Persistent trace storage
-- **pytest-trace-exporter** - Custom metrics exporter from traces
-- **Prometheus** - Metrics storage
-- **Grafana** - Public read-only dashboards
-- **CI data publisher** - Optional scheduled publisher for trace-derived datasets
-- **NetworkPolicy** - Optional cluster-boundary traffic policy for blast-radius reduction
+## Chart Behavior
 
-## Deployment
+Tempo and Prometheus run as StatefulSets backed by PVCs (`ebs-gp3` by default),
+so trace and metric history survives pod restarts. Grafana, the OTel Collector,
+and the trace exporter run as Deployments; the CI data publisher runs as a
+CronJob.
 
-Production deployment values are intentionally not committed to this public repository. Use a private values file that provides deployment-specific domains, certificate ARNs, and secret-management configuration.
+Sensitive values are loaded from a pre-created Secret (referenced by
+`secrets.name`); non-secret runtime config lives in `values.yaml` / your env
+values file. Set `secrets.create: false` in production and provide the Secret
+through your secret-management mechanism — either a local Secret file applied by
+`deploy.sh --secret-file`, or the generic `externalSecret` block (a
+provider-specific secret-sync CRD such as Infisical's `InfisicalSecret`).
 
-Example render/install command using the placeholder example values:
+The trace exporter and CI data publisher clone code from this repository at pod
+startup. For code-only changes, pass a source revision so the pods pick it up
+(see [Source Code Changes](#source-code-changes)).
+
+## Deploy
+
+Render manifests locally without touching the cluster:
 
 ```bash
-helm upgrade --install transformers-ci . \
-  --namespace transformers-ci \
-  --create-namespace \
-  -f env/example.yaml
+deploy/scripts/deploy.sh --dry-run -f deploy/helm/env/private.yaml
 ```
 
-For a real deployment, replace `env/example.yaml` with a private values file.
+Create or update the Secret in the target namespace and deploy:
+
+```bash
+cp deploy/helm/transformers-ci-secrets.example.yaml deploy/helm/transformers-ci-secrets.yaml
+$EDITOR deploy/helm/transformers-ci-secrets.yaml
+deploy/scripts/deploy.sh \
+  -n transformers-ci \
+  --secret-file deploy/helm/transformers-ci-secrets.yaml \
+  -f deploy/helm/env/private.yaml
+```
+
+Deploy without applying a Secret file (Secret already exists, e.g. synced by an
+external-secret operator):
+
+```bash
+deploy/scripts/deploy.sh -n transformers-ci -f deploy/helm/env/private.yaml
+```
+
+Use `--context` to refuse any other kube context:
+
+```bash
+deploy/scripts/deploy.sh \
+  --context infra:opensource-aws-use1-prod-54 \
+  -n transformers-ci \
+  -f deploy/helm/env/private.yaml
+```
+
+## Logs
+
+Fetch recent logs for a component (`grafana`, `otelcol`, `trace-exporter`,
+`tempo`, `prometheus`, `ci-data-publisher`):
+
+```bash
+deploy/scripts/logs.sh \
+  --context infra:opensource-aws-use1-prod-54 \
+  -n transformers-ci \
+  -c trace-exporter \
+  --since 2h \
+  --grep 'error|traceback|crashed|HTTPError'
+```
+
+Print only the latest error block:
+
+```bash
+deploy/scripts/logs.sh -n transformers-ci -c trace-exporter --since 2h --last-error
+```
 
 ## Network Policies
 
-Network policies are disabled by default so the public example chart renders safely in any cluster/CNI. To reduce blast radius from the public Grafana, trace-exporter, and OTLP endpoints, enable the chart policy in private values and set `allowedCIDRs` to the cluster/VPC address space that should be reachable:
+Network policies are disabled by default so the example chart renders safely in
+any cluster/CNI. To reduce blast radius from the public Grafana, trace-exporter,
+and OTLP endpoints, enable the policy in private values and set `allowedCIDRs` to
+the cluster/VPC address space that should be reachable:
 
 ```yaml
 networkPolicy:
@@ -41,23 +116,29 @@ networkPolicy:
   allowSameReleasePods: true
 ```
 
-When enabled, the chart renders a `NetworkPolicy` selecting pods in this Helm release with `policyTypes: [Ingress, Egress]`. It allows ingress from, and egress to, only the configured CIDRs plus same-release pod-to-pod traffic. This is intended to prevent a compromised public-facing pod from using arbitrary outbound network access to reach another cluster or public network.
-
-If this deployment still performs runtime source/package downloads or publishing, remember that standard Kubernetes `NetworkPolicy` supports CIDRs, not DNS names. Either avoid those runtime internet dependencies in production or add tightly scoped `networkPolicy.extraEgress` rules for the required address ranges.
+When enabled, the chart renders a `NetworkPolicy` selecting pods in this Helm
+release with `policyTypes: [Ingress, Egress]`. It allows ingress from, and
+egress to, only the configured CIDRs plus same-release pod-to-pod traffic.
+Standard Kubernetes `NetworkPolicy` supports CIDRs, not DNS names — if the
+deployment performs runtime source/package downloads, add tightly scoped
+`networkPolicy.extraEgress` rules for the required address ranges.
 
 ## Secrets
 
-By default, the chart can create a placeholder Kubernetes Secret for local/manual testing. For production deployments, set:
+The chart references a Secret by `secrets.name` (default
+`transformers-ci-secrets`). The required key names are configurable under
+`secrets.keys`:
 
-```yaml
-secrets:
-  create: false
-  name: transformers-ci-secrets
-```
+| values key             | default Secret key       | used by           |
+| ---------------------- | ------------------------ | ----------------- |
+| `traceApiKey`          | `trace-api-key`          | OTLP ingestion    |
+| `grafanaAdminPassword` | `grafana-admin-password` | Grafana admin     |
+| `githubToken`          | `github-token`           | trace-exporter    |
+| `hfToken`              | `hf-token`               | ci-data-publisher |
 
-Then provide that Secret through your preferred private secret-management mechanism. The required Secret key names are configurable under `secrets.keys`; the committed defaults are placeholders.
-
-Alternatively, private deployment values can let Helm manage a provider-specific secret-sync CRD through the generic `externalSecret` block:
+For production, set `secrets.create: false` and provide the Secret through your
+preferred mechanism. The `externalSecret` block can have Helm manage a
+provider-specific secret-sync CRD:
 
 ```yaml
 secrets:
@@ -66,75 +147,65 @@ secrets:
 
 externalSecret:
   enabled: true
-  apiVersion: example.com/v1
-  kind: ExampleSecretSync
+  apiVersion: secrets.infisical.com/v1alpha1
+  kind: InfisicalSecret
   spec:
     # Provider-specific configuration belongs in private values.
-    # Values can use Helm templating via tpl.
 ```
 
-## File Structure
-
-```text
-deploy/
-├── Chart.yaml                    # Helm chart metadata
-├── values.yaml                   # Default values with public-safe placeholders
-├── env/
-│   └── example.yaml              # Example override values with placeholders
-├── templates/                    # Kubernetes manifests
-│   ├── _helpers.tpl
-│   ├── namespace.yaml
-│   ├── otelcol.yaml              # OTel Collector
-│   ├── tempo.yaml                # Tempo StatefulSet
-│   ├── trace-exporter.yaml       # Custom metrics exporter
-│   ├── prometheus.yaml           # Prometheus StatefulSet
-│   ├── grafana.yaml              # Grafana Deployment and dashboards
-│   ├── ingress.yaml              # Ingresses
-│   ├── ci-data-publisher.yaml    # Optional publishing CronJob
-│   ├── networkpolicy.yaml        # Optional cluster-boundary NetworkPolicy
-│   └── secrets.yaml              # Generic Secret placeholder / external secret resource
-└── dashboards/                   # Grafana dashboard JSONs
-```
+> The `githubToken` key matters for dashboard correctness: without it the
+> trace-exporter calls the GitHub API unauthenticated (60 req/hr), gets
+> rate-limited, and PR titles render blank in the dashboards.
 
 ## Keeping Docker Compose and Helm in Sync
 
-The `dashboard/` directory contains the Docker Compose configuration. The `deploy/` directory is the Kubernetes/Helm source of truth. Both live in this repo, so dashboard and observability changes can be made together.
+The `dashboard/` directory contains the Docker Compose configuration. The
+`deploy/helm/` directory is the Kubernetes/Helm source of truth. Both live in
+this repo, so dashboard and observability changes can be made together.
 
 ### Dashboard Changes
 
 When dashboards are updated in `dashboard/`:
 
 ```bash
-cp dashboard/*.json deploy/dashboards/
+cp dashboard/*.json deploy/helm/dashboards/
 ```
 
 Checklist:
 
-- [ ] New dashboards: add the JSON file to `grafana.dashboards.files` in `values.yaml`
-- [ ] Existing dashboards: copy the updated JSON into `deploy/dashboards/`
+- [ ] New dashboards: add the JSON file to `grafana.dashboards.files` in `helm/values.yaml`
+- [ ] Existing dashboards: copy the updated JSON into `deploy/helm/dashboards/`
 
 ### Source Code Changes
 
-For changes to Helm templates or values, no manual restart is needed: Helm updates the rendered manifests and Kubernetes rolls affected workloads when their pod templates change.
+For changes to Helm templates or values, no manual restart is needed: Helm
+updates the rendered manifests and Kubernetes rolls affected workloads when their
+pod templates change.
 
-The trace exporter and CI data publisher also clone code from this repository at pod startup. For code-only changes that do not otherwise change the rendered manifests, pass a source revision value during upgrade. A git commit SHA is recommended:
+The trace exporter and CI data publisher clone code from this repository at pod
+startup. For code-only changes that do not otherwise change the rendered
+manifests, pass a source revision during upgrade (a git commit SHA is
+recommended):
 
 ```bash
-helm upgrade transformers-ci ./deploy \
+helm upgrade transformers-ci ./deploy/helm \
   --namespace transformers-ci \
-  -f /path/to/private-values.yaml \
+  -f deploy/helm/env/private.yaml \
   --set-string traceExporter.sourceRevision="$GIT_SHA" \
   --set-string ciDataPublisher.sourceRevision="$GIT_SHA"
 ```
 
-These values are rendered as pod template annotations, so changing them triggers a Kubernetes rollout for `trace-exporter` and updates the `ci-data-publisher` CronJob pod template for future jobs.
-
-For new environment variables, add them to the relevant template under `templates/` and `values.yaml`; no separate rollout command is required.
+These values render as pod template annotations, so changing them triggers a
+rollout for `trace-exporter` and updates the `ci-data-publisher` CronJob pod
+template for future jobs.
 
 ### Deployment Verification
 
+`deploy.sh` waits on every workload, but to check manually:
+
 ```bash
 kubectl rollout status deployment/grafana -n transformers-ci
+kubectl rollout status deployment/otelcol -n transformers-ci
 kubectl rollout status deployment/trace-exporter -n transformers-ci
 kubectl rollout status statefulset/tempo -n transformers-ci
 kubectl rollout status statefulset/prometheus -n transformers-ci

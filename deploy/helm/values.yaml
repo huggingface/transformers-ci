@@ -267,10 +267,10 @@ secrets:
   name: transformers-ci-secrets
   create: true
   keys:
-    traceApiKey: ingestion-auth-token
-    grafanaAdminPassword: dashboard-admin-password
-    githubToken: source-api-token
-    hfToken: publisher-token
+    traceApiKey: trace-api-key
+    grafanaAdminPassword: grafana-admin-password
+    githubToken: github-token
+    hfToken: hf-token
   placeholder:
     # Only used when secrets.create is true
     traceApiKey: ""
