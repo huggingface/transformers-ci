@@ -52,6 +52,9 @@ data:
       scrape_interval: {{ .Values.prometheus.scrapeInterval }}
       evaluation_interval: 15s
 
+    rule_files:
+      - /etc/prometheus/recording_rules.yml
+
     scrape_configs:
       - job_name: 'prometheus'
         static_configs:
@@ -170,6 +173,17 @@ data:
             target_label: __address__
             regex: ([^:]+)(?::\d+)?;(\d+)
             replacement: $1:$2
+  recording_rules.yml: |
+    groups:
+      - name: slowest_tests_main
+        # The per-test pytest_test_duration_seconds metric is high-cardinality, so
+        # scanning it over a long window is slow (a 90d ad-hoc query timed out the
+        # "Slowest Tests By Average Duration" panel at ~30s). Precompute the top 20
+        # here on a slow cadence; the dashboard reads this 20-series result instantly.
+        interval: 15m
+        rules:
+          - record: pytest_test:duration_avg_main:top20_7d
+            expr: topk(20, avg by (test_job, test_module, test_class, test_function) (last_over_time(pytest_test_duration_seconds{pr="main"}[7d])))
 ---
 apiVersion: apps/v1
 kind: StatefulSet

@@ -792,12 +792,18 @@
         },
         {
           "editorMode": "code",
-          "expr": "671088640",
-          "legendFormat": "limit (640 MiB)",
+          "expr": "2147483648",
+          "legendFormat": "container limit (2 GiB)",
           "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "1824522240",
+          "legendFormat": "soft cap (1740 MiB, cache drop)",
+          "refId": "C"
         }
       ],
-      "title": "Exporter memory (RSS) vs 640 MiB limit",
+      "title": "Exporter memory (RSS) vs 2 GiB limit",
       "type": "timeseries"
     },
     {
