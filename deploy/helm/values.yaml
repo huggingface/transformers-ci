@@ -117,10 +117,16 @@ traceExporter:
     httpTimeout: 10
     refreshSlowSeconds: 30
     refreshCooldownSeconds: 60
-    traceCacheMax: 128
-    traceCacheMaxBytes: 134217728
+    # Keep the trace cache >= limit so a full lookback window stays warm and the
+    # render stops re-fetching/re-parsing traces from Tempo every cycle.
+    traceCacheMax: 256
+    # Quoted: Helm parses large bare ints as float64 and emits scientific
+    # notation (2.68e+08), which the exporter's int parser rejects.
+    traceCacheMaxBytes: "268435456"  # 256Mi serialized (~1GiB resident at 4x overhead)
     traceSettleSeconds: 120
-    memSoftMb: 560
+    # Soft RSS ceiling. Sized to ~85% of the 2Gi container limit (was 560, sized
+    # for the retired 640MiB docker box, which forced premature cache drops).
+    memSoftMb: 1740
     lookback: 1h
     port: 8000
     serviceName: pytest-observability
