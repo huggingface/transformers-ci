@@ -2,11 +2,29 @@ from __future__ import annotations
 
 import io
 import json
+import urllib.parse
 from unittest.mock import patch
 
 import pytest
 
 from transformersci.otel import trace_exporter
+
+
+def _shaped_iter(*traces: dict):
+    """Mimic :func:`_iter_window_shaped` for render tests.
+
+    Shapes each raw (Jaeger) trace and yields ``(trace_info, rows, is_new=True)``
+    — the contract the render now consumes — so a test can drive the render with
+    fixed traces without standing up the Tempo search/fetch path.
+    """
+    shaped = [(*trace_exporter.extract_trace_rows(t), True) for t in traces]
+
+    def _gen(*_args, **_kwargs):
+        # Reset carryover so per-test emission is deterministic across tests.
+        trace_exporter._previous_new_ids = set()
+        return iter(list(shaped))
+
+    return _gen
 
 
 def make_tag(key: str, value: str) -> dict[str, str]:
@@ -891,7 +909,7 @@ def test_render_emits_exporter_self_metrics(monkeypatch) -> None:
         status_code="STATUS_CODE_OK",
     )
     trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
-    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([trace]))
+    monkeypatch.setattr(trace_exporter, "_iter_window_shaped", _shaped_iter(trace))
 
     out = trace_exporter._render_metrics_uncached()
 
@@ -908,7 +926,7 @@ def test_render_emits_configured_limits_for_pressure(monkeypatch) -> None:
     # limit and soft-memory ceiling are emitted as gauges (not hardcoded).
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_LIMIT", "321")
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_MEM_SOFT_MB", "1740")
-    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([]))
+    monkeypatch.setattr(trace_exporter, "_iter_window_shaped", _shaped_iter())
 
     out = trace_exporter._render_metrics_uncached()
 
@@ -920,7 +938,7 @@ def test_render_emits_self_metrics_on_empty_window(monkeypatch) -> None:
     # An idle exporter (no traces in the window) is still healthy: its own
     # health metrics must stay populated so the dashboard shows "idle", not
     # "no data".
-    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([]))
+    monkeypatch.setattr(trace_exporter, "_iter_window_shaped", _shaped_iter())
     out = trace_exporter._render_metrics_uncached()
     assert "pytest_trace_exporter_up 1" in out
     assert "pytest_trace_exporter_render_duration_seconds " in out
@@ -943,7 +961,7 @@ def test_render_metrics_serves_cached_payload(monkeypatch, tmp_path) -> None:
         status_code="STATUS_CODE_OK",
     )
     trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
-    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([trace]))
+    monkeypatch.setattr(trace_exporter, "_iter_window_shaped", _shaped_iter(trace))
     trace_exporter._refresh_cache_once()
     out = trace_exporter.render_metrics()
     assert "pytest_trace_exporter_render_duration_seconds " in out
@@ -956,7 +974,7 @@ def test_refresh_cache_once_publishes_atomically(monkeypatch, tmp_path) -> None:
     # temp file, and no .tmp siblings may be left behind.
     payload_file = tmp_path / "payload.prom"
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PAYLOAD_FILE", str(payload_file))
-    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([]))
+    monkeypatch.setattr(trace_exporter, "_iter_window_shaped", _shaped_iter())
     trace_exporter._refresh_cache_once()
     body = payload_file.read_text(encoding="utf-8")
     assert body.endswith("\n")
@@ -987,10 +1005,10 @@ def test_streamed_payload_matches_full_render(monkeypatch, tmp_path) -> None:
         status_code="STATUS_CODE_OK",
     )
     trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
-    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([trace]))
+    monkeypatch.setattr(trace_exporter, "_iter_window_shaped", _shaped_iter(trace))
     expected = trace_exporter._render_metrics_uncached()
 
-    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([trace]))
+    monkeypatch.setattr(trace_exporter, "_iter_window_shaped", _shaped_iter(trace))
     out = tmp_path / "payload.prom"
     trace_exporter._write_payload_atomic(out)
     streamed = out.read_text(encoding="utf-8")
@@ -1061,7 +1079,7 @@ def test_payload_survives_crash_and_serves_last_good(monkeypatch, tmp_path) -> N
         status_code="STATUS_CODE_OK",
     )
     trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
-    monkeypatch.setattr(trace_exporter, "iter_traces", lambda *a, **k: iter([trace]))
+    monkeypatch.setattr(trace_exporter, "_iter_window_shaped", _shaped_iter(trace))
     trace_exporter._refresh_cache_once()
     good = payload_file.read_text(encoding="utf-8")
     assert "pytest_test_duration_seconds{" in good
@@ -1189,6 +1207,227 @@ def test_iter_traces_skips_failed_fetches() -> None:
     # The failing fetch is dropped; all 20 healthy traces still come through.
     assert len(traces) == 20
     assert {t["traceID"] for t in traces} == {f"ok-{i}" for i in range(20)}
+
+
+def _windowed_search_opener(timestamps: dict[str, int]):
+    """Fake urlopen for /api/search that honours the [start,end) window + limit.
+
+    Models Tempo: returns the ids whose timestamp falls in the requested window,
+    most-recent first, capped at ``limit`` — exactly the behaviour that buries a
+    sharded run's older traces under newer ones at real volume.
+    """
+
+    def opener(url, timeout=None):
+        assert "/api/search" in url
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        start = int(params["start"][0])
+        end = int(params["end"][0])
+        limit = int(params["limit"][0])
+        in_window = [tid for tid, ts in timestamps.items() if start <= ts < end]
+        in_window.sort(key=lambda tid: timestamps[tid], reverse=True)
+        chosen = in_window[:limit]
+        return _UrlResponse(json.dumps({"traces": [{"traceID": t} for t in chosen]}))
+
+    return opener
+
+
+def test_search_all_trace_ids_enumerates_every_shard_beyond_limit() -> None:
+    # Models the production bug: 8 shard traces of one run plus noise, but a
+    # single search only ever returns the newest ``limit`` ids. Bisection must
+    # surface ALL of them so no shard is silently dropped.
+    shards = {f"shard-{i}": 2_000 + i for i in range(8)}
+    noise = {f"noise-{i}": 2_100 + i for i in range(40)}
+    timestamps = {**shards, **noise}
+    with patch(
+        "transformersci.otel.trace_exporter.urlopen",
+        side_effect=_windowed_search_opener(timestamps),
+    ):
+        ids, truncated = trace_exporter.search_all_trace_ids(
+            "http://tempo:3200", "svc", 2_000, 2_200, limit=4
+        )
+
+    assert set(ids) == set(timestamps)  # every shard AND every noise trace
+    assert set(shards).issubset(set(ids))
+    assert truncated is False
+
+
+def test_search_all_trace_ids_flags_truncation_when_unsplittable() -> None:
+    # More than ``limit`` traces sharing one timestamp can't be split below a
+    # 1-second slice; enumeration returns what it can and flags truncation
+    # rather than silently claiming completeness.
+    timestamps = {f"t{i}": 5_000 for i in range(6)}
+    with patch(
+        "transformersci.otel.trace_exporter.urlopen",
+        side_effect=_windowed_search_opener(timestamps),
+    ):
+        ids, truncated = trace_exporter.search_all_trace_ids(
+            "http://tempo:3200", "svc", 5_000, 5_001, limit=3
+        )
+
+    assert truncated is True
+    assert len(ids) <= 3
+
+
+def _reset_window_state() -> None:
+    trace_exporter._shaped_cache.clear()
+    trace_exporter._shaped_cache_sizes.clear()
+    trace_exporter._shaped_cache_bytes = 0
+    trace_exporter._trace_cache.clear()
+    trace_exporter._previous_new_ids = set()
+    trace_exporter._run_members.clear()
+    trace_exporter._run_last_growth.clear()
+
+
+def test_window_shaped_caches_settled_trace_and_skips_refetch() -> None:
+    # A settled trace is shaped once and served from the shaped cache thereafter,
+    # so the complete window costs no repeat Tempo fetches each render.
+    _reset_window_state()
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    calls = {"search": 0, "traces": 0}
+
+    def opener(url, timeout=None):
+        if "/api/search" in url:
+            calls["search"] += 1
+            return _UrlResponse(json.dumps({"traces": [{"traceID": "trace-torch"}]}))
+        calls["traces"] += 1
+        return _UrlResponse(json.dumps(payload))
+
+    with patch("transformersci.otel.trace_exporter.urlopen", side_effect=opener):
+        first = list(trace_exporter._iter_window_shaped("http://tempo:3200"))
+        second = list(trace_exporter._iter_window_shaped("http://tempo:3200"))
+
+    assert [is_new for *_rest, is_new in first] == [True]
+    assert [is_new for *_rest, is_new in second] == [False]
+    assert calls["traces"] == 1  # fetched once, cached for the second render
+    _reset_window_state()
+
+
+def test_window_defers_new_fetches_beyond_cap(monkeypatch) -> None:
+    # New traces beyond the per-render cap are deferred (not fetched this cycle),
+    # bounding the cold-start/restart burst; the rest land on later renders.
+    _reset_window_state()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_MAX_NEW_FETCH_PER_RENDER", "2")
+    ids = [f"trace-{i}" for i in range(5)]
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+
+    def opener(url, timeout=None):
+        if "/api/search" in url:
+            return _UrlResponse(json.dumps({"traces": [{"traceID": t} for t in ids]}))
+        return _UrlResponse(json.dumps(payload))
+
+    with patch("transformersci.otel.trace_exporter.urlopen", side_effect=opener):
+        yielded = list(trace_exporter._iter_window_shaped("http://tempo:3200"))
+
+    assert sum(1 for *_r, is_new in yielded if is_new) == 2
+    assert trace_exporter._last_enumeration_deferred == 3
+    _reset_window_state()
+
+
+def test_per_test_emitted_for_new_traces_then_retires_after_carryover(
+    monkeypatch,
+) -> None:
+    # Per-test (high-cardinality) series are emitted for a freshly-seen trace and
+    # for one carryover render, then stop — Prometheus' last_over_time retains
+    # them, so the payload stays small without losing the data.
+    _reset_window_state()
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    with patch(
+        "transformersci.otel.trace_exporter.urlopen",
+        side_effect=_tempo_urlopen(["trace-torch"], payload),
+    ):
+        first = trace_exporter._render_metrics_uncached()
+        second = trace_exporter._render_metrics_uncached()
+        third = trace_exporter._render_metrics_uncached()
+
+    marker = "pytest_test_duration_seconds{"
+    assert marker in first  # freshly seen
+    assert marker in second  # one-render carryover
+    assert marker not in third  # retired; retained by Prometheus
+    _reset_window_state()
+
+
+def _with_run_id(payload: dict, run_id: str) -> dict:
+    """Clone an OTLP payload, overriding its run id (used to vary noise traces)."""
+    clone = json.loads(json.dumps(payload))
+    for attr in clone["batches"][0]["resource"]["attributes"]:
+        if attr["key"] == "transformers.test.run.id":
+            attr["value"] = {"stringValue": run_id}
+    return clone
+
+
+def test_render_rolls_up_every_shard_of_a_sharded_run(monkeypatch) -> None:
+    # The headline fix: a run sharded across 8 traces, buried under noise so a
+    # single capped search can never see them all at once. Complete enumeration
+    # must let the run roll-up count all 8 shards, not the ~3 the old top-N
+    # snapshot captured.
+    _reset_window_state()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_LIMIT", "3")
+    monkeypatch.setattr(trace_exporter, "_run_settle_seconds", lambda: 0.0)
+
+    base = int(__import__("time").time()) - 300  # recent but settled (>120s old)
+    payloads: dict[str, dict] = {}
+    timestamps: dict[str, int] = {}
+    # 8 shard traces — same run-1 / tests_torch, one distinct test each.
+    for shard in range(8):
+        tid = f"shard-{shard}"
+        payloads[tid] = make_otlp_trace(
+            nodeid=f"tests/test_torch.py::TestTorch::test_{shard}",
+            start_nano=(base + shard) * 1_000_000_000,
+            end_nano=(base + shard + 1) * 1_000_000_000,
+            status_code="STATUS_CODE_OK",
+        )
+        timestamps[tid] = base + shard
+    # Noise: newer traces from *other* runs that crowd out the shards in any
+    # single top-3 search.
+    for n in range(20):
+        tid = f"noise-{n}"
+        payloads[tid] = _with_run_id(
+            make_otlp_trace(
+                nodeid=f"tests/test_other.py::test_{n}",
+                start_nano=(base + 50 + n) * 1_000_000_000,
+                end_nano=(base + 51 + n) * 1_000_000_000,
+                status_code="STATUS_CODE_OK",
+            ),
+            run_id=f"noise-run-{n}",
+        )
+        timestamps[tid] = base + 50 + n
+
+    def opener(url, timeout=None):
+        if "/api/search" in url:
+            return _windowed_search_opener(timestamps)(url, timeout)
+        tid = urllib.parse.unquote(url.rsplit("/", 1)[-1])
+        return _UrlResponse(json.dumps(payloads[tid]))
+
+    with patch("transformersci.otel.trace_exporter.urlopen", side_effect=opener):
+        out = trace_exporter._render_metrics_uncached()
+
+    torch_job = next(
+        (
+            value
+            for labels, value in trace_exporter._iter_metric_samples(
+                "pytest_run_job_total_tests", source=out
+            )
+            if labels.get("run_id") == "run-1" and labels.get("test_job") == "tests_torch"
+        ),
+        None,
+    )
+    assert torch_job == 8.0  # all 8 shards counted, not a top-N fraction
+    _reset_window_state()
 
 
 def test_trace_cache_is_bounded_lru(monkeypatch) -> None:

@@ -550,6 +550,91 @@ def search_trace_ids(
     return trace_ids
 
 
+# Tempo's /api/search returns at most ``limit`` traces, ordered most-recent
+# first. At real CI volume (≈1500 traces/hr) a single search over a 1h window
+# only ever surfaces the newest ``limit`` (200) of them — so the traces of a
+# large sharded run (e.g. tests_torch's 8 shard traces) get buried behind newer
+# small traces and are NEVER fetched. That silently truncated every dashboard
+# roll-up to whatever fraction of a run's shards happened to be recent enough
+# (~3 of 8 → ~15k of ~40k tests). See docs/session-notes-exporter-2026-06-23.md.
+#
+# search_all_trace_ids fixes the enumeration: it adaptively bisects the time
+# window until every sub-slice returns fewer than ``limit`` traces, so the union
+# is the COMPLETE set of trace ids in the window regardless of volume. Search
+# returns only ids (no span payloads), so the extra calls are cheap; the
+# expensive per-trace fetch is still bounded elsewhere (the render fetches each
+# trace at most once and caps new fetches per cycle).
+DEFAULT_SEARCH_MAX_SLICES = 64
+
+
+def search_all_trace_ids(
+    base_url: str,
+    service_name: str,
+    start: int,
+    end: int,
+    limit: int,
+    *,
+    max_slices: int = DEFAULT_SEARCH_MAX_SLICES,
+    extra_selector: str = "",
+) -> tuple[list[str], bool]:
+    """Completely enumerate the window's trace ids via adaptive time-bisection.
+
+    Returns ``(trace_ids, truncated)``. A slice that comes back *full* (``>=
+    limit``) means it holds more traces than one search can return, so it is
+    split at its midpoint and each half is searched independently; this repeats
+    until every slice is under-full. ``truncated`` is ``True`` if the slice
+    budget (``max_slices``) ran out or a slice could not be split further (a
+    burst of >``limit`` traces within a 1-second window) while still full — i.e.
+    enumeration may be incomplete and the caller should surface that.
+    """
+    if limit <= 0 or end <= start:
+        return [], False
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    truncated = False
+    # LIFO stack of [start, end) slices still to search.
+    stack: list[tuple[int, int]] = [(start, end)]
+    slices = 0
+
+    def _record(ids: list[str]) -> None:
+        for trace_id in ids:
+            if trace_id not in seen:
+                seen.add(trace_id)
+                ordered.append(trace_id)
+
+    while stack:
+        slice_start, slice_end = stack.pop()
+        if slices >= max_slices:
+            # Out of budget: take whatever this slice yields and flag truncation
+            # rather than searching unboundedly.
+            _record(search_trace_ids(
+                base_url, service_name, slice_start, slice_end, limit, extra_selector
+            ))
+            truncated = True
+            continue
+        slices += 1
+        ids = search_trace_ids(
+            base_url, service_name, slice_start, slice_end, limit, extra_selector
+        )
+        if len(ids) < limit:
+            _record(ids)
+            continue
+        # Slice is saturated — it hides more than ``limit`` traces. Bisect it and
+        # re-search each half; the parent's (truncated) ids are discarded because
+        # the children re-enumerate the same range completely.
+        mid = (slice_start + slice_end) // 2
+        if mid <= slice_start or mid >= slice_end:
+            # Cannot split a 1-second slice further; keep what we have and flag.
+            _record(ids)
+            truncated = True
+            continue
+        stack.append((slice_start, mid))
+        stack.append((mid, slice_end))
+
+    return ordered, truncated
+
+
 # LRU cache of settled (immutable) traces, bounded by both entry count and an
 # approximate serialized byte budget. The cache holds full multi-MB Jaeger dicts,
 # so count-only bounds are not enough when a replay/search window contains a few
@@ -687,7 +772,9 @@ def iter_traces(base_url: str | None = None) -> Iterator[dict]:
 
     end = int(time.time())
     start = end - parse_lookback_seconds(lookback)
-    trace_ids = search_trace_ids(base_url, service_name, start, end, limit)
+    trace_ids, _ = search_all_trace_ids(
+        base_url, service_name, start, end, limit
+    )
     if not trace_ids:
         return
 
@@ -726,6 +813,236 @@ def fetch_traces() -> list[dict]:
     """Eager list of the window's traces. Kept for callers/tests; the metrics
     render streams via :func:`iter_traces` to avoid materialising them all."""
     return list(iter_traces())
+
+
+# ---------------------------------------------------------------------------
+# Shaped-window cache — lets the render assemble the COMPLETE window cheaply.
+#
+# With complete enumeration the window can hold ~1500 traces/hr; keeping that
+# many raw multi-MB traces resident is infeasible (~5 GiB). But each trace's
+# *shaped* result — the small (trace_info, rows) tuple the extractors consume —
+# is orders of magnitude smaller, and a settled trace's shape never changes. So
+# we memoize the shaped result by trace_id. Each render then rebuilds the whole
+# window from this cache and only fetches+shapes traces it has not seen yet
+# (bounded per render), instead of re-fetching the entire window every cycle.
+# This is what makes per-shard completeness affordable on the live render path.
+# ---------------------------------------------------------------------------
+
+# A shaped trace: the (trace_info, rows) pair extract_trace_rows returns. Kept
+# loose (tuple[dict, list]) at runtime to avoid PEP 604 unions in an eagerly
+# evaluated alias; the precise element types live on extract_trace_rows.
+ShapedEntry = tuple[dict, list]
+
+_shaped_cache_lock = threading.Lock()
+_shaped_cache: "OrderedDict[str, ShapedEntry]" = OrderedDict()
+_shaped_cache_sizes: dict[str, int] = {}
+_shaped_cache_bytes = 0
+# Sized to comfortably cover well over an hour of CI volume so a run's shards
+# survive in the cache until the run settles, even when their completion spans
+# longer than the lookback window.
+DEFAULT_SHAPED_CACHE_MAX = 8192
+DEFAULT_SHAPED_CACHE_MAX_BYTES = 384 * 1024 * 1024
+# How many not-yet-seen traces a single render is allowed to fetch+shape. This
+# bounds per-cycle Tempo load and the cold-start/restart burst (when the shaped
+# cache is empty the whole window is "new"); deferred traces stay in the window
+# and are picked up over the next few renders. A run only emits its roll-up once
+# settled, by which point its deferred shards have been fetched, so the cap
+# never truncates a settled run's totals.
+DEFAULT_MAX_NEW_FETCH_PER_RENDER = 600
+
+# Observability for the render/self-metrics: stats from the most recent
+# enumeration pass (updated by :func:`_iter_window_shaped`).
+_enumeration_lock = threading.Lock()
+_last_enumeration_total = 0
+_last_enumeration_truncated = False
+_last_enumeration_deferred = 0
+# Trace ids whose per-test rows were emitted as "new" on the PREVIOUS render.
+# Re-emitting them once more (while they are now cheap cache hits) guarantees a
+# freshly-seen trace's high-cardinality series appears in at least two published
+# payloads — so a Prometheus scrape can't miss it in the gap between the render
+# that first saw it and the next republish. Touched only by the single render
+# thread.
+_previous_new_ids: set[str] = set()
+
+
+def _shaped_cache_max() -> int:
+    return max(
+        0, env_int("PYTEST_TRACE_EXPORTER_SHAPED_CACHE_MAX", DEFAULT_SHAPED_CACHE_MAX)
+    )
+
+
+def _shaped_cache_max_bytes() -> int:
+    return max(
+        0,
+        env_int(
+            "PYTEST_TRACE_EXPORTER_SHAPED_CACHE_MAX_BYTES",
+            DEFAULT_SHAPED_CACHE_MAX_BYTES,
+        ),
+    )
+
+
+def _max_new_fetch_per_render() -> int:
+    return max(
+        1,
+        env_int(
+            "PYTEST_TRACE_EXPORTER_MAX_NEW_FETCH_PER_RENDER",
+            DEFAULT_MAX_NEW_FETCH_PER_RENDER,
+        ),
+    )
+
+
+def _shaped_entry_bytes(entry: ShapedEntry) -> int:
+    """Approximate resident bytes of a shaped (trace_info, rows) tuple.
+
+    Mirrors :func:`_trace_cache_entry_bytes`: a cheap serialized-size proxy
+    scaled by the parsed-object overhead factor, so the byte budget reflects the
+    in-RAM footprint rather than the compact JSON size.
+    """
+    try:
+        serialized = len(
+            json.dumps(entry, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        )
+    except (TypeError, ValueError):
+        return 0
+    return serialized * _TRACE_RAM_OVERHEAD
+
+
+def _store_shaped(trace_id: str, entry: ShapedEntry) -> None:
+    max_entries = _shaped_cache_max()
+    max_bytes = _shaped_cache_max_bytes()
+    if max_entries == 0 or max_bytes == 0:
+        return
+    entry_bytes = _shaped_entry_bytes(entry)
+    with _shaped_cache_lock:
+        global _shaped_cache_bytes
+        if not _shaped_cache:
+            _shaped_cache_sizes.clear()
+            _shaped_cache_bytes = 0
+        previous_size = _shaped_cache_sizes.pop(trace_id, 0)
+        _shaped_cache_bytes = max(0, _shaped_cache_bytes - previous_size)
+        _shaped_cache[trace_id] = entry
+        _shaped_cache_sizes[trace_id] = entry_bytes
+        _shaped_cache_bytes += entry_bytes
+        _shaped_cache.move_to_end(trace_id)
+        while len(_shaped_cache) > max_entries or _shaped_cache_bytes > max_bytes:
+            evicted_id, _ = _shaped_cache.popitem(last=False)
+            evicted_size = _shaped_cache_sizes.pop(evicted_id, 0)
+            _shaped_cache_bytes = max(0, _shaped_cache_bytes - evicted_size)
+
+
+def _fetch_and_shape(
+    trace_id: str, base_url: str, settle_seconds: float, now: float
+) -> ShapedEntry | None:
+    """Fetch a trace, shape it, and memoize the shape if it has settled.
+
+    Returns the shaped entry, or ``None`` if the fetch failed (the id is then
+    simply retried on a later render). Only settled (immutable) shapes are
+    cached, so an in-flight run's later spans are still picked up.
+    """
+    trace = get_trace(trace_id, base_url)
+    if trace is None:
+        return None
+    entry = extract_trace_rows(trace)
+    latest_micros = trace_start_time(trace)
+    if latest_micros and now - (latest_micros / 1_000_000) > settle_seconds:
+        _store_shaped(trace_id, entry)
+    return entry
+
+
+def _iter_window_shaped(
+    base_url: str | None = None,
+) -> Iterator[tuple[dict[str, str | int], list[dict[str, str | float]], bool]]:
+    """Yield ``(trace_info, rows, is_new)`` for the COMPLETE enumerated window.
+
+    Already-shaped (settled) traces are served straight from the shaped cache
+    with ``is_new=False`` and cost no Tempo round-trip. Traces not yet shaped are
+    fetched concurrently — but at most :func:`_max_new_fetch_per_render` of them
+    per render — and yielded with ``is_new=True``; any beyond that cap are
+    deferred to a later render. ``is_new`` lets the caller emit the
+    high-cardinality per-test series only for freshly-seen traces (Prometheus
+    retains the rest), keeping the payload small while the roll-ups still see the
+    whole window.
+    """
+    if base_url is None:
+        base_url = tempo_base_url()
+    limit = env_int("PYTEST_TRACE_EXPORTER_LIMIT", DEFAULT_LIMIT)
+    lookback = os.getenv("PYTEST_TRACE_EXPORTER_LOOKBACK", DEFAULT_LOOKBACK)
+    service_name = os.getenv("PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME)
+    settle_seconds = _trace_settle_seconds()
+    now = time.time()
+
+    end = int(now)
+    start = end - parse_lookback_seconds(lookback)
+    trace_ids, truncated = search_all_trace_ids(base_url, service_name, start, end, limit)
+
+    # Partition the window into shapes we already hold (free) and ids we still
+    # need to fetch (bounded this render).
+    uncached: list[str] = []
+    with _shaped_cache_lock:
+        for trace_id in trace_ids:
+            entry = _shaped_cache.get(trace_id)
+            if entry is None:
+                uncached.append(trace_id)
+            else:
+                _shaped_cache.move_to_end(trace_id)
+    cached_ids = [tid for tid in trace_ids if tid not in set(uncached)]
+
+    max_new = _max_new_fetch_per_render()
+    to_fetch = uncached[:max_new]
+    deferred = len(uncached) - len(to_fetch)
+
+    with _enumeration_lock:
+        global _last_enumeration_total, _last_enumeration_truncated
+        global _last_enumeration_deferred
+        _last_enumeration_total = len(trace_ids)
+        _last_enumeration_truncated = truncated
+        _last_enumeration_deferred = deferred
+
+    # Yield the cache hits first (no I/O), then stream the fetched ones.
+    for trace_id in cached_ids:
+        with _shaped_cache_lock:
+            entry = _shaped_cache.get(trace_id)
+        if entry is not None:
+            yield entry[0], entry[1], False
+
+    if not to_fetch:
+        return
+
+    workers = max(
+        1,
+        min(
+            env_int(
+                "PYTEST_TRACE_EXPORTER_FETCH_CONCURRENCY", DEFAULT_FETCH_CONCURRENCY
+            ),
+            len(to_fetch),
+        ),
+    )
+    pending = iter(to_fetch)
+    with ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="trace-fetch"
+    ) as pool:
+        inflight = {
+            pool.submit(_fetch_and_shape, tid, base_url, settle_seconds, now)
+            for tid in islice(pending, workers)
+        }
+        while inflight:
+            done, inflight = wait(inflight, return_when=FIRST_COMPLETED)
+            for future in done:
+                nxt = next(pending, None)
+                if nxt is not None:
+                    inflight.add(
+                        pool.submit(
+                            _fetch_and_shape, nxt, base_url, settle_seconds, now
+                        )
+                    )
+                try:
+                    entry = future.result()
+                except Exception:
+                    entry = None
+                if entry is not None:
+                    yield entry[0], entry[1], True
 
 
 def fetch_resource_records() -> list[dict[str, str | float | int]]:
@@ -1140,6 +1457,29 @@ def _precompute_trace_rows(
     traces: list[dict],
 ) -> list[tuple[dict[str, str | int], list[dict[str, str | float]]]]:
     return [extract_trace_rows(trace) for trace in traces]
+
+
+def latest_trace_info_lines(trace_info: dict[str, str | int]) -> list[str]:
+    """Emit the 'latest-trace' pointer markers from an already-shaped trace_info.
+
+    The render works from shaped (trace_info, rows) entries — the raw trace for
+    a cache hit is long gone — so this takes the shaped info directly rather
+    than re-deriving it from a raw trace.
+    """
+    info_labels = {
+        "pr": str(trace_info["pr"]),
+        "run_id": str(trace_info["run_id"]),
+        "test_job": str(trace_info["test_job"]),
+        "provider": str(trace_info["provider"]),
+        "service_name": str(trace_info["service_name"]),
+        "trace_id": str(trace_info["trace_id"]),
+    }
+    return [
+        "# HELP pytest_latest_trace_info Metadata for the latest pytest trace visible to the exporter.",
+        "# TYPE pytest_latest_trace_info gauge",
+        f"pytest_latest_trace_info{metric_labels(info_labels)} 1",
+        f"pytest_latest_trace_start_time_seconds{metric_labels(info_labels)} {int(trace_info['latest_start_time']) / 1_000_000:.6f}",
+    ]
 
 
 def extract_latest_trace_metrics(trace: dict) -> list[str]:
@@ -1765,9 +2105,11 @@ def settled_runs_complete_extracted(
 
     For every run with at least one trace in the current window that has not
     received a new trace for ``settle_seconds``, gather all of its member
-    traces — the in-window ones plus any aged-out ones still in the trace cache
-    — so the roll-up reflects the whole run. Runs still ingesting are skipped
-    this cycle (so only one stable, complete series is ever emitted per run).
+    traces — the in-window ones plus any aged-out ones still cached — so the
+    roll-up reflects the whole run. Aged-out members are resolved from the
+    shaped cache (small per-entry, holds the whole window+) and, failing that,
+    the raw trace cache. Runs still ingesting are skipped this cycle (so only
+    one stable, complete series is ever emitted per run).
     """
     by_trace_id: dict[
         str, tuple[dict[str, str | int], list[dict[str, str | float]]]
@@ -1790,6 +2132,11 @@ def settled_runs_complete_extracted(
                 entry = by_trace_id.get(trace_id)
                 if entry is not None:
                     complete.append(entry)
+                    continue
+                with _shaped_cache_lock:
+                    shaped = _shaped_cache.get(trace_id)
+                if shaped is not None:
+                    complete.append(shaped)
                     continue
                 cached = _trace_cache.get(trace_id)
                 if cached is not None:
@@ -2032,24 +2379,31 @@ def _iter_metric_lines() -> Iterator[str]:
     before the next, so peak is one group plus the shaped rows, not all lines at
     once.
     """
-    global _traces_processed_total
+    global _traces_processed_total, _previous_new_ids
     started = time.monotonic()
-    # Shape each trace into small rows and drop the (multi-MB) raw trace
-    # immediately, so peak memory is the shaped rows + the fetch window + a
-    # single retained "latest" trace — never every raw trace at once.
+    # The window is enumerated completely (every trace id, not just the newest
+    # ``limit``) and assembled mostly from the shaped cache; only traces seen for
+    # the first time are fetched this cycle. ``is_new`` marks those, so the
+    # high-cardinality per-test series is emitted only for fresh traces (plus a
+    # one-render carryover) while the roll-ups still aggregate the whole window —
+    # Prometheus' last_over_time retains the rest, keeping the payload small.
     extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] = []
-    latest: dict | None = None
+    latest_info: dict[str, str | int] | None = None
     latest_start = -1
-    trace_count = 0
+    current_new_ids: set[str] = set()
+    new_count = 0
     try:
-        for trace in iter_traces():
-            trace_count += 1
-            extracted.append(extract_trace_rows(trace))
-            start = trace_start_time(trace)
+        for trace_info, rows, is_new in _iter_window_shaped():
+            extracted.append((trace_info, rows))
+            trace_id = str(trace_info.get("trace_id", ""))
+            if is_new:
+                new_count += 1
+                if trace_id:
+                    current_new_ids.add(trace_id)
+            start = int(trace_info.get("latest_start_time", 0) or 0)
             if start > latest_start:
                 latest_start = start
-                latest = trace
-            # All other traces fall out of scope here and are reclaimed.
+                latest_info = trace_info
         resource_records = fetch_resource_records()
     except Exception as error:
         yield "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo."
@@ -2082,14 +2436,40 @@ def _iter_metric_lines() -> Iterator[str]:
         extracted, now, _run_settle_seconds()
     )
 
+    # Per-test is emitted only for traces newly seen this render plus the
+    # previous render's new ids (the one-render carryover), so the same
+    # high-cardinality series is never emitted twice in one payload (duplicate
+    # samples are rejected) yet always lands in at least two consecutive
+    # payloads. Everything else aggregates the COMPLETE window.
+    emit_per_test_ids = current_new_ids | _previous_new_ids
+    per_test_extracted = [
+        (info, rows)
+        for info, rows in extracted
+        if str(info.get("trace_id", "")) in emit_per_test_ids
+    ]
+    _previous_new_ids = current_new_ids
+
+    with _enumeration_lock:
+        enumeration_truncated = _last_enumeration_truncated
+        enumeration_deferred = _last_enumeration_deferred
+
     yield "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo."
     yield "# TYPE pytest_trace_exporter_up gauge"
     yield "pytest_trace_exporter_up 1"
-    yield "# HELP pytest_trace_exporter_trace_count Number of traces fetched from Tempo for aggregation."
+    yield "# HELP pytest_trace_exporter_trace_count Number of traces aggregated from the window this render."
     yield "# TYPE pytest_trace_exporter_trace_count gauge"
-    yield f"pytest_trace_exporter_trace_count {trace_count}"
+    yield f"pytest_trace_exporter_trace_count {len(extracted)}"
+    yield "# HELP pytest_trace_exporter_traces_deferred Window traces not yet fetched this render (picked up on a later render)."
+    yield "# TYPE pytest_trace_exporter_traces_deferred gauge"
+    yield f"pytest_trace_exporter_traces_deferred {enumeration_deferred}"
+    yield "# HELP pytest_trace_exporter_enumeration_truncated 1 if window enumeration hit its slice budget (possibly incomplete)."
+    yield "# TYPE pytest_trace_exporter_enumeration_truncated gauge"
+    yield (
+        "pytest_trace_exporter_enumeration_truncated "
+        f"{1 if enumeration_truncated else 0}"
+    )
     yield from extract_ci_runner_execution_metrics(_extracted=extracted)
-    yield from extract_per_test_duration_metrics(_extracted=extracted)
+    yield from extract_per_test_duration_metrics(_extracted=per_test_extracted)
     yield from extract_run_rollup_metrics(_extracted=rollup_extracted)
     yield from extract_run_info_metrics(_extracted=rollup_extracted)
     yield from extract_pr_info_metrics([], _extracted=extracted)
@@ -2097,11 +2477,11 @@ def _iter_metric_lines() -> Iterator[str]:
     yield from extract_average_metrics([], _extracted=extracted)
     yield from extract_average_resource_metrics(resource_records)
 
-    _traces_processed_total += trace_count
+    _traces_processed_total += new_count
     yield from _exporter_self_metric_lines(time.monotonic() - started)
 
-    if latest is not None:
-        yield from extract_latest_trace_metrics(latest)
+    if latest_info is not None:
+        yield from latest_trace_info_lines(latest_info)
 
 
 def _render_metrics_uncached() -> str:
@@ -2682,13 +3062,16 @@ def _mem_soft_limit_bytes() -> int:
 
 
 def _relieve_memory_pressure() -> None:
-    """Before a render, if RSS is over the soft limit, drop the settled-trace
-    cache so the render reuses freed heap instead of stacking new allocations on
-    a near-full process and tipping into the hard cgroup limit (an OOM-kill).
+    """Before a render, if RSS is over the soft limit, drop the reclaimable
+    trace caches so the render reuses freed heap instead of stacking new
+    allocations on a near-full process and tipping into the hard cgroup limit
+    (an OOM-kill).
 
-    The cache is the only large *reclaimable* state the exporter holds; Tempo is
-    its durable source, so a dropped trace is just re-fetched. Best-effort — a
-    pure safety valve under load, off when MEM_SOFT_MB <= 0.
+    Both the raw-trace cache and the (now larger) shaped-window cache are
+    reclaimable; Tempo is the durable source, so a dropped entry is just
+    re-fetched — bounded by the per-render fetch cap, and the run-settle gate
+    means a run's roll-up still waits until its re-fetched shards are back.
+    Best-effort — a pure safety valve under load, off when MEM_SOFT_MB <= 0.
     """
     soft = _mem_soft_limit_bytes()
     if soft <= 0:
@@ -2696,12 +3079,17 @@ def _relieve_memory_pressure() -> None:
     rss = _process_resident_bytes()
     if rss is None or rss < soft:
         return
-    global _trace_cache_bytes
+    global _trace_cache_bytes, _shaped_cache_bytes
     with _trace_cache_lock:
         dropped = len(_trace_cache)
         _trace_cache.clear()
         _trace_cache_sizes.clear()
         _trace_cache_bytes = 0
+    with _shaped_cache_lock:
+        dropped += len(_shaped_cache)
+        _shaped_cache.clear()
+        _shaped_cache_sizes.clear()
+        _shaped_cache_bytes = 0
     print(
         f"[pytest-trace-exporter] RSS {rss // (1024 * 1024)}MiB over soft limit "
         f"{soft // (1024 * 1024)}MiB; dropped {dropped} cached traces to cap growth",
