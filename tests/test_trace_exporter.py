@@ -1663,3 +1663,67 @@ def test_pr_badge_uses_prometheus_rollups_before_tempo(monkeypatch) -> None:
     assert "1 failed" in svg
     assert "4 tests" in svg
     assert "3 jobs" in svg
+
+
+def test_pr_badge_prefers_prometheus_job_rollups_for_latest_run(monkeypatch) -> None:
+    """The PR dashboard derives latest-run failures from job rollups, so the
+    badge should not underreport when run-level and job-level rollups diverge."""
+    trace_exporter._pr_summary_cache.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
+    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
+
+    def _query(url):
+        labels = {
+            "pr": "45638",
+            "provider": "github_actions",
+            "run_id": "latest",
+            "service_name": "pytest-observability",
+        }
+        rows = [
+            ("pytest_run_start_time_seconds", labels, "200"),
+            ("pytest_run_end_time_seconds", labels, "260"),
+            ("pytest_run_total_tests", labels, "4"),
+            ("pytest_run_failed_tests", labels, "0"),
+            ("pytest_run_duration_seconds", labels, "12.5"),
+            ("pytest_run_job_count", labels, "2"),
+            (
+                "pytest_run_job_total_tests",
+                {**labels, "test_job": "tests_non_model"},
+                "3",
+            ),
+            (
+                "pytest_run_job_failed_tests",
+                {**labels, "test_job": "tests_non_model"},
+                "1",
+            ),
+            (
+                "pytest_run_job_total_tests",
+                {**labels, "test_job": "tests_torch"},
+                "1",
+            ),
+            (
+                "pytest_run_job_failed_tests",
+                {**labels, "test_job": "tests_torch"},
+                "0",
+            ),
+        ]
+        return {
+            "status": "success",
+            "data": {
+                "result": [
+                    {"metric": {"__name__": name, **metric_labels}, "value": [0, value]}
+                    for name, metric_labels, value in rows
+                ]
+            },
+        }
+
+    def _must_not_search(*args, **kwargs):
+        raise AssertionError("Tempo search must not run when Prometheus has rollups")
+
+    monkeypatch.setattr(trace_exporter, "_http_get_json", _query)
+    monkeypatch.setattr(trace_exporter, "search_trace_ids", _must_not_search)
+
+    svg = trace_exporter.render_pr_badge_svg("45638").decode()
+    assert "1 failed" in svg
+    assert "4 tests" in svg
+    assert "2 jobs" in svg

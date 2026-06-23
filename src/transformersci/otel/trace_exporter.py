@@ -2380,9 +2380,11 @@ def _pr_run_summary_from_prometheus(
 ) -> dict[str, str | float | int | None] | None:
     """Read a PR's latest run from Prometheus rollups.
 
-    This is much cheaper than the Tempo fallback: the run-level badge fields are
-    already persisted as low-cardinality series, while Tempo has to scan blocks
-    and fetch full traces.
+    This is much cheaper than the Tempo fallback: the badge fields are already
+    persisted as low-cardinality series, while Tempo has to scan blocks and
+    fetch full traces. Prefer job-level totals for the selected run because the
+    PR dashboard uses those and they can be more complete than the run-level
+    aggregate while a run is settling.
     """
     base_url = prometheus_base_url()
     if not base_url:
@@ -2393,7 +2395,10 @@ def _pr_run_summary_from_prometheus(
         "pytest_run_total_tests|"
         "pytest_run_failed_tests|"
         "pytest_run_duration_seconds|"
-        "pytest_run_job_count"
+        "pytest_run_job_count|"
+        "pytest_run_job_member_info|"
+        "pytest_run_job_total_tests|"
+        "pytest_run_job_failed_tests"
     )
     query = (
         f'last_over_time({{__name__=~"{metric_pattern}",pr="{pr}"}}'
@@ -2414,6 +2419,9 @@ def _pr_run_summary_from_prometheus(
         return None
 
     lines: list[str] = []
+    job_values: dict[
+        tuple[tuple[str, str, str, str], str], dict[str, float | bool]
+    ] = {}
     for item in result:
         if not isinstance(item, dict):
             continue
@@ -2429,8 +2437,64 @@ def _pr_run_summary_from_prometheus(
         if not isinstance(metric_name, str):
             continue
         labels = {str(k): str(v) for k, v in metric.items() if k != "__name__"}
+        try:
+            metric_value = float(value[1])
+        except (TypeError, ValueError):
+            continue
         lines.append(f"{metric_name}{metric_labels(labels)} {value[1]}")
-    return _latest_pr_run_summary(pr, source="\n".join(lines)) if lines else None
+        if metric_name not in {
+            "pytest_run_job_member_info",
+            "pytest_run_job_total_tests",
+            "pytest_run_job_failed_tests",
+        }:
+            continue
+        test_job = labels.get("test_job", "")
+        if not test_job:
+            continue
+        run_key = (
+            labels.get("service_name", ""),
+            labels.get("provider", ""),
+            labels.get("pr", ""),
+            labels.get("run_id", ""),
+        )
+        job_key = (run_key, test_job)
+        aggregate = job_values.setdefault(
+            job_key, {"member": False, "total_tests": 0.0, "failed_tests": 0.0}
+        )
+        if metric_name == "pytest_run_job_member_info":
+            aggregate["member"] = True
+        elif metric_name == "pytest_run_job_total_tests":
+            aggregate["total_tests"] = max(
+                float(aggregate["total_tests"]), metric_value
+            )
+        elif metric_name == "pytest_run_job_failed_tests":
+            aggregate["failed_tests"] = max(
+                float(aggregate["failed_tests"]), metric_value
+            )
+    summary = _latest_pr_run_summary(pr, source="\n".join(lines)) if lines else None
+    if summary is None:
+        return None
+
+    summary_key = (
+        str(summary.get("service_name") or ""),
+        str(summary.get("provider") or ""),
+        str(summary.get("pr") or ""),
+        str(summary.get("run_id") or ""),
+    )
+    matching_jobs = [
+        aggregate
+        for (run_key, _), aggregate in job_values.items()
+        if run_key == summary_key
+    ]
+    if matching_jobs:
+        summary["total_tests"] = sum(
+            float(aggregate["total_tests"]) for aggregate in matching_jobs
+        )
+        summary["failed_tests"] = sum(
+            float(aggregate["failed_tests"]) for aggregate in matching_jobs
+        )
+        summary["job_count"] = len(matching_jobs)
+    return summary
 
 
 def _pr_extracted_rows(
