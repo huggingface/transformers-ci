@@ -1,4 +1,17 @@
 :80 {
+	# Trace-exporter helper endpoints on bare paths, matching the kube ALB
+	# ingress (/failure, /badge, /summary). Keeping these identical across both
+	# deployments lets the dashboards in dashboard/ be a single source of truth.
+	handle /failure* {
+		reverse_proxy pytest-trace-exporter:8000
+	}
+	handle /badge* {
+		reverse_proxy pytest-trace-exporter:8000
+	}
+	handle /summary* {
+		reverse_proxy pytest-trace-exporter:8000
+	}
+	# Backward-compat alias: the old /exporter/* prefix still works (stripped).
 	handle_path /exporter/* {
 		reverse_proxy pytest-trace-exporter:8000
 	}

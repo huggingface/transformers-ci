@@ -159,22 +159,25 @@ externalSecret:
 
 ## Keeping Docker Compose and Helm in Sync
 
-The `dashboard/` directory contains the Docker Compose configuration. The
-`deploy/helm/` directory is the Kubernetes/Helm source of truth. Both live in
-this repo, so dashboard and observability changes can be made together.
+The `dashboard/` directory is the **single source of truth** for the dashboard
+JSONs (it's where contributors edit them, and the Docker Compose stack mounts
+them directly). The entries under `deploy/helm/dashboards/` are **symlinks** into
+`dashboard/` — Helm follows them when embedding the chart, so there is only ever
+one real copy and nothing to sync. (Recreate a link with
+`ln -s ../../../dashboard/<file> deploy/helm/dashboards/<file>`.)
+
+The exporter helper endpoints use the same bare paths (`/failure`, `/badge`,
+`/summary`) in both deployments, so a single dashboard JSON works for both.
 
 ### Dashboard Changes
 
-When dashboards are updated in `dashboard/`:
-
-```bash
-cp dashboard/*.json deploy/helm/dashboards/
-```
+Edit dashboards in `dashboard/` only — the chart symlinks pick the changes up
+automatically.
 
 Checklist:
 
 - [ ] New dashboards: add the JSON file to `grafana.dashboards.files` in `helm/values.yaml`
-- [ ] Existing dashboards: copy the updated JSON into `deploy/helm/dashboards/`
+- [ ] Version bump: run `dashboard/bump-version.sh X.Y.Z` (edits the canonical `dashboard/` copies)
 
 ### Source Code Changes
 

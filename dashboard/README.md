@@ -150,16 +150,20 @@ limits, export `PYTEST_GITHUB_TOKEN` before starting the stack. Optional knobs:
 
 ### GitHub PR Integration
 
-Caddy exposes the trace exporter under `/exporter/*`. The exporter serves a
-small live SVG badge and JSON summary for a PR from its cached metrics payload:
+The trace exporter is exposed on bare paths (`/failure`, `/badge`, `/summary`),
+identical across the compose and kube deployments. The exporter serves a small
+live SVG badge and JSON summary for a PR from its cached metrics payload:
 
 ```md
-[![CI](https://transformers-ci.lor-e.huggingface.cool/exporter/badge/pr?pr=46767)](https://transformers-ci.lor-e.huggingface.cool/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=46767)
+[![CI](https://transformers-ci.lor-e.huggingface.cool/badge/pr?pr=46767)](https://transformers-ci.lor-e.huggingface.cool/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=46767)
 ```
 
 ```sh
-curl -fsS "https://transformers-ci.lor-e.huggingface.cool/exporter/summary/pr?pr=46767"
+curl -fsS "https://transformers-ci.lor-e.huggingface.cool/summary/pr?pr=46767"
 ```
+
+(The old `/exporter/*` prefix still works on the compose deployment as a
+backward-compatible alias.)
 
 ## Tempo
 

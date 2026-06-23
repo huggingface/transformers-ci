@@ -35,6 +35,12 @@
       "title": "Back to PR",
       "type": "link",
       "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr}"
+    },
+    {
+      "targetBlank": true,
+      "title": "Grafana Explore",
+      "type": "link",
+      "url": "/explore?orgId=1"
     }
   ],
   "panels": [
@@ -100,7 +106,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(last_over_time(pytest_run_job_total_tests{test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[90d]))",
+          "expr": "sum(last_over_time(pytest_run_job_total_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -156,7 +162,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(last_over_time(pytest_run_job_passed_tests{test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[90d])) or vector(0)",
+          "expr": "sum(last_over_time(pytest_run_job_passed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range])) or vector(0)",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -217,7 +223,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(last_over_time(pytest_run_job_failed_tests{test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[90d])) or vector(0)",
+          "expr": "sum(last_over_time(pytest_run_job_failed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range])) or vector(0)",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -274,7 +280,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(last_over_time(pytest_run_job_duration_seconds{test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[90d]))",
+          "expr": "sum(last_over_time(pytest_run_job_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -331,7 +337,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "max(last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\",run_id=~\"$run_id\"}[90d])) * 1000",
+          "expr": "max(last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range])) * 1000",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -486,7 +492,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk($test_limit, last_over_time(pytest_test_duration_seconds{test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",status_code=~\"$status_filter\"}[90d]))",
+          "expr": "topk($test_limit, last_over_time(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",status_code=~\"$status_filter\"}[$__range]))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -540,6 +546,32 @@
   "templating": {
     "list": [
       {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(pytest_run_start_time_seconds, service_name)",
+        "includeAll": true,
+        "label": "Service",
+        "multi": false,
+        "name": "service",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_run_start_time_seconds, service_name)",
+          "refId": "Prometheus-service-Variable-Query"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      },
+      {
         "current": {
           "selected": false,
           "text": "",
@@ -549,7 +581,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_run_job_member_info{}, test_job)",
+        "definition": "label_values(pytest_run_job_member_info{service_name=~\"$service\"}, test_job)",
         "includeAll": false,
         "label": "Job",
         "multi": false,
@@ -557,7 +589,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_run_job_member_info{}, test_job)",
+          "query": "label_values(pytest_run_job_member_info{service_name=~\"$service\"}, test_job)",
           "refId": "Prometheus-job-Variable-Query"
         },
         "refresh": 2,
@@ -575,7 +607,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_run_job_member_info{test_job=~\"$job\"}, pr)",
+        "definition": "label_values(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\"}, pr)",
         "includeAll": true,
         "label": "PR",
         "multi": false,
@@ -583,7 +615,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_run_job_member_info{test_job=~\"$job\"}, pr)",
+          "query": "label_values(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\"}, pr)",
           "refId": "Prometheus-pr-Variable-Query"
         },
         "refresh": 2,
@@ -671,14 +703,11 @@
     ]
   },
   "time": {
-    "from": "now-90d",
+    "from": "now-24h",
     "to": "now"
   },
   "timezone": "browser",
-  "title": "Job",
+  "title": "Pytest Observability - Job",
   "uid": "pytest-observability-by-job",
-  "version": 1,
-  "timepicker": {
-    "hidden": true
-  }
+  "version": 1
 }
