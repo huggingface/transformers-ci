@@ -24,6 +24,20 @@ data:
         max_duration: 26h
         concurrent_jobs: 200
 
+    # Per-trace span budget. A sharded CI job emits ONE trace per shard with 10k+
+    # spans; at ~2.6 KB/span a shard trace is ~20-45 MB. Tempo's default
+    # max_bytes_per_trace is 5 MB, which silently dropped ~70% of every shard's
+    # spans (tempo_discarded_spans_total{reason="trace_too_large"} ran into the
+    # tens of millions) and capped each shard at ~1,880 tests in the dashboards —
+    # so a run that really ran ~52k tests showed ~15k. Raise it to match the
+    # 64 MiB OTLP body limit set on the distributor below so whole shard traces
+    # persist. (Bigger live traces cost ingester RAM — watch Tempo RSS vs its
+    # GOMEMLIMIT/4Gi limit; lower this or raise the limit if it climbs.)
+    overrides:
+      defaults:
+        global:
+          max_bytes_per_trace: 67108864  # 64 MiB (was 5 MB default)
+
     server:
       http_listen_port: 3200
       log_level: info
