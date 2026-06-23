@@ -930,7 +930,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(tempo_ingester_traces_created_total[5m])) * pytest_trace_exporter_render_duration_seconds) / pytest_trace_exporter_limit",
+          "expr": "scalar(sum(rate(tempo_ingester_traces_created_total[1h]))) * scalar(max(pytest_trace_exporter_render_duration_seconds)) / scalar(max(pytest_trace_exporter_limit))",
           "instant": true,
           "legendFormat": "window pressure",
           "range": false,
@@ -1703,15 +1703,15 @@
         "name": "dashboard_version",
         "type": "constant",
         "label": "Dashboard version",
-        "query": "0.1.10",
+        "query": "0.1.11",
         "current": {
-          "text": "0.1.10",
-          "value": "0.1.10"
+          "text": "0.1.11",
+          "value": "0.1.11"
         },
         "options": [
           {
-            "text": "0.1.10",
-            "value": "0.1.10",
+            "text": "0.1.11",
+            "value": "0.1.11",
             "selected": true
           }
         ],
