@@ -1617,6 +1617,13 @@ def test_pr_fallback_result_is_memoized_per_pr(monkeypatch) -> None:
     assert calls["n"] == 1
 
 
+def test_pr_badge_color_matches_main_dashboard_failure_rate_thresholds() -> None:
+    assert trace_exporter._badge_failure_color(0, 100) == "green"
+    assert trace_exporter._badge_failure_color(1, 19_801) == "94B45F"
+    assert trace_exporter._badge_failure_color(1, 100) == "orange"
+    assert trace_exporter._badge_failure_color(10, 100) == "red"
+
+
 def test_pr_badge_uses_prometheus_rollups_before_tempo(monkeypatch) -> None:
     """When the live payload misses, query Prometheus rollups before doing the
     expensive Tempo search+full-trace fetch fallback."""

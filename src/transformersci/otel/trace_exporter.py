@@ -2325,6 +2325,19 @@ def _format_badge_count(value: object) -> str:
     return f"{int(value):,}"
 
 
+def _badge_failure_color(failed: int, total: int) -> str:
+    if failed <= 0:
+        return "green"
+    if total <= 0:
+        return "red"
+    failure_rate = 100 * failed / total
+    if failure_rate < 1:
+        return "94B45F"
+    if failure_rate < 10:
+        return "orange"
+    return "red"
+
+
 # ---------------------------------------------------------------------------
 # On-demand per-PR lookup (badge / summary fallback)
 #
@@ -2609,10 +2622,11 @@ def render_pr_badge_svg(pr: str) -> bytes:
         color = "9f9f9f"
     else:
         failed = int(float(summary.get("failed_tests") or 0))
+        total_value = int(float(summary.get("total_tests") or 0))
         total = _format_badge_count(summary.get("total_tests"))
         jobs = _format_badge_count(summary.get("job_count"))
         message = f"{failed} failed / {total} tests / {jobs} jobs"
-        color = "e05d44" if failed else "4c1"
+        color = _badge_failure_color(failed, total_value)
 
     label = f"PR {pr} CI"
     label_width = max(70, 7 * len(label) + 10)
