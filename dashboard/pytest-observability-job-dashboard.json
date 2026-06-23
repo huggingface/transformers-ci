@@ -106,7 +106,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(last_over_time(pytest_run_job_total_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))",
+          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_total_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range])))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -162,7 +162,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(last_over_time(pytest_run_job_passed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range])) or vector(0)",
+          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_passed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))) or vector(0)",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -223,7 +223,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(last_over_time(pytest_run_job_failed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range])) or vector(0)",
+          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))) or vector(0)",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -280,7 +280,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(last_over_time(pytest_run_job_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))",
+          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range])))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -337,7 +337,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "max(last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range])) * 1000",
+          "expr": "max(max without (instance) (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))) * 1000",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -492,7 +492,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk($test_limit, last_over_time(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",status_code=~\"$status_filter\"}[$__range]))",
+          "expr": "topk($test_limit, max without (instance) (last_over_time(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",status_code=~\"$status_filter\"}[$__range])))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",

@@ -85,7 +85,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "(sum(last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])))",
+          "expr": "(sum(max without (instance) (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -147,7 +147,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "(sum(last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d])) or vector(0))",
+          "expr": "(sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]))) or vector(0))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -217,7 +217,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "floor((100 * ((sum(last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))) - (sum(last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d])) or vector(0))) / (sum(last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d])) or sum(last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])))) * 100) / 100",
+          "expr": "floor((100 * ((sum(max without (instance) (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])))) - (sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]))) or vector(0))) / (sum(max without (instance) (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))))) * 100) / 100",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -275,7 +275,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "min(last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\"}[90d])) * 1000",
+          "expr": "min(max without (instance) (last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\"}[90d]))) * 1000",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -459,7 +459,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk($test_limit, last_over_time(pytest_test_duration_seconds{run_id=~\"$run_id\",status_code=~\"$status_filter\"}[90d]))",
+          "expr": "topk($test_limit, max without (instance) (last_over_time(pytest_test_duration_seconds{run_id=~\"$run_id\",status_code=~\"$status_filter\"}[90d])))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -643,7 +643,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (last_over_time(pytest_run_job_member_info{run_id=~\"$run_id\"}[90d]) * on (run_id) group_left() max by (run_id)(last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\"}[90d]))) * 1000"
+          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_member_info{run_id=~\"$run_id\"}[90d])) * on (run_id) group_left() max by (run_id)(max without (instance) (last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\"}[90d])))) * 1000"
         },
         {
           "refId": "Duration",
@@ -652,7 +652,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (last_over_time(pytest_run_job_duration_seconds{run_id=~\"$run_id\"}[90d]))"
+          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_duration_seconds{run_id=~\"$run_id\"}[90d])))"
         },
         {
           "refId": "Pass",
@@ -661,7 +661,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (last_over_time(pytest_run_job_passed_tests{run_id=~\"$run_id\"}[90d]))"
+          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_passed_tests{run_id=~\"$run_id\"}[90d])))"
         },
         {
           "refId": "Fail",
@@ -670,7 +670,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d]))"
+          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d])))"
         }
       ],
       "title": "Jobs",

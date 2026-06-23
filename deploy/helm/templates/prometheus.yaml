@@ -89,6 +89,14 @@ data:
             target_label: __address__
             regex: ([^:]+)(?::\d+)?;(\d+)
             replacement: $1:$2
+          # Pin `instance` to a constant. The exporter is a singleton renderer of
+          # the GLOBAL CI snapshot, not per-pod data, so the default per-pod IP
+          # instance label is wrong: every rollout minted a new instance and its
+          # series lingered for the 90d retention, so dashboard sum()/count()
+          # double-counted across dead pods. A constant instance makes a
+          # replacement pod continue the same series instead of forking a new one.
+          - target_label: instance
+            replacement: trace-exporter
 
       # Infrastructure metrics: observability stack itself (tempo, grafana,
       # otelcol). These are high-cardinality but the single Prometheus in k8s
