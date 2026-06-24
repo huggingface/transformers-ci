@@ -95,3 +95,60 @@ def test_logging_export_counts_exception_as_lost(monkeypatch) -> None:
     assert tally.exported == 0
     assert tally.failed == 2
     assert tally.failed_calls == 1
+
+
+class _FakeExporter:
+    """Stand-in for an OTLPSpanExporter carrying a resolved ``_timeout``."""
+
+    def __init__(self, timeout) -> None:
+        self._timeout = timeout
+
+    def export(self, spans):
+        return _FakeResult()
+
+
+def test_logging_export_line_reports_exporter_timeout(monkeypatch, capsys) -> None:
+    tally = debug_exporter._SpanTally()
+    monkeypatch.setattr(debug_exporter, "_TALLY", tally)
+
+    exporter = _FakeExporter(timeout=30)
+    wrapped = debug_exporter._make_logging_export(_FakeExporter.export)
+    wrapped(exporter, ["s1", "s2"])
+
+    line = capsys.readouterr().err
+    # The resolved per-export timeout must show next to duration so a timeout
+    # failure (duration ≈ timeout) is self-evident in the log.
+    assert "timeout_s=30" in line
+
+
+def test_logging_export_timeout_unknown_when_absent(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(debug_exporter, "_TALLY", debug_exporter._SpanTally())
+
+    wrapped = debug_exporter._make_logging_export(lambda self, spans: _FakeResult())
+    wrapped("self", ["s1"])  # plain object, no _timeout
+
+    assert "timeout_s=?" in capsys.readouterr().err
+
+
+def test_bsp_config_logged_once(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(debug_exporter, "_TALLY", debug_exporter._SpanTally())
+    monkeypatch.setattr(debug_exporter, "_BSP_CONFIG_LOGGED", False)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TIMEOUT", "30000")
+
+    class _FakeBSP:
+        max_queue_size = 2048
+        max_export_batch_size = 512
+        schedule_delay_millis = 5000
+        export_timeout_millis = 30000
+
+    processor = _FakeBSP()
+    wrapped = debug_exporter._make_counting_on_end(lambda self, span: None)
+    wrapped(processor, "span-a")
+    wrapped(processor, "span-b")
+
+    err = capsys.readouterr().err
+    # Logged exactly once, and carries the batch + timeout knobs.
+    assert err.count("OTEL DEBUG BSP CONFIG") == 1
+    assert "max_queue_size=2048" in err
+    assert "export_timeout_millis=30000" in err
+    assert "otlp_timeout_env=30000" in err

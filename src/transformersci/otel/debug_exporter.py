@@ -114,6 +114,46 @@ class _SpanTally:
 
 _TALLY = _SpanTally()
 _SUMMARY_REGISTERED = False
+# Print the BatchSpanProcessor config the first time we see a span flushed, so the
+# log records the effective queue/batch/timeout knobs (incl. anything
+# configure-ci-otel set via OTEL_BSP_* / OTEL_EXPORTER_OTLP_TIMEOUT) exactly once.
+_BSP_CONFIG_LOGGED = False
+_BSP_CONFIG_LOCK = threading.Lock()
+
+
+def _exporter_timeout_s(exporter) -> object:
+    """Best-effort read of an OTLP exporter's per-export timeout (seconds).
+
+    Both the HTTP and gRPC ``OTLPSpanExporter`` store the resolved timeout —
+    which is where ``OTEL_EXPORTER_OTLP_TIMEOUT`` / the constructor ``timeout``
+    actually lands — on ``_timeout``. Surfacing it next to ``duration_ms`` makes a
+    timeout failure self-evident (``duration_ms≈timeout_s*1000``) and confirms the
+    configured value really took effect. Returns "?" if the attribute is absent.
+    """
+    return getattr(exporter, "_timeout", "?")
+
+
+def _log_bsp_config_once(processor) -> None:
+    """Log the BatchSpanProcessor's queue/batch/timeout settings exactly once."""
+    global _BSP_CONFIG_LOGGED
+    if _BSP_CONFIG_LOGGED:
+        return
+    with _BSP_CONFIG_LOCK:
+        if _BSP_CONFIG_LOGGED:
+            return
+        _BSP_CONFIG_LOGGED = True
+    print(
+        "OTEL DEBUG BSP CONFIG "
+        f"max_queue_size={getattr(processor, 'max_queue_size', '?')} "
+        f"max_export_batch_size={getattr(processor, 'max_export_batch_size', '?')} "
+        f"schedule_delay_millis={getattr(processor, 'schedule_delay_millis', '?')} "
+        f"export_timeout_millis={getattr(processor, 'export_timeout_millis', '?')} "
+        f"otlp_timeout_env={os.getenv('OTEL_EXPORTER_OTLP_TIMEOUT', '<unset>')} "
+        f"(export_timeout_millis=BSP per-flush deadline; otlp_timeout_env=per-export "
+        f"OTLP client timeout — see timeout_s on each EXPORT line for the resolved value)",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _make_logging_export(original):
@@ -125,6 +165,7 @@ def _make_logging_export(original):
             or "<unset>"
         )
         protocol = os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+        timeout_s = _exporter_timeout_s(self)
         start = time.monotonic()
         try:
             result = original(self, spans)
@@ -135,8 +176,8 @@ def _make_logging_export(original):
             duration_ms = (time.monotonic() - start) * 1000
             print(
                 f"OTEL DEBUG EXPORT spans={n} result=EXCEPTION "
-                f"duration_ms={duration_ms:.1f} protocol={protocol} "
-                f"endpoint={endpoint} error={error!r}",
+                f"duration_ms={duration_ms:.1f} timeout_s={timeout_s} "
+                f"protocol={protocol} endpoint={endpoint} error={error!r}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -148,7 +189,8 @@ def _make_logging_export(original):
         _TALLY.record_export(n, ok=result_name == "SUCCESS")
         print(
             f"OTEL DEBUG EXPORT spans={n} result={result_name} "
-            f"duration_ms={duration_ms:.1f} protocol={protocol} endpoint={endpoint}",
+            f"duration_ms={duration_ms:.1f} timeout_s={timeout_s} "
+            f"protocol={protocol} endpoint={endpoint}",
             file=sys.stderr,
             flush=True,
         )
@@ -159,6 +201,7 @@ def _make_logging_export(original):
 
 def _make_counting_on_end(original):
     def on_end(self, span):
+        _log_bsp_config_once(self)
         _TALLY.record_produced(1)
         return original(self, span)
 
