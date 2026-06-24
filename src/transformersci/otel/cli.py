@@ -49,6 +49,16 @@ DEFAULT_SERVICE_NAME = "transformers-tests"
 DEFAULT_LOCAL_JOB = "local_pytest"
 LOCAL_PROVIDER = "local"
 OTEL_PING_TIMEOUT_SECONDS = 2.0
+# Per-OTLP-export timeout (milliseconds) the SDK exporter uses for each batch.
+# The OTel default is 10s; a heavy sharded run fires many full batches at a
+# single-replica collector through the ingress, and at ~5-10s the slow ones time
+# out and the batch is DROPPED after retries — the dominant cause of the dashboard
+# undercount (see docs/investigation-undercount-large-traces-2026-06-24.md). 30s
+# gives a congested ingest path room to ack and the exporter room to retry within
+# one export() call. Only set when the env doesn't already pin it, so a workflow
+# can still override.
+DEFAULT_OTLP_EXPORT_TIMEOUT_MS = 30000
+OTLP_TIMEOUT_ENV = "OTEL_EXPORTER_OTLP_TIMEOUT"
 # Read by the pytest plugin (resource_plugin) to attach a SECOND span processor
 # so every span is mirrored to a staging backend on top of the primary export.
 STAGING_ENDPOINT_ENV = "TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT"
@@ -641,6 +651,13 @@ def prepare_environment(
     )
     updated_env["OTEL_TRACES_EXPORTER"] = traces_exporter
     updated_env["OTEL_EXPORTER_OTLP_PROTOCOL"] = otel_protocol
+    # Give each batch export a generous timeout so a busy collector/ingress can
+    # ack large batches instead of timing out and dropping them. Respect an
+    # explicit override (either the generic or the traces-specific env).
+    if not updated_env.get(OTLP_TIMEOUT_ENV) and not updated_env.get(
+        "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT"
+    ):
+        updated_env[OTLP_TIMEOUT_ENV] = str(DEFAULT_OTLP_EXPORT_TIMEOUT_MS)
     attributes = build_resource_attributes(
         updated_env, provider, resolved_job, resolved_pr
     )

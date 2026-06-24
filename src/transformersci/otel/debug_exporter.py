@@ -47,42 +47,68 @@ _PATCH_FLAG = "_transformersci_debug_patched"
 
 
 class _SpanTally:
-    """Thread-safe running totals of spans produced vs exported this process.
+    """Thread-safe running totals of where this process's spans actually went.
 
-    ``produced`` counts ``BatchSpanProcessor.on_end`` calls (spans the SDK tried
-    to enqueue for export); ``exported`` sums ``len(spans)`` across every
-    ``export()`` call. Both sum across all active processors/pipelines, so with
-    the staging mirror attached each span is counted once per pipeline — the
-    ``produced - exported`` gap still reflects queue drops, just scaled by the
-    number of pipelines. ``on_end`` runs on the test threads and ``export`` on
-    the batch worker thread, hence the lock.
+    Four counters, each summed across all active processors/pipelines (so with
+    the staging mirror attached every span is counted once per pipeline):
+
+    - ``produced`` — ``BatchSpanProcessor.on_end`` calls (spans the SDK enqueued).
+    - ``submitted`` — spans passed to an exporter's ``export()`` (any outcome).
+    - ``exported`` — spans whose ``export()`` returned ``SUCCESS`` (confirmed
+      shipped to the OTLP endpoint).
+    - ``failed`` — spans whose ``export()`` returned ``FAILURE`` or raised. These
+      are **lost** once the SDK's retries are exhausted; the endpoint never got
+      them.
+
+    The earlier version recorded ``exported`` *before* calling ``export()``, so a
+    transport timeout/rejection still counted as exported and the summary's gap
+    only ever reflected BatchSpanProcessor *queue* overflow — it was blind to
+    export failures (the dominant span loss on a flaky/slow ingest path). Now the
+    outcome is recorded *after* the call, so ``failed`` surfaces that loss.
+    ``produced - submitted`` is the queue overflow; ``failed`` is the transport
+    loss. ``on_end`` runs on the test threads and ``export`` on the batch worker
+    thread, hence the lock.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self.produced = 0
+        self.submitted = 0
         self.exported = 0
+        self.failed = 0
         self.export_calls = 0
+        self.failed_calls = 0
 
     def record_produced(self, n: int = 1) -> None:
         with self._lock:
             self.produced += n
 
-    def record_exported(self, n: int) -> None:
+    def record_export(self, n: int, *, ok: bool) -> None:
+        """Record the outcome of one ``export()`` of ``n`` spans."""
         with self._lock:
-            self.exported += n
+            self.submitted += n
             self.export_calls += 1
+            if ok:
+                self.exported += n
+            else:
+                self.failed += n
+                self.failed_calls += 1
 
     def summary_line(self) -> str:
         with self._lock:
-            dropped = self.produced - self.exported
+            queue_dropped = self.produced - self.submitted
             return (
                 f"OTEL DEBUG SUMMARY produced={self.produced} "
-                f"exported={self.exported} not_exported={dropped} "
+                f"submitted={self.submitted} exported={self.exported} "
+                f"failed={self.failed} not_exported={queue_dropped} "
                 f"export_calls={self.export_calls} "
+                f"failed_calls={self.failed_calls} "
                 f"(produced=spans handed to BatchSpanProcessor; "
-                f"exported=spans passed to exporter; gap=queue drops, "
-                f"summed across pipelines)"
+                f"submitted=spans passed to exporter; "
+                f"exported=spans the exporter confirmed shipped (result=SUCCESS); "
+                f"failed=spans whose export returned FAILURE/raised — LOST after "
+                f"retries; not_exported=produced-submitted=BSP queue overflow; "
+                f"all summed across pipelines)"
             )
 
 
@@ -92,7 +118,7 @@ _SUMMARY_REGISTERED = False
 
 def _make_logging_export(original):
     def export(self, spans):
-        _TALLY.record_exported(len(spans))
+        n = len(spans)
         endpoint = (
             os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
             or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -103,9 +129,12 @@ def _make_logging_export(original):
         try:
             result = original(self, spans)
         except BaseException as error:
+            # An exception escaping export() means the batch was not shipped —
+            # tally it as failed (lost), not exported.
+            _TALLY.record_export(n, ok=False)
             duration_ms = (time.monotonic() - start) * 1000
             print(
-                f"OTEL DEBUG EXPORT spans={len(spans)} result=EXCEPTION "
+                f"OTEL DEBUG EXPORT spans={n} result=EXCEPTION "
                 f"duration_ms={duration_ms:.1f} protocol={protocol} "
                 f"endpoint={endpoint} error={error!r}",
                 file=sys.stderr,
@@ -114,8 +143,11 @@ def _make_logging_export(original):
             raise
         duration_ms = (time.monotonic() - start) * 1000
         result_name = getattr(result, "name", str(result))
+        # SpanExportResult.SUCCESS.name == "SUCCESS"; anything else (FAILURE) means
+        # the SDK exhausted its retries and dropped the batch — count it as lost.
+        _TALLY.record_export(n, ok=result_name == "SUCCESS")
         print(
-            f"OTEL DEBUG EXPORT spans={len(spans)} result={result_name} "
+            f"OTEL DEBUG EXPORT spans={n} result={result_name} "
             f"duration_ms={duration_ms:.1f} protocol={protocol} endpoint={endpoint}",
             file=sys.stderr,
             flush=True,

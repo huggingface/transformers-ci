@@ -16,13 +16,39 @@ receivers:
           authenticator: bearertokenauth
 
 processors:
+  # Cap heap so a burst can't OOM-kill the collector (which would drop every
+  # in-flight span). check_interval must be < the GC interval; limits sit under
+  # the 2Gi container limit so the limiter trips before the kernel does.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 1700
+    spike_limit_mib: 400
   batch:
+    # Larger batches to Tempo cut per-request overhead under a multi-million-span
+    # burst. send_batch_max_size stays within Tempo's 64 MiB OTLP body limit.
+    send_batch_size: 8192
+    send_batch_max_size: 16384
+    timeout: 5s
 
 exporters:
   otlp/tempo:
     endpoint: tempo:4317
     tls:
       insecure: true
+    # Single-replica Tempo can be slow to ack a large block-building push; give
+    # the leg a generous timeout and a deep on-disk-free queue so a momentary
+    # Tempo stall buffers in the collector instead of backpressuring the receiver
+    # and timing out the runner's export.
+    timeout: 30s
+    sending_queue:
+      enabled: true
+      queue_size: 10000
+      num_consumers: 10
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 120s
 
 service:
   telemetry:
@@ -32,7 +58,9 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
+      # memory_limiter must be first so it sheds load before the batcher buffers
+      # it; batch last so whole batches are shipped to Tempo.
+      processors: [memory_limiter, batch]
       exporters: [otlp/tempo]
 {{- end }}
 

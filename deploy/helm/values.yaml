@@ -43,18 +43,25 @@ ingress:
 # OpenTelemetry Collector
 #------------------------------------------------------------------------------
 otelcol:
-  replicas: 2
+  # 3 replicas (behind the ingress) so a sharded run's burst — 64 worker
+  # processes flushing full batches at once — spreads across more receivers
+  # instead of timing out a single congested collector (the dominant cause of the
+  # span-undercount; see docs/investigation-undercount-large-traces-2026-06-24.md).
+  replicas: 3
   image:
     repository: otel/opentelemetry-collector-contrib
     tag: "0.96.0"
     pullPolicy: IfNotPresent
 
+  # Headroom for the burst: a 512Mi/1Gi collector under a multi-million-span flush
+  # spends its time in GC and acks slowly, which backpressures the receiver and
+  # times out the runner's export. More memory + CPU keeps acks fast.
   resources:
     requests:
-      cpu: 200m
-      memory: 512Mi
-    limits:
+      cpu: 500m
       memory: 1Gi
+    limits:
+      memory: 2Gi
 
   receivers:
     otlp:

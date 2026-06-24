@@ -141,6 +141,32 @@ class ConfigureCiOtelTests(TestCase):
         self.assertEqual(env["OTEL_TRACES_EXPORTER"], "otlp_proto_http")
         self.assertEqual(env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf")
 
+    def test_prepare_environment_sets_default_export_timeout(self):
+        # A generous per-batch OTLP timeout keeps heavy sharded runs from dropping
+        # batches when the collector/ingress is slow to ack.
+        env, export_traces = cli.prepare_environment(
+            {"OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example"}
+        )
+        self.assertTrue(export_traces)
+        self.assertEqual(
+            env["OTEL_EXPORTER_OTLP_TIMEOUT"],
+            str(cli.DEFAULT_OTLP_EXPORT_TIMEOUT_MS),
+        )
+
+    def test_prepare_environment_respects_explicit_export_timeout(self):
+        env, _ = cli.prepare_environment(
+            {
+                "OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example",
+                "OTEL_EXPORTER_OTLP_TIMEOUT": "8000",
+            }
+        )
+        self.assertEqual(env["OTEL_EXPORTER_OTLP_TIMEOUT"], "8000")
+
+    def test_prepare_environment_no_timeout_without_export(self):
+        env, export_traces = cli.prepare_environment({})
+        self.assertFalse(export_traces)
+        self.assertNotIn("OTEL_EXPORTER_OTLP_TIMEOUT", env)
+
     def test_prepare_environment_uses_env_otlp_endpoint(self):
         env, export_traces = cli.prepare_environment(
             {
