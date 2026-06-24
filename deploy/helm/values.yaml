@@ -124,6 +124,16 @@ traceExporter:
     # notation (2.68e+08), which the exporter's int parser rejects.
     traceCacheMaxBytes: "268435456"  # 256Mi serialized (~1GiB resident at 4x overhead)
     traceSettleSeconds: 120
+    # How often a still-in-flight (unsettled) trace is re-read from Tempo. MUST be
+    # comfortably ABOVE the render duration: a render re-fetches every cached trace
+    # whose last fetch is older than this, so if it is <= the render period the
+    # exporter re-reads the whole window every cycle and render time spirals
+    # (15s -> 120s+). Decoupled from traceSettleSeconds for exactly this reason —
+    # at 600s, after one cold-start render each cycle only fetches newly-arrived
+    # traces and serves the rest from cache, holding render duration at ~1-8s.
+    # In-flight test counts then lag by up to this interval, which is fine: run
+    # roll-ups settle post-completion and Prometheus retains the per-test series.
+    traceRefetchSeconds: 600
     # Soft RSS ceiling. Sized to ~85% of the 2Gi container limit (was 560, sized
     # for the retired 640MiB docker box, which forced premature cache drops).
     memSoftMb: 1740

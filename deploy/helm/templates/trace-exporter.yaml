@@ -85,6 +85,8 @@ spec:
               value: "{{ .Values.traceExporter.config.traceCacheMaxBytes }}"
             - name: PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS
               value: "{{ .Values.traceExporter.config.traceSettleSeconds }}"
+            - name: PYTEST_TRACE_EXPORTER_TRACE_REFETCH_SECONDS
+              value: "{{ .Values.traceExporter.config.traceRefetchSeconds }}"
             - name: PYTEST_TRACE_EXPORTER_MEM_SOFT_MB
               value: "{{ .Values.traceExporter.config.memSoftMb }}"
             - name: PYTEST_TRACE_EXPORTER_LOOKBACK
