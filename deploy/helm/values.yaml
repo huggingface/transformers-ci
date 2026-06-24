@@ -179,9 +179,12 @@ prometheus:
   resources:
     requests:
       cpu: 200m
-      memory: 1Gi
+      memory: 2Gi
+    # 8Gi: the head holds the exporter's high-cardinality per-test series; 4Gi
+    # OOM-killed during WAL replay on startup and crashlooped. Root fix is
+    # reducing that cardinality.
     limits:
-      memory: 4Gi
+      memory: 8Gi
 
   scrapeInterval: 15s
 
