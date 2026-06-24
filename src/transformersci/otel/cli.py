@@ -49,15 +49,20 @@ DEFAULT_SERVICE_NAME = "transformers-tests"
 DEFAULT_LOCAL_JOB = "local_pytest"
 LOCAL_PROVIDER = "local"
 OTEL_PING_TIMEOUT_SECONDS = 2.0
-# Per-OTLP-export timeout (milliseconds) the SDK exporter uses for each batch.
-# The OTel default is 10s; a heavy sharded run fires many full batches at a
-# single-replica collector through the ingress, and at ~5-10s the slow ones time
-# out and the batch is DROPPED after retries — the dominant cause of the dashboard
-# undercount (see docs/investigation-undercount-large-traces-2026-06-24.md). 30s
-# gives a congested ingest path room to ack and the exporter room to retry within
-# one export() call. Only set when the env doesn't already pin it, so a workflow
-# can still override.
-DEFAULT_OTLP_EXPORT_TIMEOUT_MS = 30000
+# Per-OTLP-export timeout the SDK exporter uses for each batch. A heavy sharded
+# run fires many full batches at a single-replica collector through the ingress,
+# and at ~5-10s the slow ones time out and the batch is DROPPED after retries —
+# the dominant cause of the dashboard undercount (see
+# docs/investigation-undercount-large-traces-2026-06-24.md). 30s gives a congested
+# ingest path room to ack and the exporter room to retry within one export() call.
+#
+# NB: opentelemetry-python consumes OTEL_EXPORTER_OTLP_TIMEOUT as **seconds** and
+# stores it verbatim on the exporter's ``_timeout`` (the value passed straight to
+# the HTTP/gRPC call) — NOT milliseconds as the OTel spec nominally says. Verified
+# in CI: env=30000 produced ``timeout_s=30000`` (an 8h timeout), and a constructor
+# ``timeout=5`` times out at 5s wall-clock. So this is a number of SECONDS. Only
+# set when the env doesn't already pin it, so a workflow can still override.
+DEFAULT_OTLP_EXPORT_TIMEOUT_SECONDS = 30
 OTLP_TIMEOUT_ENV = "OTEL_EXPORTER_OTLP_TIMEOUT"
 # Read by the pytest plugin (resource_plugin) to attach a SECOND span processor
 # so every span is mirrored to a staging backend on top of the primary export.
@@ -657,7 +662,7 @@ def prepare_environment(
     if not updated_env.get(OTLP_TIMEOUT_ENV) and not updated_env.get(
         "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT"
     ):
-        updated_env[OTLP_TIMEOUT_ENV] = str(DEFAULT_OTLP_EXPORT_TIMEOUT_MS)
+        updated_env[OTLP_TIMEOUT_ENV] = str(DEFAULT_OTLP_EXPORT_TIMEOUT_SECONDS)
     attributes = build_resource_attributes(
         updated_env, provider, resolved_job, resolved_pr
     )

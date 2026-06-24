@@ -150,8 +150,11 @@ class ConfigureCiOtelTests(TestCase):
         self.assertTrue(export_traces)
         self.assertEqual(
             env["OTEL_EXPORTER_OTLP_TIMEOUT"],
-            str(cli.DEFAULT_OTLP_EXPORT_TIMEOUT_MS),
+            str(cli.DEFAULT_OTLP_EXPORT_TIMEOUT_SECONDS),
         )
+        # opentelemetry-python reads this as SECONDS, so it must be a small number,
+        # not a milliseconds value (a 30000 here would be an 8h timeout).
+        self.assertLessEqual(int(env["OTEL_EXPORTER_OTLP_TIMEOUT"]), 120)
 
     def test_prepare_environment_respects_explicit_export_timeout(self):
         env, _ = cli.prepare_environment(

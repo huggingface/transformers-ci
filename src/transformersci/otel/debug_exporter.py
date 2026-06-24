@@ -133,6 +133,24 @@ def _exporter_timeout_s(exporter) -> object:
     return getattr(exporter, "_timeout", "?")
 
 
+def _bsp_attr(processor, name: str) -> object:
+    """Read a BatchSpanProcessor config knob across SDK layouts.
+
+    Different opentelemetry-python versions expose these as ``max_queue_size`` on
+    the processor, or as ``_max_queue_size`` on an inner ``_batch_processor``
+    delegate. Try each before giving up so the config line isn't all ``?``.
+    """
+    inner = getattr(processor, "_batch_processor", None)
+    for obj in (processor, inner):
+        if obj is None:
+            continue
+        for attr in (name, f"_{name}"):
+            value = getattr(obj, attr, None)
+            if value is not None:
+                return value
+    return "?"
+
+
 def _log_bsp_config_once(processor) -> None:
     """Log the BatchSpanProcessor's queue/batch/timeout settings exactly once."""
     global _BSP_CONFIG_LOGGED
@@ -144,10 +162,10 @@ def _log_bsp_config_once(processor) -> None:
         _BSP_CONFIG_LOGGED = True
     print(
         "OTEL DEBUG BSP CONFIG "
-        f"max_queue_size={getattr(processor, 'max_queue_size', '?')} "
-        f"max_export_batch_size={getattr(processor, 'max_export_batch_size', '?')} "
-        f"schedule_delay_millis={getattr(processor, 'schedule_delay_millis', '?')} "
-        f"export_timeout_millis={getattr(processor, 'export_timeout_millis', '?')} "
+        f"max_queue_size={_bsp_attr(processor, 'max_queue_size')} "
+        f"max_export_batch_size={_bsp_attr(processor, 'max_export_batch_size')} "
+        f"schedule_delay_millis={_bsp_attr(processor, 'schedule_delay_millis')} "
+        f"export_timeout_millis={_bsp_attr(processor, 'export_timeout_millis')} "
         f"otlp_timeout_env={os.getenv('OTEL_EXPORTER_OTLP_TIMEOUT', '<unset>')} "
         f"(export_timeout_millis=BSP per-flush deadline; otlp_timeout_env=per-export "
         f"OTLP client timeout — see timeout_s on each EXPORT line for the resolved value)",
