@@ -4,6 +4,12 @@ extensions:
     endpoint: 0.0.0.0:13133
   bearertokenauth:
     token: ${TRACE_API_KEY}
+  # Disk-backed buffer for the otlp/tempo sending_queue so an undelivered backlog
+  # survives a collector container restart (its dominant failure is its own OOM,
+  # after which the same pod's emptyDir is still there). Full durability across a
+  # pod reschedule/redeploy would need a PVC (StatefulSet) — tracked as a follow-up.
+  file_storage/queue:
+    directory: /var/lib/otelcol/queue
 
 receivers:
   otlp:
@@ -42,19 +48,31 @@ exporters:
     timeout: 30s
     sending_queue:
       enabled: true
+      # Disk-backed so the buffered backlog survives a collector restart too — not
+      # just a Tempo restart. Without this the queue is in-memory and an OOM/redeploy
+      # of the collector silently drops everything in flight to Tempo.
+      storage: file_storage/queue
       queue_size: 10000
       num_consumers: 10
     retry_on_failure:
       enabled: true
       initial_interval: 1s
       max_interval: 30s
-      max_elapsed_time: 120s
+      # NEVER give up on a retryable error (e.g. Tempo OOM-restarting and returning
+      # "connection refused"). The old 120s cap dropped the batch permanently once
+      # Tempo was down >2min — and a Tempo OOM crashloop runs ~130s, right at that
+      # edge, so a slightly longer restart silently lost spans despite export
+      # SUCCESS. retry_on_failure only retries *retryable* errors, so a permanent
+      # reject (e.g. trace_too_large) still fails fast and won't wedge. The safety
+      # valve against unbounded buffering is memory_limiter, which backpressures the
+      # receiver (a visible runner-side export failure) rather than dropping silently.
+      max_elapsed_time: 0
 
 service:
   telemetry:
     metrics:
       address: 0.0.0.0:8889
-  extensions: [health_check, bearertokenauth]
+  extensions: [health_check, bearertokenauth, file_storage/queue]
   pipelines:
     traces:
       receivers: [otlp]
@@ -129,6 +147,8 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /conf
+            - name: queue
+              mountPath: /var/lib/otelcol/queue
           livenessProbe:
             httpGet:
               path: /
@@ -145,6 +165,9 @@ spec:
         - name: config
           configMap:
             name: otelcol-config
+        # Survives container OOM-restart within the same pod (not pod reschedule).
+        - name: queue
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
