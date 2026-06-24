@@ -261,30 +261,32 @@ def github_job_outcomes(
     return per_job
 
 
+# Headline fields are PROD ONLY (the client fans out to prod + a staging mirror;
+# staging must never pollute a prod-vs-Tempo comparison). ``stage_*`` are tracked
+# separately for visibility only.
+_DEBUG_FIELDS = ("produced", "submitted", "exported", "failed", "not_exported")
+_DEBUG_STAGE_FIELDS = ("stage_produced", "stage_exported", "stage_failed")
+
+
 def _empty_debug() -> dict[str, int]:
-    return {
-        "produced": 0,
-        "submitted": 0,
-        "exported": 0,
-        "failed": 0,
-        "not_exported": 0,
-        "summaries": 0,
-    }
+    return {key: 0 for key in (*_DEBUG_FIELDS, *_DEBUG_STAGE_FIELDS, "summaries")}
 
 
 def parse_debug_summaries(log_text: str) -> dict[str, int]:
     """Sum the OTEL DEBUG SUMMARY tallies in one job log.
 
-    Returns produced/submitted/exported/failed/not_exported summed across every
-    summary line (one per process, so per pytest-xdist worker), plus
-    ``summaries`` = how many lines were found (0 means the debug flag wasn't
-    enabled for this shard). Parsed field-by-field so it tolerates older logs that
-    only carry produced/exported/not_exported (the missing fields stay 0).
+    Headline fields (produced/submitted/exported/failed/not_exported) are PROD
+    ONLY — the staging mirror is reported separately as ``stage_*`` so it never
+    contaminates the prod comparison. ``summaries`` = how many lines were found (0
+    means the debug flag wasn't enabled for this shard). Parsed field-by-field so
+    it tolerates older logs: pre-split logs lacked ``stage_*`` (stay 0), and the
+    oldest logs summed both pipelines into ``produced`` (then prod is an
+    overcount, but the field still parses).
     """
     totals = _empty_debug()
     for body in DEBUG_SUMMARY_RE.findall(log_text):
         fields = {k: int(v) for k, v in DEBUG_FIELD_RE.findall(body)}
-        for key in ("produced", "submitted", "exported", "failed", "not_exported"):
+        for key in (*_DEBUG_FIELDS, *_DEBUG_STAGE_FIELDS):
             totals[key] += fields.get(key, 0)
         totals["summaries"] += 1
     return totals
@@ -476,11 +478,11 @@ def print_debug_section(jobs: list[str], gh: dict[str, dict]) -> None:
 
     columns = (
         f"{'test_job':24} {'GH collect':>10} {'produced':>9} {'exported':>9} "
-        f"{'failed':>8} {'lost%':>6} {'queued':>7} {'shards':>7}"
+        f"{'failed':>8} {'lost%':>6} {'queued':>7} {'stg_lost%':>9} {'shards':>7}"
     )
     print(
-        "\nRunner span pipeline (TRANSFORMERSCI_OTEL_DEBUG=1; summed across "
-        "shards/workers):"
+        "\nRunner span pipeline — PROD ONLY (TRANSFORMERSCI_OTEL_DEBUG=1; summed "
+        "across shards/workers; staging mirror excluded from the prod columns):"
     )
     print(columns)
     print("-" * len(columns))
@@ -492,28 +494,38 @@ def print_debug_section(jobs: list[str], gh: dict[str, dict]) -> None:
         exported = dbg["exported"]
         failed = dbg["failed"]
         queue_dropped = dbg["not_exported"]
-        # 'lost%' is the share of submitted spans the exporter failed to ship —
-        # the transport-loss signal the old tally hid.
+        # 'lost%' is the share of submitted PROD spans the exporter failed to ship.
         submitted = dbg["submitted"] or (exported + failed)
         lost_pct = (100 * failed / submitted) if submitted else float("nan")
         lost_col = "   n/a" if not submitted else f"{lost_pct:5.0f}%"
+        # Staging loss, shown only for context (never mixed into the prod verdict).
+        stg_submitted = dbg["stage_exported"] + dbg["stage_failed"]
+        stg_lost = (
+            f"{100 * dbg['stage_failed'] / stg_submitted:6.0f}%"
+            if stg_submitted
+            else "     -"
+        )
         flag = ""
         if submitted and failed > 0.05 * submitted:
-            flag = " !export failures (ingest timeout/capacity — raise OTLP timeout / scale collector)"
+            flag = " !PROD export failures (ingest timeout/capacity — raise OTLP timeout / scale collector)"
         elif gh_coll and produced < 0.95 * gh_coll:
             flag = " !under-produced (spans never created)"
         elif produced and queue_dropped > 0.05 * produced:
             flag = " !queue drops (raise OTEL_BSP_MAX_QUEUE_SIZE)"
         print(
             f"{job:24} {gh_coll:>10} {produced:>9} {exported:>9} "
-            f"{failed:>8} {lost_col:>6} {queue_dropped:>7} {dbg['summaries']:>7}{flag}"
+            f"{failed:>8} {lost_col:>6} {queue_dropped:>7} {stg_lost:>9} "
+            f"{dbg['summaries']:>7}{flag}"
         )
     print(
-        "\nproduced = spans handed to the BatchSpanProcessor; exported = spans the "
-        "exporter CONFIRMED shipped (result=SUCCESS); failed = spans whose export "
-        "returned FAILURE/raised (LOST after retries — transport/ingest loss); "
-        "queued = produced-submitted = BSP queue overflow. 'lost%' = failed/submitted. "
-        "'shards' = processes that reported (≈ shards × xdist workers)."
+        "\nAll columns except stg_lost% are PROD ONLY (the client fans out to prod "
+        "+ a staging mirror; staging must not skew the prod verdict). "
+        "produced = prod spans handed to the BatchSpanProcessor; exported = prod "
+        "spans the exporter CONFIRMED shipped (result=SUCCESS); failed = prod spans "
+        "whose export returned FAILURE/raised (LOST after retries — transport/ingest "
+        "loss); queued = produced-submitted = BSP queue overflow; lost% = "
+        "failed/submitted. stg_lost% = the staging mirror's own failure rate, shown "
+        "for context only. 'shards' = processes that reported (≈ shards × xdist workers)."
     )
 
 

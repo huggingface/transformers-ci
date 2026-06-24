@@ -97,6 +97,53 @@ def test_logging_export_counts_exception_as_lost(monkeypatch) -> None:
     assert tally.failed_calls == 1
 
 
+def test_tally_keeps_prod_and_stage_separate() -> None:
+    tally = debug_exporter._SpanTally()
+    tally.record_produced(100, dest="prod")
+    tally.record_produced(100, dest="stage")
+    tally.record_export(90, ok=True, dest="prod")
+    tally.record_export(10, ok=False, dest="prod")
+    # Staging is much flakier — but it must NOT pollute the prod headline.
+    tally.record_export(40, ok=True, dest="stage")
+    tally.record_export(60, ok=False, dest="stage")
+
+    # Back-compat properties report PROD only.
+    assert tally.produced == 100
+    assert tally.exported == 90
+    assert tally.failed == 10
+
+    line = tally.summary_line()
+    assert "produced=100" in line
+    assert "exported=90" in line
+    assert "failed=10" in line  # prod failures only
+    assert "stage_failed=60" in line  # staging failures kept separate
+    assert "stage_exported=40" in line
+
+
+def test_export_to_staging_endpoint_classified_as_stage(monkeypatch) -> None:
+    tally = debug_exporter._SpanTally()
+    monkeypatch.setattr(debug_exporter, "_TALLY", tally)
+    monkeypatch.setenv(
+        "TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT", "http://stagebox:4318"
+    )
+
+    class _Exp:
+        def __init__(self, endpoint):
+            self._endpoint = endpoint
+
+        def export(self, spans):
+            return _FakeResult()
+
+    prod = _Exp("https://prod.example/v1/traces")
+    stage = _Exp("http://stagebox:4318/v1/traces")
+    debug_exporter._make_logging_export(_Exp.export)(prod, ["a", "b"])
+    debug_exporter._make_logging_export(_Exp.export)(stage, ["c", "d", "e"])
+
+    # Prod headline counts only the prod export; staging is sidelined.
+    assert tally.exported == 2
+    assert "stage_exported=3" in tally.summary_line()
+
+
 class _FakeExporter:
     """Stand-in for an OTLPSpanExporter carrying a resolved ``_timeout``."""
 
