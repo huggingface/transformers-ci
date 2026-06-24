@@ -11,29 +11,88 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Opt-in diagnostic that logs every OTLP span export to stderr.
+"""Opt-in diagnostic that logs OTLP span exports and a per-process span tally.
 
 When traces silently fail to reach the backend (wrong endpoint, auth rejected,
-transport mismatch), nothing surfaces — the export just drops. This module
-monkeypatches the active span exporter's ``export()`` so each attempt prints a
-one-line record: span count, result/exception, duration, protocol, and the
-resolved endpoint. A module-level flag keeps the patch idempotent so repeated
-installs don't stack wrappers. Intended to be enabled only while debugging
-export connectivity, never in steady-state CI.
+transport mismatch) nothing surfaces — the export just drops. When the test
+session out-produces the export pipeline, the ``BatchSpanProcessor`` silently
+drops spans off the *front* (its queue fills), so a shard that ran 13k tests
+lands only a few thousand spans in Tempo and the dashboards under-count.
+
+This module makes both visible, gated behind ``TRANSFORMERSCI_OTEL_DEBUG=1``:
+
+- Each ``export()`` attempt prints a one-line record: span count, result, the
+  duration, protocol, and resolved endpoint (catches transport/auth failures).
+- Every span handed to a ``BatchSpanProcessor`` (its ``on_end``) is tallied, and
+  every span passed to an exporter is tallied. At process exit a single SUMMARY
+  line prints ``produced`` vs ``exported`` — their difference is the queue drop.
+  Each pytest shard is its own process, so the summary is per-shard, which lines
+  up directly with the per-shard GitHub ``collected`` counts.
+
+All patches are class-level and idempotent (a module-level flag keeps repeated
+installs from stacking wrappers). Intended only while debugging, never in
+steady-state CI.
 """
 
 from __future__ import annotations
 
+import atexit
 import os
 import sys
+import threading
 import time
 
 
 _PATCH_FLAG = "_transformersci_debug_patched"
 
 
+class _SpanTally:
+    """Thread-safe running totals of spans produced vs exported this process.
+
+    ``produced`` counts ``BatchSpanProcessor.on_end`` calls (spans the SDK tried
+    to enqueue for export); ``exported`` sums ``len(spans)`` across every
+    ``export()`` call. Both sum across all active processors/pipelines, so with
+    the staging mirror attached each span is counted once per pipeline — the
+    ``produced - exported`` gap still reflects queue drops, just scaled by the
+    number of pipelines. ``on_end`` runs on the test threads and ``export`` on
+    the batch worker thread, hence the lock.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.produced = 0
+        self.exported = 0
+        self.export_calls = 0
+
+    def record_produced(self, n: int = 1) -> None:
+        with self._lock:
+            self.produced += n
+
+    def record_exported(self, n: int) -> None:
+        with self._lock:
+            self.exported += n
+            self.export_calls += 1
+
+    def summary_line(self) -> str:
+        with self._lock:
+            dropped = self.produced - self.exported
+            return (
+                f"OTEL DEBUG SUMMARY produced={self.produced} "
+                f"exported={self.exported} not_exported={dropped} "
+                f"export_calls={self.export_calls} "
+                f"(produced=spans handed to BatchSpanProcessor; "
+                f"exported=spans passed to exporter; gap=queue drops, "
+                f"summed across pipelines)"
+            )
+
+
+_TALLY = _SpanTally()
+_SUMMARY_REGISTERED = False
+
+
 def _make_logging_export(original):
     def export(self, spans):
+        _TALLY.record_exported(len(spans))
         endpoint = (
             os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
             or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -66,15 +125,16 @@ def _make_logging_export(original):
     return export
 
 
-def install_debug_logging() -> int:
-    """Monkey-patch OTLP exporter classes' export() to log each call.
+def _make_counting_on_end(original):
+    def on_end(self, span):
+        _TALLY.record_produced(1)
+        return original(self, span)
 
-    Patches at the class level so it works regardless of how the SDK
-    pipes spans through processors (incl. SDKs where BatchSpanProcessor
-    exposes span_exporter as a read-only property).
+    return on_end
 
-    Returns the number of exporter classes patched.
-    """
+
+def _patch_exporters() -> int:
+    """Patch OTLP exporter classes' ``export()`` to log + tally each call."""
     classes = []
     try:
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
@@ -100,4 +160,43 @@ def install_debug_logging() -> int:
         cls.export = _make_logging_export(cls.export)
         setattr(cls, _PATCH_FLAG, True)
         patched += 1
+    return patched
+
+
+def _patch_batch_processor() -> int:
+    """Patch ``BatchSpanProcessor.on_end`` to tally every span produced."""
+    try:
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    except ImportError:
+        return 0
+    if getattr(BatchSpanProcessor, _PATCH_FLAG, False):
+        return 0
+    BatchSpanProcessor.on_end = _make_counting_on_end(BatchSpanProcessor.on_end)
+    setattr(BatchSpanProcessor, _PATCH_FLAG, True)
+    return 1
+
+
+def _register_summary() -> None:
+    """Print the produced-vs-exported tally once, at process exit."""
+    global _SUMMARY_REGISTERED
+    if _SUMMARY_REGISTERED:
+        return
+    atexit.register(lambda: print(_TALLY.summary_line(), file=sys.stderr, flush=True))
+    _SUMMARY_REGISTERED = True
+
+
+def install_debug_logging() -> int:
+    """Monkey-patch the OTLP export path to log each call and tally spans.
+
+    Patches at the class level so it works regardless of how the SDK pipes spans
+    through processors (incl. SDKs where ``BatchSpanProcessor`` exposes
+    ``span_exporter`` as a read-only property), counts spans entering every
+    ``BatchSpanProcessor``, and registers a per-process exit summary.
+
+    Returns the number of exporter classes patched (the batch-processor patch
+    and the exit summary are best-effort side effects).
+    """
+    patched = _patch_exporters()
+    _patch_batch_processor()
+    _register_summary()
     return patched

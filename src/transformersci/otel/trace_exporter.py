@@ -608,9 +608,16 @@ def search_all_trace_ids(
         if slices >= max_slices:
             # Out of budget: take whatever this slice yields and flag truncation
             # rather than searching unboundedly.
-            _record(search_trace_ids(
-                base_url, service_name, slice_start, slice_end, limit, extra_selector
-            ))
+            _record(
+                search_trace_ids(
+                    base_url,
+                    service_name,
+                    slice_start,
+                    slice_end,
+                    limit,
+                    extra_selector,
+                )
+            )
             truncated = True
             continue
         slices += 1
@@ -772,9 +779,7 @@ def iter_traces(base_url: str | None = None) -> Iterator[dict]:
 
     end = int(time.time())
     start = end - parse_lookback_seconds(lookback)
-    trace_ids, _ = search_all_trace_ids(
-        base_url, service_name, start, end, limit
-    )
+    trace_ids, _ = search_all_trace_ids(base_url, service_name, start, end, limit)
     if not trace_ids:
         return
 
@@ -900,9 +905,7 @@ def _shaped_entry_bytes(entry: ShapedEntry) -> int:
     """
     try:
         serialized = len(
-            json.dumps(entry, ensure_ascii=False, separators=(",", ":")).encode(
-                "utf-8"
-            )
+            json.dumps(entry, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         )
     except (TypeError, ValueError):
         return 0
@@ -975,7 +978,9 @@ def _iter_window_shaped(
 
     end = int(now)
     start = end - parse_lookback_seconds(lookback)
-    trace_ids, truncated = search_all_trace_ids(base_url, service_name, start, end, limit)
+    trace_ids, truncated = search_all_trace_ids(
+        base_url, service_name, start, end, limit
+    )
 
     # Partition the window into shapes we already hold (free) and ids we still
     # need to fetch (bounded this render).

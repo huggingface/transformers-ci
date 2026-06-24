@@ -1422,7 +1422,8 @@ def test_render_rolls_up_every_shard_of_a_sharded_run(monkeypatch) -> None:
             for labels, value in trace_exporter._iter_metric_samples(
                 "pytest_run_job_total_tests", source=out
             )
-            if labels.get("run_id") == "run-1" and labels.get("test_job") == "tests_torch"
+            if labels.get("run_id") == "run-1"
+            and labels.get("test_job") == "tests_torch"
         ),
         None,
     )
