@@ -1149,7 +1149,7 @@ def test_fetch_traces_searches_then_fetches_each_trace() -> None:
 
 def test_fetch_traces_caches_settled_traces() -> None:
     trace_exporter._trace_cache.clear()
-    # Old timestamps so the trace is "settled" and gets memoized.
+    trace_exporter._trace_growth.clear()
     payload = make_otlp_trace(
         nodeid="tests/test_torch.py::TestTorch::test_one",
         start_nano=1_000_000_000,
@@ -1157,9 +1157,13 @@ def test_fetch_traces_caches_settled_traces() -> None:
         status_code="STATUS_CODE_OK",
     )
     opener = _tempo_urlopen(["trace-torch"], payload)
+    # settle=0: a trace settles once its span count is observed UNCHANGED across
+    # two renders (count-quiescence). The first render only records the count, so
+    # the trace is re-fetched on the second render — and memoized then, served
+    # from cache on the third.
     with patch.dict(
         "os.environ",
-        {"PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS": "60"},
+        {"PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS": "0"},
         clear=False,
     ):
         with patch(
@@ -1169,11 +1173,15 @@ def test_fetch_traces_caches_settled_traces() -> None:
             first_calls = mocked.call_count
             trace_exporter.fetch_traces()
             second_calls = mocked.call_count
+            trace_exporter.fetch_traces()
+            third_calls = mocked.call_count
 
-    # First fetch: 1 search + 1 trace fetch = 2. Second fetch: only the search,
-    # because the settled trace is served from the in-memory cache.
+    # Renders 1 & 2 each do 1 search + 1 trace fetch (the count must be seen
+    # stable twice before it's trusted as complete); render 3 is search-only,
+    # the now-settled trace served from cache.
     assert first_calls == 2
-    assert second_calls == 3
+    assert second_calls == 4
+    assert third_calls == 5
 
 
 def test_iter_traces_skips_failed_fetches() -> None:
@@ -1271,8 +1279,10 @@ def test_search_all_trace_ids_flags_truncation_when_unsplittable() -> None:
 def _reset_window_state() -> None:
     trace_exporter._shaped_cache.clear()
     trace_exporter._shaped_cache_sizes.clear()
+    trace_exporter._shaped_meta.clear()
     trace_exporter._shaped_cache_bytes = 0
     trace_exporter._trace_cache.clear()
+    trace_exporter._trace_growth.clear()
     trace_exporter._previous_new_ids = set()
     trace_exporter._run_members.clear()
     trace_exporter._run_last_growth.clear()
@@ -1435,8 +1445,11 @@ def test_trace_cache_is_bounded_lru(monkeypatch) -> None:
     # The settled-trace cache must not grow without bound (it holds full
     # multi-MB traces; unbounded growth crept the exporter RSS toward its cap).
     trace_exporter._trace_cache.clear()
+    trace_exporter._trace_growth.clear()
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX", "3")
-    # Old timestamps -> "settled" -> memoized; same payload shape for every id.
+    # Settle timing is exercised elsewhere; here force every trace settled so the
+    # focus stays on the LRU bound. Same payload shape for every id.
+    monkeypatch.setattr(trace_exporter, "_trace_is_settled", lambda *a, **k: True)
     payload = make_otlp_trace(
         nodeid="tests/test_torch.py::TestTorch::test_one",
         start_nano=1_000_000_000,
@@ -1455,6 +1468,157 @@ def test_trace_cache_is_bounded_lru(monkeypatch) -> None:
         assert set(trace_exporter._trace_cache) == {"t3", "t4", "t5"}
     finally:
         trace_exporter._trace_cache.clear()
+
+
+def _trace_with_spans(n: int) -> dict:
+    return {"spans": [{"spanID": f"s{i}"} for i in range(n)]}
+
+
+def test_trace_is_settled_requires_a_prior_observation() -> None:
+    trace_exporter._trace_growth.clear()
+    # First sight never settles — we cannot yet know the count has stopped
+    # growing, even with a zero settle window.
+    assert (
+        trace_exporter._trace_is_settled(
+            "t", _trace_with_spans(100), now=1000.0, settle_seconds=0.0
+        )
+        is False
+    )
+    trace_exporter._trace_growth.clear()
+
+
+def test_trace_settles_once_count_holds_for_the_settle_window() -> None:
+    trace_exporter._trace_growth.clear()
+    trace = _trace_with_spans(100)
+    settle = 120.0
+    # Recorded at t=0; still 100 spans at t=60 (<settle); settled at t=121.
+    assert trace_exporter._trace_is_settled("t", trace, 0.0, settle) is False
+    assert trace_exporter._trace_is_settled("t", trace, 60.0, settle) is False
+    assert trace_exporter._trace_is_settled("t", trace, 121.0, settle) is True
+    trace_exporter._trace_growth.clear()
+
+
+def test_trace_not_settled_while_still_growing() -> None:
+    # THE regression. A sharded trace is fed by pytest-xdist worker PROCESSES
+    # that flush spans at staggered exit times, so it keeps growing for minutes
+    # with gaps longer than the settle window. Each new span resets the
+    # quiescence clock, so it must NOT be declared settled mid-run — the old
+    # newest-span-age heuristic froze such traces at a partial count (~half the
+    # tests). It settles only once growth stops, with the COMPLETE count.
+    trace_exporter._trace_growth.clear()
+    settle = 120.0
+    sid = "shard"
+    # Bursts at t=0/130/260 — each gap exceeds settle, yet none settles.
+    assert (
+        trace_exporter._trace_is_settled(sid, _trace_with_spans(3000), 0.0, settle)
+        is False
+    )
+    assert (
+        trace_exporter._trace_is_settled(sid, _trace_with_spans(7000), 130.0, settle)
+        is False
+    )
+    assert (
+        trace_exporter._trace_is_settled(sid, _trace_with_spans(12477), 260.0, settle)
+        is False
+    )
+    # Growth stops; the final count then holds for the settle window -> settled.
+    assert (
+        trace_exporter._trace_is_settled(sid, _trace_with_spans(12477), 390.0, settle)
+        is True
+    )
+    trace_exporter._trace_growth.clear()
+
+
+def test_trace_growth_tracker_is_bounded() -> None:
+    # Trace ids that age out before settling must not leak unboundedly.
+    trace_exporter._trace_growth.clear()
+    original = trace_exporter._TRACE_GROWTH_MAX
+    trace_exporter._TRACE_GROWTH_MAX = 4
+    try:
+        for i in range(10):
+            trace_exporter._trace_is_settled(f"t{i}", _trace_with_spans(1), 0.0, 120.0)
+        assert len(trace_exporter._trace_growth) == 4
+        # The most-recently-seen ids are the ones kept.
+        assert set(trace_exporter._trace_growth) == {"t6", "t7", "t8", "t9"}
+    finally:
+        trace_exporter._TRACE_GROWTH_MAX = original
+        trace_exporter._trace_growth.clear()
+
+
+def test_window_serves_unsettled_trace_from_cache_between_refetches(
+    monkeypatch,
+) -> None:
+    # The bounded-cadence redesign: an in-flight (unsettled) trace's shape is
+    # cached and served between renders, and re-fetched at most once per the
+    # re-fetch interval — NOT every render. This is what keeps render duration
+    # flat while a large sharded run is still settling.
+    _reset_window_state()
+    # Never settles (count keeps growing); re-fetch only every 100s.
+    monkeypatch.setattr(trace_exporter, "_trace_is_settled", lambda *a, **k: False)
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_TRACE_REFETCH_SECONDS", "100")
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    calls = {"traces": 0}
+
+    def opener(url, timeout=None):
+        if "/api/search" in url:
+            return _UrlResponse(json.dumps({"traces": [{"traceID": "trace-torch"}]}))
+        calls["traces"] += 1
+        return _UrlResponse(json.dumps(payload))
+
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(trace_exporter.time, "time", lambda: clock["now"])
+    with patch("transformersci.otel.trace_exporter.urlopen", side_effect=opener):
+        first = list(trace_exporter._iter_window_shaped("http://tempo:3200"))
+        clock["now"] += 10  # within the re-fetch interval
+        second = list(trace_exporter._iter_window_shaped("http://tempo:3200"))
+        clock["now"] += 100  # past the interval -> due for a re-read
+        third = list(trace_exporter._iter_window_shaped("http://tempo:3200"))
+
+    # Every render still yields the trace (the window stays complete)...
+    assert [is_new for *_r, is_new in first] == [True]
+    assert [is_new for *_r, is_new in second] == [False]  # served from cache
+    assert [is_new for *_r, is_new in third] == [True]  # re-fetched after interval
+    # ...but it was fetched only twice (render 1 and render 3), not three times.
+    assert calls["traces"] == 2
+    _reset_window_state()
+
+
+def test_window_serves_cached_shape_when_refetch_fails(monkeypatch) -> None:
+    # A due-for-refetch in-flight trace whose re-fetch fails must still be served
+    # from its prior cached shape, not dropped from the window.
+    _reset_window_state()
+    monkeypatch.setattr(trace_exporter, "_trace_is_settled", lambda *a, **k: False)
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_TRACE_REFETCH_SECONDS", "0")
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    state = {"fail": False}
+
+    def opener(url, timeout=None):
+        if "/api/search" in url:
+            return _UrlResponse(json.dumps({"traces": [{"traceID": "trace-torch"}]}))
+        if state["fail"]:
+            raise OSError("connection reset by peer")
+        return _UrlResponse(json.dumps(payload))
+
+    with patch("transformersci.otel.trace_exporter.urlopen", side_effect=opener):
+        first = list(trace_exporter._iter_window_shaped("http://tempo:3200"))
+        state["fail"] = True
+        second = list(trace_exporter._iter_window_shaped("http://tempo:3200"))
+
+    assert [is_new for *_r, is_new in first] == [True]
+    # Re-fetch failed, but the prior shape is still served (stale, not new).
+    assert [is_new for *_r, is_new in second] == [False]
+    assert len(second) == 1
+    _reset_window_state()
 
 
 def test_trace_cache_entry_bytes_counts_resident_overhead() -> None:
