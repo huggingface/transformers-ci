@@ -703,57 +703,128 @@ def _trace_settle_seconds() -> float:
         return DEFAULT_TRACE_SETTLE_SECONDS
 
 
-def get_trace(trace_id: str, base_url: str | None = None) -> dict | None:
-    """Return one trace in the Jaeger-shaped dict, fetching from Tempo if needed.
+# Count-quiescence settle tracking. A trace is "settled" (safe to memoize as
+# immutable) only once its span count has stopped growing for ``settle_seconds``
+# of wall-clock — NOT merely because its newest span is old. Sharded CI jobs run
+# pytest-xdist across several worker PROCESSES that each flush their spans at
+# staggered exit times, so one shard's trace keeps growing for minutes and its
+# "newest span" can already be old while more spans are still arriving. Keying
+# settle off count-quiescence (rather than span age) is what stops the exporter
+# from memoizing a partial snapshot and freezing it (which capped sharded jobs
+# at ~half their tests). Maps trace_id -> (last_seen_span_count, wall-clock time
+# the count last changed).
+_trace_growth_lock = threading.Lock()
+_trace_growth: "OrderedDict[str, tuple[int, float]]" = OrderedDict()
+# Bound the tracker so trace_ids that age out of the window before ever settling
+# (rare) can't leak unboundedly; far above any real in-flight window.
+_TRACE_GROWTH_MAX = 8192
 
-    Completed traces are immutable, so once one is old enough to have settled it
-    is memoized by ``trace_id`` and never re-fetched. Used both by the scrape
-    loop (``fetch_traces``) and the ``/failure`` traceback view.
+
+def _trace_is_settled(
+    trace_id: str, trace: dict, now: float, settle_seconds: float
+) -> bool:
+    """Return True once ``trace_id``'s span count has held steady for
+    ``settle_seconds``.
+
+    Records the current span count against the wall-clock time it last changed;
+    the trace counts as settled only after that count has been stable for the
+    full ``settle_seconds`` window. The first sighting never settles (we need a
+    prior observation to know the count is steady) — that also costs one extra
+    fetch for genuinely historical traces, which the raw/shaped caches absorb
+    thereafter. Being called more than once per render is harmless: an unchanged
+    count never resets the clock.
+    """
+    spans = trace.get("spans", [])
+    span_count = len(spans) if isinstance(spans, list) else 0
+    with _trace_growth_lock:
+        prev = _trace_growth.get(trace_id)
+        if prev is None:
+            _trace_growth[trace_id] = (span_count, now)
+            _trace_growth.move_to_end(trace_id)
+            while len(_trace_growth) > _TRACE_GROWTH_MAX:
+                _trace_growth.popitem(last=False)
+            return False
+        last_count, last_change = prev
+        if span_count != last_count:
+            last_change = now
+        _trace_growth[trace_id] = (span_count, last_change)
+        _trace_growth.move_to_end(trace_id)
+        settled = (now - last_change) >= settle_seconds
+        if settled:
+            _trace_growth.pop(trace_id, None)
+        return settled
+
+
+def _store_trace(trace_id: str, trace: dict) -> None:
+    """Memoize a settled (immutable) trace in the bounded raw-trace LRU."""
+    max_entries = _trace_cache_max()
+    max_bytes = _trace_cache_max_bytes()
+    if max_entries == 0 or max_bytes == 0:
+        return
+    entry_bytes = _trace_cache_entry_bytes(trace)
+    with _trace_cache_lock:
+        global _trace_cache_bytes
+        if not _trace_cache:
+            _trace_cache_sizes.clear()
+            _trace_cache_bytes = 0
+        previous_size = _trace_cache_sizes.pop(trace_id, 0)
+        _trace_cache_bytes = max(0, _trace_cache_bytes - previous_size)
+        _trace_cache[trace_id] = trace
+        _trace_cache_sizes[trace_id] = entry_bytes
+        _trace_cache_bytes += entry_bytes
+        _trace_cache.move_to_end(trace_id)
+        while len(_trace_cache) > max_entries or _trace_cache_bytes > max_bytes:
+            evicted_id, _ = _trace_cache.popitem(last=False)
+            evicted_size = _trace_cache_sizes.pop(evicted_id, 0)
+            _trace_cache_bytes = max(0, _trace_cache_bytes - evicted_size)
+
+
+def _fetch_trace_with_settled(
+    trace_id: str, base_url: str | None, now: float, settle_seconds: float
+) -> tuple[dict | None, bool]:
+    """Fetch one trace (Jaeger-shaped) and report whether it has settled.
+
+    A settled trace is served from the raw-trace cache on later calls (and
+    reported settled); an in-flight trace is re-fetched from Tempo every call so
+    its later spans are picked up. The settle decision (count-quiescence) is made
+    exactly once per fetch here, so the raw-trace and shaped caches stay
+    consistent. Returns ``(None, False)`` when the fetch fails (retried later).
     """
     with _trace_cache_lock:
         cached = _trace_cache.get(trace_id)
         if cached is not None:
             _trace_cache.move_to_end(trace_id)  # mark most-recently-used
     if cached is not None:
-        return cached
+        return cached, True
 
     if base_url is None:
         base_url = tempo_base_url()
     try:
         payload = _http_get_json(f"{base_url}/api/traces/{quote(trace_id, safe='')}")
     except Exception:
-        return None
+        return None, False
     if not isinstance(payload, dict):
-        return None
+        return None, False
 
     trace = tempo_trace_to_jaeger(trace_id, payload)
-    # Only memoize traces old enough to be definitely complete, so an in-flight
-    # CI run still picks up its later spans on the next scrape.
-    latest_micros = trace_start_time(trace)
-    if (
-        latest_micros
-        and time.time() - (latest_micros / 1_000_000) > _trace_settle_seconds()
-    ):
-        max_entries = _trace_cache_max()
-        max_bytes = _trace_cache_max_bytes()
-        if max_entries == 0 or max_bytes == 0:
-            return trace
-        entry_bytes = _trace_cache_entry_bytes(trace)
-        with _trace_cache_lock:
-            global _trace_cache_bytes
-            if not _trace_cache:
-                _trace_cache_sizes.clear()
-                _trace_cache_bytes = 0
-            previous_size = _trace_cache_sizes.pop(trace_id, 0)
-            _trace_cache_bytes = max(0, _trace_cache_bytes - previous_size)
-            _trace_cache[trace_id] = trace
-            _trace_cache_sizes[trace_id] = entry_bytes
-            _trace_cache_bytes += entry_bytes
-            _trace_cache.move_to_end(trace_id)
-            while len(_trace_cache) > max_entries or _trace_cache_bytes > max_bytes:
-                evicted_id, _ = _trace_cache.popitem(last=False)
-                evicted_size = _trace_cache_sizes.pop(evicted_id, 0)
-                _trace_cache_bytes = max(0, _trace_cache_bytes - evicted_size)
+    settled = _trace_is_settled(trace_id, trace, now, settle_seconds)
+    if settled:
+        _store_trace(trace_id, trace)
+    return trace, settled
+
+
+def get_trace(trace_id: str, base_url: str | None = None) -> dict | None:
+    """Return one trace in the Jaeger-shaped dict, fetching from Tempo if needed.
+
+    A trace is memoized (and thereafter served from cache) only once its span
+    count has been stable for the settle window — see :func:`_trace_is_settled`.
+    Until then every call re-fetches from Tempo so an in-flight run's later spans
+    (e.g. the staggered xdist-worker flushes of a sharded job) are not lost. Used
+    by the scrape loop (``fetch_traces``) and the ``/failure`` traceback view.
+    """
+    trace, _ = _fetch_trace_with_settled(
+        trace_id, base_url, time.time(), _trace_settle_seconds()
+    )
     return trace
 
 
@@ -941,15 +1012,14 @@ def _fetch_and_shape(
     """Fetch a trace, shape it, and memoize the shape if it has settled.
 
     Returns the shaped entry, or ``None`` if the fetch failed (the id is then
-    simply retried on a later render). Only settled (immutable) shapes are
+    simply retried on a later render). Only settled (count-quiescent) shapes are
     cached, so an in-flight run's later spans are still picked up.
     """
-    trace = get_trace(trace_id, base_url)
+    trace, settled = _fetch_trace_with_settled(trace_id, base_url, now, settle_seconds)
     if trace is None:
         return None
     entry = extract_trace_rows(trace)
-    latest_micros = trace_start_time(trace)
-    if latest_micros and now - (latest_micros / 1_000_000) > settle_seconds:
+    if settled:
         _store_shaped(trace_id, entry)
     return entry
 
