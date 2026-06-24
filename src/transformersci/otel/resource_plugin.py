@@ -202,6 +202,7 @@ def write_resource_record(item: pytest.Item, metrics: dict[str, float | int]) ->
 # of the HTTP signal-path / gRPC lowercase-header handling). The private aliases
 # below preserve this module's existing names so tests and monkeypatching of
 # ``_build_staging_exporter`` keep working.
+from ._export import STAGING_EXPORT_DISABLED  # noqa: E402
 from ._export import STAGING_EXPORT_TIMEOUT_SECONDS  # noqa: E402,F401
 from ._export import build_exporter as _build_staging_exporter  # noqa: E402
 from ._export import parse_otlp_headers as _parse_otlp_headers  # noqa: E402
@@ -218,6 +219,10 @@ def _install_staging_span_processor() -> None:
     also exported to staging. Staging auth comes from its own headers env
     (``TRANSFORMERS_TEST_OTEL_STAGING_HEADERS``), falling back to the primary's.
     """
+    if STAGING_EXPORT_DISABLED:
+        # Hardcoded kill-switch (see _export.STAGING_EXPORT_DISABLED): the staging
+        # mirror is off, so never attach the second span processor.
+        return
     endpoint = os.getenv("TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT")
     if not endpoint:
         return

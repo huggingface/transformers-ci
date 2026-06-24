@@ -83,9 +83,26 @@ def test_install_staging_span_processor_noop_without_endpoint(monkeypatch) -> No
     resource_plugin._install_staging_span_processor()
 
 
+def test_install_staging_span_processor_killswitch_skips(monkeypatch) -> None:
+    from opentelemetry import trace
+
+    # Kill-switch ON (the default): never attach the mirror, even with an endpoint.
+    assert resource_plugin.STAGING_EXPORT_DISABLED is True
+    monkeypatch.setenv(
+        "TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT", "http://10.90.52.50:4317"
+    )
+    added: list[object] = []
+    monkeypatch.setattr(
+        trace, "get_tracer_provider", lambda: _StubProvider(added.append)
+    )
+    resource_plugin._install_staging_span_processor()
+    assert added == []  # nothing attached
+
+
 def test_install_staging_span_processor_attaches_processor(monkeypatch) -> None:
     from opentelemetry import trace
 
+    monkeypatch.setattr(resource_plugin, "STAGING_EXPORT_DISABLED", False)
     monkeypatch.setenv(
         "TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT", "http://10.90.52.50:4317"
     )
@@ -109,6 +126,7 @@ def test_install_staging_span_processor_uses_staging_protocol_override(
 ) -> None:
     from opentelemetry import trace
 
+    monkeypatch.setattr(resource_plugin, "STAGING_EXPORT_DISABLED", False)
     monkeypatch.setenv(
         "TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT", "http://10.90.52.50:4318"
     )
@@ -133,6 +151,7 @@ def test_install_staging_span_processor_swallows_build_errors(
 ) -> None:
     from opentelemetry import trace
 
+    monkeypatch.setattr(resource_plugin, "STAGING_EXPORT_DISABLED", False)
     monkeypatch.setenv(
         "TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT", "http://10.90.52.50:5317"
     )
@@ -156,6 +175,7 @@ def test_install_staging_span_processor_swallows_build_errors(
 def test_install_staging_span_processor_skips_without_sdk_provider(monkeypatch) -> None:
     from opentelemetry import trace
 
+    monkeypatch.setattr(resource_plugin, "STAGING_EXPORT_DISABLED", False)
     monkeypatch.setenv(
         "TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT", "http://10.90.52.50:4317"
     )

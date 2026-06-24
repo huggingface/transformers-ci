@@ -37,6 +37,14 @@ from collections.abc import Mapping
 # second, so a few seconds is plenty.
 STAGING_EXPORT_TIMEOUT_SECONDS = 5
 
+# HARDCODED KILL-SWITCH for the staging mirror (2026-06-24). The staging box was
+# failing ~46% of its exports and the mirror only adds noise (and steals
+# end-of-session flush budget) while we chase the prod-side undercount. Set to
+# False to re-enable the mirror. Hardcoded (not env-gated) on purpose so it ships
+# with the package and needs no redeploy / runner-env change. See
+# docs/investigation-undercount-large-traces-2026-06-24.md.
+STAGING_EXPORT_DISABLED = True
+
 
 def parse_otlp_headers(raw: str | None) -> dict[str, str] | None:
     """Parse an ``OTEL_EXPORTER_OTLP_HEADERS``-style string into a dict.
@@ -130,6 +138,8 @@ def build_staging_exporter(env: Mapping[str, str]):
     protocol/headers so staging can authenticate and transport independently of
     prod while still inheriting sane defaults.
     """
+    if STAGING_EXPORT_DISABLED:
+        return None
     endpoint = env.get("TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT")
     if not endpoint:
         return None

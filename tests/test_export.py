@@ -43,7 +43,22 @@ def test_build_primary_exporter_prefers_traces_endpoint_and_headers() -> None:
     assert dict(exporter._headers) == {"Authorization": "Bearer t"}
 
 
-def test_build_staging_exporter_falls_back_to_primary_protocol_and_headers() -> None:
+def test_build_staging_exporter_disabled_by_killswitch() -> None:
+    # The hardcoded kill-switch wins regardless of a configured staging endpoint.
+    assert _export.STAGING_EXPORT_DISABLED is True
+    assert (
+        _export.build_staging_exporter(
+            {"TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT": "10.90.52.50:5317"}
+        )
+        is None
+    )
+
+
+def test_build_staging_exporter_falls_back_to_primary_protocol_and_headers(
+    monkeypatch,
+) -> None:
+    # Flip the kill-switch off to exercise the (still-present) staging machinery.
+    monkeypatch.setattr(_export, "STAGING_EXPORT_DISABLED", False)
     exporter = _export.build_staging_exporter(
         {
             "TRANSFORMERS_TEST_OTEL_STAGING_ENDPOINT": "10.90.52.50:5317",
