@@ -73,6 +73,21 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:
+    # Make OTel span/trace ids immune to the suite's reproducibility seeding.
+    # OTel's default id generator pulls from the GLOBAL random module, which
+    # transformers' set_seed()/random.seed() reseed on nearly every test — making
+    # span_ids deterministic and COLLIDE across xdist workers (and tests) that
+    # share a trace_id. Tempo then overwrites the duplicate (trace_id, span_id)
+    # keys, silently dropping ~⅔–¾ of every shard trace's spans with no error.
+    # Runs in pytest_configure so it is in place before the first span. See
+    # transformersci.otel.id_generator for the full write-up.
+    from . import id_generator
+
+    id_generator.install()
+
+
 def split_pytest_nodeid(nodeid: str) -> dict[str, str]:
     parts = nodeid.split("::")
     module_name = Path(parts[0]).name if parts else ""
