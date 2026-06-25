@@ -197,11 +197,39 @@ prometheus:
 # Grafana
 #------------------------------------------------------------------------------
 grafana:
-  replicas: 2
+  # Single replica: Grafana unified alerting on the default (ephemeral SQLite)
+  # store has no cross-replica notification dedup, so 2 replicas double-send every
+  # alert email. One replica = correct alerting; dashboards stay reachable behind
+  # the ALB across the brief restart. (For HA alerting instead, configure
+  # [unified_alerting.ha] gossip + a shared DB and raise this back to 2.)
+  replicas: 1
   image:
     repository: grafana/grafana
     tag: "11.4.0"
     pullPolicy: IfNotPresent
+
+  # Alert-notification email via Amazon SES (us-east-1). user/password are SES SMTP
+  # credentials (NOT AWS access keys) synced from Infisical; fromAddress must be a
+  # verified SES identity. Toggle `enabled` on once the secret + sender are ready.
+  smtp:
+    enabled: false
+    host: email-smtp.us-east-1.amazonaws.com:587
+    fromAddress: ""
+    fromName: "transformers-ci Grafana"
+    startTLSPolicy: MandatoryStartTLS
+    # SES SMTP credentials live in a STANDALONE Secret created out-of-band (no
+    # Infisical needed), e.g.:
+    #   kubectl -n transformers-ci create secret generic transformers-ci-smtp \
+    #     --from-literal=ses-smtp-user=AKIA... \
+    #     --from-literal=ses-smtp-password='<SES SMTP password>'
+    # It is NOT managed by the Infisical operator, so it persists across resyncs.
+    existingSecret: transformers-ci-smtp
+    userKey: ses-smtp-user
+    passwordKey: ses-smtp-password
+  alerting:
+    # Recipient(s) for the provisioned pod-health + ci-publisher alerts
+    # (comma-separated for multiple).
+    emailTo: ""
 
   auth:
     anonymous:

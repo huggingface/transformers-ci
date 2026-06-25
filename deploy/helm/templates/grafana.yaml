@@ -1,3 +1,129 @@
+{{- /*
+Extra provisioned Grafana alerting: the SES email contact point + root
+notification policy (only when smtp is enabled) and the stack pod-health rules.
+Kept in a named template so the grafana Deployment can checksum it and roll on
+change. Rendered into the grafana-alerting ConfigMap below.
+*/ -}}
+{{- define "transformers-ci.grafana-alerting-data" -}}
+{{- if .Values.grafana.smtp.enabled }}
+contactpoints.yaml: |
+  apiVersion: 1
+  contactPoints:
+    - orgId: 1
+      name: ses-email
+      receivers:
+        - uid: ses-email-recv
+          type: email
+          settings:
+            addresses: {{ .Values.grafana.alerting.emailTo | quote }}
+            singleEmail: false
+  policies:
+    - orgId: 1
+      receiver: ses-email
+      group_by: ['grafana_folder', 'alertname']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+{{- end }}
+pod-health.yaml: |
+  # Provisioned alerting for stack-pod crashes/restarts. "up == 0" catches a pod
+  # that is down/crashlooping (e.g. an OOMKill); "process restarted" catches a
+  # pod that already came back (e.g. Tempo recovering from an OOM between scrapes).
+  apiVersion: 1
+  groups:
+    - orgId: 1
+      name: stack-pod-health
+      folder: CI Alerts
+      interval: 1m
+      rules:
+        - uid: stack-pod-down
+          title: Stack pod down (scrape target unreachable)
+          condition: C
+          for: 2m
+          noDataState: OK
+          execErrState: Error
+          labels:
+            severity: critical
+            kind: pod-health
+          annotations:
+            summary: A transformers-ci stack pod is down or crashlooping.
+            description: >
+              up == 0 for a stack scrape target ({{ "{{" }} $labels.job {{ "}}" }} /
+              {{ "{{" }} $labels.instance {{ "}}" }}) for 2m — the pod is down,
+              OOMKilled, or crashlooping. Check `kubectl -n transformers-ci get pods`.
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 300
+                to: 0
+              datasourceUid: prometheus-infra
+              model:
+                refId: A
+                instant: true
+                editorMode: code
+                expr: up{job=~"tempo|otelcol-metrics|prometheus|grafana|trace-exporter"}
+            - refId: B
+              datasourceUid: __expr__
+              model:
+                refId: B
+                type: reduce
+                reducer: last
+                expression: A
+            - refId: C
+              datasourceUid: __expr__
+              model:
+                refId: C
+                type: threshold
+                expression: B
+                conditions:
+                  - evaluator:
+                      type: lt
+                      params: [1]
+
+        - uid: stack-pod-restarted
+          title: Stack pod restarted recently
+          condition: C
+          for: 0m
+          noDataState: OK
+          execErrState: Error
+          labels:
+            severity: warning
+            kind: pod-health
+          annotations:
+            summary: A transformers-ci stack process restarted in the last 10m.
+            description: >
+              changes(process_start_time_seconds[10m]) > 0 for
+              {{ "{{" }} $labels.job {{ "}}" }} — the process restarted (likely an
+              OOMKill/crash, e.g. Tempo). Investigate before it recurs.
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: prometheus-infra
+              model:
+                refId: A
+                instant: true
+                editorMode: code
+                expr: changes(process_start_time_seconds{job=~"tempo|prometheus|grafana"}[10m])
+            - refId: B
+              datasourceUid: __expr__
+              model:
+                refId: B
+                type: reduce
+                reducer: last
+                expression: A
+            - refId: C
+              datasourceUid: __expr__
+              model:
+                refId: C
+                type: threshold
+                expression: B
+                conditions:
+                  - evaluator:
+                      type: gt
+                      params: [0]
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -227,6 +353,7 @@ data:
                     - evaluator:
                         type: gt
                         params: [7200]
+{{ include "transformers-ci.grafana-alerting-data" . | indent 2 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -250,6 +377,7 @@ spec:
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "3000"
+        checksum/alerting: {{ include "transformers-ci.grafana-alerting-data" . | sha256sum }}
     spec:
       containers:
         - name: grafana
@@ -275,6 +403,28 @@ spec:
               value: "true"
             - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
               value: /var/lib/grafana/dashboards/pytest-observability-dashboard.json
+            {{- if .Values.grafana.smtp.enabled }}
+            - name: GF_SMTP_ENABLED
+              value: "true"
+            - name: GF_SMTP_HOST
+              value: "{{ .Values.grafana.smtp.host }}"
+            - name: GF_SMTP_FROM_ADDRESS
+              value: "{{ .Values.grafana.smtp.fromAddress }}"
+            - name: GF_SMTP_FROM_NAME
+              value: "{{ .Values.grafana.smtp.fromName }}"
+            - name: GF_SMTP_STARTTLS_POLICY
+              value: "{{ .Values.grafana.smtp.startTLSPolicy }}"
+            - name: GF_SMTP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.grafana.smtp.existingSecret }}
+                  key: {{ .Values.grafana.smtp.userKey }}
+            - name: GF_SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.grafana.smtp.existingSecret }}
+                  key: {{ .Values.grafana.smtp.passwordKey }}
+            {{- end }}
           resources:
             {{- toYaml .Values.grafana.resources | nindent 12 }}
           volumeMounts:
