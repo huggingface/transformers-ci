@@ -51,6 +51,19 @@
       "type": "text"
     },
     {
+      "id": 300,
+      "type": "row",
+      "title": "\u2460 Verdict \u2014 is the pipeline healthy right now?",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 3
+      },
+      "panels": []
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus-infra"
@@ -95,7 +108,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 3
+        "y": 4
       },
       "id": 1,
       "options": {
@@ -116,15 +129,353 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "max by (job) (up{job!=\"otelcol-metrics\"})",
+          "expr": "max by (job) (up)",
           "instant": true,
           "legendFormat": "{{job}}",
           "range": false,
           "refId": "A"
         }
       ],
-      "title": "Scrape targets \u2014 up/down",
+      "title": "Scrape targets \u2014 up/down (incl. collector)",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 201,
+      "type": "stat",
+      "title": "Tempo restarts (1h)",
+      "description": "changes(process_start_time_seconds{job=tempo}[1h]). The OOM-restart that caused the ~69% span drop. Should be 0.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "changes(process_start_time_seconds{job=\"tempo\"}[1h])",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Tempo restarts (1h)",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 8
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 202,
+      "type": "stat",
+      "title": "Prometheus restarts (1h)",
+      "description": "changes(process_start_time_seconds{job=prometheus}[1h]). Prometheus OOM'd on WAL replay under high per-test cardinality. Should be 0.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "changes(process_start_time_seconds{job=\"prometheus\"}[1h])",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Prometheus restarts (1h)",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 8
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 203,
+      "type": "stat",
+      "title": "Spans accepted \u2212 sent (24h)",
+      "description": "Collector receiver_accepted minus exporter_sent over 24h. A large positive delta = spans buffered/lost between collector ingest and Tempo export.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 10000
+              },
+              {
+                "color": "red",
+                "value": 100000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(increase(otelcol_receiver_accepted_spans[24h])) - sum(increase(otelcol_exporter_sent_spans[24h]))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Spans accepted \u2212 sent (24h)",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      }
+    },
+    {
+      "id": 301,
+      "type": "row",
+      "title": "\u2461 Pipeline health (the failure modes that actually bit us)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 210,
+      "type": "timeseries",
+      "title": "Collector queue & send failures",
+      "description": "Exporter queue depth vs capacity and failed sends. This is the durability layer that absorbs a Tempo restart \u2014 rising queue = buffering, send_failed > 0 = dropping.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(otelcol_exporter_queue_size)",
+          "legendFormat": "queue size",
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max(otelcol_exporter_queue_capacity)",
+          "legendFormat": "queue capacity",
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum(increase(otelcol_exporter_send_failed_spans[5m]))",
+          "legendFormat": "send_failed (5m)",
+          "refId": "C"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 211,
+      "type": "timeseries",
+      "title": "Tempo discarded spans by reason (1h)",
+      "description": "sum by(reason)(increase(tempo_discarded_spans_total[1h])). trace_too_large / live_traces_exceeded confirm whether loss is limit-based. Should stay 0.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (reason) (increase(tempo_discarded_spans_total[1h]))",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      }
     },
     {
       "datasource": {
@@ -137,14 +488,13 @@
             "mode": "palette-classic"
           },
           "custom": {
-            "axisLabel": "spans/sec",
+            "axisLabel": "blocks",
             "drawStyle": "line",
-            "fillOpacity": 20,
-            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
             "lineWidth": 2,
             "showPoints": "never"
           },
-          "unit": "ops"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -152,9 +502,9 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 7
+        "y": 21
       },
-      "id": 2,
+      "id": 8,
       "options": {
         "legend": {
           "calcs": [
@@ -174,13 +524,268 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (route) (rate(tempo_request_duration_seconds_count{job=\"tempo\",route!~\".*[Hh]ealth.*\"}[5m]))",
-          "legendFormat": "{{route}}",
+          "expr": "sum(rate(tempo_distributor_spans_received_total[5m]))",
+          "legendFormat": "spans received/s",
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum(rate(tempo_ingester_blocks_flushed_total[5m]))",
+          "legendFormat": "blocks flushed/s",
+          "refId": "B"
+        }
+      ],
+      "title": "Tempo write path (spans in / blocks flushed)",
+      "type": "timeseries",
+      "description": "Spans received by the distributor vs blocks flushed to disk by the ingester. Replaces the old unit-mismatched spans-minus-traces rate."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 213,
+      "type": "timeseries",
+      "title": "End-to-end span reconciliation (collector)",
+      "description": "Collector spans accepted/s (in) vs sent/s (out to Tempo). The two lines should overlap; a sustained gap is real-time span loss/backpressure.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(rate(otelcol_receiver_accepted_spans[5m]))",
+          "legendFormat": "accepted/s (in)",
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum(rate(otelcol_exporter_sent_spans[5m]))",
+          "legendFormat": "sent/s (\u2192Tempo)",
+          "refId": "B"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 21
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "decbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      },
+      "id": 122,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "process_resident_memory_bytes{job=\"tempo\"}",
+          "legendFormat": "RSS",
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "17179869184",
+          "legendFormat": "container limit (16 GiB)",
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "14260633600",
+          "legendFormat": "GOMEMLIMIT soft cap (13600 MiB)",
+          "refId": "C"
+        }
+      ],
+      "title": "Tempo memory (RSS) vs 16 GiB limit",
+      "type": "timeseries",
+      "description": "Tempo resident memory vs its 16 GiB cgroup limit (raised 8\u219216 GiB on 2026-06-25 after the span-id collision fix made shard traces ~16x bigger). OOMKills here silently drop acked-but-unflushed spans. GOMEMLIMIT (13600 MiB) makes GC aggressive near the soft cap."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 29
+      },
+      "id": 123,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "tempo_ingester_live_traces",
+          "legendFormat": "live traces",
           "refId": "A"
         }
       ],
-      "title": "Tempo request rate by route",
-      "type": "timeseries"
+      "title": "Tempo live traces (in-RAM)",
+      "type": "timeseries",
+      "description": "Concurrent traces held in the ingester's RAM. A sharded run holds many wide live traces at once; high counts drive the memory in the panel to the left toward the OOM limit."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "id": 212,
+      "type": "timeseries",
+      "title": "Prometheus memory (RSS) vs 8 GiB limit",
+      "description": "Prometheus resident memory vs its 8 GiB cgroup limit. It OOM'd on WAL replay under high per-test series cardinality. Mirror of the Tempo RSS panel.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "decbytes"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "process_resident_memory_bytes{job=\"prometheus\"}",
+          "legendFormat": "RSS",
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "8589934592",
+          "legendFormat": "container limit (8 GiB)",
+          "refId": "B"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 37
+      }
     },
     {
       "datasource": {
@@ -207,7 +812,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 7
+        "y": 37
       },
       "id": 7,
       "options": {
@@ -246,7 +851,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus-infra"
+        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
@@ -254,7 +859,7 @@
             "mode": "palette-classic"
           },
           "custom": {
-            "axisLabel": "blocks",
+            "axisLabel": "",
             "drawStyle": "line",
             "fillOpacity": 10,
             "lineWidth": 2,
@@ -266,15 +871,15 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
-        "y": 15
+        "y": 45
       },
-      "id": 8,
+      "id": 106,
       "options": {
         "legend": {
           "calcs": [
-            "mean",
+            "last",
             "max"
           ],
           "displayMode": "table",
@@ -290,199 +895,32 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(rate(tempo_ingester_blocks_flushed_total[5m]))",
-          "legendFormat": "blocks flushed/sec",
+          "expr": "pytest_trace_exporter_render_duration_seconds",
+          "legendFormat": "render seconds",
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "sum(rate(tempo_distributor_spans_received_total[5m])) - sum(rate(tempo_ingester_traces_created_total[5m]))",
-          "legendFormat": "spans-traces drift/sec",
+          "expr": "pytest_trace_exporter_trace_count",
+          "legendFormat": "traces in window",
           "refId": "B"
         }
       ],
-      "title": "Tempo write path",
+      "title": "Render duration & traces fetched",
       "type": "timeseries"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "unit": "decbytes"
-        },
-        "overrides": []
-      },
+      "id": 302,
+      "type": "row",
+      "title": "\u2462 Volume (per-day throughput)",
+      "collapsed": false,
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 1,
+        "w": 24,
         "x": 0,
-        "y": 23
+        "y": 53
       },
-      "id": 122,
-      "options": {
-        "legend": {
-          "calcs": [
-            "last",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "process_resident_memory_bytes{job=\"tempo\"}",
-          "legendFormat": "RSS",
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
-          "expr": "8589934592",
-          "legendFormat": "container limit (8 GiB)",
-          "refId": "B"
-        },
-        {
-          "editorMode": "code",
-          "expr": "7130316800",
-          "legendFormat": "GOMEMLIMIT soft cap (6800 MiB)",
-          "refId": "C"
-        }
-      ],
-      "title": "Tempo memory (RSS) vs 8 GiB limit",
-      "type": "timeseries",
-      "description": "Tempo's resident memory vs its 8 GiB cgroup limit (raised from 4 GiB on 2026-06-24). OOMKills here silently drop acked-but-unflushed spans. GOMEMLIMIT makes GC aggressive near the soft cap."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 23
-      },
-      "id": 123,
-      "options": {
-        "legend": {
-          "calcs": [
-            "last",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "tempo_ingester_live_traces",
-          "legendFormat": "live traces",
-          "refId": "A"
-        }
-      ],
-      "title": "Tempo live traces (in-RAM)",
-      "type": "timeseries",
-      "description": "Concurrent traces held in the ingester's RAM. A sharded run holds many wide live traces at once; high counts drive the memory in the panel to the left toward the OOM limit."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "seconds",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 15
-      },
-      "id": 9,
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "scrape_duration_seconds",
-          "legendFormat": "{{job}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Scrape duration by job",
-      "type": "timeseries",
-      "description": "How long each scrape takes, per job. Rises when a target (e.g. the trace exporter) gets slow under load \u2014 an early warning before scrapes start failing."
+      "panels": []
     },
     {
       "datasource": {
@@ -509,9 +947,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
-        "y": 31
+        "y": 54
       },
       "id": 12,
       "options": {
@@ -568,9 +1006,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 31
+        "w": 8,
+        "x": 8,
+        "y": 54
       },
       "id": 13,
       "options": {
@@ -627,9 +1065,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 39
+        "w": 8,
+        "x": 16,
+        "y": 54
       },
       "id": 14,
       "options": {
@@ -660,1159 +1098,6 @@
       "title": "AWS runner executions per day",
       "type": "timeseries",
       "timeFrom": "7d"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 47
-      },
-      "id": 101,
-      "panels": [],
-      "title": "Exporter self-metrics (pytest-trace-exporter)",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short",
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "red",
-                  "text": "DOWN"
-                },
-                "1": {
-                  "color": "green",
-                  "text": "UP"
-                }
-              },
-              "type": "value"
-            }
-          ]
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 0,
-        "y": 48
-      },
-      "id": 102,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "pytest_trace_exporter_up",
-          "instant": true,
-          "legendFormat": "up",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Exporter up",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 8,
-        "y": 48
-      },
-      "id": 103,
-      "options": {
-        "colorMode": "none",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "pytest_trace_exporter_render_duration_seconds",
-          "instant": true,
-          "legendFormat": "render",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Last render duration",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 16,
-        "y": 48
-      },
-      "id": 104,
-      "options": {
-        "colorMode": "none",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "rate(pytest_trace_exporter_traces_processed_total[5m])",
-          "instant": true,
-          "legendFormat": "traces/s",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Traces processed / sec",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "unit": "decbytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 52
-      },
-      "id": 105,
-      "options": {
-        "legend": {
-          "calcs": [
-            "last",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "pytest_trace_exporter_process_resident_bytes",
-          "legendFormat": "RSS",
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
-          "expr": "2147483648",
-          "legendFormat": "container limit (2 GiB)",
-          "refId": "B"
-        },
-        {
-          "editorMode": "code",
-          "expr": "1824522240",
-          "legendFormat": "soft cap (1740 MiB, cache drop)",
-          "refId": "C"
-        }
-      ],
-      "title": "Exporter memory (RSS) vs 2 GiB limit",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "",
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "never"
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 52
-      },
-      "id": 106,
-      "options": {
-        "legend": {
-          "calcs": [
-            "last",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "pytest_trace_exporter_render_duration_seconds",
-          "legendFormat": "render seconds",
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
-          "expr": "pytest_trace_exporter_trace_count",
-          "legendFormat": "traces in window",
-          "refId": "B"
-        }
-      ],
-      "title": "Render duration & traces fetched",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Traces arriving during one render \u00f7 the fetch limit. >0.8 means traces risk aging out of the most-recent-N window before being rendered. Benign even when 'traces in window' is pinned at the limit.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "unit": "percentunit",
-          "min": 0,
-          "decimals": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 0.5
-              },
-              {
-                "color": "red",
-                "value": 0.8
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 12,
-        "x": 0,
-        "y": 60
-      },
-      "id": 120,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "scalar(sum(rate(tempo_ingester_traces_created_total[1h]))) * scalar(max(pytest_trace_exporter_render_duration_seconds)) / scalar(max(pytest_trace_exporter_limit))",
-          "instant": true,
-          "legendFormat": "window pressure",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Exporter window pressure (data-loss risk)",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "RSS \u00f7 soft cap (memSoftMb). >1.0 means RSS is above the soft cap and the trace cache is being dropped each render (degraded, near the 2 GiB hard limit).",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "unit": "percentunit",
-          "min": 0,
-          "decimals": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 0.7
-              },
-              {
-                "color": "red",
-                "value": 1.0
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 12,
-        "x": 12,
-        "y": 60
-      },
-      "id": 121,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value_and_name"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "pytest_trace_exporter_process_resident_bytes / pytest_trace_exporter_mem_soft_bytes",
-          "instant": true,
-          "legendFormat": "memory pressure",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Exporter memory pressure",
-      "type": "stat"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 60
-      },
-      "id": 107,
-      "panels": [],
-      "title": "Live ingest \u2014 last 24h (today so far)",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "decbytes",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 12,
-        "x": 0,
-        "y": 61
-      },
-      "id": 108,
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "auto",
-        "justifyMode": "auto"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "sum(increase(tempo_distributor_bytes_received_total[24h]))",
-          "instant": true,
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "title": "Trace bytes received (last 24h)",
-      "type": "stat",
-      "description": "Rolling 24h companion to the per-day bars \u2014 grows live through the current day."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 12,
-        "x": 12,
-        "y": 61
-      },
-      "id": 109,
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "auto",
-        "justifyMode": "auto"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "sum(increase(prometheus_tsdb_head_samples_appended_total[24h]))",
-          "instant": true,
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "title": "Metric samples ingested (last 24h)",
-      "type": "stat",
-      "description": "Rolling 24h companion to the per-day bars \u2014 grows live through the current day."
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 65
-      },
-      "id": 110,
-      "panels": [],
-      "title": "CI data publisher (hourly batch job)",
-      "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 4500
-              },
-              {
-                "color": "red",
-                "value": 7200
-              }
-            ]
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 0,
-        "y": 66
-      },
-      "id": 111,
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "auto",
-        "justifyMode": "auto"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "time() - ci_publisher_last_run_timestamp_seconds",
-          "instant": true,
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "title": "Time since last publish",
-      "type": "stat",
-      "description": "Age of the last publish cycle. Yellow >75m (cron is hourly), red >2h \u2014 stale means the sidecar stopped publishing."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "1": {
-                  "text": "OK",
-                  "color": "green",
-                  "index": 0
-                },
-                "0": {
-                  "text": "FAIL",
-                  "color": "red",
-                  "index": 1
-                }
-              }
-            }
-          ]
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 6,
-        "y": 66
-      },
-      "id": 112,
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "background",
-        "graphMode": "none",
-        "textMode": "auto",
-        "justifyMode": "auto"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "ci_publisher_last_run_success",
-          "instant": true,
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "title": "Last cycle",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "decbytes",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 12,
-        "y": 66
-      },
-      "id": 113,
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "auto",
-        "justifyMode": "auto"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "ci_publisher_peak_rss_bytes",
-          "instant": true,
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "title": "Peak RSS",
-      "type": "stat",
-      "description": "Peak resident memory of the publisher process during its last cycle (mem_limit is 1 GiB)."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 66
-      },
-      "id": 114,
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "auto",
-        "justifyMode": "auto"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "ci_publisher_run_duration_seconds",
-          "instant": true,
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "title": "Cycle duration",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "lineWidth": 2,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 70
-      },
-      "id": 115,
-      "options": {
-        "legend": {
-          "calcs": [
-            "last",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "ci_publisher_traces_per_second * 60",
-          "legendFormat": "traces/sec",
-          "refId": "A"
-        }
-      ],
-      "title": "Traces published / min",
-      "type": "timeseries",
-      "description": "Throughput of the last cycle: traces shaped per minute."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "decbytes",
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 15,
-            "lineWidth": 2,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 70
-      },
-      "id": 116,
-      "options": {
-        "legend": {
-          "calcs": [
-            "last",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "ci_publisher_dataset_bytes",
-          "legendFormat": "dataset bytes",
-          "refId": "A"
-        }
-      ],
-      "title": "Data published (dataset size on disk)",
-      "type": "timeseries",
-      "description": "Total bytes of the published dataset in the staging mirror (grows as history accumulates)."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 0,
-        "y": 78
-      },
-      "id": 117,
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "auto",
-        "justifyMode": "auto"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "ci_publisher_dataset_test_rows",
-          "instant": true,
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "title": "Dataset test rows",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 8,
-        "y": 78
-      },
-      "id": 118,
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "auto",
-        "justifyMode": "auto"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "ci_publisher_dataset_run_rollups",
-          "instant": true,
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "title": "Dataset run rollups",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus-infra"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": {
-            "mode": "thresholds"
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 16,
-        "y": 78
-      },
-      "id": 119,
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "auto",
-        "justifyMode": "auto"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "ci_publisher_dataset_partitions",
-          "instant": true,
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "title": "Dataset partitions (days)",
-      "type": "stat"
     }
   ],
   "refresh": "30s",

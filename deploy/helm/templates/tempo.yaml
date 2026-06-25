@@ -32,7 +32,14 @@ data:
     # so a run that really ran ~52k tests showed ~15k. Raise it to match the
     # 64 MiB OTLP body limit set on the distributor below so whole shard traces
     # persist. (Bigger live traces cost ingester RAM — watch Tempo RSS vs its
-    # GOMEMLIMIT/4Gi limit; lower this or raise the limit if it climbs.)
+    # GOMEMLIMIT / 16Gi limit; lower this or raise the limit if it climbs.)
+    #
+    # 2026-06-25: with the producer span-id collision fixed (commit 011834c), a
+    # shard trace now keeps ~100k DISTINCT spans instead of collapsing to ~6k —
+    # ~16x more live data in the ingester, which pushed RSS to ~7.7 GiB and
+    # OOM-restarted Tempo ~8x/6h at the old 8Gi limit. Mitigation: 8Gi→16Gi limit
+    # (goMemLimit ~85%) AND max_block_duration 5m→2m below, so the ingester cuts
+    # blocks to disk sooner and holds less live data at peak.
     overrides:
       defaults:
         global:
@@ -56,7 +63,11 @@ data:
               max_request_body_size: 67108864  # 64 MiB
 
     ingester:
-      max_block_duration: 5m
+      # 2m (was 5m): cut blocks to disk sooner so the ingester holds less live
+      # trace data at peak. A CI shard trace spans ~5-6 min and now carries ~100k
+      # spans post-collision-fix; flushing more often trades a few more (smaller)
+      # blocks for a flatter memory profile. See max_bytes_per_trace note above.
+      max_block_duration: 2m
 
     compactor:
       compaction:

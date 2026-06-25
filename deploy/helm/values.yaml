@@ -92,15 +92,19 @@ tempo:
   # it throttled GC to 1.75G while live data still grew to 4G and OOM-killed Tempo,
   # losing acked-but-unflushed spans on SIGKILL (the ~69% "silent" span drop).
   # A sharded run holds many wide live traces at once (≤64MiB each), so give Tempo
-  # real headroom; the tempo node has 31GiB and is only ~26% requested.
-  goMemLimit: "6800MiB"  # ~85% of the 8Gi limit
+  # real headroom; the tempo node has 31GiB and is only lightly requested.
+  # 2026-06-25: bumped 6800MiB→13600MiB alongside the 8Gi→16Gi limit below. The
+  # producer span-id collision fix (011834c) made each shard trace keep ~100k
+  # distinct spans (~16x more live data) — RSS peaked ~7.7 GiB and OOM-restarted
+  # Tempo ~8x/6h at 8Gi. See templates/tempo.yaml ingester note.
+  goMemLimit: "13600MiB"  # ~85% of the 16Gi limit
 
   resources:
     requests:
       cpu: 500m
-      memory: 2Gi
+      memory: 4Gi
     limits:
-      memory: 8Gi
+      memory: 16Gi
 
   storage:
     enabled: true
