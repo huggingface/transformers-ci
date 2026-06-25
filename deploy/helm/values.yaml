@@ -337,12 +337,14 @@ secrets:
   keys:
     traceApiKey: trace-api-key
     grafanaAdminPassword: grafana-admin-password
-    githubToken: github-token
+    githubToken: gh-token
     hfToken: hf-token
   placeholder:
     # Only used when secrets.create is true
     traceApiKey: ""
     grafanaAdminPassword: ""
+    githubToken: ""
+    hfToken: ""
 
 #------------------------------------------------------------------------------
 # External Secret Resource

@@ -478,7 +478,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Run ID"
+              "options": "Commit"
             },
             "properties": [
               {
@@ -486,7 +486,7 @@
                 "value": [
                   {
                     "title": "View this run",
-                    "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${__value.raw}",
+                    "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${__data.fields.run_id}",
                     "targetBlank": false
                   }
                 ]
@@ -508,18 +508,12 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Commit"
+              "options": "run_id"
             },
             "properties": [
               {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View commit on GitHub",
-                    "url": "${__data.fields.html_url}",
-                    "targetBlank": true
-                  }
-                ]
+                "id": "custom.hidden",
+                "value": true
               }
             ]
           },
@@ -650,11 +644,10 @@
               "html_url": 7
             },
             "renameByName": {
-              "run_id": "Run ID",
               "commit_message": "Commit",
               "Value #Start": "Started",
               "Value #Jobs": "Job Count",
-              "Value #Total": "Total",
+              "Value #Total": "Tests",
               "Value #Duration": "Duration",
               "Value #Rate": "Failure Rate"
             }
@@ -712,7 +705,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Run ID"
+              "options": "Commit"
             },
             "properties": [
               {
@@ -720,7 +713,7 @@
                 "value": [
                   {
                     "title": "View this run",
-                    "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${__value.raw}",
+                    "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${__data.fields.run_id}",
                     "targetBlank": false
                   }
                 ]
@@ -736,6 +729,18 @@
               {
                 "id": "unit",
                 "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "run_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
               }
             ]
           },
@@ -797,6 +802,15 @@
         },
         {
           "editorMode": "code",
+          "expr": "max by (run_id, pr, commit_message, commit_sha) (max without (instance) (last_over_time(pytest_run_info{pr=~\".*\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\".*\"}[$__range]))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Commit"
+        },
+        {
+          "editorMode": "code",
           "expr": "count by (run_id, pr) (max without (instance) (last_over_time(pytest_run_job_member_info{pr=~\".*\"}[$__range])))",
           "format": "table",
           "instant": true,
@@ -820,16 +834,19 @@
               "instance": true,
               "job": true,
               "provider": true,
-              "service_name": true
+              "service_name": true,
+              "Value #Commit": true,
+              "commit_sha": true
             },
             "indexByName": {
               "run_id": 0,
-              "pr": 1,
-              "Value #Jobs": 2,
-              "Value #Start": 3
+              "commit_message": 1,
+              "pr": 2,
+              "Value #Jobs": 3,
+              "Value #Start": 4
             },
             "renameByName": {
-              "run_id": "Run ID",
+              "commit_message": "Commit",
               "pr": "PR",
               "Value #Jobs": "Job Count",
               "Value #Start": "Started"

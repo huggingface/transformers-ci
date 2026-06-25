@@ -42,7 +42,7 @@
       },
       "id": 9,
       "options": {
-        "content": "### <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"18\" height=\"18\" alt=\"GH\"/> [${branch_label:raw}](${branch_url:raw})${pr_title_section:raw}\n\n**Repo:** `${pr_repository:raw}` | **Runs:** `${pr_total_runs:raw}`${pr_metadata_section:raw}",
+        "content": "### <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"18\" height=\"18\" alt=\"GH\"/> [${branch_label:raw}](${branch_url:raw})${pr_title_section:raw}\n\n<img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"16\" height=\"16\" alt=\"GH\"/> [${latest_commit:raw}](${latest_commit_url:raw})\n\n**Repo:** `${pr_repository:raw}` | **Runs:** `${pr_total_runs:raw}`${pr_metadata_section:raw}",
         "mode": "markdown"
       },
       "pluginVersion": "12.0.0",
@@ -349,7 +349,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Run ID"
+              "options": "Commit"
             },
             "properties": [
               {
@@ -357,10 +357,22 @@
                 "value": [
                   {
                     "title": "View this run",
-                    "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${__value.raw}",
+                    "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${__data.fields.run_id}",
                     "targetBlank": false
                   }
                 ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "run_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
               }
             ]
           },
@@ -473,6 +485,15 @@
         },
         {
           "editorMode": "code",
+          "expr": "max by (run_id, pr, commit_message, commit_sha) (max without (instance) (last_over_time(pytest_run_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Commit"
+        },
+        {
+          "editorMode": "code",
           "expr": "max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_duration_seconds{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))))",
           "format": "table",
           "instant": true,
@@ -516,19 +537,22 @@
               "job": true,
               "provider": true,
               "service_name": true,
-              "pr": true
+              "pr": true,
+              "Value #Commit": true,
+              "commit_sha": true
             },
             "indexByName": {
               "run_id": 0,
-              "Value #Start": 1,
-              "Value #Jobs": 2,
-              "Value #Total": 3,
-              "Value #Failures": 4,
-              "Value #Result": 5,
-              "Value #Duration": 6
+              "commit_message": 1,
+              "Value #Start": 2,
+              "Value #Jobs": 3,
+              "Value #Total": 4,
+              "Value #Failures": 5,
+              "Value #Result": 6,
+              "Value #Duration": 7
             },
             "renameByName": {
-              "run_id": "Run ID",
+              "commit_message": "Commit",
               "Value #Jobs": "Job Count",
               "Value #Total": "Tests",
               "Value #Start": "Started",
@@ -862,6 +886,62 @@
           "refId": "Prometheus-latest_run_id-Variable-Query"
         },
         "regex": "/.*run_id=\"([^\"]+)\".*/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(max by (commit_message) (pytest_run_info{pr=~\"$pr\",run_id=~\"$latest_run_id\"}))",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "latest_commit",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(max by (commit_message) (last_over_time(pytest_run_info{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d])))",
+          "refId": "Prometheus-latest_commit-Variable-Query"
+        },
+        "regex": "/commit_message=\"([^\"]*)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(max by (html_url) (pytest_run_info{pr=~\"$pr\",run_id=~\"$latest_run_id\"}))",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "latest_commit_url",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(max by (html_url) (last_over_time(pytest_run_info{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d])))",
+          "refId": "Prometheus-latest_commit_url-Variable-Query"
+        },
+        "regex": "/html_url=\"([^\"]*)\"/",
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,

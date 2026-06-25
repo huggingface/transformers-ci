@@ -133,7 +133,7 @@ The chart references a Secret by `secrets.name` (default
 | ---------------------- | ------------------------ | ----------------- |
 | `traceApiKey`          | `trace-api-key`          | OTLP ingestion    |
 | `grafanaAdminPassword` | `grafana-admin-password` | Grafana admin     |
-| `githubToken`          | `github-token`           | trace-exporter    |
+| `githubToken`          | `gh-token`               | GitHub metadata   |
 | `hfToken`              | `hf-token`               | ci-data-publisher |
 
 For production, set `secrets.create: false` and provide the Secret through your
@@ -154,8 +154,8 @@ externalSecret:
 ```
 
 > The `githubToken` key matters for dashboard correctness: without it the
-> trace-exporter calls the GitHub API unauthenticated (60 req/hr), gets
-> rate-limited, and PR titles render blank in the dashboards.
+> trace-exporter and ci-data-publisher call the GitHub API unauthenticated
+> (60 req/hr), get rate-limited, and PR/commit metadata can render blank.
 
 ## Keeping Docker Compose and Helm in Sync
 
