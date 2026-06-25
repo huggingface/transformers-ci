@@ -570,10 +570,13 @@ def emit_trace_log(
     *,
     exit_code: int | None = None,
 ) -> None:
+    from transformersci import exporter_version
+
     details = [
         f"trace_id={trace_id}",
         f"service={env.get('OTEL_SERVICE_NAME', DEFAULT_SERVICE_NAME)}",
         f"job={env.get('TRANSFORMERS_TEST_OTEL_JOB', DEFAULT_LOCAL_JOB)}",
+        f"exporter_version={exporter_version()}",
     ]
     if exit_code is not None:
         details.append(f"exit_code={exit_code}")
@@ -688,8 +691,16 @@ def augment_pytest_command(command: Sequence[str], *, export_traces: bool) -> li
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    from transformersci import exporter_version
+
     parser = argparse.ArgumentParser(
         description="Run pytest with OpenTelemetry configured for CI or local testing."
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"configure-ci-otel {exporter_version()}",
+        help="Print the installed transformers-ci version (with the build-time git SHA) and exit.",
     )
     parser.add_argument(
         "--job",

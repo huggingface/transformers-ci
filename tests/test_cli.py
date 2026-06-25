@@ -605,3 +605,20 @@ class ConfigureCiOtelTests(TestCase):
         self.assertEqual(
             cli.job_run_id(env, "github_actions", "my_job"), "999:1:my_job"
         )
+
+    def test_version_flag_prints_version_and_exits(self):
+        import transformersci
+
+        out = io.StringIO()
+        with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stdout(out):
+            cli.parse_args(["--version"])
+
+        self.assertEqual(ctx.exception.code, 0)
+        printed = out.getvalue().strip()
+        self.assertEqual(
+            printed, f"configure-ci-otel {transformersci.exporter_version()}"
+        )
+        # We want the SHA on the result: whenever one is resolvable (build-time
+        # stamp or a git checkout at test time) it must surface in the output.
+        if transformersci.BUILD_SHA or transformersci._runtime_git_sha():
+            self.assertIn("+g", printed)
