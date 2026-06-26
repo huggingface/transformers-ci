@@ -136,7 +136,7 @@
           "refId": "A"
         }
       ],
-      "title": "Scrape targets \u2014 up/down (incl. collector)",
+      "title": "Scrape targets — up/down (incl. collector)",
       "type": "stat"
     },
     {
@@ -192,7 +192,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "changes(process_start_time_seconds{job=\"tempo\"}[1h])",
+          "expr": "sum(changes(process_start_time_seconds{job=\"tempo\"}[1h]))",
           "instant": true,
           "range": false,
           "legendFormat": "Tempo restarts (1h)",
@@ -259,7 +259,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "changes(process_start_time_seconds{job=\"prometheus\"}[1h])",
+          "expr": "sum(changes(process_start_time_seconds{job=\"prometheus\"}[1h]))",
           "instant": true,
           "range": false,
           "legendFormat": "Prometheus restarts (1h)",
@@ -280,7 +280,7 @@
       },
       "id": 203,
       "type": "stat",
-      "title": "Spans accepted \u2212 sent (24h)",
+      "title": "Spans accepted − sent (24h)",
       "description": "Collector receiver_accepted minus exporter_sent over 24h. A large positive delta = spans buffered/lost between collector ingest and Tempo export.",
       "fieldConfig": {
         "defaults": {
@@ -329,7 +329,7 @@
           "expr": "sum(increase(otelcol_receiver_accepted_spans[24h])) - sum(increase(otelcol_exporter_sent_spans[24h]))",
           "instant": true,
           "range": false,
-          "legendFormat": "Spans accepted \u2212 sent (24h)",
+          "legendFormat": "Spans accepted − sent (24h)",
           "refId": "A"
         }
       ],
@@ -361,7 +361,7 @@
       "id": 210,
       "type": "timeseries",
       "title": "Collector queue & send failures",
-      "description": "Exporter queue depth vs capacity and failed sends. This is the durability layer that absorbs a Tempo restart \u2014 rising queue = buffering, send_failed > 0 = dropping.",
+      "description": "Exporter queue depth vs capacity and failed sends. This is the durability layer that absorbs a Tempo restart — rising queue = buffering, send_failed > 0 = dropping.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -590,7 +590,7 @@
         {
           "editorMode": "code",
           "expr": "sum(rate(otelcol_exporter_sent_spans[5m]))",
-          "legendFormat": "sent/s (\u2192Tempo)",
+          "legendFormat": "sent/s (→Tempo)",
           "refId": "B"
         }
       ],
@@ -667,7 +667,7 @@
       ],
       "title": "Tempo memory (RSS) vs 16 GiB limit",
       "type": "timeseries",
-      "description": "Tempo resident memory vs its 16 GiB cgroup limit (raised 8\u219216 GiB on 2026-06-25 after the span-id collision fix made shard traces ~16x bigger). OOMKills here silently drop acked-but-unflushed spans. GOMEMLIMIT (13600 MiB) makes GC aggressive near the soft cap."
+      "description": "Tempo resident memory vs its 16 GiB cgroup limit (raised 8→16 GiB on 2026-06-25 after the span-id collision fix made shard traces ~16x bigger). OOMKills here silently drop acked-but-unflushed spans. GOMEMLIMIT (13600 MiB) makes GC aggressive near the soft cap."
     },
     {
       "datasource": {
@@ -927,7 +927,7 @@
         "type": "prometheus",
         "uid": "prometheus-infra"
       },
-      "description": "Trace payload bytes ingested by Tempo's distributor, one bar per UTC calendar day (increase over a 1d step). Primary 'data received by the system' signal \u2014 watch daily volume against the Tempo storage budget. The current day's bar is partial and grows until UTC midnight.",
+      "description": "Trace payload bytes ingested by Tempo's distributor, one bar per UTC calendar day (increase over a 1d step). Primary 'data received by the system' signal — watch daily volume against the Tempo storage budget. The current day's bar is partial and grows until UTC midnight.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1098,6 +1098,116 @@
       "title": "AWS runner executions per day",
       "type": "timeseries",
       "timeFrom": "7d"
+    },
+    {
+      "id": 303,
+      "type": "row",
+      "title": "Storage (PVC) — 90d retention fill",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 62
+      },
+      "panels": []
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "decbytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*limit.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(tempodb_backend_bytes_total)",
+          "legendFormat": "Tempo on-disk",
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "375809638400",
+          "legendFormat": "Tempo PVC limit (350 GiB)",
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "prometheus_tsdb_storage_blocks_bytes",
+          "legendFormat": "Prometheus on-disk (blocks)",
+          "refId": "C"
+        },
+        {
+          "editorMode": "code",
+          "expr": "107374182400",
+          "legendFormat": "Prometheus PVC limit (100 GiB)",
+          "refId": "D"
+        }
+      ],
+      "title": "PVC on-disk usage vs limit",
+      "type": "timeseries",
+      "description": "On-disk usage of the Tempo and Prometheus PVCs vs their provisioned limits, to follow the 90d-retention fill. Tempo = sum(tempodb_backend_bytes_total) (350 GiB PVC, 90d block_retention). Prometheus = TSDB block bytes (100 GiB PVC, 90d retention; excludes the small WAL/head). kubelet_volume_stats_* is not scraped here, so these are app-level on-disk sizes, not filesystem df. The run-store PVC (30 GiB) has no size metric yet."
     }
   ],
   "refresh": "30s",
