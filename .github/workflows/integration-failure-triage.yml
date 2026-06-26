@@ -28,6 +28,14 @@ on:
         description: "Seconds to wait for Serge to accept each task"
         type: string
         default: ""
+      slack_channel:
+        description: "Optional Slack channel for Serge task notifications"
+        type: string
+        default: ""
+      notify_task_finished:
+        description: "Ask Serge to notify Slack when each task finishes"
+        type: boolean
+        default: true
       transformersci_ref:
         description: "Ref of huggingface/transformers-ci to install the triage tooling from"
         type: string
@@ -80,6 +88,8 @@ jobs:
             --serge-url "$SERGE_URL" \
             --serge-timeout "$SERGE_TIMEOUT" \
             --report-out triage-report.md \
+            $NOTIFY_TASK_FINISHED_ARG \
+            $SLACK_CHANNEL_ARG \
             $DRY_RUN_ARG
         env:
           TRIAGE_REPO: ${{ inputs.repo || github.repository }}
@@ -88,6 +98,8 @@ jobs:
           SERGE_TIMEOUT: ${{ inputs.serge_timeout || vars.SERGE_TIMEOUT || '240' }}
           SERGE_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
           GITHUB_TOKEN: ${{ github.token }}
+          NOTIFY_TASK_FINISHED_ARG: ${{ inputs.notify_task_finished && '--notify-task-finished' || '' }}
+          SLACK_CHANNEL_ARG: ${{ inputs.slack_channel != '' && format('--slack-channel {0}', inputs.slack_channel) || '' }}
           DRY_RUN_ARG: ${{ inputs.dry_run && '--dry-run' || '' }}
 
       - name: Upload triage report artifact
