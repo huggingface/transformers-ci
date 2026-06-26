@@ -398,15 +398,15 @@
               "Value #Title": true
             },
             "indexByName": {
-              "pr": 0,
-              "title": 1,
-              "Value #Age": 2,
-              "Value #Activity": 3,
-              "Value #Runs": 4,
-              "Value #Failures": 5,
-              "Value #Rate": 6,
-              "Value #State": 7,
-              "Value #Active": 8
+              "Value #Active": 0,
+              "pr": 1,
+              "title": 2,
+              "Value #Age": 3,
+              "Value #Activity": 4,
+              "Value #Runs": 5,
+              "Value #Failures": 6,
+              "Value #Rate": 7,
+              "Value #State": 8
             },
             "renameByName": {
               "pr": "PR",
