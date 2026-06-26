@@ -11,6 +11,9 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
+agentic = [
+  "huggingface_hub>=0.25",
+]
 otel = [
   "emoji",
   "opentelemetry-api",
@@ -28,6 +31,7 @@ publish = [
 ]
 test = [
   "emoji",
+  "huggingface_hub>=0.25",
   "psutil",
   "pytest>=8.0",
 ]
@@ -44,6 +48,7 @@ dev = [
 [project.scripts]
 configure-ci-otel = "transformersci.otel.cli:main"
 pytest-trace-exporter = "transformersci.otel.trace_exporter:main"
+integration-failure-triage = "transformersci.agentic.integration_failure_triage:main"
 
 [project.entry-points.pytest11]
 transformersci_otel = "transformersci.otel.resource_plugin"
