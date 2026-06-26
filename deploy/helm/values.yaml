@@ -108,7 +108,13 @@ tempo:
 
   storage:
     enabled: true
-    size: 50Gi
+    # 90d of traces at ~1.2 GB/day net (~105 GB), sized to 350 GiB to also cover
+    # the flush-rate worst case (~310 GB) + headroom. Matches block_retention 90d
+    # and Prometheus/run-store retention so a PR's tracebacks last the full window.
+    # NOTE: the StatefulSet volumeClaimTemplate is immutable on update — the live
+    # data-tempo-0 PVC was grown with `kubectl patch` and the STS recreated with
+    # --cascade=orphan so this size applies. See templates/tempo.yaml.
+    size: 350Gi
     storageClass: ebs-gp3
 
 #------------------------------------------------------------------------------
@@ -173,14 +179,21 @@ traceExporter:
   # each run's complete test set for the rollups; persisting those slim rows lets
   # the /run drill-down serve them directly over the whole retention window
   # instead of re-searching Tempo on demand (Tempo search is capped at a 26h
-  # window and re-fetching a large sharded run's traces per view is slow). The
-  # store is a rebuildable cache, pruned to retentionDays.
+  # window and re-fetching a large sharded run's traces per view is slow).
+  #
+  # retentionDays MUST match the Prometheus retention (90d) above: a PR open for
+  # months must still surface its early runs' test lists. The run/job/PR *stats*
+  # live in Prometheus (90d); this store holds the per-run *test list* and is the
+  # only thing that keeps that drill-down alive once Tempo's 14d traces age out.
+  # Slim rows are tiny vs full traces, so 90d here is cheap (unlike Tempo at 90d).
+  # NOTE: tracebacks / the trace view (served from Tempo via /failure) remain
+  # bounded by Tempo's block_retention (14d) — only the test list reaches 90d.
   runStore:
     enabled: true
-    size: 10Gi
+    size: 30Gi
     storageClass: ebs-gp3
     path: /var/run-store
-    retentionDays: 14
+    retentionDays: 90
 
 #------------------------------------------------------------------------------
 # Prometheus
