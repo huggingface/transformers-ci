@@ -542,6 +542,69 @@ class TrackingIssueTest(unittest.TestCase):
             )
         self.assertIn("Relates to #123", sent[0]["context"])
 
+    def test_reconcile_refreshes_issue_when_pr_appears(self):
+        targets = [self._target("g1", "a"), self._target("g2", "b")]
+        fp0 = itf.target_fingerprint(targets[0])
+        fp1 = itf.target_fingerprint(targets[1])
+        both = [
+            {"number": 81, "body": itf.fingerprint_marker(fp0), "head": {"ref": "x"}},
+            {"number": 82, "body": itf.fingerprint_marker(fp1), "head": {"ref": "y"}},
+        ]
+        calls = {"n": 0}
+
+        def fake_pulls(repo, github_token):
+            # First poll: no PRs yet. Subsequent polls: both PRs have appeared,
+            # so the loop terminates via linked >= total.
+            calls["n"] += 1
+            return [] if calls["n"] == 1 else both
+
+        patched = []
+
+        def fake_update(repo, issue_number, body, github_token):
+            patched.append(body)
+            return True
+
+        with (
+            patch.object(itf, "list_open_pulls", side_effect=fake_pulls),
+            patch.object(itf, "update_issue_body", side_effect=fake_update),
+            patch.object(itf.time, "sleep", lambda _s: None),
+        ):
+            resolved = itf.reconcile_tracking_issue(
+                targets,
+                repo="o/r",
+                window=["2026-06-19"],
+                run_key="2026-06-19",
+                issue_number=42,
+                github_token="tok",
+                timeout_seconds=300,
+                poll_seconds=1,
+            )
+        self.assertEqual(resolved[fp0], 81)
+        self.assertEqual(resolved[fp1], 82)
+        # Re-rendered twice: the empty first poll, then once the PRs showed up.
+        self.assertEqual(len(patched), 2)
+        self.assertIn("#81", patched[-1])
+        self.assertIn("#82", patched[-1])
+
+    def test_reconcile_noop_without_issue_or_timeout(self):
+        targets = [self._target()]
+        with patch.object(itf, "list_open_pulls") as lop:
+            self.assertEqual(
+                itf.reconcile_tracking_issue(
+                    targets, repo="o/r", window=["d"], run_key="d",
+                    issue_number=None, github_token="tok", timeout_seconds=300,
+                ),
+                {},
+            )
+            self.assertEqual(
+                itf.reconcile_tracking_issue(
+                    targets, repo="o/r", window=["d"], run_key="d",
+                    issue_number=42, github_token="tok", timeout_seconds=0,
+                ),
+                {},
+            )
+        lop.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

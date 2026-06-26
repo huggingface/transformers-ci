@@ -69,6 +69,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -869,8 +870,9 @@ def render_tracking_issue_body(
         "recommended follow-up can be incomplete or misleading; verify the failures before acting.",
         "",
         "Serge dispatched one task per failure group below — each opens or updates its own "
-        "PR on a `serge/fix/itf-<fingerprint>` branch. Groups that already had a PR link to "
-        "it directly; brand-new PRs are opened asynchronously and get linked on the next run.",
+        "PR on a `serge/fix/itf-<fingerprint>` branch. This table is refreshed in place as "
+        "Serge opens PRs during the run; a group still showing `(pending)` either had no safe "
+        "fix or is still running, and gets linked on the next nightly run if its PR appears later.",
         "",
         "## Dispatched failure groups",
         "",
@@ -975,6 +977,83 @@ def ensure_tracking_issue(
             flush=True,
         )
         return None
+
+
+def update_issue_body(
+    repo: str, issue_number: int, body: str, github_token: str | None
+) -> bool:
+    """PATCH an existing issue's body in place. Best-effort: returns True on
+    success, False on any error (the run continues without a refresh)."""
+    if "/" not in repo or not github_token:
+        return False
+    owner, name = repo.split("/", 1)
+    url = f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}"
+    data = json.dumps({"body": body}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="PATCH",
+        headers={**_gh_headers(github_token), "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30):
+            return True
+    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        reason = getattr(e, "reason", e)
+        print(f"      warning: could not refresh tracking issue: {reason}", flush=True)
+        return False
+
+
+def reconcile_tracking_issue(
+    targets: list[dict],
+    *,
+    repo: str,
+    window: list[str],
+    run_key: str,
+    issue_number: int | None,
+    github_token: str | None,
+    timeout_seconds: int = 300,
+    poll_seconds: int = 20,
+) -> dict[str, int | None]:
+    """Poll open PRs after dispatch and refresh the tracking-issue table in
+    place, so PRs Serge opens during THIS run are linked immediately instead of
+    only on the next nightly run.
+
+    Serge accepts each task with a ``202`` and runs it asynchronously, so PRs
+    appear seconds-to-minutes after dispatch. We re-resolve the fingerprint→PR
+    map and PATCH the issue body whenever the linked count changes, stopping
+    once every group has a PR or ``timeout_seconds`` elapses (``0`` disables;
+    groups that produced no fix simply never link and time out). Returns the
+    final fingerprint→PR map."""
+    if issue_number is None or not github_token or timeout_seconds <= 0 or not targets:
+        return {}
+    total = len(targets)
+    deadline = time.monotonic() + timeout_seconds
+    last_linked = -1
+    existing_prs: dict[str, int | None] = {}
+    print(
+        f"      reconciling tracking issue #{issue_number} for up to "
+        f"{timeout_seconds}s as Serge opens PRs…",
+        flush=True,
+    )
+    while True:
+        existing_prs = resolve_existing_prs(
+            targets, list_open_pulls(repo, github_token)
+        )
+        linked = sum(1 for v in existing_prs.values() if v)
+        if linked != last_linked:
+            body = render_tracking_issue_body(targets, window, run_key, existing_prs)
+            update_issue_body(repo, issue_number, body, github_token)
+            print(
+                f"      tracking issue #{issue_number} refreshed: "
+                f"{linked}/{total} group(s) linked",
+                flush=True,
+            )
+            last_linked = linked
+        remaining = deadline - time.monotonic()
+        if linked >= total or remaining <= 0:
+            return existing_prs
+        time.sleep(min(poll_seconds, remaining))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1222,6 +1301,14 @@ def main(argv: list[str] | None = None) -> int:
         help="ask Serge to send a Slack notification when each task finishes",
     )
     p.add_argument(
+        "--reconcile-timeout",
+        type=int,
+        default=int(os.environ.get("ITF_RECONCILE_TIMEOUT", "300")),
+        help="seconds to poll for Serge PRs after dispatch and refresh the "
+        "tracking-issue table in place so this run's PRs link immediately "
+        "(0 disables; default 300)",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="compute + print everything but POST nothing to Serge",
@@ -1372,6 +1459,18 @@ def main(argv: list[str] | None = None) -> int:
         + (f"; {failed} failed" if failed else ""),
         flush=True,
     )
+    # Refresh the tracking-issue table in place as Serge opens PRs during this
+    # run, so it doesn't sit all-"(pending)" until the next nightly reconcile.
+    if accepted:
+        reconcile_tracking_issue(
+            targets,
+            repo=args.repo,
+            window=window,
+            run_key=run_key,
+            issue_number=issue_number,
+            github_token=gh_token,
+            timeout_seconds=args.reconcile_timeout,
+        )
     # Surface a hard failure only when we had work but landed nothing.
     return 1 if accepted == 0 else 0
 
