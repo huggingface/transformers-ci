@@ -58,6 +58,16 @@ _CRASH_NODEID_PATTERN = re.compile(r"crashed while running ['\"]?([^'\"\s]+)")
 # holds the crash itself.
 _MAX_OUTPUT_CHARS = 8000
 
+# Per-failure-mode defaults: (exception.type, job-level fallback nodeid suffix).
+#   worker_crash: an xdist worker died but pytest kept going (marker + per-test
+#                 nodeids usually in the log).
+#   oom_killed:   the whole pytest process was SIGKILLed mid-run (exit 137); no
+#                 nodeid is recoverable from the captured output.
+_KIND_DEFAULTS = {
+    "worker_crash": ("WorkerCrash", "worker_crash"),
+    "oom_killed": ("OOMKilled", "oom_killed"),
+}
+
 
 def parse_crashed_nodeids(text: str) -> list[str]:
     """Return the distinct test nodeids xdist reported as crashed, in order."""
@@ -106,19 +116,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Path to captured pytest output to scan for crashed test nodeids.",
     )
     parser.add_argument(
+        "--kind",
+        choices=tuple(_KIND_DEFAULTS),
+        default="worker_crash",
+        help=(
+            "Failure mode. 'worker_crash': an xdist worker died but pytest kept "
+            "going (per-test nodeids are usually in the log). 'oom_killed': the "
+            "whole pytest process was killed mid-run (exit 137) so no nodeid is "
+            "recoverable — a job-level span is recorded. Sets the default "
+            "exception type and job-level fallback nodeid."
+        ),
+    )
+    parser.add_argument(
         "--message",
         default=(
-            "CI job failed with no test failure span — likely a pytest-xdist "
-            "worker crash (OOM/segfault)."
+            "CI job failed with no test failure span — likely an OOM (a crashed "
+            "pytest-xdist worker or a killed pytest process)."
         ),
         help="Exception message recorded on the span (shown on /failure).",
     )
     parser.add_argument(
         "--exception-type",
-        default="WorkerCrash",
-        help="exception.type recorded on the span (the /failure heading).",
+        default=None,
+        help="Override exception.type (the /failure heading); defaults per --kind.",
     )
     args = parser.parse_args(argv)
+
+    default_exception_type, fallback_suffix = _KIND_DEFAULTS[args.kind]
+    exception_type = args.exception_type or default_exception_type
 
     env = os.environ
     job = resolve_job(args.job, env)
@@ -139,10 +164,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             nodeids = parse_crashed_nodeids(output)
 
     if not nodeids:
-        # The caller only runs this once a crash is already detected, but the
-        # exact test couldn't be pinned — record a job-level failure so it is
-        # still visible and counted rather than silently green.
-        nodeids = [f"{job}::worker_crash"]
+        # The caller only runs this once a failure is already detected, but the
+        # exact test couldn't be pinned (no xdist marker, or the process was
+        # killed mid-run before any nodeid was logged) — record a job-level
+        # failure so it is still visible and counted rather than silently green.
+        nodeids = [f"{job}::{fallback_suffix}"]
 
     if not instrument.is_configured(env):
         print(
@@ -158,16 +184,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     with instrument.run(job) as run:
         for nodeid in nodeids:
             with run.step(
-                nodeid, attributes={"transformers.failure.source": "ci_worker_crash"}
+                nodeid, attributes={"transformers.failure.source": args.kind}
             ) as step:
                 step.set_exit_code(
                     1,
                     command=args.message,
                     output=excerpt,
-                    exception_type=args.exception_type,
+                    exception_type=exception_type,
                 )
             print(
-                f"report-ci-failure: recorded {args.exception_type} span for "
+                f"report-ci-failure: recorded {exception_type} span for "
                 f"{nodeid!r} (job {job!r}).",
                 flush=True,
             )

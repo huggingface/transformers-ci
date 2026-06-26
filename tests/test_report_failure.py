@@ -153,5 +153,42 @@ def test_main_job_level_fallback(monkeypatch, tmp_path):
     assert recorded == ["tests_torch::worker_crash"]
 
 
+def test_main_oom_killed_kind(monkeypatch):
+    # No crash log / no nodeid + --kind oom_killed -> a job-level OOMKilled span.
+    recorded: list[tuple[str, str]] = []
+
+    class FakeStep:
+        def __init__(self, nodeid):
+            self.nodeid = nodeid
+
+        def set_exit_code(
+            self, rc, *, command=None, output=None, exception_type="CheckFailed"
+        ):
+            recorded.append((self.nodeid, exception_type))
+
+    class FakeRun:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def step(self, nodeid, attributes=None):
+            from contextlib import contextmanager
+
+            @contextmanager
+            def cm():
+                yield FakeStep(nodeid)
+
+            return cm()
+
+    monkeypatch.setattr(report_failure.instrument, "is_configured", lambda env: True)
+    monkeypatch.setattr(report_failure.instrument, "run", lambda job: FakeRun())
+
+    rc = report_failure.main(["--job", "tests_processors", "--kind", "oom_killed"])
+    assert rc == 0
+    assert recorded == [("tests_processors::oom_killed", "OOMKilled")]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
