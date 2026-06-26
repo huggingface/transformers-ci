@@ -2633,9 +2633,25 @@ def _iter_metric_lines() -> Iterator[str]:
     rollup_extracted = settled_runs_complete_extracted(
         extracted, now, _run_settle_seconds()
     )
-    # Persist each settled run's complete rows so the /run drill-down can serve
-    # them directly over the whole retention window (see persist_run_rows).
-    persist_settled_runs(rollup_extracted)
+    # Persist per-run rows incrementally for the /run drill-down: any run that
+    # gained a trace this render gets its current-window rows merged into the
+    # store. Because persist_run_rows UNIONs (it never overwrites the whole run),
+    # a long/large run accumulates ALL its shards across renders as they rotate
+    # through the lookback window — even though no single render's window ever
+    # holds them all. Bounded to runs with new activity so steady state is cheap.
+    runs_with_new = {
+        str(info.get("run_id", ""))
+        for info, _ in extracted
+        if str(info.get("trace_id", "")) in current_new_ids
+    }
+    if runs_with_new:
+        persist_settled_runs(
+            [
+                (info, rows)
+                for info, rows in extracted
+                if str(info.get("run_id", "")) in runs_with_new
+            ]
+        )
 
     # Per-test is emitted only for traces newly seen this render plus the
     # previous render's new ids (the one-render carryover), so the same
