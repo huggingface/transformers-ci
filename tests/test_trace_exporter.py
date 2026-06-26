@@ -250,10 +250,136 @@ def test_extract_per_run_metrics_aggregates_job_traces_into_one_run() -> None:
 
     duration_lines = metric_lines(metrics, "pytest_test_duration_seconds")
     assert len(duration_lines) == 4
-    assert all('run_id="12345:2"' in line for line in duration_lines)
-    assert any('trace_id="trace-torch"' in line for line in duration_lines)
-    assert any('trace_id="trace-tf"' in line for line in duration_lines)
-    assert any('trace_id="trace-flax"' in line for line in duration_lines)
+    # run_id / trace_id / pr are intentionally NOT labels here: keying the
+    # per-test metric by run blew Prometheus cardinality up to ~2M series and
+    # OOM-killed it. The series is now keyed by the test (with test_job kept),
+    # and per-run drill-down is served from the trace via the /run endpoint.
+    assert all("run_id=" not in line for line in duration_lines)
+    assert all("trace_id=" not in line for line in duration_lines)
+    assert all('pr="' not in line for line in duration_lines)
+    assert any('test_job="tests_torch"' in line for line in duration_lines)
+    assert any('test_job="tests_tf"' in line for line in duration_lines)
+    assert any('test_job="tests_flax"' in line for line in duration_lines)
+
+
+def test_per_test_duration_dedups_same_test_across_runs() -> None:
+    """The per-test metric is no longer keyed by run, so the same test seen in
+    two runs within the window must collapse to ONE series (else Prometheus
+    rejects the duplicate sample), keeping the most-recently-started run's
+    value."""
+    process_id = "pytest-process"
+    older = make_trace(
+        trace_id="trace-old",
+        run_id="run-1",
+        job="tests_torch",
+        spans=[
+            make_test_span(
+                process_id=process_id,
+                nodeid="tests/test_torch.py::T::test_x",
+                start_time=1_000_000,
+                duration=2_000_000,
+            )
+        ],
+    )
+    newer = make_trace(
+        trace_id="trace-new",
+        run_id="run-2",
+        job="tests_torch",
+        spans=[
+            make_test_span(
+                process_id=process_id,
+                nodeid="tests/test_torch.py::T::test_x",
+                start_time=9_000_000,
+                duration=5_000_000,
+            )
+        ],
+    )
+    lines = metric_lines(
+        trace_exporter.extract_per_test_duration_metrics([older, newer]),
+        "pytest_test_duration_seconds",
+    )
+    assert len(lines) == 1
+    assert "run_id=" not in lines[0] and "trace_id=" not in lines[0]
+    assert lines[0].endswith(" 5.000000000")  # newer run wins
+
+
+def test_render_run_html_sorts_filters_and_links() -> None:
+    rows = [
+        {
+            "test_nodeid": "tests/test_a.py::A::test_slow",
+            "test_job": "tests_torch",
+            "status_code": "OK",
+            "trace_id": "tr1",
+            "pr": "4321",
+            "duration_seconds": 9.5,
+        },
+        {
+            "test_nodeid": "tests/test_a.py::A::test_boom",
+            "test_job": "tests_torch",
+            "status_code": "ERROR",
+            "trace_id": "tr1",
+            "pr": "4321",
+            "duration_seconds": 0.2,
+        },
+        {
+            "test_nodeid": "tests/test_b.py::B::test_other",
+            "test_job": "tests_tf",
+            "status_code": "OK",
+            "trace_id": "tr2",
+            "pr": "4321",
+            "duration_seconds": 1.0,
+        },
+    ]
+    html_out = trace_exporter.render_run_html("123:1", rows)
+    # sorted by duration desc
+    assert (
+        html_out.index("test_slow")
+        < html_out.index("test_other")
+        < html_out.index("test_boom")
+    )
+    assert "FAIL" in html_out
+    # link to the per-test page carries the context the page now needs via URL
+    assert "/d/pytest-test/test" in html_out
+    assert "var-trace_id=tr1" in html_out
+    assert "var-run_id=123%3A1" in html_out
+    assert "var-pr=4321" in html_out
+    assert "var-gh_run_id=123" in html_out  # leading digits of run id
+
+    # job filter
+    only_tf = trace_exporter.render_run_html("123:1", rows, job="tests_tf")
+    assert "test_other" in only_tf and "test_slow" not in only_tf
+    # status filter (Failing); ".+" sentinel means no filter
+    failing = trace_exporter.render_run_html("123:1", rows, status="ERROR")
+    assert "test_boom" in failing and "test_slow" not in failing
+    allrows = trace_exporter.render_run_html("123:1", rows, status=".+")
+    assert "test_slow" in allrows and "test_boom" in allrows
+
+
+def test_gather_run_test_rows_from_membership(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run in the in-memory membership map is reconstructed from the trace
+    cache without any Tempo network call."""
+    trace = make_trace(
+        trace_id="trace-mem",
+        run_id="run-mem",
+        job="tests_torch",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_torch.py::T::test_x",
+                start_time=1_000_000,
+                duration=2_000_000,
+            )
+        ],
+    )
+    monkeypatch.setitem(trace_exporter._run_members, "run-mem", {"trace-mem"})
+    monkeypatch.setitem(trace_exporter._trace_cache, "trace-mem", trace)
+    # Any Tempo fetch would be a bug for a cached run.
+    monkeypatch.setattr(
+        trace_exporter, "get_trace", lambda *a, **k: pytest.fail("should not fetch")
+    )
+    rows = trace_exporter.gather_run_test_rows("run-mem", base_url="http://unused")
+    assert len(rows) == 1
+    assert rows[0]["test_nodeid"] == "tests/test_torch.py::T::test_x"
 
 
 def test_extract_pr_last_failure_metrics_links_failure_back_to_run() -> None:

@@ -212,7 +212,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "count by (test_job) (max without (instance) (last_over_time(pytest_test_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\",status_code=\"OK\"}[90d])))"
+          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_passed_tests{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d])))"
         },
         {
           "refId": "Fail",
@@ -221,7 +221,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "count by (test_job) (max without (instance) (last_over_time(pytest_test_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\",status_code=\"ERROR\"}[90d]))) or (0 * count by (test_job) (max without (instance) (last_over_time(pytest_test_duration_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\",status_code!=\"UNSET\"}[90d]))))"
+          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d])))"
         }
       ],
       "title": "Latest Run Jobs",

@@ -348,193 +348,20 @@
       "type": "stat"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Per-test results for the selected job/run. The query is capped by the Row limit variable so large runs stay responsive.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Status"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "ERROR": {
-                        "text": "FAIL",
-                        "color": "red",
-                        "index": 0
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "OK": {
-                        "text": "PASS",
-                        "color": "green",
-                        "index": 1
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "UNSET": {
-                        "text": "PASS",
-                        "color": "green",
-                        "index": 2
-                      }
-                    }
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "mode": "basic",
-                  "type": "color-background"
-                }
-              },
-              {
-                "id": "unit",
-                "value": "none"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Trace"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View test",
-                    "url": "/d/pytest-test/pytest-test?var-trace_id=${__value.raw}&var-test_nodeid=${__data.fields[\"test_nodeid\"]}",
-                    "targetBlank": false
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "test_nodeid"
-            },
-            "properties": [
-              {
-                "id": "custom.hidden",
-                "value": true
-              }
-            ]
-          }
-        ]
-      },
+      "id": 14,
+      "type": "text",
+      "title": "Tests for Selected Run (Top $test_limit by Duration)",
       "gridPos": {
         "h": 22,
         "w": 24,
         "x": 0,
         "y": 5
       },
-      "id": 14,
+      "transparent": true,
       "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true,
-        "sortBy": [
-          {
-            "desc": true,
-            "displayName": "Duration"
-          }
-        ]
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "topk($test_limit, max without (instance) (last_over_time(pytest_test_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",status_code=~\"$status_filter\"}[$__range])))",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Tests for Selected Run (Top $test_limit by Duration)",
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true,
-              "instance": true,
-              "job": true,
-              "pr": true,
-              "provider": true,
-              "service_name": true,
-              "test_job": true
-            },
-            "indexByName": {
-              "test_module": 0,
-              "test_class": 1,
-              "test_function": 2,
-              "status_code": 3,
-              "trace_id": 4,
-              "Value": 5
-            },
-            "renameByName": {
-              "Value": "Duration",
-              "status_code": "Status",
-              "test_class": "Class",
-              "test_function": "Function",
-              "test_module": "Module",
-              "trace_id": "Trace"
-            }
-          }
-        }
-      ],
-      "type": "table"
+        "mode": "html",
+        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&job='+encodeURIComponent('${job}')+'&status='+encodeURIComponent('${status_filter}')+'&limit='+encodeURIComponent('${test_limit}')+'&from=${__from}&to=${__to}';location.replace(u);</script>\"></iframe>"
+      }
     }
   ],
   "schemaVersion": 41,

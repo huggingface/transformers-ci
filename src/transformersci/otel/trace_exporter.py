@@ -1935,37 +1935,78 @@ def extract_per_test_duration_metrics(
     _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
     | None = None,
 ) -> list[str]:
-    """Emit one ``pytest_test_duration_seconds`` sample per test span.
+    """Emit one ``pytest_test_duration_seconds`` sample per test (current state).
 
-    Window-based: each test span seen in the lookback is emitted. Per-test
-    series never decay (a test's last status is correct and retained by
-    Prometheus), so this stays on the in-window set.
+    The series identity is the *test*, not the test-within-a-run: ``run_id``,
+    ``trace_id`` and ``pr`` are deliberately NOT labels here. Keying per run made
+    the same ~14k tests mint a fresh series set on every PR/commit, so a busy
+    window held millions of concurrent series and OOM-killed Prometheus (peak
+    ~2M head series at the 8Gi limit). Dropping the per-run labels collapses the
+    metric to one series per test (~14k, flat regardless of CI volume); per-run /
+    per-PR test drill-down is served from the trace instead (the ``/run``
+    endpoint + the Tempo trace view), not from Prometheus.
+
+    Because the label set no longer distinguishes runs, the same test can appear
+    in several traces within the lookback. Emitting one line per occurrence would
+    put duplicate series in a single payload (Prometheus rejects "duplicate
+    sample for timestamp" and drops the whole scrape), so rows are deduplicated
+    to one line per series key, keeping the most recently started run's value.
     """
     extracted = (
         _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
     )
     lines = [
-        "# HELP pytest_test_duration_seconds Duration of each pytest test span, labeled with run_id and trace_id.",
+        "# HELP pytest_test_duration_seconds Duration of the most recent run of each pytest test span (current state; not keyed by run).",
         "# TYPE pytest_test_duration_seconds gauge",
     ]
-    for _trace_info, rows in extracted:
+    # key -> (trace_start_time, duration_seconds). On collision the later run
+    # (higher start time) wins, so the metric reflects the test's latest result.
+    latest: dict[tuple[str, ...], tuple[int, float]] = {}
+    for trace_info, rows in extracted:
+        trace_start = int(
+            trace_info.get("latest_start_time", 0)
+            or trace_info.get("start_time", 0)
+            or 0
+        )
         for row in rows:
-            test_labels = {
-                "pr": str(row["pr"]),
-                "test_job": str(row["test_job"]),
-                "provider": str(row["provider"]),
-                "run_id": str(row["run_id"]),
-                "service_name": str(row["service_name"]),
-                "status_code": str(row["status_code"]),
-                "test_class": str(row["test_class"]),
-                "test_function": str(row["test_function"]),
-                "test_module": str(row["test_module"]),
-                "test_nodeid": str(row["test_nodeid"]),
-                "trace_id": str(row["trace_id"]),
-            }
-            lines.append(
-                f"pytest_test_duration_seconds{metric_labels(test_labels)} {float(row['duration_seconds']):.9f}"
+            key = (
+                str(row["provider"]),
+                str(row["service_name"]),
+                str(row["status_code"]),
+                str(row["test_class"]),
+                str(row["test_function"]),
+                str(row["test_job"]),
+                str(row["test_module"]),
+                str(row["test_nodeid"]),
             )
+            duration = float(row["duration_seconds"])
+            existing = latest.get(key)
+            if existing is None or trace_start >= existing[0]:
+                latest[key] = (trace_start, duration)
+    for key, (_trace_start, duration) in sorted(latest.items()):
+        (
+            provider,
+            service_name,
+            status_code,
+            test_class,
+            test_function,
+            test_job,
+            test_module,
+            test_nodeid,
+        ) = key
+        test_labels = {
+            "provider": provider,
+            "service_name": service_name,
+            "status_code": status_code,
+            "test_class": test_class,
+            "test_function": test_function,
+            "test_job": test_job,
+            "test_module": test_module,
+            "test_nodeid": test_nodeid,
+        }
+        lines.append(
+            f"pytest_test_duration_seconds{metric_labels(test_labels)} {duration:.9f}"
+        )
     return lines
 
 
@@ -3273,6 +3314,199 @@ def _refresh_loop(interval: float) -> None:
             time.sleep(max(1.0, interval))
 
 
+# ---------------------------------------------------------------------------
+# Per-run test drill-down (/run). pytest_test_duration_seconds is no longer
+# keyed by run (that caused the Prometheus cardinality blow-up), so the
+# "tests in this run" tables that used to query that metric by run_id are
+# served here from the run's traces instead — same pattern as /failure.
+# ---------------------------------------------------------------------------
+
+# Last-resort window for the Tempo search fallback when a run is no longer in
+# the in-memory membership map and the caller passed no window.
+_RUN_SEARCH_FALLBACK_SECONDS = 7 * 86400
+# Cap traces pulled for one /run request so an enormous run can't stall it.
+_RUN_SEARCH_MAX_TRACES = 500
+
+
+def _search_run_trace_ids(
+    run_id: str, base_url: str, window: tuple[int, int] | None
+) -> list[str]:
+    """Best-effort Tempo lookup of a run's trace ids by its run-id attribute.
+
+    Only used when the run has aged out of the in-memory membership map. The
+    run id is matched against the same resource tags :func:`extract_trace_rows`
+    reads it from. Returns ``[]`` on any error (the caller then renders an
+    empty table with an "open in Tempo" hint).
+    """
+    if window is not None:
+        start, end = window
+    else:
+        end = int(time.time())
+        start = end - _RUN_SEARCH_FALLBACK_SECONDS
+    service_name = os.getenv("PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME)
+    rid = run_id.replace('"', "")
+    selector = (
+        f'(resource.transformers.test.run.id = "{rid}" '
+        f'|| resource.cicd.pipeline.run.id = "{rid}")'
+    )
+    try:
+        ids, _ = search_all_trace_ids(
+            base_url,
+            service_name,
+            start,
+            end,
+            _RUN_SEARCH_MAX_TRACES,
+            extra_selector=selector,
+        )
+    except Exception:
+        return []
+    return ids
+
+
+def gather_run_test_rows(
+    run_id: str,
+    *,
+    base_url: str | None = None,
+    window: tuple[int, int] | None = None,
+) -> list[dict[str, str | float]]:
+    """Collect every test row for one workflow run, for the /run drill-down.
+
+    Source order: the in-memory run-membership map (covers any run seen in the
+    last ``RUN_MEMBERSHIP_TTL_SECONDS``, i.e. the recent runs dashboards link
+    to), then per trace the shaped cache, the raw trace cache, or a direct
+    fetch; falling back to a Tempo search by run id for runs aged out of cache.
+    """
+    if not run_id:
+        return []
+    if base_url is None:
+        base_url = tempo_base_url()
+
+    with _run_state_lock:
+        members = _run_members.get(run_id)
+        trace_ids = list(members) if members else []
+    if not trace_ids:
+        trace_ids = _search_run_trace_ids(run_id, base_url, window)
+
+    rows: list[dict[str, str | float]] = []
+    for trace_id in trace_ids:
+        with _shaped_cache_lock:
+            entry = _shaped_cache.get(trace_id)
+        if entry is None:
+            cached = _trace_cache.get(trace_id)
+            entry = extract_trace_rows(cached) if cached is not None else None
+        if entry is None:
+            trace = get_trace(trace_id, base_url)
+            entry = extract_trace_rows(trace) if trace is not None else None
+        if entry is None:
+            continue
+        rows.extend(entry[1])
+    return rows
+
+
+def render_run_html(
+    run_id: str,
+    rows: list[dict[str, str | float]],
+    *,
+    job: str = "",
+    status: str = "",
+    limit: int = 200,
+) -> str:
+    """Render the per-run test table (sortable, links to the per-test page).
+
+    Self-contained dark HTML, embedded via ``<iframe>`` in the Run/Job
+    dashboards. Links are origin-relative (the exporter is served under the
+    Grafana host via ingress) and open in the parent frame.
+    """
+    esc = html.escape
+    rows = [r for r in rows if not job or str(r.get("test_job", "")) == job]
+    # The Run/Job dashboards pass $status_filter as either "ERROR" (Failing) or a
+    # regex-all sentinel (".+"/".*"/"All") meaning no filter.
+    if status and status not in (".+", ".*", "All"):
+        rows = [r for r in rows if str(r.get("status_code", "")) == status]
+    rows.sort(key=lambda r: float(r.get("duration_seconds", 0) or 0), reverse=True)
+    total = len(rows)
+    shown = rows[: max(0, limit)] if limit else rows
+
+    out = [
+        "<!doctype html><html><head><meta charset='utf-8'>",
+        f"<title>Run {esc(run_id)} tests</title>",
+        "<style>"
+        "body{margin:0;padding:10px 12px;background:#0b0c0e;color:#d8d9da;"
+        "font:13px/1.5 system-ui,sans-serif}"
+        "table{width:100%;border-collapse:collapse}"
+        "th,td{text-align:left;padding:5px 8px;border-bottom:1px solid #24262b;"
+        "white-space:nowrap}"
+        "th{color:#8e9197;font:600 11px system-ui,sans-serif;text-transform:uppercase;"
+        "letter-spacing:.04em;position:sticky;top:0;background:#0b0c0e}"
+        "td.nodeid{white-space:normal;word-break:break-word;"
+        "font-family:ui-monospace,Menlo,Consolas,monospace}"
+        "td.dur{text-align:right;font-variant-numeric:tabular-nums}"
+        "a{color:#6ab0ff;text-decoration:none}a:hover{text-decoration:underline}"
+        ".ok{color:#73bf69}.err{color:#ff8a80;font-weight:600}"
+        ".meta{margin:0 0 8px;color:#8e9197}"
+        "</style></head><body>",
+    ]
+    if not rows:
+        out.append(
+            "<p class='meta'>No tests found for this run in the exporter's recent "
+            "window."
+            + (
+                f" <a target='_parent' href=\"/explore?schemaVersion=1&orgId=1&"
+                f"panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:"
+                f"%5B%7B%22query%22:%22%7B%20resource.transformers.test.run.id%3D"
+                f"%5C%22{esc(run_id)}%5C%22%20%7D%22,%22queryType%22:%22traceql%22,"
+                f'%22refId%22:%22A%22%7D%5D%7D%7D">Search this run in Tempo ↗</a>'
+                if run_id
+                else ""
+            )
+            + "</p>"
+        )
+        out.append("</body></html>")
+        return "".join(out)
+
+    suffix = f" (showing top {len(shown)})" if total > len(shown) else ""
+    out.append(
+        f"<p class='meta'>{total} test{'s' if total != 1 else ''}{suffix} · "
+        f"run <code>{esc(run_id)}</code></p>"
+    )
+    out.append(
+        "<table><thead><tr><th>Status</th><th>Test</th><th>Job</th>"
+        "<th style='text-align:right'>Duration</th></tr></thead><tbody>"
+    )
+    for row in shown:
+        nodeid = str(row.get("test_nodeid", ""))
+        trace_id = str(row.get("trace_id", ""))
+        pr = str(row.get("pr", ""))
+        st = str(row.get("status_code", ""))
+        is_err = st == "ERROR"
+        dur = float(row.get("duration_seconds", 0) or 0)
+        # The per-test page is no longer backed by per-run Prometheus series, so
+        # pass the run context it needs (run_id, pr, the numeric GitHub run id)
+        # as URL vars. gh_run_id is the leading digits of run_id ("12345:1" ->
+        # "12345") for the "Full logs" GitHub link.
+        gh_run_id = re.match(r"\d+", run_id)
+        # Origin-relative link to the per-test page; opens the parent Grafana frame.
+        href = (
+            f"/d/pytest-test/test?orgId=1"
+            f"&var-trace_id={quote(trace_id, safe='')}"
+            f"&var-test_nodeid={quote(nodeid, safe='')}"
+            f"&var-run_id={quote(run_id, safe='')}"
+            f"&var-pr={quote(pr, safe='')}"
+            f"&var-gh_run_id={gh_run_id.group(0) if gh_run_id else ''}"
+        )
+        st_cls = "err" if is_err else "ok"
+        st_txt = "FAIL" if is_err else esc(st or "OK")
+        out.append(
+            f"<tr><td class='{st_cls}'>{st_txt}</td>"
+            f"<td class='nodeid'><a target='_parent' href=\"{esc(href)}\">"
+            f"{esc(nodeid)}</a></td>"
+            f"<td>{esc(str(row.get('test_job', '')))}</td>"
+            f"<td class='dur'>{dur:.3f}s</td></tr>"
+        )
+    out.append("</tbody></table></body></html>")
+    return "".join(out)
+
+
 class MetricsHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -3284,6 +3518,9 @@ class MetricsHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/failure":
             self._serve_failure(parse_qs(parsed.query))
+            return
+        if parsed.path == "/run":
+            self._serve_run(parse_qs(parsed.query))
             return
         if parsed.path in {"/metrics", "/"}:
             self._serve_metrics()
@@ -3338,6 +3575,34 @@ class MetricsHandler(BaseHTTPRequestHandler):
             200,
             "text/html; charset=utf-8",
             render_failure_html(trace_id, details).encode("utf-8"),
+        )
+
+    def _serve_run(self, params: dict[str, list[str]]) -> None:
+        run_id = (params.get("run_id") or [""])[0].strip()
+        job = (params.get("job") or [""])[0].strip()
+        status = (params.get("status") or [""])[0].strip()
+        try:
+            limit = int((params.get("limit") or ["200"])[0])
+        except ValueError:
+            limit = 200
+
+        def _ts(name: str) -> int | None:
+            raw = (params.get(name) or [""])[0].strip()
+            # Grafana passes from/to as unix milliseconds.
+            try:
+                return int(raw) // 1000 if raw else None
+            except ValueError:
+                return None
+
+        from_s, to_s = _ts("from"), _ts("to")
+        window = (from_s, to_s) if from_s is not None and to_s is not None else None
+        rows = gather_run_test_rows(run_id, window=window) if run_id else []
+        self._send(
+            200,
+            "text/html; charset=utf-8",
+            render_run_html(run_id, rows, job=job, status=status, limit=limit).encode(
+                "utf-8"
+            ),
         )
 
     def _send(self, status: int, content_type: str, payload: bytes) -> None:

@@ -63,8 +63,17 @@ spec:
       http:
         paths:
           # Route trace-exporter helper endpoints before the Grafana catch-all.
-          # /failure serves traceback HTML; /badge and /summary serve PR status integrations.
+          # /failure serves traceback HTML; /run serves the per-run test table
+          # (both embedded as iframes in dashboards); /badge and /summary serve
+          # PR status integrations.
           - path: /failure
+            pathType: Prefix
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
+          - path: /run
             pathType: Prefix
             backend:
               service:
