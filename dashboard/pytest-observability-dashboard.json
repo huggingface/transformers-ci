@@ -212,6 +212,10 @@
                   "type": "color-background",
                   "mode": "basic"
                 }
+              },
+              {
+                "id": "custom.width",
+                "value": 72
               }
             ]
           },
@@ -831,8 +835,8 @@
       },
       "gridPos": {
         "h": 13,
-        "w": 12,
-        "x": 12,
+        "w": 24,
+        "x": 0,
         "y": 26
       },
       "id": 9,
