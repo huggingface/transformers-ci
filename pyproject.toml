@@ -47,6 +47,7 @@ dev = [
 
 [project.scripts]
 configure-ci-otel = "transformersci.otel.cli:main"
+report-ci-failure = "transformersci.otel.report_failure:main"
 pytest-trace-exporter = "transformersci.otel.trace_exporter:main"
 integration-failure-triage = "transformersci.agentic.integration_failure_triage:main"
 

@@ -179,6 +179,7 @@ class _Step:
         *,
         command: str | None = None,
         output: str | None = None,
+        exception_type: str = "CheckFailed",
     ) -> None:
         """Record the step's exit code; non-zero marks the span ERROR.
 
@@ -189,19 +190,22 @@ class _Step:
         ``"exception"`` span event using the same ``exception.message`` /
         ``exception.stacktrace`` fields a pytest traceback uses. This lets the
         trace exporter's ``/failure`` page render the checker's output with no
-        exporter-side changes (it already reads that event).
+        exporter-side changes (it already reads that event). ``exception_type``
+        sets the heading shown there (e.g. ``"WorkerCrash"`` for an OOM).
         """
         from opentelemetry.trace import Status, StatusCode
 
         self._span.set_attribute("transformers.check.exit_code", int(returncode))
         if returncode != 0:
             self._span.set_status(Status(StatusCode.ERROR))
-            self._record_failure_event(command, output)
+            self._record_failure_event(command, output, exception_type)
         else:
             self._span.set_status(Status(StatusCode.OK))
 
-    def _record_failure_event(self, command: str | None, output: str | None) -> None:
-        attributes: dict[str, str] = {"exception.type": "CheckFailed"}
+    def _record_failure_event(
+        self, command: str | None, output: str | None, exception_type: str
+    ) -> None:
+        attributes: dict[str, str] = {"exception.type": exception_type}
         if command:
             attributes["exception.message"] = command
         if output:
@@ -235,5 +239,6 @@ class _NoStep:
         *,
         command: str | None = None,
         output: str | None = None,
+        exception_type: str = "CheckFailed",
     ) -> None:
         pass
