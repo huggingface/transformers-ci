@@ -3372,14 +3372,31 @@ def persist_run_rows(
     *,
     directory: str | None = None,
 ) -> None:
-    """Write a run's slim test rows to the store (atomic; best-effort)."""
+    """Merge a run's slim test rows into the store (atomic; best-effort).
+
+    Critically a *merge*, not an overwrite: a large run executes for longer than
+    the exporter's lookback window and has more shard traces than the caches
+    hold, so any single render only reconstructs the subset of shards currently
+    in the window. Unioning across renders (keyed by trace_id+test_nodeid) lets
+    the store accumulate the COMPLETE run as its shards rotate through the
+    window, instead of being capped at one render's partial view.
+    """
     directory = _run_store_dir() if directory is None else directory
     if not directory or not run_id:
         return
     try:
         os.makedirs(directory, exist_ok=True)
-        slim = [{k: r.get(k) for k in _RUN_STORE_FIELDS} for r in rows]
-        payload = json.dumps({"run_id": run_id, "rows": slim}).encode("utf-8")
+        merged: dict[tuple[str, str], dict[str, str | float | None]] = {}
+        for r in load_run_rows(run_id, directory=directory) or []:
+            merged[(str(r.get("trace_id", "")), str(r.get("test_nodeid", "")))] = r
+        for r in rows:
+            slim_row = {k: r.get(k) for k in _RUN_STORE_FIELDS}
+            merged[(str(r.get("trace_id", "")), str(r.get("test_nodeid", "")))] = (
+                slim_row
+            )
+        payload = json.dumps({"run_id": run_id, "rows": list(merged.values())}).encode(
+            "utf-8"
+        )
         path = _run_store_path(directory, run_id)
         tmp = f"{path}.{os.getpid()}.tmp"
         with gzip.open(tmp, "wb") as fh:

@@ -408,6 +408,41 @@ def test_run_store_roundtrip_and_prune(tmp_path) -> None:
     assert trace_exporter.load_run_rows("99:1", directory=d) is None
 
 
+def test_persist_run_rows_merges_shards_across_renders(tmp_path) -> None:
+    """A big run's shards rotate through the window over many renders; persist
+    must UNION them (keyed by trace_id+test_nodeid), not overwrite — otherwise
+    the store is capped at one render's partial view."""
+    d = str(tmp_path)
+    shard1 = [
+        {
+            "test_nodeid": "a",
+            "test_job": "j",
+            "status_code": "OK",
+            "duration_seconds": 1.0,
+            "trace_id": "shard1",
+            "pr": "1",
+        },
+    ]
+    shard2 = [
+        {
+            "test_nodeid": "b",
+            "test_job": "j",
+            "status_code": "ERROR",
+            "duration_seconds": 2.0,
+            "trace_id": "shard2",
+            "pr": "1",
+        },
+    ]
+    trace_exporter.persist_run_rows("7:1", shard1, directory=d)
+    trace_exporter.persist_run_rows("7:1", shard2, directory=d)  # later render
+    loaded = trace_exporter.load_run_rows("7:1", directory=d)
+    nodeids = sorted(r["test_nodeid"] for r in loaded)
+    assert nodeids == ["a", "b"]  # both shards accumulated
+    # re-persisting an already-seen shard does not duplicate
+    trace_exporter.persist_run_rows("7:1", shard1, directory=d)
+    assert len(trace_exporter.load_run_rows("7:1", directory=d)) == 2
+
+
 def test_persist_settled_runs_groups_by_run(tmp_path) -> None:
     d = str(tmp_path)
     extracted = [
