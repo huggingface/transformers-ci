@@ -575,7 +575,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Duration"
+              "options": "Test Time"
             },
             "properties": [
               {
@@ -617,6 +617,18 @@
               {
                 "id": "custom.width",
                 "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Wall"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
               }
             ]
           }
@@ -702,6 +714,15 @@
           "legendFormat": "__auto",
           "range": false,
           "refId": "Rate"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_wall_seconds{pr=\"main\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=\"main\"}[$__range]))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Wall"
         }
       ],
       "title": "Main Branch - Last 10 Runs",
@@ -731,16 +752,18 @@
               "Value #Total": 3,
               "Value #Start": 4,
               "Value #Duration": 5,
-              "Value #Rate": 6,
-              "html_url": 7
+              "Value #Rate": 7,
+              "html_url": 8,
+              "Value #Wall": 6
             },
             "renameByName": {
               "commit_message": "Commit",
               "Value #Start": "Started",
               "Value #Jobs": "Job Count",
               "Value #Total": "Tests",
-              "Value #Duration": "Duration",
-              "Value #Rate": "Failure Rate"
+              "Value #Duration": "Test Time",
+              "Value #Rate": "Failure Rate",
+              "Value #Wall": "Wall"
             }
           }
         },

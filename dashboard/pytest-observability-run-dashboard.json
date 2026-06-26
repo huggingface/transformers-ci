@@ -409,7 +409,19 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Duration"
+              "options": "Test Time"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Wall"
             },
             "properties": [
               {
@@ -482,6 +494,15 @@
           "range": false,
           "legendFormat": "__auto",
           "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d])))"
+        },
+        {
+          "refId": "Wall",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_wall_seconds{run_id=~\"$run_id\"}[90d])))"
         }
       ],
       "title": "Jobs",
@@ -500,15 +521,17 @@
               "test_job": 0,
               "Value #Started": 1,
               "Value #Duration": 2,
-              "Value #Pass": 3,
-              "Value #Fail": 4
+              "Value #Pass": 4,
+              "Value #Fail": 5,
+              "Value #Wall": 3
             },
             "renameByName": {
               "test_job": "Job",
               "Value #Started": "Started",
-              "Value #Duration": "Duration",
+              "Value #Duration": "Test Time",
               "Value #Pass": "Pass",
-              "Value #Fail": "Fail"
+              "Value #Fail": "Fail",
+              "Value #Wall": "Wall"
             }
           }
         }

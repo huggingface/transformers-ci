@@ -142,7 +142,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Duration"
+              "options": "Test Time"
             },
             "properties": [
               {
@@ -192,6 +192,18 @@
                     }
                   }
                 ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Wall"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
               }
             ]
           }
@@ -275,6 +287,15 @@
           "range": false,
           "legendFormat": "",
           "expr": "max by (test_job)(last_over_time(pytest_run_job_active{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[5m])) or (((max by (test_job)(last_over_time(pytest_run_job_failed_tests{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d])) >= bool 1) * 3) > 0) or ((max by (test_job)(last_over_time(pytest_run_job_passed_tests{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d])) >= bool 0) * 2)"
+        },
+        {
+          "refId": "Wall",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_wall_seconds{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d])))"
         }
       ],
       "title": "Latest Run Jobs",
@@ -294,16 +315,18 @@
               "test_job": 1,
               "Value #Started": 2,
               "Value #Duration": 3,
-              "Value #Pass": 4,
-              "Value #Fail": 5
+              "Value #Pass": 5,
+              "Value #Fail": 6,
+              "Value #Wall": 4
             },
             "renameByName": {
               "test_job": "Job",
               "Value #Started": "Started",
-              "Value #Duration": "Duration",
+              "Value #Duration": "Test Time",
               "Value #Pass": "Pass",
               "Value #Fail": "Fail",
-              "Value #Active": "Status"
+              "Value #Active": "Status",
+              "Value #Wall": "Wall"
             }
           }
         }
@@ -442,7 +465,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Duration"
+              "options": "Test Time"
             },
             "properties": [
               {
@@ -503,6 +526,18 @@
               {
                 "id": "custom.width",
                 "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Wall"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
               }
             ]
           }
@@ -598,6 +633,15 @@
           "legendFormat": "__auto",
           "range": false,
           "refId": "Failures"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_wall_seconds{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Wall"
         }
       ],
       "title": "Past Runs",
@@ -628,16 +672,18 @@
               "Value #Total": 4,
               "Value #Failures": 5,
               "Value #Result": 6,
-              "Value #Duration": 7
+              "Value #Duration": 7,
+              "Value #Wall": 8
             },
             "renameByName": {
               "commit_message": "Commit",
               "Value #Jobs": "Job Count",
               "Value #Total": "Tests",
               "Value #Start": "Started",
-              "Value #Duration": "Duration",
+              "Value #Duration": "Test Time",
               "Value #Result": "Result",
-              "Value #Failures": "Failures"
+              "Value #Failures": "Failures",
+              "Value #Wall": "Wall"
             }
           }
         },

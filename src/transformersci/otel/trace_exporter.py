@@ -2387,6 +2387,8 @@ def extract_run_rollup_metrics(
         "# TYPE pytest_run_failed_tests gauge",
         "# HELP pytest_run_duration_seconds Total duration (sum of test span durations) of a pytest run.",
         "# TYPE pytest_run_duration_seconds gauge",
+        "# HELP pytest_run_wall_seconds Wall-clock elapsed time (max end - min start across the run's traces) of a pytest run.",
+        "# TYPE pytest_run_wall_seconds gauge",
         "# HELP pytest_run_job_count Number of distinct jobs that contributed tests to a pytest run.",
         "# TYPE pytest_run_job_count gauge",
         "# HELP pytest_run_job_member_info Whether a job contributed tests to a pytest run.",
@@ -2399,6 +2401,8 @@ def extract_run_rollup_metrics(
         "# TYPE pytest_run_job_failed_tests gauge",
         "# HELP pytest_run_job_duration_seconds Total duration (sum of test span durations) for one job of a pytest run.",
         "# TYPE pytest_run_job_duration_seconds gauge",
+        "# HELP pytest_run_job_wall_seconds Wall-clock elapsed time (max end - min start across the job's traces) for one job of a pytest run.",
+        "# TYPE pytest_run_job_wall_seconds gauge",
     ]
     run_aggregates: dict[tuple[str, str, str, str], dict[str, object]] = {}
     job_aggregates: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
@@ -2453,6 +2457,8 @@ def extract_run_rollup_metrics(
                 "failed": 0,
                 "total": 0,
                 "total_duration": 0.0,
+                "start_time": 0,
+                "end_time": 0,
             }
         job_aggregate = job_aggregates[job_key]
         job_aggregate["failed"] = int(job_aggregate["failed"]) + failed
@@ -2460,6 +2466,14 @@ def extract_run_rollup_metrics(
         job_aggregate["total_duration"] = (
             float(job_aggregate["total_duration"]) + total_duration
         )
+        job_aggregate["end_time"] = max(
+            int(job_aggregate["end_time"]), int(trace_info.get("end_time", 0) or 0)
+        )
+        job_start_time = int(job_aggregate["start_time"])
+        if job_start_time == 0 or (
+            trace_start_time != 0 and trace_start_time < job_start_time
+        ):
+            job_aggregate["start_time"] = trace_start_time
 
     for (service_name, provider, pr, run_id), aggregate in sorted(
         run_aggregates.items()
@@ -2496,6 +2510,14 @@ def extract_run_rollup_metrics(
         lines.append(
             f"pytest_run_duration_seconds{metric_labels(run_labels)} {total_duration:.6f}"
         )
+        run_wall_seconds = (
+            max(0.0, end_time_seconds - start_time_seconds)
+            if start_time_seconds > 0
+            else 0.0
+        )
+        lines.append(
+            f"pytest_run_wall_seconds{metric_labels(run_labels)} {run_wall_seconds:.6f}"
+        )
         lines.append(
             f"pytest_run_job_count{metric_labels(run_labels)} {len(job_names)}"
         )
@@ -2523,6 +2545,16 @@ def extract_run_rollup_metrics(
         lines.append(f"pytest_run_job_failed_tests{metric_labels(job_labels)} {failed}")
         lines.append(
             f"pytest_run_job_duration_seconds{metric_labels(job_labels)} {float(aggregate['total_duration']):.6f}"
+        )
+        job_start_seconds = int(aggregate["start_time"]) / 1_000_000
+        job_end_seconds = int(aggregate["end_time"]) / 1_000_000
+        wall_seconds = (
+            max(0.0, job_end_seconds - job_start_seconds)
+            if job_start_seconds > 0
+            else 0.0
+        )
+        lines.append(
+            f"pytest_run_job_wall_seconds{metric_labels(job_labels)} {wall_seconds:.6f}"
         )
     return lines
 
