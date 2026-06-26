@@ -176,7 +176,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 360
+                "value": 520
               }
             ]
           },
@@ -252,6 +252,30 @@
                     }
                   }
                 ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Runs"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 72
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failures"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 72
               }
             ]
           }
@@ -541,6 +565,10 @@
                     "targetBlank": false
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 480
               }
             ]
           },
@@ -577,6 +605,18 @@
               {
                 "id": "custom.hidden",
                 "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Job Count"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
               }
             ]
           }
