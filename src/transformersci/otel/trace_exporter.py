@@ -1888,8 +1888,10 @@ _cached_run_activity: dict[
     tuple[str, str], tuple[float, tuple[str, frozenset[str]]]
 ] = {}
 
-# Trailing matrix-parameter suffix on a GitHub job display name, e.g. " (1, 8)".
-_MATRIX_JOB_SUFFIX = re.compile(r"\s*\([^()]*\)\s*$")
+# Trailing matrix/shard suffix(es) on a GitHub job display name, e.g. " (1, 8)"
+# or " [shard 1/8]" (transformers uses bracket notation). Strips one or more
+# consecutive trailing bracketed groups.
+_MATRIX_JOB_SUFFIX = re.compile(r"(?:\s*[(\[][^()\[\]]*[)\]])+\s*$")
 
 
 def active_cache_ttl_seconds() -> float:
@@ -1931,6 +1933,14 @@ def logical_job_name(github_job_name: str) -> str:
     but never marks a finished job as running."""
     name = github_job_name.rsplit(" / ", 1)[-1]
     return _MATRIX_JOB_SUFFIX.sub("", name).strip()
+
+
+def slugify_job(name: str) -> str:
+    """Normalise a job name for cross-source matching: lowercase, with every run
+    of non-alphanumerics collapsed to a single underscore. Lets a GitHub display
+    name (``"Check repository consistency"``) line up with the ``test_job`` key
+    the traces carry (``"check_repository_consistency"`` = ``GITHUB_JOB``)."""
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
 def fetch_github_run_activity(
@@ -2033,13 +2043,19 @@ def extract_run_active_metrics(
     lookback_us = active_lookback_seconds() * 1_000_000
 
     # The panels key on the *latest* run per PR, so resolve that (and its repo)
-    # here and poll only it.
+    # here and poll only it. We also collect the set of test_jobs each run has
+    # actually produced traces for, so the per-job spinner can be matched back to
+    # a real row instead of minting a phantom row under GitHub's display name.
     latest_by_pr: dict[str, dict[str, str | int]] = {}
+    jobs_by_pr_run: dict[tuple[str, str], set[str]] = {}
     for trace_info, _rows in extracted:
         pr = str(trace_info.get("pr", "none"))
         run_id = str(trace_info.get("run_id", ""))
         if not pr.isdigit() or not run_id:
             continue
+        test_job = str(trace_info.get("test_job", ""))
+        if test_job and test_job != "unknown":
+            jobs_by_pr_run.setdefault((pr, run_id), set()).add(test_job)
         latest_start = int(trace_info.get("latest_start_time", 0) or 0)
         current = latest_by_pr.get(pr)
         if current is not None and latest_start < int(current["latest_start"]):
@@ -2081,7 +2097,28 @@ def extract_run_active_metrics(
             "service_name": str(info["service_name"]),
         }
         run_lines.append(f"pytest_run_active{metric_labels(base_labels)} 1")
-        for job in sorted(active_jobs):
+
+        # Match each running GitHub job back to a real test_job the run has
+        # produced traces for. GitHub only exposes the job *display* name, which
+        # differs from the test_job key (= GITHUB_JOB), so we match on the key
+        # itself and on its slug. Emitting only matched test_jobs (deduped, so
+        # shards collapse onto one row) means the spinner lands on the actual job
+        # row; an unmatched running job simply doesn't spin rather than spawning a
+        # phantom row.
+        known_jobs = jobs_by_pr_run.get((pr, run_id), set())
+        known_forms: dict[str, str] = {}
+        for known in known_jobs:
+            known_forms[known] = known
+            known_forms.setdefault(slugify_job(known), known)
+        matched_jobs: set[str] = set()
+        for job in active_jobs:
+            logical = logical_job_name(job)
+            for form in (job, slugify_job(job), logical, slugify_job(logical)):
+                canonical = known_forms.get(form)
+                if canonical:
+                    matched_jobs.add(canonical)
+                    break
+        for job in sorted(matched_jobs):
             job_labels = dict(base_labels)
             job_labels["test_job"] = job
             job_lines.append(f"pytest_run_job_active{metric_labels(job_labels)} 1")
