@@ -27,6 +27,13 @@ metadata:
     app.kubernetes.io/component: trace-exporter
 spec:
   replicas: {{ .Values.traceExporter.replicas }}
+  {{- if .Values.traceExporter.runStore.enabled }}
+  # The run store is a ReadWriteOnce PVC; Recreate avoids the new pod blocking on
+  # a volume the old pod still holds during a rolling update (the store is a
+  # rebuildable cache, so the brief gap is fine).
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "transformers-ci.selectorLabels" . | nindent 6 }}
@@ -97,6 +104,14 @@ spec:
               value: "{{ .Values.traceExporter.config.port }}"
             - name: PYTEST_TRACE_EXPORTER_SERVICE_NAME
               value: {{ .Values.traceExporter.config.serviceName }}
+            {{- if .Values.traceExporter.runStore.enabled }}
+            # Per-run test rows persisted here so the /run drill-down serves them
+            # directly over the retention window instead of re-searching Tempo.
+            - name: PYTEST_TRACE_EXPORTER_RUN_STORE
+              value: "{{ .Values.traceExporter.runStore.path }}"
+            - name: PYTEST_TRACE_EXPORTER_RUN_STORE_RETENTION_DAYS
+              value: "{{ .Values.traceExporter.runStore.retentionDays }}"
+            {{- end }}
             - name: PYTEST_GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -112,6 +127,10 @@ spec:
           volumeMounts:
             - name: src
               mountPath: /app/src
+            {{- if .Values.traceExporter.runStore.enabled }}
+            - name: run-store
+              mountPath: {{ .Values.traceExporter.runStore.path }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /
@@ -129,6 +148,28 @@ spec:
       volumes:
         - name: src
           emptyDir: {}
+        {{- if .Values.traceExporter.runStore.enabled }}
+        - name: run-store
+          persistentVolumeClaim:
+            claimName: trace-exporter-run-store
+        {{- end }}
+{{- if .Values.traceExporter.runStore.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: trace-exporter-run-store
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: trace-exporter
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.traceExporter.runStore.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.traceExporter.runStore.size }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Service

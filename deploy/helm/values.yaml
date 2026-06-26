@@ -169,6 +169,19 @@ traceExporter:
     limits:
       memory: 2Gi
 
+  # Persistent store for per-run test rows. The render loop already reconstructs
+  # each run's complete test set for the rollups; persisting those slim rows lets
+  # the /run drill-down serve them directly over the whole retention window
+  # instead of re-searching Tempo on demand (Tempo search is capped at a 26h
+  # window and re-fetching a large sharded run's traces per view is slow). The
+  # store is a rebuildable cache, pruned to retentionDays.
+  runStore:
+    enabled: true
+    size: 10Gi
+    storageClass: ebs-gp3
+    path: /var/run-store
+    retentionDays: 14
+
 #------------------------------------------------------------------------------
 # Prometheus
 #------------------------------------------------------------------------------

@@ -382,6 +382,100 @@ def test_gather_run_test_rows_from_membership(monkeypatch: pytest.MonkeyPatch) -
     assert rows[0]["test_nodeid"] == "tests/test_torch.py::T::test_x"
 
 
+def test_run_store_roundtrip_and_prune(tmp_path) -> None:
+    d = str(tmp_path)
+    rows = [
+        {
+            "test_nodeid": "t.py::A::test_x",
+            "test_job": "tests_torch",
+            "status_code": "ERROR",
+            "duration_seconds": 1.5,
+            "trace_id": "tr1",
+            "pr": "42",
+            "extra": "dropped",  # non-slim field should not be stored
+        }
+    ]
+    trace_exporter.persist_run_rows("99:1", rows, directory=d)
+    loaded = trace_exporter.load_run_rows("99:1", directory=d)
+    assert loaded is not None and len(loaded) == 1
+    assert loaded[0]["test_nodeid"] == "t.py::A::test_x"
+    assert loaded[0]["status_code"] == "ERROR"
+    assert "extra" not in loaded[0]  # only slim fields persisted
+    assert trace_exporter.load_run_rows("nope", directory=d) is None
+    # prune removes nothing when fresh, everything when max age is 0
+    assert trace_exporter.prune_run_store(3600, directory=d) == 0
+    assert trace_exporter.prune_run_store(0, directory=d) == 1
+    assert trace_exporter.load_run_rows("99:1", directory=d) is None
+
+
+def test_persist_settled_runs_groups_by_run(tmp_path) -> None:
+    d = str(tmp_path)
+    extracted = [
+        (
+            {"run_id": "100:1"},
+            [
+                {
+                    "test_nodeid": "a",
+                    "test_job": "j1",
+                    "status_code": "OK",
+                    "duration_seconds": 1.0,
+                    "trace_id": "t1",
+                    "pr": "1",
+                }
+            ],
+        ),
+        (
+            {"run_id": "100:1"},
+            [
+                {
+                    "test_nodeid": "b",
+                    "test_job": "j2",
+                    "status_code": "ERROR",
+                    "duration_seconds": 2.0,
+                    "trace_id": "t2",
+                    "pr": "1",
+                }
+            ],
+        ),
+    ]
+    trace_exporter.persist_settled_runs(extracted, directory=d)
+    loaded = trace_exporter.load_run_rows("100:1", directory=d)
+    assert loaded is not None and len(loaded) == 2  # both traces' rows merged
+
+
+def test_gather_run_test_rows_prefers_store(tmp_path, monkeypatch) -> None:
+    d = str(tmp_path)
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_RUN_STORE", d)
+    monkeypatch.setattr(trace_exporter, "_run_rows_cache", trace_exporter.OrderedDict())
+    trace_exporter.persist_run_rows(
+        "55:1",
+        [
+            {
+                "test_nodeid": "x",
+                "test_job": "j",
+                "status_code": "OK",
+                "duration_seconds": 1.0,
+                "trace_id": "t",
+                "pr": "1",
+            }
+        ],
+        directory=d,
+    )
+    monkeypatch.setattr(
+        trace_exporter,
+        "_search_run_trace_ids",
+        lambda *a, **k: pytest.fail("should not search when persisted"),
+    )
+    rows = trace_exporter.gather_run_test_rows("55:1", base_url="http://unused")
+    assert len(rows) == 1 and rows[0]["test_nodeid"] == "x"
+
+
+def test_run_store_disabled_is_noop(tmp_path) -> None:
+    assert trace_exporter.load_run_rows("1:1", directory="") is None
+    trace_exporter.persist_run_rows("1:1", [{"test_nodeid": "x"}], directory="")
+    assert trace_exporter.prune_run_store(0, directory="") == 0
+
+
 def test_extract_pr_last_failure_metrics_links_failure_back_to_run() -> None:
     metrics = trace_exporter.extract_pr_last_failure_metrics(
         workflow_split_across_three_jobs()

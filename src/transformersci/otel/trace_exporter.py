@@ -44,6 +44,7 @@ Pipeline (and roughly the order functions appear in the file):
 
 from __future__ import annotations
 
+import gzip
 import html
 import json
 import os
@@ -871,18 +872,25 @@ def iter_traces(base_url: str | None = None) -> Iterator[dict]:
     end = int(time.time())
     start = end - parse_lookback_seconds(lookback)
     trace_ids, _ = search_all_trace_ids(base_url, service_name, start, end, limit)
+    yield from _iter_traces_by_ids(trace_ids, base_url)
+
+
+def _iter_traces_by_ids(
+    trace_ids: list[str], base_url: str, *, workers: int | None = None
+) -> Iterator[dict]:
+    """Stream-fetch a known set of trace ids concurrently (bounded in flight).
+
+    Shared by the window render (:func:`iter_traces`) and the on-demand /run
+    drill-down. Streaming + a bounded sliding window keeps peak memory at the
+    in-flight traces only — the caller shapes each into small rows and drops it.
+    A slow/failed fetch drops to None rather than sinking the batch.
+    """
     if not trace_ids:
         return
-
-    workers = max(
-        1,
-        min(
-            env_int(
-                "PYTEST_TRACE_EXPORTER_FETCH_CONCURRENCY", DEFAULT_FETCH_CONCURRENCY
-            ),
-            len(trace_ids),
-        ),
+    workers = workers or env_int(
+        "PYTEST_TRACE_EXPORTER_FETCH_CONCURRENCY", DEFAULT_FETCH_CONCURRENCY
     )
+    workers = max(1, min(workers, len(trace_ids)))
     pending = iter(trace_ids)
     with ThreadPoolExecutor(
         max_workers=workers, thread_name_prefix="trace-fetch"
@@ -2625,6 +2633,9 @@ def _iter_metric_lines() -> Iterator[str]:
     rollup_extracted = settled_runs_complete_extracted(
         extracted, now, _run_settle_seconds()
     )
+    # Persist each settled run's complete rows so the /run drill-down can serve
+    # them directly over the whole retention window (see persist_run_rows).
+    persist_settled_runs(rollup_extracted)
 
     # Per-test is emitted only for traces newly seen this render plus the
     # previous render's new ids (the one-render carryover), so the same
@@ -3292,6 +3303,7 @@ def _relieve_memory_pressure() -> None:
 def _refresh_cache_once() -> None:
     _relieve_memory_pressure()
     _write_payload_atomic(_payload_path())
+    _maybe_prune_run_store()
 
 
 def _refresh_loop(interval: float) -> None:
@@ -3321,11 +3333,168 @@ def _refresh_loop(interval: float) -> None:
 # served here from the run's traces instead — same pattern as /failure.
 # ---------------------------------------------------------------------------
 
-# Last-resort window for the Tempo search fallback when a run is no longer in
-# the in-memory membership map and the caller passed no window.
-_RUN_SEARCH_FALLBACK_SECONDS = 7 * 86400
+# ---------------------------------------------------------------------------
+# Per-run rows persistence. The render loop already reconstructs each run's
+# COMPLETE test set (to keep the rollups accurate as job traces age out of the
+# window); we persist those small rows keyed by run id so the /run drill-down
+# can serve them directly — fast and complete over the whole retention window —
+# instead of re-searching Tempo on demand. Tempo search is capped at a 26h
+# window and re-fetching a large sharded run's traces per view is slow, so the
+# search path is only a fallback for runs not (yet) persisted.
+#
+# No-op unless PYTEST_TRACE_EXPORTER_RUN_STORE points at a writable directory.
+# ---------------------------------------------------------------------------
+
+# The slim per-test fields the /run table needs (the full shaped row is larger).
+_RUN_STORE_FIELDS = (
+    "test_nodeid",
+    "test_job",
+    "status_code",
+    "duration_seconds",
+    "trace_id",
+    "pr",
+)
+
+
+def _run_store_dir() -> str:
+    return os.getenv("PYTEST_TRACE_EXPORTER_RUN_STORE", "").rstrip("/")
+
+
+def _run_store_path(directory: str, run_id: str) -> str:
+    # run ids contain ':' (and could contain '/'); make a filesystem-safe name.
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", run_id)[:200]
+    return os.path.join(directory, f"{safe}.json.gz")
+
+
+def persist_run_rows(
+    run_id: str,
+    rows: list[dict[str, str | float]],
+    *,
+    directory: str | None = None,
+) -> None:
+    """Write a run's slim test rows to the store (atomic; best-effort)."""
+    directory = _run_store_dir() if directory is None else directory
+    if not directory or not run_id:
+        return
+    try:
+        os.makedirs(directory, exist_ok=True)
+        slim = [{k: r.get(k) for k in _RUN_STORE_FIELDS} for r in rows]
+        payload = json.dumps({"run_id": run_id, "rows": slim}).encode("utf-8")
+        path = _run_store_path(directory, run_id)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with gzip.open(tmp, "wb") as fh:
+            fh.write(payload)
+        os.replace(tmp, path)  # atomic swap so a reader never sees a torn file
+    except OSError:
+        pass
+
+
+def load_run_rows(
+    run_id: str, *, directory: str | None = None
+) -> list[dict[str, str | float]] | None:
+    """Return a run's persisted rows, or None if not stored / unreadable."""
+    directory = _run_store_dir() if directory is None else directory
+    if not directory or not run_id:
+        return None
+    try:
+        with gzip.open(_run_store_path(directory, run_id), "rb") as fh:
+            data = json.loads(fh.read())
+    except (OSError, ValueError):
+        return None
+    rows = data.get("rows") if isinstance(data, dict) else None
+    return rows if isinstance(rows, list) else None
+
+
+def persist_settled_runs(
+    rollup_extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]],
+    *,
+    directory: str | None = None,
+) -> None:
+    """Persist each settled run's complete rows, grouped from the render's
+    complete per-run extract (one file per run, rewritten as the run settles)."""
+    directory = _run_store_dir() if directory is None else directory
+    if not directory:
+        return
+    by_run: dict[str, list[dict[str, str | float]]] = {}
+    for trace_info, rows in rollup_extracted:
+        run_id = str(trace_info.get("run_id", ""))
+        if run_id:
+            by_run.setdefault(run_id, []).extend(rows)
+    for run_id, rows in by_run.items():
+        persist_run_rows(run_id, rows, directory=directory)
+
+
+def prune_run_store(
+    max_age_seconds: float, *, directory: str | None = None, now: float | None = None
+) -> int:
+    """Delete stored runs older than *max_age_seconds*. Returns the count removed."""
+    directory = _run_store_dir() if directory is None else directory
+    if not directory:
+        return 0
+    now = time.time() if now is None else now
+    removed = 0
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return 0
+    for name in names:
+        if not name.endswith(".json.gz"):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            if now - os.path.getmtime(path) > max_age_seconds:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+_RUN_STORE_PRUNE_INTERVAL_SECONDS = 3600.0
+_last_run_store_prune = 0.0
+_run_store_prune_lock = threading.Lock()
+
+
+def _run_store_retention_seconds() -> float:
+    return env_int("PYTEST_TRACE_EXPORTER_RUN_STORE_RETENTION_DAYS", 14) * 86400.0
+
+
+def _maybe_prune_run_store() -> None:
+    """Prune the run store at most once an hour (called from the render loop)."""
+    global _last_run_store_prune
+    if not _run_store_dir():
+        return
+    now = time.time()
+    with _run_store_prune_lock:
+        if now - _last_run_store_prune < _RUN_STORE_PRUNE_INTERVAL_SECONDS:
+            return
+        _last_run_store_prune = now
+    try:
+        prune_run_store(_run_store_retention_seconds(), now=now)
+    except Exception:
+        pass
+
+
+# Tempo rejects any /api/search whose window exceeds query_frontend.search
+# max_duration (26h in tempo.yaml). The /run fallback search must stay under it
+# or Tempo 4xxs and the run shows empty — so both the default window and any
+# caller-supplied window are clamped to this. Runs older than this can't be
+# searched; /run then shows the "open in Tempo" hint.
+_RUN_SEARCH_MAX_WINDOW_SECONDS = 25 * 3600
+# Default fallback window when the caller passes none.
+_RUN_SEARCH_FALLBACK_SECONDS = _RUN_SEARCH_MAX_WINDOW_SECONDS
 # Cap traces pulled for one /run request so an enormous run can't stall it.
 _RUN_SEARCH_MAX_TRACES = 500
+# Per-run shaped-rows cache so repeat /run views (and the Run + Job dashboards
+# hitting the same run id) don't re-fetch all of a run's traces from Tempo every
+# time. A big sharded run is dozens of multi-MB traces; the first view fetches
+# them concurrently, subsequent views serve from here.
+_RUN_ROWS_CACHE_TTL_SECONDS = 300.0
+_RUN_ROWS_CACHE_MAX = 32
+_run_rows_cache: "OrderedDict[str, tuple[float, list[dict[str, str | float]]]]" = (
+    OrderedDict()
+)
+_run_rows_cache_lock = threading.Lock()
 
 
 def _search_run_trace_ids(
@@ -3343,6 +3512,10 @@ def _search_run_trace_ids(
     else:
         end = int(time.time())
         start = end - _RUN_SEARCH_FALLBACK_SECONDS
+    # Clamp to Tempo's search max_duration — a wider window is rejected outright
+    # (the dashboard can pass e.g. a 7d range), which would silently empty /run.
+    if end - start > _RUN_SEARCH_MAX_WINDOW_SECONDS:
+        start = end - _RUN_SEARCH_MAX_WINDOW_SECONDS
     service_name = os.getenv("PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME)
     rid = run_id.replace('"', "")
     selector = (
@@ -3381,6 +3554,21 @@ def gather_run_test_rows(
     if base_url is None:
         base_url = tempo_base_url()
 
+    now = time.time()
+    with _run_rows_cache_lock:
+        hit = _run_rows_cache.get(run_id)
+        if hit is not None and now - hit[0] < _RUN_ROWS_CACHE_TTL_SECONDS:
+            _run_rows_cache.move_to_end(run_id)
+            return hit[1]
+
+    # Persisted store: complete rows the render loop saved when the run settled,
+    # available for the whole retention window without any Tempo search/fetch.
+    stored = load_run_rows(run_id)
+    if stored is not None:
+        _cache_run_rows(run_id, stored, now)
+        return stored
+
+    # Not persisted (yet) — reconstruct from live state, then Tempo as a fallback.
     with _run_state_lock:
         members = _run_members.get(run_id)
         trace_ids = list(members) if members else []
@@ -3388,19 +3576,35 @@ def gather_run_test_rows(
         trace_ids = _search_run_trace_ids(run_id, base_url, window)
 
     rows: list[dict[str, str | float]] = []
+    to_fetch: list[str] = []
     for trace_id in trace_ids:
+        # Cache hits (recent runs the render loop already shaped) are free;
+        # everything else is fetched concurrently below, not one-at-a-time —
+        # a large sharded run is dozens of traces and serial fetch timed out.
         with _shaped_cache_lock:
             entry = _shaped_cache.get(trace_id)
         if entry is None:
             cached = _trace_cache.get(trace_id)
             entry = extract_trace_rows(cached) if cached is not None else None
-        if entry is None:
-            trace = get_trace(trace_id, base_url)
-            entry = extract_trace_rows(trace) if trace is not None else None
-        if entry is None:
-            continue
-        rows.extend(entry[1])
+        if entry is not None:
+            rows.extend(entry[1])
+        else:
+            to_fetch.append(trace_id)
+    for trace in _iter_traces_by_ids(to_fetch, base_url):
+        rows.extend(extract_trace_rows(trace)[1])
+
+    _cache_run_rows(run_id, rows, now)
     return rows
+
+
+def _cache_run_rows(
+    run_id: str, rows: list[dict[str, str | float]], now: float
+) -> None:
+    with _run_rows_cache_lock:
+        _run_rows_cache[run_id] = (now, rows)
+        _run_rows_cache.move_to_end(run_id)
+        while len(_run_rows_cache) > _RUN_ROWS_CACHE_MAX:
+            _run_rows_cache.popitem(last=False)
 
 
 def render_run_html(
@@ -3418,14 +3622,19 @@ def render_run_html(
     Grafana host via ingress) and open in the parent frame.
     """
     esc = html.escape
-    rows = [r for r in rows if not job or str(r.get("test_job", "")) == job]
+    job_rows = [r for r in rows if not job or str(r.get("test_job", "")) == job]
     # The Run/Job dashboards pass $status_filter as either "ERROR" (Failing) or a
     # regex-all sentinel (".+"/".*"/"All") meaning no filter.
-    if status and status not in (".+", ".*", "All"):
-        rows = [r for r in rows if str(r.get("status_code", "")) == status]
+    status_active = bool(status) and status not in (".+", ".*", "All")
+    rows = (
+        [r for r in job_rows if str(r.get("status_code", "")) == status]
+        if status_active
+        else job_rows
+    )
     rows.sort(key=lambda r: float(r.get("duration_seconds", 0) or 0), reverse=True)
     total = len(rows)
     shown = rows[: max(0, limit)] if limit else rows
+    show_label = "Failing" if status == "ERROR" else esc(status)
 
     out = [
         "<!doctype html><html><head><meta charset='utf-8'>",
@@ -3446,21 +3655,36 @@ def render_run_html(
         ".meta{margin:0 0 8px;color:#8e9197}"
         "</style></head><body>",
     ]
+    tempo_link = (
+        f" <a target='_parent' href=\"/explore?schemaVersion=1&orgId=1&"
+        f"panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:"
+        f"%5B%7B%22query%22:%22%7B%20resource.transformers.test.run.id%3D"
+        f"%5C%22{esc(run_id)}%5C%22%20%7D%22,%22queryType%22:%22traceql%22,"
+        f'%22refId%22:%22A%22%7D%5D%7D%7D">Search this run in Tempo ↗</a>'
+        if run_id
+        else ""
+    )
     if not rows:
-        out.append(
-            "<p class='meta'>No tests found for this run in the exporter's recent "
-            "window."
-            + (
-                f" <a target='_parent' href=\"/explore?schemaVersion=1&orgId=1&"
-                f"panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:"
-                f"%5B%7B%22query%22:%22%7B%20resource.transformers.test.run.id%3D"
-                f"%5C%22{esc(run_id)}%5C%22%20%7D%22,%22queryType%22:%22traceql%22,"
-                f'%22refId%22:%22A%22%7D%5D%7D%7D">Search this run in Tempo ↗</a>'
-                if run_id
-                else ""
+        if status_active and job_rows:
+            # Tests ran, but the Show filter hid them all (e.g. Failing on a
+            # green job). Point the user at the filter rather than implying the
+            # run has no data.
+            msg = (
+                f"No <b>{show_label}</b> tests in this view — "
+                f"{len(job_rows)} test{'s' if len(job_rows) != 1 else ''} ran. "
+                f"Set <b>Show</b> to <b>All</b> to list them."
             )
-            + "</p>"
-        )
+        elif job:
+            msg = (
+                f"No tests recorded for job <code>{esc(job)}</code> in this run."
+                + tempo_link
+            )
+        else:
+            msg = (
+                "No tests found for this run in the exporter's recent window."
+                + tempo_link
+            )
+        out.append(f"<p class='meta'>{msg}</p>")
         out.append("</body></html>")
         return "".join(out)
 
