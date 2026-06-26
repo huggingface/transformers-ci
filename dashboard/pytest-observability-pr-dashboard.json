@@ -154,7 +154,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Live"
+              "options": "Status"
             },
             "properties": [
               {
@@ -180,6 +180,14 @@
                       "1": {
                         "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PC9zdmc+",
                         "index": 0
+                      },
+                      "2": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iIzNmYjk1MCIvPjxwYXRoIGQ9Ik00LjUgOC4zbDIuMSAyLjEgNC45LTUuMSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjEuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+",
+                        "index": 1
+                      },
+                      "3": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iI2Y4NTE0OSIvPjxwYXRoIGQ9Ik01LjQgNS40bDUuMiA1LjJNMTAuNiA1LjRsLTUuMiA1LjIiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjgiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==",
+                        "index": 2
                       }
                     }
                   }
@@ -266,7 +274,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "",
-          "expr": "max by (test_job) (last_over_time(pytest_run_job_active{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[5m]))"
+          "expr": "max by (test_job)(last_over_time(pytest_run_job_active{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[5m])) or (((max by (test_job)(last_over_time(pytest_run_job_failed_tests{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d])) >= bool 1) * 3) > 0) or ((max by (test_job)(last_over_time(pytest_run_job_passed_tests{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d])) >= bool 0) * 2)"
         }
       ],
       "title": "Latest Run Jobs",
@@ -295,7 +303,7 @@
               "Value #Duration": "Duration",
               "Value #Pass": "Pass",
               "Value #Fail": "Fail",
-              "Value #Active": "Live"
+              "Value #Active": "Status"
             }
           }
         }
@@ -390,6 +398,10 @@
               {
                 "id": "decimals",
                 "value": 2
+              },
+              {
+                "id": "custom.width",
+                "value": 90
               }
             ]
           },
@@ -408,6 +420,10 @@
                     "targetBlank": false
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 560
               }
             ]
           },
@@ -471,6 +487,22 @@
                     }
                   ]
                 }
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Job Count"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
               }
             ]
           }

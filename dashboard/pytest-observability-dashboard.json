@@ -24,7 +24,7 @@
   "editable": true,
   "graphTooltip": 0,
   "links": [],
-  "refresh": "2m",
+  "refresh": "1m",
   "panels": [
     {
       "datasource": {
