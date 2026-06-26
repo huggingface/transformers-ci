@@ -112,6 +112,12 @@ DEFAULT_ACTIVE_LOOKBACK_SECONDS = 6 * 3600.0
 # can't make one render fan out unboundedly; exceeding it can only under-report a
 # running job, never invent one.
 DEFAULT_ACTIVE_JOBS_PAGES = 5
+# The Actions jobs listing for a big reusable-workflow run (~90 jobs) routinely
+# takes 8-10s to respond — well past the 5s default used for the small PR-info
+# calls — so the run-activity calls get their own, longer timeout. Too short and
+# the per-job fetch times out and no job ever spins (the run-level call, being
+# tiny, still succeeds, so the overview spins while the job table doesn't).
+DEFAULT_ACTIVE_API_TIMEOUT = 20.0
 # GitHub Actions run/job `status` values that mean "not finished yet".
 GITHUB_ACTIVE_STATUSES = frozenset(
     {"queued", "in_progress", "requested", "waiting", "pending"}
@@ -1284,7 +1290,7 @@ def parse_github_timestamp(value: str) -> float | None:
         return None
 
 
-def _github_api_get(api_url: str) -> object:
+def _github_api_get(api_url: str, timeout: float = 5.0) -> object:
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "transformersci-trace-exporter",
@@ -1294,7 +1300,7 @@ def _github_api_get(api_url: str) -> object:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = Request(api_url, headers=headers)
-    with urlopen(request, timeout=5) as response:
+    with urlopen(request, timeout=timeout) as response:
         return json.load(response)
 
 
@@ -1914,6 +1920,16 @@ def active_lookback_seconds() -> float:
         return DEFAULT_ACTIVE_LOOKBACK_SECONDS
 
 
+def active_api_timeout_seconds() -> float:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_ACTIVE_API_TIMEOUT_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_ACTIVE_API_TIMEOUT
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return DEFAULT_ACTIVE_API_TIMEOUT
+
+
 def split_run_id(run_id: str) -> tuple[str, str]:
     """Split an exporter run_id (``"{GITHUB_RUN_ID}:{attempt}"``) into the GitHub
     workflow-run database id and the run attempt. Attempt is ``""`` when absent."""
@@ -1954,8 +1970,9 @@ def fetch_github_run_activity(
     )
     repo = quote(repository, safe="/")
     run_id_q = quote(run_db_id, safe="")
+    timeout = active_api_timeout_seconds()
     run_payload = _github_api_get(
-        f"{api_base_url}/repos/{repo}/actions/runs/{run_id_q}"
+        f"{api_base_url}/repos/{repo}/actions/runs/{run_id_q}", timeout=timeout
     )
     status = ""
     if isinstance(run_payload, dict):
@@ -1972,7 +1989,9 @@ def fetch_github_run_activity(
         jobs_url = f"{api_base_url}/repos/{repo}/actions/runs/{run_id_q}/jobs"
     active_jobs: set[str] = set()
     for page in range(1, DEFAULT_ACTIVE_JOBS_PAGES + 1):
-        payload = _github_api_get(f"{jobs_url}?per_page=100&page={page}")
+        payload = _github_api_get(
+            f"{jobs_url}?per_page=100&page={page}", timeout=timeout
+        )
         jobs = payload.get("jobs") if isinstance(payload, dict) else None
         if not isinstance(jobs, list) or not jobs:
             break
