@@ -101,6 +101,21 @@ DEFAULT_REFRESH_COOLDOWN_SECONDS = 60.0
 DEFAULT_REFRESH_SLOW_SECONDS = 30.0
 DEFAULT_GITHUB_API_URL = "https://api.github.com"
 DEFAULT_GITHUB_CACHE_SECONDS = 300.0
+# Live "is it still running" enrichment (see :func:`extract_run_active_metrics`).
+# A run's GitHub Actions status is re-checked at most this often while it is in
+# flight (terminal results are cached for the longer GitHub TTL above), and we
+# only bother polling runs whose newest span landed within the lookback below —
+# anything older is certainly finished and never gets a spinner.
+DEFAULT_ACTIVE_CACHE_SECONDS = 30.0
+DEFAULT_ACTIVE_LOOKBACK_SECONDS = 6 * 3600.0
+# Cap on pages of the per-run jobs listing (100/page) so a run with a huge matrix
+# can't make one render fan out unboundedly; exceeding it can only under-report a
+# running job, never invent one.
+DEFAULT_ACTIVE_JOBS_PAGES = 5
+# GitHub Actions run/job `status` values that mean "not finished yet".
+GITHUB_ACTIVE_STATUSES = frozenset(
+    {"queued", "in_progress", "requested", "waiting", "pending"}
+)
 # A CI trace counts as "settled" (immutable, safe to memoize) once its span
 # count has held steady for this long — see :func:`_trace_is_settled`. NOT
 # merely once its newest span is old: a sharded pytest-xdist job is fed by
@@ -1857,6 +1872,238 @@ def extract_pr_info_metrics(
     return lines
 
 
+# ---------------------------------------------------------------------------
+# Live "is it still running?" enrichment (GitHub Actions status)
+#
+# Every other metric here is derived from traces, so it can only ever describe a
+# run that has already produced spans — it can't tell a panel that a run/job is
+# *still going*. These helpers ask the GitHub Actions API directly for the live
+# status of a PR's latest run (and that run's jobs) so the dashboards can show an
+# animated spinner next to in-flight PRs/jobs and stop it the moment CI finishes.
+# ---------------------------------------------------------------------------
+
+_run_activity_cache_lock = threading.Lock()
+# (repository, run_db_id) -> (cached_at_monotonic, (run_status, {logical job names}))
+_cached_run_activity: dict[
+    tuple[str, str], tuple[float, tuple[str, frozenset[str]]]
+] = {}
+
+# Trailing matrix-parameter suffix on a GitHub job display name, e.g. " (1, 8)".
+_MATRIX_JOB_SUFFIX = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def active_cache_ttl_seconds() -> float:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_ACTIVE_CACHE_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_ACTIVE_CACHE_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return DEFAULT_ACTIVE_CACHE_SECONDS
+
+
+def active_lookback_seconds() -> float:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_ACTIVE_LOOKBACK_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_ACTIVE_LOOKBACK_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return DEFAULT_ACTIVE_LOOKBACK_SECONDS
+
+
+def split_run_id(run_id: str) -> tuple[str, str]:
+    """Split an exporter run_id (``"{GITHUB_RUN_ID}:{attempt}"``) into the GitHub
+    workflow-run database id and the run attempt. Attempt is ``""`` when absent."""
+    db_id, _, attempt = run_id.partition(":")
+    return db_id, attempt
+
+
+def logical_job_name(github_job_name: str) -> str:
+    """Reduce a GitHub Actions job *display* name to the logical job key the
+    exporter stores as ``test_job`` (which is ``GITHUB_JOB``).
+
+    The jobs API never exposes the workflow YAML job key, only the display name,
+    so this is best-effort: it strips a trailing matrix suffix (``" (1, 8)"``) and
+    keeps the last segment of a reusable-workflow ``"caller / job"`` name. If a
+    workflow sets a custom ``name:`` unlike its job key, the result simply won't
+    match any ``test_job`` row and no spinner shows — i.e. it can under-report,
+    but never marks a finished job as running."""
+    name = github_job_name.rsplit(" / ", 1)[-1]
+    return _MATRIX_JOB_SUFFIX.sub("", name).strip()
+
+
+def fetch_github_run_activity(
+    repository: str, run_db_id: str, run_attempt: str
+) -> tuple[str, frozenset[str]]:
+    """Return ``(run_status, {active logical job names})`` from the GitHub Actions
+    API. The job set is populated only when the run itself is still active. Raises
+    on transport errors so the caller can decide how to degrade."""
+    api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip(
+        "/"
+    )
+    repo = quote(repository, safe="/")
+    run_id_q = quote(run_db_id, safe="")
+    run_payload = _github_api_get(
+        f"{api_base_url}/repos/{repo}/actions/runs/{run_id_q}"
+    )
+    status = ""
+    if isinstance(run_payload, dict):
+        status = str(run_payload.get("status") or "")
+    if status not in GITHUB_ACTIVE_STATUSES:
+        return status, frozenset()
+
+    if run_attempt:
+        jobs_url = (
+            f"{api_base_url}/repos/{repo}/actions/runs/{run_id_q}"
+            f"/attempts/{quote(run_attempt, safe='')}/jobs"
+        )
+    else:
+        jobs_url = f"{api_base_url}/repos/{repo}/actions/runs/{run_id_q}/jobs"
+    active_jobs: set[str] = set()
+    for page in range(1, DEFAULT_ACTIVE_JOBS_PAGES + 1):
+        payload = _github_api_get(f"{jobs_url}?per_page=100&page={page}")
+        jobs = payload.get("jobs") if isinstance(payload, dict) else None
+        if not isinstance(jobs, list) or not jobs:
+            break
+        for job in jobs:
+            if not isinstance(job, dict):
+                continue
+            if str(job.get("status") or "") in GITHUB_ACTIVE_STATUSES:
+                name = logical_job_name(str(job.get("name") or ""))
+                if name:
+                    active_jobs.add(name)
+        if len(jobs) < 100:
+            break
+    return status, frozenset(active_jobs)
+
+
+def fetch_github_run_activity_cached(
+    repository: str, run_db_id: str, run_attempt: str
+) -> tuple[str, frozenset[str]]:
+    """Cached wrapper around :func:`fetch_github_run_activity`. Active runs are
+    re-checked every :func:`active_cache_ttl_seconds`; terminal results are held
+    for the longer GitHub TTL so we stop hammering a finished run. On a transport
+    error we reuse the last known value rather than flap the spinner."""
+    key = (repository, run_db_id)
+    now = time.monotonic()
+    with _run_activity_cache_lock:
+        cached = _cached_run_activity.get(key)
+        if cached is not None:
+            cached_at, value = cached
+            ttl = (
+                active_cache_ttl_seconds()
+                if value[0] in GITHUB_ACTIVE_STATUSES
+                else github_cache_ttl_seconds()
+            )
+            if ttl > 0 and now - cached_at < ttl:
+                return value
+    try:
+        value = fetch_github_run_activity(repository, run_db_id, run_attempt)
+    except Exception:
+        return cached[1] if cached is not None else ("", frozenset())
+    with _run_activity_cache_lock:
+        _cached_run_activity[key] = (now, value)
+    return value
+
+
+def extract_run_active_metrics(
+    traces: list[dict] | None = None,
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
+    _activity_fetcher: Callable[[str, str, str], tuple[str, frozenset[str]]]
+    | None = None,
+    _now: float | None = None,
+) -> list[str]:
+    """Emit ``pytest_run_active`` (one per PR whose latest run is in flight) and
+    ``pytest_run_job_active`` (one per still-running job) from the GitHub Actions
+    API, so the dashboards can show an animated spinner that stops when CI ends.
+
+    The signal is deliberately *not* trace-derived: a queued or just-started job
+    may have emitted no spans yet. To keep it cheap we resolve only the latest run
+    per PR, skip runs whose newest span is older than the lookback (certainly
+    finished), and cache aggressively — so steady state is a small, bounded number
+    of API calls regardless of window size."""
+    extracted = (
+        _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
+    )
+    fetcher = _activity_fetcher or fetch_github_run_activity_cached
+    now_seconds = _now if _now is not None else time.time()
+    lookback_us = active_lookback_seconds() * 1_000_000
+
+    # The panels key on the *latest* run per PR, so resolve that (and its repo)
+    # here and poll only it.
+    latest_by_pr: dict[str, dict[str, str | int]] = {}
+    for trace_info, _rows in extracted:
+        pr = str(trace_info.get("pr", "none"))
+        run_id = str(trace_info.get("run_id", ""))
+        if not pr.isdigit() or not run_id:
+            continue
+        latest_start = int(trace_info.get("latest_start_time", 0) or 0)
+        current = latest_by_pr.get(pr)
+        if current is not None and latest_start < int(current["latest_start"]):
+            continue
+        repository = str(trace_info.get("repository", ""))
+        if not repository:
+            repository = repository_from_pr_url(str(trace_info.get("pr_url", "")))
+        latest_by_pr[pr] = {
+            "latest_start": latest_start,
+            "run_id": run_id,
+            "repository": repository,
+            "service_name": str(trace_info.get("service_name", "unknown")),
+            "provider": str(trace_info.get("provider", "unknown")),
+        }
+
+    run_lines: list[str] = []
+    job_lines: list[str] = []
+    for pr, info in sorted(latest_by_pr.items()):
+        repository = str(info["repository"])
+        if not repository:
+            continue
+        latest_start = int(info["latest_start"])
+        if latest_start and (now_seconds * 1_000_000 - latest_start) > lookback_us:
+            continue
+        run_id = str(info["run_id"])
+        run_db_id, run_attempt = split_run_id(run_id)
+        if not run_db_id:
+            continue
+        try:
+            status, active_jobs = fetcher(repository, run_db_id, run_attempt)
+        except Exception:
+            continue
+        if status not in GITHUB_ACTIVE_STATUSES:
+            continue
+        base_labels = {
+            "pr": pr,
+            "provider": str(info["provider"]),
+            "run_id": run_id,
+            "service_name": str(info["service_name"]),
+        }
+        run_lines.append(f"pytest_run_active{metric_labels(base_labels)} 1")
+        for job in sorted(active_jobs):
+            job_labels = dict(base_labels)
+            job_labels["test_job"] = job
+            job_lines.append(f"pytest_run_job_active{metric_labels(job_labels)} 1")
+
+    lines: list[str] = []
+    if run_lines:
+        lines.append(
+            "# HELP pytest_run_active 1 while the PR's latest CI run is queued or "
+            "in progress (live, from the GitHub Actions API)."
+        )
+        lines.append("# TYPE pytest_run_active gauge")
+        lines.extend(run_lines)
+    if job_lines:
+        lines.append(
+            "# HELP pytest_run_job_active 1 while a job in the run is queued or in "
+            "progress (live, from the GitHub Actions API)."
+        )
+        lines.append("# TYPE pytest_run_job_active gauge")
+        lines.extend(job_lines)
+    return lines
+
+
 def extract_run_info_metrics(
     traces: list[dict] | None = None,
     *,
@@ -2690,6 +2937,7 @@ def _iter_metric_lines() -> Iterator[str]:
     yield from extract_run_rollup_metrics(_extracted=rollup_extracted)
     yield from extract_run_info_metrics(_extracted=rollup_extracted)
     yield from extract_pr_info_metrics([], _extracted=extracted)
+    yield from extract_run_active_metrics(_extracted=extracted)
     yield from extract_pr_last_failure_metrics([], _extracted=extracted)
     yield from extract_average_metrics([], _extracted=extracted)
     yield from extract_average_resource_metrics(resource_records)

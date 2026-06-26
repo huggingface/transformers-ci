@@ -150,6 +150,42 @@
                 "value": "s"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Live"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "image"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 46
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PC9zdmc+",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
           }
         ]
       },
@@ -222,6 +258,15 @@
           "range": false,
           "legendFormat": "__auto",
           "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[90d])))"
+        },
+        {
+          "refId": "Active",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "expr": "max by (test_job) (last_over_time(pytest_run_job_active{pr=~\"$pr\",run_id=~\"$latest_run_id\"}[5m]))"
         }
       ],
       "title": "Latest Run Jobs",
@@ -237,18 +282,20 @@
               "Time": true
             },
             "indexByName": {
-              "test_job": 0,
-              "Value #Started": 1,
-              "Value #Duration": 2,
-              "Value #Pass": 3,
-              "Value #Fail": 4
+              "Value #Active": 0,
+              "test_job": 1,
+              "Value #Started": 2,
+              "Value #Duration": 3,
+              "Value #Pass": 4,
+              "Value #Fail": 5
             },
             "renameByName": {
               "test_job": "Job",
               "Value #Started": "Started",
               "Value #Duration": "Duration",
               "Value #Pass": "Pass",
-              "Value #Fail": "Fail"
+              "Value #Fail": "Fail",
+              "Value #Active": "Live"
             }
           }
         }

@@ -214,6 +214,42 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Live"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "image"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 46
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PC9zdmc+",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
           }
         ]
       },
@@ -306,6 +342,15 @@
           "legendFormat": "",
           "range": false,
           "refId": "State"
+        },
+        {
+          "refId": "Active",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "expr": "max by (pr) (last_over_time(pytest_run_active{pr=~\".*\",pr!=\"main\"}[5m]))"
         }
       ],
       "title": "Last 10 PRs",
@@ -332,7 +377,8 @@
               "Value #Runs": 4,
               "Value #Failures": 5,
               "Value #Rate": 6,
-              "Value #State": 7
+              "Value #State": 7,
+              "Value #Active": 8
             },
             "renameByName": {
               "pr": "PR",
@@ -342,7 +388,8 @@
               "Value #Failures": "Failures",
               "Value #Rate": "Failure Rate",
               "title": "Title",
-              "Value #State": "State"
+              "Value #State": "State",
+              "Value #Active": "Live"
             }
           }
         },
