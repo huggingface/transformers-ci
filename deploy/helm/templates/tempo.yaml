@@ -71,7 +71,15 @@ data:
 
     compactor:
       compaction:
-        block_retention: 2160h
+        # 336h = 14d (was 2160h/90d). The producer span-id collision fix (011834c)
+        # tripled on-disk growth to ~3.4 GB/day; at 90d retention Tempo's 50 GiB PVC
+        # fills in ~11 days (~310 GB needed for a true 90d). 14d ≈ 48 GB, fits the
+        # 50 GiB PVC, and is ample for CI trace debugging. To keep longer history,
+        # grow tempo.storage.size first (≈110 GiB for 30d, ≈350 GiB for 90d) — the
+        # ebs-gp3 PVC resizes online but volumeClaimTemplates are immutable on the
+        # StatefulSet (needs a manual `kubectl patch pvc data-tempo-0`).
+        # See docs/capacity-and-retention-plan-2026-06-25.md.
+        block_retention: 336h
 
     storage:
       trace:
