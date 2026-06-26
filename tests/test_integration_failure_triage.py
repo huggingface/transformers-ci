@@ -591,15 +591,25 @@ class TrackingIssueTest(unittest.TestCase):
         with patch.object(itf, "list_open_pulls") as lop:
             self.assertEqual(
                 itf.reconcile_tracking_issue(
-                    targets, repo="o/r", window=["d"], run_key="d",
-                    issue_number=None, github_token="tok", timeout_seconds=300,
+                    targets,
+                    repo="o/r",
+                    window=["d"],
+                    run_key="d",
+                    issue_number=None,
+                    github_token="tok",
+                    timeout_seconds=300,
                 ),
                 {},
             )
             self.assertEqual(
                 itf.reconcile_tracking_issue(
-                    targets, repo="o/r", window=["d"], run_key="d",
-                    issue_number=42, github_token="tok", timeout_seconds=0,
+                    targets,
+                    repo="o/r",
+                    window=["d"],
+                    run_key="d",
+                    issue_number=42,
+                    github_token="tok",
+                    timeout_seconds=0,
                 ),
                 {},
             )
