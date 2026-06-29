@@ -40,6 +40,12 @@ spec:
                 - -c
                 - |
                   git clone --depth 1 https://github.com/huggingface/transformers-ci.git /app/src
+                  revision={{ .Values.ciDataPublisher.sourceRevision | quote }}
+                  if [ -n "${revision}" ]; then
+                    git -C /app/src fetch --depth 1 origin "${revision}" || \
+                      git -C /app/src fetch --depth 1 origin "refs/heads/${revision}"
+                    git -C /app/src checkout --detach FETCH_HEAD
+                  fi
               volumeMounts:
                 - name: src
                   mountPath: /app/src
