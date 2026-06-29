@@ -998,7 +998,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(topk(1, pytest_run_start_time_seconds{pr=~\"$pr\"}))",
+        "definition": "query_result(topk(1, last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d]) or timestamp(last_over_time(pytest_run_active{pr=~\"$pr\"}[5m]))))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -1007,7 +1007,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(topk(1, last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d])))",
+          "query": "query_result(topk(1, last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d]) or timestamp(last_over_time(pytest_run_active{pr=~\"$pr\"}[5m]))))",
           "refId": "Prometheus-latest_run_id-Variable-Query"
         },
         "regex": "/.*run_id=\"([^\"]+)\".*/",
