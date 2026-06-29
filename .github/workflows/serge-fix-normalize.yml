@@ -1,0 +1,89 @@
+name: Normalize Serge fix branches (reusable)
+
+# Reusable workflow. Serge (the nightly integration-failure triage bot) is a
+# repo-agnostic patch producer: it proposes a logical fix and opens a PR on a
+# `serge/fix/**` branch, but it never runs the target repo's build commands.
+# This workflow closes that gap downstream — it checks out the pushed branch,
+# runs the repo's OWN fixers (formatting/lint + regenerating modular / copied /
+# auto-generated files), and commits the result back onto the same branch, so
+# the resulting PR already satisfies repo-consistency instead of failing it.
+#
+# Lives in huggingface/transformers-ci and is called from a thin caller in the
+# target repo (see the *-caller.yml pattern), so all the logic stays here and
+# the target repo just wires the `push` trigger to it. The commands default to
+# transformers' (`pip install -e ".[quality]"` + `make style && make
+# fix-repo`) but are inputs, so another repo can reuse this by overriding them.
+#
+# Loop safety: the normalization commit is pushed with the caller's
+# GITHUB_TOKEN, and pushes made with GITHUB_TOKEN do NOT trigger new workflow
+# runs — so this can never re-trigger itself.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "The serge/fix/** branch to normalize (e.g. github.ref_name)."
+        type: string
+        required: true
+      python_version:
+        description: "Python version for the fixer toolchain."
+        type: string
+        default: "3.10"
+      install_command:
+        description: "Command that installs the repo's fixer toolchain."
+        type: string
+        default: 'pip install -e ".[quality]"'
+      fix_command:
+        description: "Command(s) that normalize the tree in place."
+        type: string
+        default: "make style && make fix-repo"
+      fetch_main:
+        description: "Fetch main before fixing (transformers' modular conversion compares against it)."
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  normalize:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout the pushed Serge branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          # Full history so transformers' check_modular_conversion can diff main.
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Fetch main
+        if: ${{ inputs.fetch_main }}
+        run: git fetch origin main:main || true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Install the fixer toolchain
+        run: |
+          python -m pip install --upgrade pip
+          ${{ inputs.install_command }}
+
+      - name: Run the repo's own fixers
+        run: ${{ inputs.fix_command }}
+
+      - name: Commit and push normalization (if any)
+        env:
+          REF_NAME: ${{ inputs.ref }}
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Nothing to normalize — Serge's patch already conforms."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Apply ${{ inputs.fix_command }} (automated normalization)"
+          git push origin "HEAD:${REF_NAME}"
