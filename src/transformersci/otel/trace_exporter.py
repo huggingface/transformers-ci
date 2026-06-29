@@ -147,6 +147,7 @@ DEFAULT_BADGE_TRACE_LIMIT = 100
 DEFAULT_BADGE_CACHE_SECONDS = 120.0
 DEFAULT_BADGE_PROMETHEUS_LOOKBACK = "90d"
 DEFAULT_PROMETHEUS_URL = ""
+DEFAULT_PUBLIC_RESPONSE_CACHE_SECONDS = 30.0
 
 
 def env_int(name: str, default: int) -> int:
@@ -163,6 +164,19 @@ def metric_labels(labels: dict[str, str]) -> str:
         escaped = value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
         segments.append(f'{key}="{escaped}"')
     return "{" + ",".join(segments) + "}"
+
+
+def _public_response_cache_seconds() -> float:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_PUBLIC_RESPONSE_CACHE_SECONDS", "")
+    try:
+        return max(0.0, float(raw)) if raw else DEFAULT_PUBLIC_RESPONSE_CACHE_SECONDS
+    except ValueError:
+        return DEFAULT_PUBLIC_RESPONSE_CACHE_SECONDS
+
+
+def _public_cache_control_header() -> str:
+    ttl = int(_public_response_cache_seconds())
+    return f"public, max-age={ttl}" if ttl > 0 else "no-store"
 
 
 def tag_map(items: list[dict]) -> dict[str, str]:
@@ -2847,6 +2861,72 @@ def extract_average_resource_metrics(
 # counter so the dashboard can take rate() for throughput.
 _traces_processed_total = 0
 
+_http_metrics_lock = threading.Lock()
+_http_requests_total: dict[tuple[str, str, str], int] = {}
+_http_request_duration_seconds_total: dict[tuple[str, str, str], float] = {}
+_http_response_bytes_total: dict[tuple[str, str, str], int] = {}
+
+
+def _observe_http_request(
+    route: str,
+    status: int,
+    duration_seconds: float,
+    response_bytes: int,
+    cache: str = "none",
+) -> None:
+    key = (route, str(status), cache)
+    with _http_metrics_lock:
+        _http_requests_total[key] = _http_requests_total.get(key, 0) + 1
+        _http_request_duration_seconds_total[key] = (
+            _http_request_duration_seconds_total.get(key, 0.0) + duration_seconds
+        )
+        _http_response_bytes_total[key] = (
+            _http_response_bytes_total.get(key, 0) + response_bytes
+        )
+
+
+def _http_metric_lines() -> list[str]:
+    with _http_metrics_lock:
+        request_counts = dict(_http_requests_total)
+        duration_counts = dict(_http_request_duration_seconds_total)
+        byte_counts = dict(_http_response_bytes_total)
+
+    lines = [
+        "# HELP pytest_trace_exporter_http_requests_total HTTP requests served by the trace-exporter helper endpoints.",
+        "# TYPE pytest_trace_exporter_http_requests_total counter",
+    ]
+    for key, count in sorted(request_counts.items()):
+        route, status, cache = key
+        lines.append(
+            f"pytest_trace_exporter_http_requests_total"
+            f"{metric_labels({'route': route, 'status': status, 'cache': cache})} {count}"
+        )
+    lines.extend(
+        [
+            "# HELP pytest_trace_exporter_http_request_duration_seconds_total Total wall-clock seconds spent serving trace-exporter HTTP requests.",
+            "# TYPE pytest_trace_exporter_http_request_duration_seconds_total counter",
+        ]
+    )
+    for key, duration in sorted(duration_counts.items()):
+        route, status, cache = key
+        lines.append(
+            f"pytest_trace_exporter_http_request_duration_seconds_total"
+            f"{metric_labels({'route': route, 'status': status, 'cache': cache})} {duration:.6f}"
+        )
+    lines.extend(
+        [
+            "# HELP pytest_trace_exporter_http_response_bytes_total Bytes served by trace-exporter HTTP requests.",
+            "# TYPE pytest_trace_exporter_http_response_bytes_total counter",
+        ]
+    )
+    for key, byte_count in sorted(byte_counts.items()):
+        route, status, cache = key
+        lines.append(
+            f"pytest_trace_exporter_http_response_bytes_total"
+            f"{metric_labels({'route': route, 'status': status, 'cache': cache})} {byte_count}"
+        )
+    return lines
+
 
 def _process_resident_bytes() -> int | None:
     """Current resident set size (RSS) of this process in bytes.
@@ -2898,6 +2978,7 @@ def _exporter_self_metric_lines(render_seconds: float) -> list[str]:
                 f"pytest_trace_exporter_process_resident_bytes {rss}",
             ]
         )
+    lines.extend(_http_metric_lines())
     return lines
 
 
@@ -3328,6 +3409,34 @@ _pr_summary_cache_lock = threading.Lock()
 _pr_summary_cache: dict[
     str, tuple[float, dict[str, str | float | int | None] | None]
 ] = {}
+_public_response_cache_lock = threading.Lock()
+_public_response_cache: "OrderedDict[str, tuple[float, bytes]]" = OrderedDict()
+_PUBLIC_RESPONSE_CACHE_MAX = 512
+
+
+def _public_response_cache_get(key: str) -> bytes | None:
+    now = time.monotonic()
+    with _public_response_cache_lock:
+        hit = _public_response_cache.get(key)
+        if hit is None:
+            return None
+        expires, payload = hit
+        if expires <= now:
+            _public_response_cache.pop(key, None)
+            return None
+        _public_response_cache.move_to_end(key)
+        return payload
+
+
+def _public_response_cache_put(key: str, payload: bytes) -> None:
+    ttl = _public_response_cache_seconds()
+    if ttl <= 0:
+        return
+    with _public_response_cache_lock:
+        _public_response_cache[key] = (time.monotonic() + ttl, payload)
+        _public_response_cache.move_to_end(key)
+        while len(_public_response_cache) > _PUBLIC_RESPONSE_CACHE_MAX:
+            _public_response_cache.popitem(last=False)
 
 
 def _pr_run_summary_from_prometheus(
@@ -4102,24 +4211,44 @@ def render_run_html(
 
 class MetricsHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
+        self._request_started = time.monotonic()
+        self._request_route = "notfound"
+        self._request_cache = "none"
         parsed = urlparse(self.path)
         if parsed.path == "/badge/pr":
+            self._request_route = "/badge/pr"
             self._serve_pr_badge(parse_qs(parsed.query))
             return
         if parsed.path == "/summary/pr":
+            self._request_route = "/summary/pr"
             self._serve_pr_summary(parse_qs(parsed.query))
             return
         if parsed.path == "/failure":
+            self._request_route = "/failure"
             self._serve_failure(parse_qs(parsed.query))
             return
         if parsed.path == "/run":
+            self._request_route = "/run"
             self._serve_run(parse_qs(parsed.query))
             return
         if parsed.path in {"/metrics", "/"}:
+            self._request_route = "/metrics"
             self._serve_metrics()
             return
         self.send_response(404)
+        self.send_header("Content-Length", "0")
         self.end_headers()
+        self._observe_response(404, 0)
+
+    def _observe_response(self, status: int, response_bytes: int) -> None:
+        started = getattr(self, "_request_started", time.monotonic())
+        _observe_http_request(
+            getattr(self, "_request_route", "unknown"),
+            status,
+            time.monotonic() - started,
+            response_bytes,
+            getattr(self, "_request_cache", "none"),
+        )
 
     def _serve_metrics(self) -> None:
         """Stream the published payload file straight to the socket.
@@ -4142,20 +4271,47 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(size))
             self.end_headers()
             shutil.copyfileobj(handle, self.wfile, 64 * 1024)
+            self._observe_response(200, size)
 
     def _serve_pr_badge(self, params: dict[str, list[str]]) -> None:
         pr = (params.get("pr") or [""])[0].strip()
         if not pr.isdigit():
             self._send(400, SVG_CONTENT_TYPE, render_pr_badge_svg("unknown"))
             return
-        self._send(200, SVG_CONTENT_TYPE, render_pr_badge_svg(pr))
+        cache_key = f"badge:{pr}"
+        payload = _public_response_cache_get(cache_key)
+        if payload is None:
+            self._request_cache = "miss"
+            payload = render_pr_badge_svg(pr)
+            _public_response_cache_put(cache_key, payload)
+        else:
+            self._request_cache = "hit"
+        self._send(
+            200,
+            SVG_CONTENT_TYPE,
+            payload,
+            cache_control=_public_cache_control_header(),
+        )
 
     def _serve_pr_summary(self, params: dict[str, list[str]]) -> None:
         pr = (params.get("pr") or [""])[0].strip()
         if not pr.isdigit():
             self._send(400, JSON_CONTENT_TYPE, b'{"error":"missing numeric pr"}\n')
             return
-        self._send(200, JSON_CONTENT_TYPE, render_pr_summary_json(pr))
+        cache_key = f"summary:{pr}"
+        payload = _public_response_cache_get(cache_key)
+        if payload is None:
+            self._request_cache = "miss"
+            payload = render_pr_summary_json(pr)
+            _public_response_cache_put(cache_key, payload)
+        else:
+            self._request_cache = "hit"
+        self._send(
+            200,
+            JSON_CONTENT_TYPE,
+            payload,
+            cache_control=_public_cache_control_header(),
+        )
 
     def _serve_failure(self, params: dict[str, list[str]]) -> None:
         trace_id = (params.get("trace_id") or [""])[0].strip()
@@ -4168,6 +4324,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
             200,
             "text/html; charset=utf-8",
             render_failure_html(trace_id, details).encode("utf-8"),
+            cache_control="public, max-age=300",
         )
 
     def _serve_run(self, params: dict[str, list[str]]) -> None:
@@ -4196,14 +4353,25 @@ class MetricsHandler(BaseHTTPRequestHandler):
             render_run_html(run_id, rows, job=job, status=status, limit=limit).encode(
                 "utf-8"
             ),
+            cache_control=_public_cache_control_header(),
         )
 
-    def _send(self, status: int, content_type: str, payload: bytes) -> None:
+    def _send(
+        self,
+        status: int,
+        content_type: str,
+        payload: bytes,
+        *,
+        cache_control: str | None = None,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(payload)
+        self._observe_response(status, len(payload))
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A003
         return

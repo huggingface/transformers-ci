@@ -1100,7 +1100,7 @@
       "timeFrom": "7d"
     },
     {
-      "id": 303,
+      "id": 304,
       "type": "row",
       "title": "Storage (PVC) — 90d retention fill",
       "collapsed": false,
@@ -1208,6 +1208,203 @@
       "title": "PVC on-disk usage vs limit",
       "type": "timeseries",
       "description": "On-disk usage of the Tempo and Prometheus PVCs vs their provisioned limits, to follow the 90d-retention fill. Tempo = sum(tempodb_backend_bytes_total) (350 GiB PVC, 90d block_retention). Prometheus = TSDB block bytes (100 GiB PVC, 90d retention; excludes the small WAL/head). kubelet_volume_stats_* is not scraped here, so these are app-level on-disk sizes, not filesystem df. The run-store PVC (30 GiB) has no size metric yet."
+    },
+    {
+      "id": 303,
+      "type": "row",
+      "title": "Frontend traffic",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 72
+      },
+      "panels": []
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Grafana HTTP requests plus trace-exporter helper-page requests, averaged over 5 minutes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 300
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 73
+      },
+      "id": 400,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "(sum(rate(grafana_http_request_duration_seconds_count[5m])) * 60 or vector(0)) + (sum(rate(pytest_trace_exporter_http_requests_total{route=~\"/badge/pr|/summary/pr|/run|/failure\"}[5m])) * 60 or vector(0))",
+          "instant": false,
+          "legendFormat": "requests/min",
+          "refId": "A"
+        }
+      ],
+      "title": "Frontend requests/min",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Top Grafana routes and custom trace-exporter pages. Badge/summary/run/failure are the public anonymous-click surfaces routed to trace-exporter by kube ingress.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "requests/min",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 8,
+        "y": 73
+      },
+      "id": 401,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "topk(10, sum by (handler) (rate(grafana_http_request_duration_seconds_count[5m])) * 60)",
+          "legendFormat": "grafana {{handler}}",
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum by (route) (rate(pytest_trace_exporter_http_requests_total{route=~\"/badge/pr|/summary/pr|/run|/failure\"}[5m])) * 60",
+          "legendFormat": "exporter {{route}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Requests/min by route",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Rendered-response cache activity for badge and summary endpoints. Hits avoid re-reading and scanning the full metrics payload for repeated anonymous requests.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "requests/min",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 81
+      },
+      "id": 402,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (route, cache) (rate(pytest_trace_exporter_http_requests_total{route=~\"/badge/pr|/summary/pr\"}[5m])) * 60",
+          "legendFormat": "{{route}} {{cache}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Badge/summary cache activity",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
