@@ -1176,6 +1176,33 @@ def test_render_emits_exporter_self_metrics(monkeypatch) -> None:
         assert "pytest_trace_exporter_process_resident_bytes " in out
 
 
+def test_exporter_self_metrics_include_http_request_counters() -> None:
+    trace_exporter._http_requests_total.clear()
+    trace_exporter._http_request_duration_seconds_total.clear()
+    trace_exporter._http_response_bytes_total.clear()
+
+    trace_exporter._observe_http_request("/badge/pr", 200, 0.012, 512, "miss")
+    trace_exporter._observe_http_request("/badge/pr", 200, 0.003, 512, "hit")
+    lines = "\n".join(trace_exporter._exporter_self_metric_lines(0.1))
+
+    assert (
+        'pytest_trace_exporter_http_requests_total{route="/badge/pr",'
+        'status="200",cache="miss"} 1'
+    ) in lines
+    assert (
+        'pytest_trace_exporter_http_requests_total{route="/badge/pr",'
+        'status="200",cache="hit"} 1'
+    ) in lines
+    assert (
+        'pytest_trace_exporter_http_request_duration_seconds_total{route="/badge/pr",'
+        'status="200",cache="miss"} 0.012000'
+    ) in lines
+    assert (
+        'pytest_trace_exporter_http_response_bytes_total{route="/badge/pr",'
+        'status="200",cache="hit"} 512'
+    ) in lines
+
+
 def test_render_emits_configured_limits_for_pressure(monkeypatch) -> None:
     # Dashboards compute exporter "pressure" against the live config, so the
     # limit and soft-memory ceiling are emitted as gauges (not hardcoded).
@@ -2287,6 +2314,25 @@ def test_pr_fallback_result_is_memoized_per_pr(monkeypatch) -> None:
     trace_exporter.render_pr_badge_svg("999")
     trace_exporter.render_pr_badge_svg("999")
     assert calls["n"] == 1
+
+
+def test_public_response_cache_stores_rendered_badge_bytes(monkeypatch) -> None:
+    trace_exporter._public_response_cache.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PUBLIC_RESPONSE_CACHE_SECONDS", "60")
+
+    assert trace_exporter._public_response_cache_get("badge:4321") is None
+    trace_exporter._public_response_cache_put("badge:4321", b"<svg/>")
+    assert trace_exporter._public_response_cache_get("badge:4321") == b"<svg/>"
+
+
+def test_public_response_cache_can_be_disabled(monkeypatch) -> None:
+    trace_exporter._public_response_cache.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PUBLIC_RESPONSE_CACHE_SECONDS", "0")
+
+    trace_exporter._public_response_cache_put("badge:4321", b"<svg/>")
+
+    assert trace_exporter._public_response_cache_get("badge:4321") is None
+    assert trace_exporter._public_cache_control_header() == "no-store"
 
 
 def test_pr_badge_color_matches_main_dashboard_failure_rate_thresholds() -> None:
