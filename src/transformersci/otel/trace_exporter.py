@@ -146,6 +146,9 @@ DEFAULT_BADGE_LOOKBACK = "24h"
 DEFAULT_BADGE_TRACE_LIMIT = 100
 DEFAULT_BADGE_CACHE_SECONDS = 120.0
 DEFAULT_BADGE_PROMETHEUS_LOOKBACK = "90d"
+# A PR that passed but has since been closed/merged is no longer a "live green"
+# run — render it in a distinct merged blue so the badge tells the two apart.
+BADGE_MERGED_COLOR = "1f6feb"
 DEFAULT_PROMETHEUS_URL = ""
 DEFAULT_PUBLIC_RESPONSE_CACHE_SECONDS = 30.0
 
@@ -3361,6 +3364,27 @@ def _badge_failure_color(failed: int, total: int) -> str:
     return "red"
 
 
+def _badge_fill(color: str) -> str:
+    """SVG ``fill`` for a palette token. The palette mixes bare CSS color names
+    (``green``) with 3/6-digit hex (``94B45F``); only the latter takes a leading
+    ``#``, so normalize here rather than forcing ``#`` on every branch (which
+    turns ``green`` into the invalid ``#green``)."""
+    if re.fullmatch(r"[0-9a-fA-F]{3}|[0-9a-fA-F]{6}", color):
+        return f"#{color}"
+    return color
+
+
+def _pr_state_for_badge(pr: str) -> str | None:
+    """Open/closed state for ``pr`` from the published payload's
+    ``pytest_pr_state`` gauge (1=open, 0=closed), or ``None`` when the PR is not
+    in the current render window (its state series isn't emitted) so callers can
+    leave a passing badge green rather than guess a state."""
+    for labels, value in _iter_metric_samples("pytest_pr_state"):
+        if labels.get("pr") == pr:
+            return "open" if value >= 0.5 else "closed"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # On-demand per-PR lookup (badge / summary fallback)
 #
@@ -3676,8 +3700,15 @@ def render_pr_badge_svg(pr: str) -> bytes:
         total_value = int(float(summary.get("total_tests") or 0))
         total = _format_badge_count(summary.get("total_tests"))
         jobs = _format_badge_count(summary.get("job_count"))
-        message = f"{failed} failed / {total} tests / {jobs} jobs"
         color = _badge_failure_color(failed, total_value)
+        # Green is reserved for a still-open passing PR. A passing PR we know has
+        # closed/merged shows the merged blue instead; an unknown state (PR aged
+        # out of the render window) stays green.
+        if failed <= 0 and _pr_state_for_badge(pr) == "closed":
+            color = BADGE_MERGED_COLOR
+            message = f"merged / {total} tests / {jobs} jobs"
+        else:
+            message = f"{failed} failed / {total} tests / {jobs} jobs"
 
     label = f"PR {pr} CI"
     label_width = max(70, 7 * len(label) + 10)
@@ -3693,7 +3724,7 @@ def render_pr_badge_svg(pr: str) -> bytes:
   <clipPath id="r"><rect width="{width}" height="20" rx="3" fill="#fff"/></clipPath>
   <g clip-path="url(#r)">
     <rect width="{label_width}" height="20" fill="#555"/>
-    <rect x="{label_width}" width="{message_width}" height="20" fill="#{color}"/>
+    <rect x="{label_width}" width="{message_width}" height="20" fill="{_badge_fill(color)}"/>
     <rect width="{width}" height="20" fill="url(#s)"/>
   </g>
   <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="11">

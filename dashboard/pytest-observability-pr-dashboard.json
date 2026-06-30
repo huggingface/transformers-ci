@@ -42,7 +42,7 @@
       },
       "id": 9,
       "options": {
-        "content": "### <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"18\" height=\"18\" alt=\"GH\"/> [${branch_label:raw}](${branch_url:raw})${pr_title_section:raw}\n\n<img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"16\" height=\"16\" alt=\"GH\"/> [${latest_commit:raw}](${latest_commit_url:raw})\n\n**Repo:** `${pr_repository:raw}` | **Runs:** `${pr_total_runs:raw}`${pr_metadata_section:raw}",
+        "content": "### <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"18\" height=\"18\" alt=\"GH\"/> [${branch_label:raw}](${branch_url:raw})${pr_title_section:raw} ${pr_state_badge:raw}\n\n<img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"16\" height=\"16\" alt=\"GH\"/> [${latest_commit:raw}](${latest_commit_url:raw})\n\n**Repo:** `${pr_repository:raw}` | **Runs:** `${pr_total_runs:raw}`${pr_metadata_section:raw}",
         "mode": "markdown"
       },
       "pluginVersion": "12.0.0",
@@ -1175,6 +1175,33 @@
           "refId": "Prometheus-pr_metadata_section-Variable-Query"
         },
         "regex": "/m=\"([^\"]+)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 1), \"b\", \"🟢 Open\", \"pr\", \".*\") or label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 0), \"b\", \"🟣 Merged\", \"pr\", \".*\"))",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "name": "pr_state_badge",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 1), \"b\", \"🟢 Open\", \"pr\", \".*\") or label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 0), \"b\", \"🟣 Merged\", \"pr\", \".*\"))",
+          "refId": "Prometheus-pr_state_badge-Variable-Query"
+        },
+        "regex": "/b=\"([^\"]+)\"/",
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,

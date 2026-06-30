@@ -2342,6 +2342,66 @@ def test_pr_badge_color_matches_main_dashboard_failure_rate_thresholds() -> None
     assert trace_exporter._badge_failure_color(10, 100) == "red"
 
 
+def test_badge_fill_prefixes_hex_but_leaves_css_names_bare() -> None:
+    # Hex tokens need a leading '#'; bare CSS names must not get one (that would
+    # produce the invalid '#green' and the fill would fall back to black).
+    assert trace_exporter._badge_fill("94B45F") == "#94B45F"
+    assert trace_exporter._badge_fill("9f9f9f") == "#9f9f9f"
+    assert trace_exporter._badge_fill(trace_exporter.BADGE_MERGED_COLOR).startswith("#")
+    assert trace_exporter._badge_fill("green") == "green"
+    assert trace_exporter._badge_fill("orange") == "orange"
+    assert trace_exporter._badge_fill("red") == "red"
+
+
+def _passing_pr_payload(pr: str, state_value: str | None) -> str:
+    lines = [
+        f'pytest_run_start_time_seconds{{service_name="s",provider="p",pr="{pr}",run_id="r1"}} 100',
+        f'pytest_run_total_tests{{service_name="s",provider="p",pr="{pr}",run_id="r1"}} 10',
+        f'pytest_run_failed_tests{{service_name="s",provider="p",pr="{pr}",run_id="r1"}} 0',
+        f'pytest_run_job_count{{service_name="s",provider="p",pr="{pr}",run_id="r1"}} 2',
+    ]
+    if state_value is not None:
+        lines.append(
+            f'pytest_pr_state{{pr="{pr}",repository="x",service_name="s"}} {state_value}'
+        )
+    return "\n".join(lines)
+
+
+def test_pr_badge_open_passing_run_is_green(monkeypatch) -> None:
+    trace_exporter._pr_summary_cache.clear()
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
+    monkeypatch.setattr(
+        trace_exporter, "render_metrics", lambda: _passing_pr_payload("4321", "1")
+    )
+    svg = trace_exporter.render_pr_badge_svg("4321").decode()
+    assert 'fill="green"' in svg
+    assert "0 failed" in svg
+    assert "merged" not in svg
+
+
+def test_pr_badge_closed_passing_run_is_merged_blue(monkeypatch) -> None:
+    trace_exporter._pr_summary_cache.clear()
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
+    monkeypatch.setattr(
+        trace_exporter, "render_metrics", lambda: _passing_pr_payload("4321", "0")
+    )
+    svg = trace_exporter.render_pr_badge_svg("4321").decode()
+    assert f'fill="#{trace_exporter.BADGE_MERGED_COLOR}"' in svg
+    assert "merged" in svg
+    assert 'fill="green"' not in svg
+
+
+def test_pr_badge_unknown_state_passing_run_stays_green(monkeypatch) -> None:
+    trace_exporter._pr_summary_cache.clear()
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
+    monkeypatch.setattr(
+        trace_exporter, "render_metrics", lambda: _passing_pr_payload("4321", None)
+    )
+    svg = trace_exporter.render_pr_badge_svg("4321").decode()
+    assert 'fill="green"' in svg
+    assert "merged" not in svg
+
+
 def test_pr_badge_uses_prometheus_rollups_before_tempo(monkeypatch) -> None:
     """When the live payload misses, query Prometheus rollups before doing the
     expensive Tempo search+full-trace fetch fallback."""
