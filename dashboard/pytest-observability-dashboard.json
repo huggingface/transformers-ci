@@ -197,10 +197,15 @@
                         "color": "green",
                         "index": 0
                       },
+                      "2": {
+                        "text": "merged",
+                        "color": "#1f6feb",
+                        "index": 1
+                      },
                       "0": {
                         "text": "closed",
                         "color": "#808080",
-                        "index": 1
+                        "index": 2
                       }
                     }
                   }

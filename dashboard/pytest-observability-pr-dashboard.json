@@ -1190,7 +1190,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 1), \"b\", \"🟢 Open\", \"pr\", \".*\") or label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 0), \"b\", \"🟣 Merged\", \"pr\", \".*\"))",
+        "definition": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 1), \"b\", \"🟢 Open\", \"pr\", \".*\") or label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 2), \"b\", \"🟣 Merged\", \"pr\", \".*\") or label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 0), \"b\", \"⚪ Closed\", \"pr\", \".*\"))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -1198,7 +1198,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 1), \"b\", \"🟢 Open\", \"pr\", \".*\") or label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 0), \"b\", \"🟣 Merged\", \"pr\", \".*\"))",
+          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 1), \"b\", \"🟢 Open\", \"pr\", \".*\") or label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 2), \"b\", \"🟣 Merged\", \"pr\", \".*\") or label_replace(group by (pr) (last_over_time(pytest_pr_state{pr=~\"$pr\"}[90d]) == 0), \"b\", \"⚪ Closed\", \"pr\", \".*\"))",
           "refId": "Prometheus-pr_state_badge-Variable-Query"
         },
         "regex": "/b=\"([^\"]+)\"/",

@@ -630,6 +630,7 @@ def test_fetch_github_pr_info_uses_github_api_response() -> None:
         "commit_sha": "deadbeefcafebabe1234567890abcdef00000000",
         "created_at": "2024-01-02T03:04:05Z",
         "html_url": "https://github.com/huggingface/transformers/pull/4321",
+        "merged": "false",
         "reviewers": "carol,alice,bob",
         "state": "open",
         "title": "Fix dashboard metadata",
@@ -655,6 +656,24 @@ def test_fetch_github_pr_info_expands_emoji_shortcodes_in_title() -> None:
     # Grafana renders GitHub shortcodes verbatim, so the exporter expands them
     # to real glyphs at the source.
     assert metadata["title"] == "🚨 Fix flaky test 🔥"
+
+
+def test_fetch_github_pr_info_carries_merged_flag() -> None:
+    pr_payload = FakeResponse(
+        '{"html_url": "https://github.com/huggingface/transformers/pull/4321", '
+        '"state": "closed", "merged": true, "title": "Done", '
+        '"user": {"login": "octocat"}, "head": {"sha": "deadbeef"}}'
+    )
+    reviews_payload = FakeResponse("[]")
+    with patch(
+        "transformersci.otel.trace_exporter.urlopen",
+        side_effect=[pr_payload, reviews_payload],
+    ):
+        metadata = trace_exporter.fetch_github_pr_info(
+            "huggingface/transformers", "4321"
+        )
+    assert metadata["state"] == "closed"
+    assert metadata["merged"] == "true"
 
 
 def test_fetch_github_commit_message_expands_emoji_shortcodes() -> None:
@@ -730,13 +749,25 @@ def test_extract_pr_info_metrics_fetches_metadata_once_per_pr() -> None:
 
 
 def test_extract_pr_info_metrics_state_gauge_closed_is_zero() -> None:
+    # Closed without merging -> 0 (abandoned).
     metrics = trace_exporter.extract_pr_info_metrics(
         workflow_split_across_three_jobs(),
-        _metadata_fetcher=lambda repo, pr: {"state": "closed"},
+        _metadata_fetcher=lambda repo, pr: {"state": "closed", "merged": "false"},
     )
     state_lines = metric_lines(metrics, "pytest_pr_state")
     assert len(state_lines) == 1
     assert state_lines[0].endswith(" 0")
+
+
+def test_extract_pr_info_metrics_state_gauge_merged_is_two() -> None:
+    # Closed *and* merged -> 2, distinguishing it from an abandoned close.
+    metrics = trace_exporter.extract_pr_info_metrics(
+        workflow_split_across_three_jobs(),
+        _metadata_fetcher=lambda repo, pr: {"state": "closed", "merged": "true"},
+    )
+    state_lines = metric_lines(metrics, "pytest_pr_state")
+    assert len(state_lines) == 1
+    assert state_lines[0].endswith(" 2")
 
 
 def test_extract_pr_info_metrics_state_gauge_omitted_when_unknown() -> None:
@@ -2379,15 +2410,28 @@ def test_pr_badge_open_passing_run_is_green(monkeypatch) -> None:
     assert "merged" not in svg
 
 
-def test_pr_badge_closed_passing_run_is_merged_blue(monkeypatch) -> None:
+def test_pr_badge_merged_passing_run_is_merged_blue(monkeypatch) -> None:
+    trace_exporter._pr_summary_cache.clear()
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
+    monkeypatch.setattr(
+        trace_exporter, "render_metrics", lambda: _passing_pr_payload("4321", "2")
+    )
+    svg = trace_exporter.render_pr_badge_svg("4321").decode()
+    assert f'fill="#{trace_exporter.BADGE_MERGED_COLOR}"' in svg
+    assert "merged" in svg
+    assert 'fill="green"' not in svg
+
+
+def test_pr_badge_closed_unmerged_passing_run_is_grey(monkeypatch) -> None:
     trace_exporter._pr_summary_cache.clear()
     monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
     monkeypatch.setattr(
         trace_exporter, "render_metrics", lambda: _passing_pr_payload("4321", "0")
     )
     svg = trace_exporter.render_pr_badge_svg("4321").decode()
-    assert f'fill="#{trace_exporter.BADGE_MERGED_COLOR}"' in svg
-    assert "merged" in svg
+    assert f'fill="#{trace_exporter.BADGE_CLOSED_COLOR}"' in svg
+    assert "closed" in svg
+    assert "merged" not in svg
     assert 'fill="green"' not in svg
 
 

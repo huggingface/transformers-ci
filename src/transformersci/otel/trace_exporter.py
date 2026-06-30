@@ -146,9 +146,11 @@ DEFAULT_BADGE_LOOKBACK = "24h"
 DEFAULT_BADGE_TRACE_LIMIT = 100
 DEFAULT_BADGE_CACHE_SECONDS = 120.0
 DEFAULT_BADGE_PROMETHEUS_LOOKBACK = "90d"
-# A PR that passed but has since been closed/merged is no longer a "live green"
-# run — render it in a distinct merged blue so the badge tells the two apart.
+# A PR that passed but has since been merged is no longer a "live green" run —
+# render it in a distinct merged blue. A passing PR that was closed *without*
+# merging (abandoned) gets a muted grey so it reads as inert, not active-green.
 BADGE_MERGED_COLOR = "1f6feb"
+BADGE_CLOSED_COLOR = "9f9f9f"
 DEFAULT_PROMETHEUS_URL = ""
 DEFAULT_PUBLIC_RESPONSE_CACHE_SECONDS = 30.0
 
@@ -1383,6 +1385,9 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
     html_url = payload.get("html_url")
     title = payload.get("title")
     state = payload.get("state")
+    # A "closed" PR is either merged or abandoned; GitHub's `merged` boolean is
+    # the only way to tell, so carry it through to distinguish the two downstream.
+    is_merged = payload.get("merged") is True
     head = payload.get("head")
     commit_sha = head.get("sha") if isinstance(head, dict) else ""
     created_at = payload.get("created_at")
@@ -1411,6 +1416,7 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
         "html_url": html_url
         if isinstance(html_url, str)
         else github_pr_html_url(repository, pr),
+        "merged": "true" if is_merged else "false",
         "reviewers": reviewers,
         "state": state if isinstance(state, str) else "",
         "title": _emojize(title) if isinstance(title, str) else "",
@@ -1437,6 +1443,7 @@ def fetch_github_pr_info_cached(repository: str, pr: str) -> dict[str, str]:
         "commit_sha": "",
         "created_at": "",
         "html_url": github_pr_html_url(repository, pr),
+        "merged": "",
         "reviewers": "",
         "state": "",
         "title": "",
@@ -1855,10 +1862,11 @@ def extract_pr_info_metrics(
         lines.append(f"pytest_pr_info{metric_labels(labels)} 1")
 
         # Numeric state gauge: ONE series per PR whose VALUE is the state
-        # (open=1, closed=0), so the dashboard can last_over_time() it to get the
-        # current state without juggling a multi-valued `state` label. Skipped
-        # when the state is unknown (GitHub lookup failed) so the column stays
-        # blank rather than implying a state.
+        # (open=1, merged=2, closed-but-not-merged=0), so the dashboard can
+        # last_over_time() it to get the current state without juggling a
+        # multi-valued `state` label. Merged splits out of "closed" via GitHub's
+        # `merged` boolean. Skipped when the state is unknown (GitHub lookup
+        # failed) so the column stays blank rather than implying a state.
         state = str(metadata.get("state", "")).lower()
         if state in ("open", "closed"):
             state_labels = {
@@ -1866,9 +1874,14 @@ def extract_pr_info_metrics(
                 "repository": repository,
                 "service_name": service_name,
             }
+            if state == "open":
+                state_value = 1
+            elif str(metadata.get("merged", "")).lower() == "true":
+                state_value = 2
+            else:
+                state_value = 0
             state_lines.append(
-                f"pytest_pr_state{metric_labels(state_labels)} "
-                f"{1 if state == 'open' else 0}"
+                f"pytest_pr_state{metric_labels(state_labels)} {state_value}"
             )
 
         created_ts = parse_github_timestamp(str(metadata.get("created_at", "")))
@@ -1889,7 +1902,9 @@ def extract_pr_info_metrics(
         lines.append("# TYPE pytest_pr_created_at_seconds gauge")
         lines.extend(created_lines)
     if state_lines:
-        lines.append("# HELP pytest_pr_state PR state as a value: open=1, closed=0.")
+        lines.append(
+            "# HELP pytest_pr_state PR state as a value: open=1, merged=2, closed=0."
+        )
         lines.append("# TYPE pytest_pr_state gauge")
         lines.extend(state_lines)
     return lines
@@ -3375,13 +3390,17 @@ def _badge_fill(color: str) -> str:
 
 
 def _pr_state_for_badge(pr: str) -> str | None:
-    """Open/closed state for ``pr`` from the published payload's
-    ``pytest_pr_state`` gauge (1=open, 0=closed), or ``None`` when the PR is not
-    in the current render window (its state series isn't emitted) so callers can
+    """State for ``pr`` from the published payload's ``pytest_pr_state`` gauge
+    (1=open, 2=merged, 0=closed-not-merged), or ``None`` when the PR is not in
+    the current render window (its state series isn't emitted) so callers can
     leave a passing badge green rather than guess a state."""
     for labels, value in _iter_metric_samples("pytest_pr_state"):
         if labels.get("pr") == pr:
-            return "open" if value >= 0.5 else "closed"
+            if value >= 1.5:
+                return "merged"
+            if value >= 0.5:
+                return "open"
+            return "closed"
     return None
 
 
@@ -3701,14 +3720,18 @@ def render_pr_badge_svg(pr: str) -> bytes:
         total = _format_badge_count(summary.get("total_tests"))
         jobs = _format_badge_count(summary.get("job_count"))
         color = _badge_failure_color(failed, total_value)
+        message = f"{failed} failed / {total} tests / {jobs} jobs"
         # Green is reserved for a still-open passing PR. A passing PR we know has
-        # closed/merged shows the merged blue instead; an unknown state (PR aged
-        # out of the render window) stays green.
-        if failed <= 0 and _pr_state_for_badge(pr) == "closed":
-            color = BADGE_MERGED_COLOR
-            message = f"merged / {total} tests / {jobs} jobs"
-        else:
-            message = f"{failed} failed / {total} tests / {jobs} jobs"
+        # merged shows the merged blue; one closed without merging shows a muted
+        # grey. An unknown state (PR aged out of the render window) stays green.
+        if failed <= 0:
+            state = _pr_state_for_badge(pr)
+            if state == "merged":
+                color = BADGE_MERGED_COLOR
+                message = f"merged / {total} tests / {jobs} jobs"
+            elif state == "closed":
+                color = BADGE_CLOSED_COLOR
+                message = f"closed / {total} tests / {jobs} jobs"
 
     label = f"PR {pr} CI"
     label_width = max(70, 7 * len(label) + 10)
