@@ -44,6 +44,10 @@ on:
         description: "Compute the report but do not dispatch to Serge"
         type: boolean
         default: false
+      max_groups:
+        description: "Cap how many failure groups are dispatched to Serge. Set to 1 for a single-task test run; empty keeps the CLI default (20)."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -88,6 +92,7 @@ jobs:
             --serge-url "$SERGE_URL" \
             --serge-timeout "$SERGE_TIMEOUT" \
             --report-out triage-report.md \
+            $MAX_GROUPS_ARG \
             $NOTIFY_TASK_FINISHED_ARG \
             $SLACK_CHANNEL_ARG \
             $DRY_RUN_ARG
@@ -101,6 +106,7 @@ jobs:
           NOTIFY_TASK_FINISHED_ARG: ${{ inputs.notify_task_finished && '--notify-task-finished' || '' }}
           SLACK_CHANNEL_ARG: ${{ inputs.slack_channel != '' && format('--slack-channel {0}', inputs.slack_channel) || '' }}
           DRY_RUN_ARG: ${{ inputs.dry_run && '--dry-run' || '' }}
+          MAX_GROUPS_ARG: ${{ inputs.max_groups != '' && format('--max-groups {0}', inputs.max_groups) || '' }}
 
       - name: Upload triage report artifact
         if: always()
