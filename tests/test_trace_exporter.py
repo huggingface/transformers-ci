@@ -1476,7 +1476,12 @@ def test_fetch_traces_caches_settled_traces() -> None:
     # from cache on the third.
     with patch.dict(
         "os.environ",
-        {"PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS": "0"},
+        {
+            "PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS": "0",
+            # Isolate the pure count-quiescence path; the reverify window is
+            # exercised separately in test_trace_reverify_window_*.
+            "PYTEST_TRACE_EXPORTER_TRACE_REVERIFY_SECONDS": "0",
+        },
         clear=False,
     ):
         with patch(
@@ -1837,6 +1842,75 @@ def test_trace_not_settled_while_still_growing() -> None:
     # Growth stops; the final count then holds for the settle window -> settled.
     assert (
         trace_exporter._trace_is_settled(sid, _trace_with_spans(12477), 390.0, settle)
+        is True
+    )
+    trace_exporter._trace_growth.clear()
+
+
+def test_trace_reverify_window_delays_freeze_past_apparent_quiescence() -> None:
+    # The reverify window keeps a count-quiescent trace UNSETTLED (and therefore
+    # still re-read) for `reverify_seconds` beyond the settle window, so it is not
+    # frozen the instant the count first looks steady.
+    trace_exporter._trace_growth.clear()
+    settle, reverify = 120.0, 180.0
+    trace = _trace_with_spans(100)
+    sid = "reverify"
+    # Recorded at t=0; steady through settle (t=121) but NOT yet frozen — the
+    # reverify window (total 300s) is still open.
+    assert trace_exporter._trace_is_settled(sid, trace, 0.0, settle, reverify) is False
+    assert (
+        trace_exporter._trace_is_settled(sid, trace, 121.0, settle, reverify) is False
+    )
+    assert (
+        trace_exporter._trace_is_settled(sid, trace, 299.0, settle, reverify) is False
+    )
+    # Only once the full settle+reverify window has held does it settle.
+    assert trace_exporter._trace_is_settled(sid, trace, 301.0, settle, reverify) is True
+    trace_exporter._trace_growth.clear()
+
+
+def test_trace_reverify_catches_out_of_order_late_span() -> None:
+    # THE fix. Tempo can make a trace's spans queryable OUT OF ORDER, so a failing
+    # test's ERROR span may surface after the count first looks quiescent. Without
+    # the reverify window the trace would freeze at t~121 missing that span, and
+    # the job's failed-count would stay 0 (green dashboard, red GitHub — PR 46259).
+    # With reverify, the trace is still being re-read when the late span arrives:
+    # the count grows, quiescence re-opens, and the frozen snapshot includes it.
+    trace_exporter._trace_growth.clear()
+    settle, reverify = 120.0, 180.0
+    sid = "late-error"
+    # Count looks steady at 100 through the settle window...
+    assert (
+        trace_exporter._trace_is_settled(
+            sid, _trace_with_spans(100), 0.0, settle, reverify
+        )
+        is False
+    )
+    assert (
+        trace_exporter._trace_is_settled(
+            sid, _trace_with_spans(100), 121.0, settle, reverify
+        )
+        is False
+    )
+    # ...then a late span becomes queryable at t=200 (still inside the reverify
+    # window): the count grows, resetting the quiescence clock.
+    assert (
+        trace_exporter._trace_is_settled(
+            sid, _trace_with_spans(101), 200.0, settle, reverify
+        )
+        is False
+    )
+    # It must not freeze until the NEW count holds for the full window (t>=500).
+    assert (
+        trace_exporter._trace_is_settled(
+            sid, _trace_with_spans(101), 480.0, settle, reverify
+        )
+        is False
+    )
+    assert (
+        trace_exporter._trace_is_settled(
+            sid, _trace_with_spans(101), 501.0, settle, reverify
+        )
         is True
     )
     trace_exporter._trace_growth.clear()

@@ -129,6 +129,17 @@ GITHUB_ACTIVE_STATUSES = frozenset(
 # trace keeps growing for minutes while its newest-present span is already old.
 # Keying settle off count-quiescence stops us memoizing a partial snapshot.
 DEFAULT_TRACE_SETTLE_SECONDS = 120.0
+# Extra quiescence required — beyond ``settle_seconds`` — before a trace is FROZEN
+# (memoized immutable and never re-read). Count-quiescence over Tempo's search
+# view is not proof of completeness: Tempo makes a trace's spans queryable
+# eventually and OUT OF ORDER, so a failing test's span can surface seconds to
+# minutes after its neighbours. If we froze the moment the count first looked
+# steady, that late ERROR span would be lost forever and the job's failed-count
+# would stay 0 — a green dashboard for a run GitHub marks failed (observed on
+# PR 46259). Holding for this extra window, while still re-reading at the refetch
+# cadence, lets those out-of-order spans arrive and re-open the count before we
+# commit. Purely delays freezing; it does not increase the per-read Tempo load.
+DEFAULT_TRACE_REVERIFY_SECONDS = 180.0
 # Each get_trace() is an independent, blocking Tempo round-trip. Keep this low:
 # fetching several multi-MB traces in parallel can make small single-node Tempo
 # instances spike hard enough to hit their container memory limit.
@@ -746,14 +757,32 @@ def _trace_settle_seconds() -> float:
         return DEFAULT_TRACE_SETTLE_SECONDS
 
 
+def _trace_reverify_seconds() -> float:
+    """Extra quiescence, on top of the settle window, before a trace is frozen.
+
+    See :data:`DEFAULT_TRACE_REVERIFY_SECONDS`: guards against Tempo surfacing a
+    trace's spans out of order, which could otherwise freeze an incomplete trace
+    that is missing a late-arriving ERROR span.
+    """
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_TRACE_REVERIFY_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_TRACE_REVERIFY_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return DEFAULT_TRACE_REVERIFY_SECONDS
+
+
 def _trace_refetch_interval() -> float:
     """Minimum wall-clock between re-fetches of one still-unsettled trace.
 
     The render path re-reads an in-flight (unsettled) trace at most this often,
     serving its last shaped rows from cache in between, so render duration stays
     flat regardless of how many large sharded runs are in flight. Defaults to the
-    settle window — re-reading more often than that only burns Tempo I/O without
-    settling sooner (settle needs the count to hold steady for a whole window).
+    settle window. These re-reads continue through the reverify window too (the
+    trace stays unsettled until then), which is exactly what lets an out-of-order
+    late span be observed before the trace is frozen — see
+    :data:`DEFAULT_TRACE_REVERIFY_SECONDS`.
     """
     raw = os.getenv("PYTEST_TRACE_EXPORTER_TRACE_REFETCH_SECONDS")
     if raw is None or raw == "":
@@ -782,18 +811,29 @@ _TRACE_GROWTH_MAX = 8192
 
 
 def _trace_is_settled(
-    trace_id: str, trace: dict, now: float, settle_seconds: float
+    trace_id: str,
+    trace: dict,
+    now: float,
+    settle_seconds: float,
+    reverify_seconds: float = 0.0,
 ) -> bool:
     """Return True once ``trace_id``'s span count has held steady for
-    ``settle_seconds``.
+    ``settle_seconds + reverify_seconds``.
 
     Records the current span count against the wall-clock time it last changed;
     the trace counts as settled only after that count has been stable for the
-    full ``settle_seconds`` window. The first sighting never settles (we need a
-    prior observation to know the count is steady) — that also costs one extra
-    fetch for genuinely historical traces, which the raw/shaped caches absorb
-    thereafter. Being called more than once per render is harmless: an unchanged
-    count never resets the clock.
+    full window. The first sighting never settles (we need a prior observation to
+    know the count is steady) — that also costs one extra fetch for genuinely
+    historical traces, which the raw/shaped caches absorb thereafter. Being
+    called more than once per render is harmless: an unchanged count never resets
+    the clock.
+
+    ``reverify_seconds`` extends the required-stable window past the point the
+    count first looks quiescent. Because the trace stays unsettled (and is thus
+    re-read at the refetch cadence) throughout, spans that Tempo makes queryable
+    out of order — e.g. a failing test's ERROR span surfacing after its
+    neighbours — re-open the count before we freeze an incomplete snapshot. See
+    :data:`DEFAULT_TRACE_REVERIFY_SECONDS`.
     """
     spans = trace.get("spans", [])
     span_count = len(spans) if isinstance(spans, list) else 0
@@ -810,7 +850,7 @@ def _trace_is_settled(
             last_change = now
         _trace_growth[trace_id] = (span_count, last_change)
         _trace_growth.move_to_end(trace_id)
-        settled = (now - last_change) >= settle_seconds
+        settled = (now - last_change) >= settle_seconds + reverify_seconds
         if settled:
             _trace_growth.pop(trace_id, None)
         return settled
@@ -868,7 +908,9 @@ def _fetch_trace_with_settled(
         return None, False
 
     trace = tempo_trace_to_jaeger(trace_id, payload)
-    settled = _trace_is_settled(trace_id, trace, now, settle_seconds)
+    settled = _trace_is_settled(
+        trace_id, trace, now, settle_seconds, _trace_reverify_seconds()
+    )
     if settled:
         _store_trace(trace_id, trace)
     return trace, settled
