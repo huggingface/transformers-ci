@@ -27,6 +27,11 @@ to this public repository — supply them through a private values file.
   waits on each workload's rollout.
 - `scripts/logs.sh` finds the current running pod for a given component and
   prints recent logs.
+- `scripts/tempo.py` queries the Tempo trace store (and Prometheus) through the
+  public read-only Grafana proxy — no kubectl needed. Useful for reconciling a
+  green dashboard against a red GitHub run: `search`/`spans`/`status` inspect a
+  test's spans (even inside a >16 MB sharded trace), and `promql` reads the exact
+  metric a panel uses. Run `deploy/scripts/tempo.py -h` for examples.
 
 ## Chart Behavior
 
