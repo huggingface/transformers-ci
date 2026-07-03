@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-03
 **Status:** immediate mitigation shipped; source-side reduction IMPLEMENTED
-(one-span-per-test via `span_pruning`, PR #11 — 85% fewer spans measured
+(one-span-per-test via `span_pruning`, PR #12 — 85% fewer spans measured
 end-to-end). Band-aid revert pending prod confirmation of small traces.
 
 ## Symptom
