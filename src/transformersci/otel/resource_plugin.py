@@ -87,6 +87,15 @@ def pytest_configure(config: pytest.Config) -> None:
 
     id_generator.install()
 
+    # Emit ONE span per test: drop pytest-opentelemetry's ::setup/::call/::teardown
+    # phase spans and fixture spans (~83% of a shard trace, all unused by our
+    # dashboards). Keeps shard traces under Tempo's read-path limit so the biggest
+    # jobs (e.g. tests_torch) don't 500 on fetch and vanish. See
+    # transformersci.otel.span_pruning for the full write-up.
+    from . import span_pruning
+
+    span_pruning.install()
+
 
 def split_pytest_nodeid(nodeid: str) -> dict[str, str]:
     parts = nodeid.split("::")
