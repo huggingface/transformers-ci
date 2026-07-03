@@ -136,13 +136,11 @@ traceExporter:
   config:
     limit: 100
     fetchConcurrency: 4
-    # 45s (was 10s): the biggest jobs' shard traces are ~40-65 MB / ~100k spans and
-    # take ~10s+ to assemble in-cluster (`GET /api/traces/{id}`). At 10s the fetch
-    # timed out right at the edge, so even after Tempo's read limit was raised the
-    # exporter would still drop tests_torch — just as a `timeout` instead of
-    # `too_large`. Give margin so whole shard traces finish downloading. (Durable
-    # fix is smaller traces — see docs/plan-large-trace-read-limit-2026-07-03.md.)
-    httpTimeout: 45
+    # 20s: span_pruning (one span per test) shrank shard traces from ~40-65 MB to
+    # ~7 MB, which fetch in <1s. The 45s band-aid (needed while legacy large traces
+    # were still in-window) is dialled back to 20s — ample for small traces plus a
+    # margin for the last legacy stragglers aging out of the lookback window.
+    httpTimeout: 20
     refreshSlowSeconds: 30
     refreshCooldownSeconds: 60
     # Keep the trace cache >= limit so a full lookback window stays warm and the
@@ -151,7 +149,11 @@ traceExporter:
     # Quoted: Helm parses large bare ints as float64 and emits scientific
     # notation (2.68e+08), which the exporter's int parser rejects.
     traceCacheMaxBytes: "268435456"  # 256Mi serialized (~1GiB resident at 4x overhead)
-    traceSettleSeconds: 120
+    # 60s (was 120s): a run's rollup (Jobs table, run totals) emits after this
+    # quiet gap following the last trace. A run's shards arrive continuously, so a
+    # 60s gap still reliably means "done" — this just makes run-level stats appear
+    # ~1 min sooner. Snappier GitHub→dashboard lag without churn.
+    traceSettleSeconds: 60
     # How often a still-in-flight (unsettled) trace is re-read from Tempo. MUST be
     # comfortably ABOVE the render duration: a render re-fetches every cached trace
     # whose last fetch is older than this, so if it is <= the render period the
@@ -165,13 +167,13 @@ traceExporter:
     # shard is re-read several times before it can age out of the window (too long
     # risks a shard's next re-read falling past the lookback, freezing its roll-up
     # at a partial count).
-    # 900s (was 300s): once the exporter started actually downloading the biggest
-    # jobs' 40-65 MB traces (httpTimeout 10->45), render jumped from ~10s to
-    # ~300-330s — AT/ABOVE the old 300s refetch, which re-reads the whole window
-    # every cycle and spirals render time. 900s sits safely above render and below
-    # lookback/2. This is a band-aid; the render cost of giant traces is the real
-    # signal that traces must shrink (see docs/plan-large-trace-read-limit-2026-07-03.md).
-    traceRefetchSeconds: 900
+    # 300s: with span_pruning shrinking traces to ~7 MB, re-reading in-flight
+    # traces is cheap again, so the 900s band-aid (added when giant-trace downloads
+    # spiralled render to ~330s) is restored to 300s. Only UNSETTLED traces are
+    # re-fetched at this cadence (settled ones serve from cache), and post-fix
+    # in-flight traces are small — so this halves in-progress test-count lag
+    # (15 min → 5 min) without render risk. Still above render, below lookback/2.
+    traceRefetchSeconds: 300
     # Soft RSS ceiling. Sized to ~85% of the 2Gi container limit (was 560, sized
     # for the retired 640MiB docker box, which forced premature cache drops).
     memSoftMb: 1740

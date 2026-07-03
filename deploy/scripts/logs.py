@@ -100,7 +100,7 @@ def last_error_block(lines: list[str]) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="deploy/scripts/logs.sh")
+    parser = argparse.ArgumentParser(prog="deploy/scripts/logs.py")
     parser.add_argument(
         "-n",
         "--namespace",
