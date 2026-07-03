@@ -843,6 +843,52 @@ def test_fetch_github_commit_message_returns_subject_line() -> None:
     assert message == "Fix the flaky test"
 
 
+def test_fetch_error_too_large_is_counted_and_surfaced() -> None:
+    """A Tempo 'response larger than the max' 500 is classified as ``too_large``,
+    counted, and surfaced on the self-metrics so a dropped job is not invisible."""
+    from urllib.error import HTTPError
+
+    trace_exporter._trace_fetch_errors.clear()
+    too_large = HTTPError(
+        "u",
+        500,
+        "err",
+        {},
+        io.BytesIO(b"response larger than the max (36329178 vs 16777216)"),
+    )
+    with patch(
+        "transformersci.otel.trace_exporter.urlopen", side_effect=too_large
+    ):
+        trace, settled = trace_exporter._fetch_trace_with_settled(
+            "deadbeef", "http://tempo:3200", 0.0, 120.0
+        )
+    assert trace is None and settled is False
+    assert trace_exporter._trace_fetch_errors == {"too_large": 1}
+
+    lines = trace_exporter._exporter_self_metric_lines(0.1)
+    assert (
+        'pytest_trace_exporter_trace_fetch_errors_total{reason="too_large"} 1'
+        in lines
+    )
+    trace_exporter._trace_fetch_errors.clear()
+
+
+def test_fetch_error_classification_buckets() -> None:
+    from urllib.error import HTTPError
+
+    def _err(code: int, body: bytes) -> HTTPError:
+        return HTTPError("u", code, "e", {}, io.BytesIO(body))
+
+    assert (
+        trace_exporter._classify_fetch_error(_err(500, b"larger than the max"))
+        == "too_large"
+    )
+    assert trace_exporter._classify_fetch_error(_err(500, b"kaboom")) == "http_500"
+    assert trace_exporter._classify_fetch_error(_err(404, b"nope")) == "http_404"
+    assert trace_exporter._classify_fetch_error(TimeoutError()) == "timeout"
+    assert trace_exporter._classify_fetch_error(OSError("boom")) == "other"
+
+
 def test_fetch_github_commit_message_returns_empty_on_error() -> None:
     with patch(
         "transformersci.otel.trace_exporter.urlopen",
