@@ -43,22 +43,39 @@ drops the biggest job from *every* large run, not one PR.
 
 ## Shipped mitigation (this change)
 
-1. **Tempo read limit** — `deploy/helm/templates/tempo.yaml`:
-   `server.grpc_server_max_recv_msg_size` / `max_send_msg_size` → 64 MiB, to
-   match ingestion. Future runs' shard traces become readable and repopulate.
-   (This specific aged-out run's Prometheus roll-up won't backfill; the `/run`
-   drill-down can rebuild it from a Tempo search once fetches succeed.)
-2. **Visibility** — `pytest_trace_exporter_trace_fetch_errors_total{reason=...}`
+Reading a giant trace back turned out to require raising limits at **three**
+layers — each one uncovered the next:
+
+1. **Tempo read limit** — `deploy/helm/templates/tempo.yaml`. The 16 MiB cap was
+   NOT `server.grpc_server_max_send_msg_size` (raised that too, needed for the
+   frontend's receive side) but **`querier.frontend_worker.grpc_client_config.max_send_msg_size`**
+   — the querier→frontend hop, whose send side defaults to 16 MiB while its recv
+   already defaults to 100 MiB. Raised both to 64 MiB. Verified: the 36 MB trace
+   that 500'd now returns 200. Requires a `tempo-0` restart (ConfigMap change
+   alone does NOT roll a StatefulSet pod).
+2. **Exporter HTTP timeout** — `values.yaml` `config.httpTimeout` 10s → 45s. A
+   40–65 MB trace takes ~10s+ to assemble in-cluster; at 10s the fetch timed out
+   right at the edge, so the trace would still be dropped (now as `timeout`).
+3. **Exporter memory** — `env/private.yaml` limit 2Gi → 4Gi. Parsing a 40–65 MB
+   trace costs several hundred MB; up to `fetchConcurrency` (4) parse at once on
+   top of the ~1.4 GiB caches. At 2Gi a big run OOM-killed the exporter.
+4. **Render cadence** — `values.yaml` `config.traceRefetchSeconds` 300s → 900s.
+   Once the exporter actually downloaded the big traces, render jumped ~10s →
+   ~300–330s, at/above the 300s refetch interval → the whole window re-fetches
+   every cycle and render spirals. 900s sits above render, below lookback/2.
+5. **Visibility** — `pytest_trace_exporter_trace_fetch_errors_total{reason=...}`
    (exporter) + a "Trace read failures — dropped jobs (too_large)" panel on the
    CI Health dashboard, cross-checked against
    `tempo_request_duration_seconds_count{route="api_traces_traceid",status_code=~"5.."}`.
 
-### Caveat — the mitigation is a moving ceiling
+### Caveat — the mitigation is a moving ceiling (this is the point)
 
-Raising the gRPC limit means the querier and the exporter each buffer the full
-trace in RAM per read. tests_torch will keep growing; at 60–100 MB we hit the
-limit again *and* Tempo/exporter RSS pressure (Tempo already OOM-restarted at
-the 8Gi→16Gi bump). We must not keep chasing it with the limit alone.
+Every layer above is a band-aid, and layer 4 shows the cost is already biting:
+downloading + parsing 40–65 MB traces makes the exporter's render ~30× slower
+(metrics now refresh every ~5 min) and holds far more RAM. tests_torch will keep
+growing; at 60–100 MB we hit the limits again *and* Tempo/exporter RSS pressure
+(Tempo already OOM-restarted at the 8Gi→16Gi bump). **The render-time blowup is
+the signal that the durable fix below is now required, not optional.**
 
 ## Source-side reduction (pending — pick one)
 

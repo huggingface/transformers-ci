@@ -136,7 +136,13 @@ traceExporter:
   config:
     limit: 100
     fetchConcurrency: 4
-    httpTimeout: 10
+    # 45s (was 10s): the biggest jobs' shard traces are ~40-65 MB / ~100k spans and
+    # take ~10s+ to assemble in-cluster (`GET /api/traces/{id}`). At 10s the fetch
+    # timed out right at the edge, so even after Tempo's read limit was raised the
+    # exporter would still drop tests_torch — just as a `timeout` instead of
+    # `too_large`. Give margin so whole shard traces finish downloading. (Durable
+    # fix is smaller traces — see docs/plan-large-trace-read-limit-2026-07-03.md.)
+    httpTimeout: 45
     refreshSlowSeconds: 30
     refreshCooldownSeconds: 60
     # Keep the trace cache >= limit so a full lookback window stays warm and the
@@ -155,11 +161,17 @@ traceExporter:
     # traces and serves the rest from cache, holding render duration at ~1-8s.
     # In-flight test counts then lag by up to this interval, which is fine: run
     # roll-ups settle post-completion and Prometheus retains the per-test series.
-    # Kept comfortably ABOVE the ~90s cold-start render yet below 1h/2 so an
-    # in-flight shard is re-read several times before it can age out of the window
-    # (a longer interval e.g. 600 risks a shard's next re-read falling past the
-    # lookback, freezing its roll-up at a partial count).
-    traceRefetchSeconds: 300
+    # Kept comfortably ABOVE the render yet below 1h/2 (1800s) so an in-flight
+    # shard is re-read several times before it can age out of the window (too long
+    # risks a shard's next re-read falling past the lookback, freezing its roll-up
+    # at a partial count).
+    # 900s (was 300s): once the exporter started actually downloading the biggest
+    # jobs' 40-65 MB traces (httpTimeout 10->45), render jumped from ~10s to
+    # ~300-330s — AT/ABOVE the old 300s refetch, which re-reads the whole window
+    # every cycle and spirals render time. 900s sits safely above render and below
+    # lookback/2. This is a band-aid; the render cost of giant traces is the real
+    # signal that traces must shrink (see docs/plan-large-trace-read-limit-2026-07-03.md).
+    traceRefetchSeconds: 900
     # Soft RSS ceiling. Sized to ~85% of the 2Gi container limit (was 560, sized
     # for the retired 640MiB docker box, which forced premature cache drops).
     memSoftMb: 1740

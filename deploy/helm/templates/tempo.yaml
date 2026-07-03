@@ -48,22 +48,32 @@ data:
     server:
       http_listen_port: 3200
       log_level: info
-      # Read-path message size. INGESTION was raised to 64 MiB (max_bytes_per_trace
-      # + the OTLP body limits below), but the READ path was left at Tempo's 16 MiB
-      # gRPC default: the querier assembles a whole trace and sends it to the
-      # query-frontend in ONE gRPC message, so any trace over 16 MiB fails
-      # `GET /api/traces/{id}` with HTTP 500 "response larger than the max
-      # (N vs 16777216)". Post span-id-collision-fix a tests_torch shard trace is
-      # ~36 MB / ~100k spans, so EVERY fetch of the biggest job 500'd — the
-      # exporter silently dropped it from the run store AND the Prometheus
-      # rollup, so tests_torch vanished from the Jobs table for large runs
-      # (~27k trace-by-id 500s/24h ≈ 17% of reads). Match the 64 MiB ingestion
-      # ceiling (Tempo's own internal query limits are already 100 MiB) so whole
-      # shard traces can be read back. NOTE: this buffers the full trace in
-      # querier/frontend RAM per read — watch Tempo RSS; the durable fix is
-      # smaller per-shard traces (see docs/plan-large-trace-read-limit-2026-07-03.md).
+      # Read-path message size (frontend's RECEIVE side of the querier→frontend
+      # hop). INGESTION was raised to 64 MiB (max_bytes_per_trace + the OTLP body
+      # limits below), but the READ path kept Tempo's 16 MiB gRPC default. See the
+      # querier.frontend_worker note below for the full failure mode; the frontend
+      # must be able to RECEIVE the 64 MiB response the querier now sends.
       grpc_server_max_recv_msg_size: 67108864  # 64 MiB (was 16 MiB default)
       grpc_server_max_send_msg_size: 67108864  # 64 MiB (was 16 MiB default)
+
+    querier:
+      frontend_worker:
+        # SEND side of the querier→frontend hop — the ACTUAL trace-by-id read cap.
+        # The querier assembles a whole trace and sends it to the query-frontend in
+        # ONE gRPC message over this client; Tempo defaults max_send_msg_size to
+        # 16 MiB (while max_recv_msg_size already defaults to 100 MiB), so any trace
+        # over 16 MiB fails `GET /api/traces/{id}` with HTTP 500 "response larger
+        # than the max (N vs 16777216)". Post span-id-collision-fix a tests_torch
+        # shard trace is ~36 MB / ~100k spans, so EVERY fetch of the biggest job
+        # 500'd — the exporter silently dropped it from the run store AND the
+        # Prometheus rollup, so tests_torch vanished from the Jobs table for large
+        # runs (~27k trace-by-id 500s/24h ≈ 17% of reads). Raise to the 64 MiB
+        # ingestion ceiling so whole shard traces read back. NOTE: buffers the full
+        # trace in querier/frontend RAM per read — watch Tempo RSS; the durable fix
+        # is smaller per-shard traces (see docs/plan-large-trace-read-limit-2026-07-03.md).
+        grpc_client_config:
+          max_send_msg_size: 67108864  # 64 MiB (was 16 MiB default)
+          max_recv_msg_size: 67108864  # 64 MiB (default is already 100 MiB; pin for symmetry)
 
     distributor:
       receivers:
