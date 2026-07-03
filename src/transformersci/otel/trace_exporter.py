@@ -61,6 +61,7 @@ from itertools import islice
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from math import fsum
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -880,6 +881,39 @@ def _store_trace(trace_id: str, trace: dict) -> None:
             _trace_cache_bytes = max(0, _trace_cache_bytes - evicted_size)
 
 
+# Per-trace fetch failures, by reason, since start. The dominant reason is
+# ``too_large``: Tempo returns HTTP 500 "response larger than the max (N vs
+# 16777216)" when a trace exceeds the read-path gRPC message limit. Such a trace
+# can NEVER be shaped, so the exporter silently drops it from both the run store
+# and the roll-up — that is exactly how the biggest job (e.g. tests_torch's
+# ~36 MB shard traces) vanishes from the Jobs table. Counting it by reason
+# surfaces the loss on the CI Health dashboard instead of leaving it invisible.
+_trace_fetch_errors_lock = threading.Lock()
+_trace_fetch_errors: dict[str, int] = {}
+
+
+def _classify_fetch_error(error: BaseException) -> str:
+    """Bucket a trace-fetch exception into a low-cardinality reason label."""
+    if isinstance(error, HTTPError):
+        if error.code == 500:
+            try:
+                body = error.read().decode("utf-8", "replace")
+            except Exception:
+                body = ""
+            if "larger than the max" in body or "trace too large" in body:
+                return "too_large"
+        return f"http_{error.code}"
+    name = type(error).__name__.lower()
+    if "timeout" in name:
+        return "timeout"
+    return "other"
+
+
+def _record_trace_fetch_error(reason: str) -> None:
+    with _trace_fetch_errors_lock:
+        _trace_fetch_errors[reason] = _trace_fetch_errors.get(reason, 0) + 1
+
+
 def _fetch_trace_with_settled(
     trace_id: str, base_url: str | None, now: float, settle_seconds: float
 ) -> tuple[dict | None, bool]:
@@ -902,7 +936,8 @@ def _fetch_trace_with_settled(
         base_url = tempo_base_url()
     try:
         payload = _http_get_json(f"{base_url}/api/traces/{quote(trace_id, safe='')}")
-    except Exception:
+    except Exception as error:
+        _record_trace_fetch_error(_classify_fetch_error(error))
         return None, False
     if not isinstance(payload, dict):
         return None, False
@@ -3029,6 +3064,19 @@ def _exporter_self_metric_lines(render_seconds: float) -> list[str]:
         "# TYPE pytest_trace_exporter_mem_soft_bytes gauge",
         f"pytest_trace_exporter_mem_soft_bytes {_mem_soft_limit_bytes()}",
     ]
+    # Per-reason trace-fetch failures. ``too_large`` means a trace exceeded
+    # Tempo's read-path message limit and was dropped whole (its job disappears
+    # from the run store and the roll-up) — the CI Health dashboard alerts on it.
+    lines.append(
+        "# HELP pytest_trace_exporter_trace_fetch_errors_total Trace fetches that failed, by reason (too_large = over Tempo's read limit)."
+    )
+    lines.append("# TYPE pytest_trace_exporter_trace_fetch_errors_total counter")
+    with _trace_fetch_errors_lock:
+        fetch_errors = sorted(_trace_fetch_errors.items())
+    for reason, count in fetch_errors:
+        lines.append(
+            f'pytest_trace_exporter_trace_fetch_errors_total{{reason="{reason}"}} {count}'
+        )
     rss = _process_resident_bytes()
     if rss is not None:
         lines.extend(
