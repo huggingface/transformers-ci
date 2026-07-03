@@ -1,7 +1,9 @@
 # Plan: large shard traces exceed Tempo's read-path limit (tests_torch vanishes)
 
 **Date:** 2026-07-03
-**Status:** immediate mitigation shipped; source-side reduction pending
+**Status:** immediate mitigation shipped; source-side reduction IMPLEMENTED
+(one-span-per-test via `span_pruning`, PR #12 — 85% fewer spans measured
+end-to-end). Band-aid revert pending prod confirmation of small traces.
 
 ## Symptom
 
@@ -77,22 +79,71 @@ growing; at 60–100 MB we hit the limits again *and* Tempo/exporter RSS pressur
 (Tempo already OOM-restarted at the 8Gi→16Gi bump). **The render-time blowup is
 the signal that the durable fix below is now required, not optional.**
 
-## Source-side reduction (pending — pick one)
+## Source-side reduction — RECOMMENDED FIX (studied 2026-07-03)
 
-Goal: no single trace should approach the read limit.
+**Emit one span per test (the protocol span); suppress the `::setup` / `::call`
+/ `::teardown` phase spans and the fixture spans.**
 
-- **A. Smaller trace grain.** Stop grouping an entire shard (~100k spans) under
-  one `trace_id`. One trace per xdist worker (or per test-file batch) keeps each
-  trace ≪16 MiB and parallelizes reads. Cost: the "one trace = one shard" view
-  in Grafana/Tempo splits; the exporter's per-run grouping already keys on
-  `run.id` + `test.job`, so roll-ups are unaffected, but the trace/span view
-  changes. **Recommended.**
-- **B. Fewer spans per test.** pytest emits ~4 spans/test; a shard runs ~thousands
-  of tests. Dropping redundant child spans (keep the test span + failure event)
-  cuts trace size several-fold with no schema split. Complementary to A.
-- **C. Don't fetch whole traces.** Shape rows from paged TraceQL span search
-  instead of `GET /api/traces/{id}`, so the exporter never holds a multi-MB blob.
-  Biggest rework; also fixes exporter RSS. Consider if A/B prove insufficient.
+### Why this one
+
+Measured a real shard trace (tests_generate, 5.8 MB, 7647 spans, 1291 tests):
+
+| span kind | count | share | used by our dashboards? |
+|---|---|---|---|
+| test **protocol** span (`name == nodeid`) | ~1291 | 17% | **YES — the only one** |
+| `::setup` / `::call` / `::teardown` (span_type=`test`) | ~3861 | 50% | no |
+| fixture spans (span_type=`fixture`) | ~2486 | 33% | no |
+
+The exporter reads **only** the protocol span: `extract_trace_rows` requires
+`span_type == "test"` **and** `operation_name == nodeid` (trace_exporter.py:1686);
+`extract_failure_details` filters the same way (:241). The other ~83% of spans
+exist solely for the Tempo waterfall view. Dropping them:
+
+- **~83% smaller traces** → a ~50 MB tests_torch shard → ~8.5 MB, under the
+  16 MiB read limit with headroom for growth.
+- **No topology change** (still one trace/shard), **no exporter change**, **no
+  increase in trace count / Tempo cardinality**.
+- **No metric/dashboard/failure-view regression.** Pass/fail status lands on the
+  protocol span via `pytest_runtest_logreport` (fires after each phase span
+  closes, when the protocol span is current). Exception tracebacks: with the
+  `::call` span gone, `pytest_exception_interact`'s `get_current_span()` is the
+  protocol span, so `record_exception` lands there — exactly where
+  `extract_failure_details` looks.
+- **Lets us revert the band-aids** (httpTimeout 45→10, mem 4→2 Gi, refetch
+  900→300, and even the Tempo gRPC bump) once trace sizes are proven small,
+  restoring the ~10s render.
+- **Cost:** the Tempo trace waterfall loses per-phase/per-fixture timing for a
+  test — a rarely-used debugging nicety.
+
+### Implementation
+
+In `pytest_configure` (next to `id_generator.install()`), monkeypatch the
+pytest-opentelemetry plugin (`PerTestOpenTelemetryPlugin` /
+`OpenTelemetryPlugin`) to make these hookwrappers a plain `yield` (no span):
+`pytest_runtest_setup`, `pytest_runtest_call`, `pytest_runtest_teardown`,
+`pytest_fixture_setup`. Keep `pytest_runtest_protocol` (per-test span), the
+session/run span, `pytest_exception_interact`, `pytest_runtest_logreport`.
+Same install mechanism as `id_generator` (class-method patch, before first span).
+
+### Validation before rollout
+
+Run one real shard (staging or local `-n 8` xdist) and confirm: (1) the shard's
+trace is single-digit MB; (2) `GET /api/traces/{id}` returns 200; (3) a failing
+test still shows ERROR in the Jobs table and a full traceback on `/failure`;
+(4) test counts per job match. Then repoint prod and revert the band-aids.
+
+### Why not the alternatives
+
+- **Per-worker traces** (drop the shared trace via patching
+  `XdistOpenTelemetryPlugin.pytest_configure_node` context injection — note
+  merely unsetting `TRACEPARENT` does NOT work; the plugin re-injects the
+  controller context into every worker's `workerinput`, :298). Content-preserving
+  ÷8 → ~6 MB, but multiplies trace count 8× (heavier Tempo + exporter
+  enumeration) and needs care to nest a worker's tests under a fresh per-worker
+  root rather than one-trace-per-test. Keep as a follow-on only if per-test spans
+  still grow past the limit.
+- **TraceQL span-paging in the exporter** (never fetch whole traces): biggest
+  rework; unnecessary once traces are ~8 MB.
 
 ## Verification
 
