@@ -35,7 +35,7 @@ def output(args: list[str]) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="deploy/scripts/deploy.sh",
+        prog="deploy/scripts/deploy.py",
         description=(
             "Deploy the transformers-ci Helm chart. The committed env/example.yaml "
             "carries public-safe placeholders. For a real deployment pass a private "
