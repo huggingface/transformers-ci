@@ -856,9 +856,7 @@ def test_fetch_error_too_large_is_counted_and_surfaced() -> None:
         {},
         io.BytesIO(b"response larger than the max (36329178 vs 16777216)"),
     )
-    with patch(
-        "transformersci.otel.trace_exporter.urlopen", side_effect=too_large
-    ):
+    with patch("transformersci.otel.trace_exporter.urlopen", side_effect=too_large):
         trace, settled = trace_exporter._fetch_trace_with_settled(
             "deadbeef", "http://tempo:3200", 0.0, 120.0
         )
@@ -867,8 +865,7 @@ def test_fetch_error_too_large_is_counted_and_surfaced() -> None:
 
     lines = trace_exporter._exporter_self_metric_lines(0.1)
     assert (
-        'pytest_trace_exporter_trace_fetch_errors_total{reason="too_large"} 1'
-        in lines
+        'pytest_trace_exporter_trace_fetch_errors_total{reason="too_large"} 1' in lines
     )
     trace_exporter._trace_fetch_errors.clear()
 
@@ -2375,6 +2372,70 @@ def test_run_rollup_resists_lookback_window_decay() -> None:
     # Without the complete-set fix (window-only) the failure would vanish.
     window_only = trace_exporter.extract_run_rollup_metrics(_extracted=window2)
     assert metric_lines(window_only, "pytest_run_failed_tests")[0].endswith(" 0")
+
+
+def test_run_rollup_reconciles_late_failure_from_store(tmp_path, monkeypatch) -> None:
+    """The observed dashboard bug: a job's ERROR span surfaces out-of-order (or on
+    a shard that has already aged out), so this render's in-window rows show the
+    job as all-passing — but the run-store UNION already captured the failure.
+    The rollup must reconcile against the store and report failed=1 / total=2,
+    not the frozen window value of 0/1."""
+    d = str(tmp_path)
+    monkeypatch.setattr(
+        trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
+    )
+    # Store holds the complete union: two processor tests, one an ERROR (with a
+    # None nodeid, exactly like the late/synthetic span in the real incident).
+    trace_exporter.persist_run_rows(
+        "999:1",
+        [
+            {
+                "test_nodeid": "a",
+                "test_job": "tests_processors",
+                "status_code": "OK",
+                "duration_seconds": 1.0,
+                "trace_id": "shardA",
+                "pr": "1",
+            },
+            {
+                "test_nodeid": None,
+                "test_job": "tests_processors",
+                "status_code": "ERROR",
+                "duration_seconds": 2.0,
+                "trace_id": "shardB",
+                "pr": "1",
+            },
+        ],
+        directory=d,
+    )
+    # This render's window only sees the passing shard.
+    window = [
+        (
+            {
+                "run_id": "999:1",
+                "test_job": "tests_processors",
+                "service_name": "svc",
+                "provider": "github",
+                "pr": "1",
+                "start_time": 1_000_000,
+                "end_time": 2_000_000,
+            },
+            [{"status_code": "OK", "duration_seconds": 1.0}],
+        )
+    ]
+    rollup = trace_exporter.extract_run_rollup_metrics(_extracted=window)
+    assert metric_lines(rollup, "pytest_run_failed_tests")[0].endswith(" 1")
+    assert metric_lines(rollup, "pytest_run_total_tests")[0].endswith(" 2")
+    assert metric_lines(rollup, "pytest_run_job_failed_tests")[0].endswith(" 1")
+    assert metric_lines(rollup, "pytest_run_job_total_tests")[0].endswith(" 2")
+
+    # With no store entry the window value stands — the reconcile only ever
+    # heals upward and adds no dependency when the store is empty/disabled.
+    monkeypatch.setattr(
+        trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
+    )
+    bare = trace_exporter.extract_run_rollup_metrics(_extracted=window)
+    assert metric_lines(bare, "pytest_run_failed_tests")[0].endswith(" 0")
 
 
 # ---------------------------------------------------------------------------

@@ -13,9 +13,18 @@ def test_should_keep_predicate() -> None:
     # session/run span
     assert keep("test run", {"pytest.span_type": "run"}) is True
     # phase spans: span_type=test but name != nodeid
-    assert keep(f"{nid}::setup", {"pytest.span_type": "test", "pytest.nodeid": nid}) is False
-    assert keep(f"{nid}::call", {"pytest.span_type": "test", "pytest.nodeid": nid}) is False
-    assert keep(f"{nid}::teardown", {"pytest.span_type": "test", "pytest.nodeid": nid}) is False
+    assert (
+        keep(f"{nid}::setup", {"pytest.span_type": "test", "pytest.nodeid": nid})
+        is False
+    )
+    assert (
+        keep(f"{nid}::call", {"pytest.span_type": "test", "pytest.nodeid": nid})
+        is False
+    )
+    assert (
+        keep(f"{nid}::teardown", {"pytest.span_type": "test", "pytest.nodeid": nid})
+        is False
+    )
     # fixture spans
     assert keep("client setup", {"pytest.span_type": "fixture"}) is False
     # unattributed "fixture teardown" start_span

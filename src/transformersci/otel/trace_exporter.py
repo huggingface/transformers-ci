@@ -2584,13 +2584,48 @@ def extract_run_rollup_metrics(
         ):
             job_aggregate["start_time"] = trace_start_time
 
+    # Reconcile the in-window counts against the authoritative run-store union
+    # (see :data:`_run_store_counts`). A run's late/out-of-order ERROR spans and
+    # aged-out shards live in the store but may be absent from this render's
+    # in-window rows — which is how a real failure froze as "0 failed" and large
+    # runs undercounted "total". Take the per-field max so the metric never
+    # reports fewer tests/failures than either source; the store is a superset in
+    # practice, so this simply heals the snapshot. The counts come from an
+    # in-memory cache populated by persist_run_rows this render — no extra I/O.
+    store_counts = _run_store_counts_snapshot()
+    reconciled_jobs: dict[tuple[str, str, str, str, str], tuple[int, int, float]] = {}
+    reconciled_runs: dict[tuple[str, str, str, str], tuple[int, int, float]] = {}
+    for job_key, job_aggregate in job_aggregates.items():
+        total = int(job_aggregate["total"])
+        failed = int(job_aggregate["failed"])
+        duration = float(job_aggregate["total_duration"])
+        stored = store_counts.get(job_key[3], {}).get(job_key[4])
+        if stored is not None:
+            total = max(total, int(stored["total"]))
+            failed = max(failed, int(stored["failed"]))
+            duration = max(duration, float(stored["duration"]))
+        reconciled_jobs[job_key] = (total, failed, duration)
+        run_total, run_failed, run_duration = reconciled_runs.get(
+            job_key[:4], (0, 0, 0.0)
+        )
+        reconciled_runs[job_key[:4]] = (
+            run_total + total,
+            run_failed + failed,
+            run_duration + duration,
+        )
+
     for (service_name, provider, pr, run_id), aggregate in sorted(
         run_aggregates.items()
     ):
         job_names = sorted(str(job_name) for job_name in aggregate["job_names"])
-        total = int(aggregate["total"])
-        failed = int(aggregate["failed"])
-        total_duration = float(aggregate["total_duration"])
+        total, failed, total_duration = reconciled_runs.get(
+            (service_name, provider, pr, run_id),
+            (
+                int(aggregate["total"]),
+                int(aggregate["failed"]),
+                float(aggregate["total_duration"]),
+            ),
+        )
         start_time_seconds = int(aggregate["start_time"]) / 1_000_000
         end_time_seconds = int(aggregate["end_time"]) / 1_000_000
         run_labels = {
@@ -2638,8 +2673,14 @@ def extract_run_rollup_metrics(
     for (service_name, provider, pr, run_id, test_job), aggregate in sorted(
         job_aggregates.items()
     ):
-        total = int(aggregate["total"])
-        failed = int(aggregate["failed"])
+        total, failed, job_duration = reconciled_jobs.get(
+            (service_name, provider, pr, run_id, test_job),
+            (
+                int(aggregate["total"]),
+                int(aggregate["failed"]),
+                float(aggregate["total_duration"]),
+            ),
+        )
         job_labels = {
             "pr": pr,
             "provider": provider,
@@ -2653,7 +2694,7 @@ def extract_run_rollup_metrics(
         )
         lines.append(f"pytest_run_job_failed_tests{metric_labels(job_labels)} {failed}")
         lines.append(
-            f"pytest_run_job_duration_seconds{metric_labels(job_labels)} {float(aggregate['total_duration']):.6f}"
+            f"pytest_run_job_duration_seconds{metric_labels(job_labels)} {job_duration:.6f}"
         )
         job_start_seconds = int(aggregate["start_time"]) / 1_000_000
         job_end_seconds = int(aggregate["end_time"]) / 1_000_000
@@ -2701,6 +2742,58 @@ _run_members: dict[str, set[str]] = {}
 _run_last_growth: dict[str, float] = {}
 # Drop membership for runs untouched for this long, to bound memory.
 RUN_MEMBERSHIP_TTL_SECONDS = 86400.0
+
+# Authoritative per-(run, job) test counts derived from the run-store UNION.
+# The run store accumulates a run's COMPLETE, deduplicated rows across renders
+# (see :func:`persist_run_rows`), so it captures late/out-of-order ERROR spans
+# and shards that no single render's window ever holds — exactly what the
+# in-window rollup can miss, freezing a wrong "0 failed" / undercounted "total"
+# into Prometheus. :func:`persist_run_rows` already loads+merges the store for
+# each changed run every render, so deriving these counts there is ~free; the
+# rollup then reconciles against this in-memory cache with NO extra file I/O, so
+# render time is unchanged. run_id -> {test_job -> {total, failed, duration}}.
+_run_store_counts: "OrderedDict[str, dict[str, dict[str, float]]]" = OrderedDict()
+_run_store_counts_lock = threading.Lock()
+# Bound memory: evict least-recently-written runs beyond this many entries.
+_RUN_STORE_COUNTS_MAX = 20000
+
+
+def _update_run_store_counts(
+    run_id: str, rows: "Iterator[dict[str, str | float | None]]"
+) -> None:
+    """Recompute a run's per-job counts from its merged store rows and cache them.
+
+    Called from :func:`persist_run_rows` with the already-built union, so it adds
+    only one O(rows) pass over data we just merged — no additional I/O.
+    """
+    counts: dict[str, dict[str, float]] = {}
+    for r in rows:
+        job = str(r.get("test_job", "") or "")
+        entry = counts.get(job)
+        if entry is None:
+            entry = counts[job] = {"total": 0.0, "failed": 0.0, "duration": 0.0}
+        entry["total"] += 1
+        if str(r.get("status_code")) == "ERROR":
+            entry["failed"] += 1
+        try:
+            entry["duration"] += float(r.get("duration_seconds") or 0.0)
+        except (TypeError, ValueError):
+            pass
+    with _run_store_counts_lock:
+        _run_store_counts[run_id] = counts
+        _run_store_counts.move_to_end(run_id)
+        while len(_run_store_counts) > _RUN_STORE_COUNTS_MAX:
+            _run_store_counts.popitem(last=False)
+
+
+def _run_store_counts_snapshot() -> dict[str, dict[str, dict[str, float]]]:
+    """Shallow copy of the count cache for lock-free reads during a render.
+
+    Inner dicts are replaced wholesale by :func:`_update_run_store_counts` (never
+    mutated in place), so sharing their references across the snapshot is safe.
+    """
+    with _run_store_counts_lock:
+        return dict(_run_store_counts)
 
 
 def _run_settle_seconds() -> float:
@@ -4007,6 +4100,9 @@ def persist_run_rows(
         with gzip.open(tmp, "wb") as fh:
             fh.write(payload)
         os.replace(tmp, path)  # atomic swap so a reader never sees a torn file
+        # Cache the authoritative per-job counts from the union we just merged,
+        # so the rollup can reconcile against them without re-reading the store.
+        _update_run_store_counts(run_id, iter(merged.values()))
     except OSError:
         pass
 
