@@ -136,6 +136,10 @@ data:
   grafana.ini: |
     [server]
     root_url = https://{{ .Values.grafana.domain }}
+    # Compress responses (notably the multi-MB /public/build/*.js bundles, which
+    # are otherwise served uncompressed: ~8 MB on a cold load). gzip cuts the JS
+    # ~3x, so first paint on a fresh/post-deploy cache goes from ~12s to a few.
+    enable_gzip = true
 
     [auth.anonymous]
     enabled = {{ .Values.grafana.auth.anonymous.enabled }}
