@@ -1099,6 +1099,7 @@ def build_task_payload(
     *,
     fingerprint: str,
     existing_pr: int | None = None,
+    tracking_issue: int | None = None,
     slack_channel: str | None = None,
     notify_pr_created: bool = True,
     notify_task_finished: bool = False,
@@ -1116,6 +1117,10 @@ def build_task_payload(
         "context": context,
         "output": output,
     }
+    # A no_fix group opens no PR, so this PR-driven reconciler never links it.
+    # Tell Serge the tracking issue so it comments the outcome there directly.
+    if tracking_issue is not None:
+        payload["tracking_issue"] = tracking_issue
     notifications: dict[str, str | bool] = {
         "pr_created": notify_pr_created,
         "task_finished": notify_task_finished,
@@ -1217,6 +1222,7 @@ def dispatch_targets(
             title,
             fingerprint=fingerprint,
             existing_pr=existing_pr,
+            tracking_issue=issue_number,
             slack_channel=slack_channel,
             notify_task_finished=notify_task_finished,
         )
