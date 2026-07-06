@@ -541,6 +541,9 @@ class TrackingIssueTest(unittest.TestCase):
                 issue_number=123,
             )
         self.assertIn("Relates to #123", sent[0]["context"])
+        # Serge is told the tracking issue so it can comment no_fix/error
+        # outcomes there (groups that open no PR).
+        self.assertEqual(sent[0]["tracking_issue"], 123)
 
     def test_reconcile_refreshes_issue_when_pr_appears(self):
         targets = [self._target("g1", "a"), self._target("g2", "b")]
