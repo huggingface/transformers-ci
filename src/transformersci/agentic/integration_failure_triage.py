@@ -852,6 +852,7 @@ def render_tracking_issue_body(
     window: list[str],
     run_key: str,
     existing_prs: dict[str, int | None] | None = None,
+    statuses: dict[str, str] | None = None,
 ) -> str:
     """Markdown body for the per-run tracking issue. When a group already has an
     open Serge PR (a follow-up), its number is written inline as ``#<pr>`` — that
@@ -860,6 +861,7 @@ def render_tracking_issue_body(
     PR Serge opens asynchronously show their branch until a later run resolves
     the number (a follow-up next time)."""
     existing_prs = existing_prs or {}
+    statuses = statuses or {}
     win = f"{window[0]} → {window[-1]}" if window else "?"
     lines = [
         tracking_issue_marker(run_key),
@@ -871,8 +873,9 @@ def render_tracking_issue_body(
         "",
         "Serge dispatched one task per failure group below — each opens or updates its own "
         "PR on a `serge/fix/itf-<fingerprint>` branch. This table is refreshed in place as "
-        "Serge opens PRs during the run; a group still showing `(pending)` either had no safe "
-        "fix or is still running, and gets linked on the next nightly run if its PR appears later.",
+        "Serge runs: a group links its `#<pr>` when opened, shows `🚫 no fix` when Serge "
+        "found no safe change, `⚠️ task failed` on error, or `(pending)` while still running "
+        "(a late PR links on the next nightly run).",
         "",
         "## Dispatched failure groups",
         "",
@@ -891,7 +894,15 @@ def render_tracking_issue_body(
         mode = target.get("failure_mode") or "mixed"
         error_cell = f"{mode} — {summary}" if summary else mode
         pr = existing_prs.get(fp)
-        pr_cell = f"#{pr}" if pr else f"`{task_branch_prefix(fp)}` (pending)"
+        status = statuses.get(fp)
+        if pr:
+            pr_cell = f"#{pr}"
+        elif status == "no_fix":
+            pr_cell = "🚫 no fix"
+        elif status == "error":
+            pr_cell = "⚠️ task failed"
+        else:
+            pr_cell = f"`{task_branch_prefix(fp)}` (pending)"
         cells = [model_cell, error_cell, str(len(target["failures"])), pr_cell]
         lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
     lines += [
@@ -1012,46 +1023,76 @@ def reconcile_tracking_issue(
     run_key: str,
     issue_number: int | None,
     github_token: str | None,
+    job_ids: dict[str, str] | None = None,
+    serge_url: str | None = None,
+    serge_token: str | None = None,
     timeout_seconds: int = 300,
     poll_seconds: int = 20,
 ) -> dict[str, int | None]:
     """Poll open PRs after dispatch and refresh the tracking-issue table in
-    place, so PRs Serge opens during THIS run are linked immediately instead of
-    only on the next nightly run.
+    place, so outcomes Serge produces during THIS run show immediately instead
+    of only on the next nightly run.
 
-    Serge accepts each task with a ``202`` and runs it asynchronously, so PRs
-    appear seconds-to-minutes after dispatch. We re-resolve the fingerprint→PR
-    map and PATCH the issue body whenever the linked count changes, stopping
-    once every group has a PR or ``timeout_seconds`` elapses (``0`` disables;
-    groups that produced no fix simply never link and time out). Returns the
-    final fingerprint→PR map."""
+    Serge accepts each task with a ``202`` and runs it asynchronously, so a
+    group resolves seconds-to-minutes after dispatch. Each poll we re-resolve
+    the fingerprint→PR map AND (when ``job_ids``/``serge_url``/``serge_token``
+    are given) ask Serge for each not-yet-linked group's status, so a group that
+    opens no PR still shows ``no_fix``/``error`` instead of sitting ``(pending)``
+    forever. The issue body is PATCHed whenever the resolved set changes; we stop
+    once every group is resolved (PR linked or a terminal Serge status) or
+    ``timeout_seconds`` elapses (``0`` disables). Returns the final
+    fingerprint→PR map."""
     if issue_number is None or not github_token or timeout_seconds <= 0 or not targets:
         return {}
+    fingerprints = [target_fingerprint(t) for t in targets]
+    poll_serge = bool(job_ids and serge_url and serge_token)
     total = len(targets)
     deadline = time.monotonic() + timeout_seconds
-    last_linked = -1
+    last_key: tuple[int, int] = (-1, -1)
     existing_prs: dict[str, int | None] = {}
+    statuses: dict[str, str] = {}
     print(
         f"      reconciling tracking issue #{issue_number} for up to "
-        f"{timeout_seconds}s as Serge opens PRs…",
+        f"{timeout_seconds}s as Serge runs…",
         flush=True,
     )
     while True:
         existing_prs = resolve_existing_prs(
             targets, list_open_pulls(repo, github_token)
         )
+        if poll_serge:
+            # Refresh the OIDC bearer (the one minted at start can expire before
+            # every task finishes), then poll the still-open groups' status.
+            serge_token = mint_serge_oidc_token() or serge_token
+            for fp in fingerprints:
+                if existing_prs.get(fp) or statuses.get(fp) in ("no_fix", "error"):
+                    continue  # already resolved
+                jid = (job_ids or {}).get(fp)
+                if not jid:
+                    continue
+                st = poll_serge_status(serge_url, serge_token, repo, jid)
+                if st:
+                    statuses[fp] = st
         linked = sum(1 for v in existing_prs.values() if v)
-        if linked != last_linked:
-            body = render_tracking_issue_body(targets, window, run_key, existing_prs)
+        terminal = sum(
+            1
+            for fp in fingerprints
+            if not existing_prs.get(fp) and statuses.get(fp) in ("no_fix", "error")
+        )
+        resolved = linked + terminal
+        if (linked, terminal) != last_key:
+            body = render_tracking_issue_body(
+                targets, window, run_key, existing_prs, statuses
+            )
             update_issue_body(repo, issue_number, body, github_token)
             print(
                 f"      tracking issue #{issue_number} refreshed: "
-                f"{linked}/{total} group(s) linked",
+                f"{resolved}/{total} resolved ({linked} PR, {terminal} no-fix/error)",
                 flush=True,
             )
-            last_linked = linked
+            last_key = (linked, terminal)
         remaining = deadline - time.monotonic()
-        if linked >= total or remaining <= 0:
+        if resolved >= total or remaining <= 0:
             return existing_prs
         time.sleep(min(poll_seconds, remaining))
 
@@ -1165,6 +1206,46 @@ def dispatch_to_serge(
         raise SergeDispatchError(f"could not reach Serge at {url}: {e.reason}")
 
 
+def poll_serge_status(
+    serge_url: str, token: str, repo: str, job_id: str, timeout: int = 15
+) -> str | None:
+    """Best-effort GET of a task's status from Serge, OIDC-authorized with the
+    same bearer used to dispatch (``GET /tasks/{owner}/{repo}/{job_id}/status``).
+
+    Returns the status string (``running`` / ``published`` / ``no_fix`` /
+    ``error`` / …) or ``None`` on any error — the caller treats ``None`` as
+    "unknown, try again later" and never fails the run over it."""
+    url = f"{serge_url.rstrip('/')}/tasks/{repo}/{job_id}/status"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8") or "{}")
+    except (urllib.error.HTTPError, urllib.error.URLError, ValueError):
+        return None
+    status = body.get("status")
+    return str(status) if status else None
+
+
+def mint_serge_oidc_token() -> str | None:
+    """Re-mint a fresh Serge-audience OIDC token from the GitHub Actions token
+    service (the same exchange the workflow's mint step does in bash). Used to
+    refresh the bearer during the reconcile poll, since the token minted at
+    start can expire before every task finishes. Returns ``None`` outside
+    Actions (no request env) so callers fall back to the initial token."""
+    base = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
+    rtok = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+    if not base or not rtok:
+        return None
+    req = urllib.request.Request(
+        f"{base}&audience=serge", headers={"Authorization": f"Bearer {rtok}"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8")).get("value") or None
+    except (urllib.error.HTTPError, urllib.error.URLError, ValueError):
+        return None
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = (os.environ.get(name) or "").strip().lower()
     if not raw:
@@ -1187,7 +1268,7 @@ def dispatch_targets(
     existing_prs: dict[str, int | None] | None = None,
     slack_channel: str | None = None,
     notify_task_finished: bool = False,
-) -> tuple[int, int]:
+) -> tuple[int, int, dict[str, str]]:
     """Dispatch one Serge task per failure group — one PR per group — so a
     single run iterates over every group instead of fixing only the first.
 
@@ -1196,12 +1277,15 @@ def dispatch_targets(
     what was accepted. ``existing_prs`` maps fingerprint → open PR number (so a
     group that already has a Serge PR gets a follow-up rather than a duplicate);
     if omitted it is computed here. When ``issue_number`` is set, each task is
-    told to back-reference that tracking issue. Returns ``(accepted, failed)``."""
+    told to back-reference that tracking issue. Returns
+    ``(accepted, failed, job_ids)`` where ``job_ids`` maps fingerprint → the
+    Serge job id (for polling each group's terminal status in reconcile)."""
     if existing_prs is None:
         existing_prs = resolve_existing_prs(
             targets, list_open_pulls(repo, github_token)
         )
     accepted = failed = 0
+    job_ids: dict[str, str] = {}
     total = len(targets)
     for idx, target in enumerate(targets, start=1):
         fingerprint = target_fingerprint(target)
@@ -1233,10 +1317,13 @@ def dispatch_targets(
             failed += 1
             continue
         accepted += 1
+        job_id = resp.get("id")
+        if job_id:
+            job_ids[fingerprint] = str(job_id)
         job_url = resp.get("url")
         suffix = f" → {serge_url.rstrip('/')}{job_url}" if job_url else ""
         print(f"        ✅ accepted {resp.get('id', '?')}{suffix}", flush=True)
-    return accepted, failed
+    return accepted, failed, job_ids
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1445,7 +1532,7 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
 
-    accepted, failed = dispatch_targets(
+    accepted, failed, job_ids = dispatch_targets(
         targets,
         repo=args.repo,
         base_ref=args.base_ref,
@@ -1465,8 +1552,9 @@ def main(argv: list[str] | None = None) -> int:
         + (f"; {failed} failed" if failed else ""),
         flush=True,
     )
-    # Refresh the tracking-issue table in place as Serge opens PRs during this
-    # run, so it doesn't sit all-"(pending)" until the next nightly reconcile.
+    # Refresh the tracking-issue table in place as Serge runs, so it doesn't sit
+    # all-"(pending)": PRs link when opened, and Serge's status (polled with the
+    # OIDC token) marks no_fix/error groups that open no PR.
     if accepted:
         reconcile_tracking_issue(
             targets,
@@ -1475,6 +1563,9 @@ def main(argv: list[str] | None = None) -> int:
             run_key=run_key,
             issue_number=issue_number,
             github_token=gh_token,
+            job_ids=job_ids,
+            serge_url=args.serge_url,
+            serge_token=token,
             timeout_seconds=args.reconcile_timeout,
         )
     # Surface a hard failure only when we had work but landed nothing.
