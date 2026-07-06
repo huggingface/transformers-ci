@@ -108,7 +108,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "last_over_time(pytest_test_duration_seconds{test_nodeid=~\"$test_nodeid\"}[$__range])",
+          "expr": "last_over_time(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}[$__range])",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -191,7 +191,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_test_duration_seconds{test_nodeid=~\"$test_nodeid\"}, test_function)",
+        "definition": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}, test_function)",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -199,7 +199,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_test_duration_seconds{test_nodeid=~\"$test_nodeid\"}, test_function)",
+          "query": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}, test_function)",
           "refId": "Prometheus-test_function-Variable-Query"
         },
         "refresh": 2,
@@ -217,7 +217,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_test_duration_seconds{test_nodeid=~\"$test_nodeid\"}, test_module)",
+        "definition": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}, test_module)",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -225,7 +225,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_test_duration_seconds{test_nodeid=~\"$test_nodeid\"}, test_module)",
+          "query": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}, test_module)",
           "refId": "Prometheus-test_module-Variable-Query"
         },
         "refresh": 2,
@@ -243,7 +243,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_test_duration_seconds{test_nodeid=~\"$test_nodeid\"}, test_class)",
+        "definition": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}, test_class)",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -251,7 +251,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_test_duration_seconds{test_nodeid=~\"$test_nodeid\"}, test_class)",
+          "query": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}, test_class)",
           "refId": "Prometheus-test_class-Variable-Query"
         },
         "refresh": 2,
@@ -269,7 +269,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_test_duration_seconds{test_nodeid=~\"$test_nodeid\"}, test_job)",
+        "definition": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}, test_job)",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -277,7 +277,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_test_duration_seconds{test_nodeid=~\"$test_nodeid\"}, test_job)",
+          "query": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}, test_job)",
           "refId": "Prometheus-test_job-Variable-Query"
         },
         "refresh": 2,
@@ -329,7 +329,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_test_duration_seconds{test_nodeid=~\"$test_nodeid\"}, status_code)",
+        "definition": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}, status_code)",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -337,7 +337,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_test_duration_seconds{test_nodeid=~\"$test_nodeid\"}, status_code)",
+          "query": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}, status_code)",
           "refId": "Prometheus-status_code-Variable-Query"
         },
         "refresh": 2,
@@ -355,7 +355,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_test_last_failure_info{test_nodeid=~\"$test_nodeid\"}, exception_type)",
+        "definition": "label_values(pytest_test_last_failure_info{test_nodeid=\"$test_nodeid\"}, exception_type)",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -363,7 +363,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_test_last_failure_info{test_nodeid=~\"$test_nodeid\"}, exception_type)",
+          "query": "label_values(pytest_test_last_failure_info{test_nodeid=\"$test_nodeid\"}, exception_type)",
           "refId": "Prometheus-exception_type-Variable-Query"
         },
         "refresh": 2,
@@ -381,7 +381,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_test_last_failure_info{test_nodeid=~\"$test_nodeid\"}, trace_id)",
+        "definition": "label_values(pytest_test_last_failure_info{test_nodeid=\"$test_nodeid\"}, trace_id)",
         "hide": 2,
         "includeAll": false,
         "multi": true,
@@ -389,7 +389,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_test_last_failure_info{test_nodeid=~\"$test_nodeid\"}, trace_id)",
+          "query": "label_values(pytest_test_last_failure_info{test_nodeid=\"$test_nodeid\"}, trace_id)",
           "refId": "Prometheus-failure_indicator-Variable-Query"
         },
         "refresh": 2,
@@ -407,7 +407,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, repository)",
+        "definition": "label_values(pytest_pr_info{pr=\"$pr\"}, repository)",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -415,7 +415,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, repository)",
+          "query": "label_values(pytest_pr_info{pr=\"$pr\"}, repository)",
           "refId": "Prometheus-repository-Variable-Query"
         },
         "refresh": 2,
