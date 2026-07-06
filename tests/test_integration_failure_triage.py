@@ -334,7 +334,7 @@ class DispatchTargetsTest(unittest.TestCase):
             patch.object(itf, "list_open_pulls", return_value=[]),
             patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
         ):
-            accepted, failed = itf.dispatch_targets(
+            accepted, failed, _job_ids = itf.dispatch_targets(
                 self._targets(),
                 repo="o/r",
                 base_ref="main",
@@ -433,7 +433,7 @@ class DispatchTargetsTest(unittest.TestCase):
             patch.object(itf, "list_open_pulls", return_value=[]),
             patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
         ):
-            accepted, failed = itf.dispatch_targets(
+            accepted, failed, _job_ids = itf.dispatch_targets(
                 self._targets(),
                 repo="o/r",
                 base_ref="main",
@@ -588,6 +588,103 @@ class TrackingIssueTest(unittest.TestCase):
         self.assertEqual(len(patched), 2)
         self.assertIn("#81", patched[-1])
         self.assertIn("#82", patched[-1])
+
+    def test_dispatch_returns_job_ids(self):
+        def fake_dispatch(serge_url, token, payload, timeout=240):
+            return {"id": "job-123", "url": "/tasks/o/r/job-123"}
+
+        t = self._target()
+        with (
+            patch.object(itf, "list_open_pulls", return_value=[]),
+            patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
+        ):
+            accepted, failed, job_ids = itf.dispatch_targets(
+                [t],
+                repo="o/r",
+                base_ref="main",
+                serge_url="http://s",
+                token="tok",
+                window=["2026-06-19"],
+                timeout=10,
+                github_token=None,
+            )
+        self.assertEqual(accepted, 1)
+        self.assertEqual(job_ids[itf.target_fingerprint(t)], "job-123")
+
+    def test_render_shows_serge_statuses(self):
+        targets = [self._target("g1", "a"), self._target("g2", "b")]
+        fp0 = itf.target_fingerprint(targets[0])
+        fp1 = itf.target_fingerprint(targets[1])
+        body = itf.render_tracking_issue_body(
+            targets,
+            ["2026-06-19"],
+            "2026-06-19",
+            existing_prs={},
+            statuses={fp0: "no_fix", fp1: "error"},
+        )
+        self.assertIn("no fix", body)
+        self.assertIn("task failed", body)
+
+    def test_poll_serge_status_parses_status(self):
+        class _Resp:
+            def __init__(self, data):
+                self._d = data
+
+            def read(self):
+                return self._d
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        with patch.object(
+            itf.urllib.request, "urlopen", return_value=_Resp(b'{"status": "no_fix"}')
+        ):
+            st = itf.poll_serge_status("http://s", "tok", "o/r", "j1")
+        self.assertEqual(st, "no_fix")
+
+    def test_poll_serge_status_swallows_errors(self):
+        def boom(*a, **k):
+            raise itf.urllib.error.URLError("down")
+
+        with patch.object(itf.urllib.request, "urlopen", side_effect=boom):
+            self.assertIsNone(itf.poll_serge_status("http://s", "tok", "o/r", "j1"))
+
+    def test_reconcile_marks_no_fix_from_serge_status(self):
+        # A group that opens no PR but ends no_fix must show on the issue —
+        # reconcile polls Serge's status and renders it instead of "(pending)".
+        targets = [self._target("g1", "a")]
+        fp = itf.target_fingerprint(targets[0])
+        patched = []
+
+        def fake_update(repo, issue_number, body, github_token):
+            patched.append(body)
+            return True
+
+        with (
+            patch.object(itf, "list_open_pulls", return_value=[]),
+            patch.object(itf, "update_issue_body", side_effect=fake_update),
+            patch.object(itf, "mint_serge_oidc_token", return_value=None),
+            patch.object(itf, "poll_serge_status", return_value="no_fix"),
+            patch.object(itf.time, "sleep", lambda _s: None),
+        ):
+            itf.reconcile_tracking_issue(
+                targets,
+                repo="o/r",
+                window=["2026-06-19"],
+                run_key="2026-06-19",
+                issue_number=42,
+                github_token="tok",
+                job_ids={fp: "job-1"},
+                serge_url="http://s",
+                serge_token="tok",
+                timeout_seconds=300,
+                poll_seconds=1,
+            )
+        self.assertTrue(patched)
+        self.assertIn("no fix", patched[-1])
 
     def test_reconcile_noop_without_issue_or_timeout(self):
         targets = [self._target()]
