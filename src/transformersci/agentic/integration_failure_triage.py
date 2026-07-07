@@ -1015,6 +1015,155 @@ def update_issue_body(
         return False
 
 
+def _tracking_issue_marker_prefix() -> str:
+    """The run-agnostic head of the tracking-issue marker. Every run's issue
+    body carries ``<!-- serge-triage-run:<source>:<run_key> -->``; matching on
+    the prefix (without a run_key) finds *any* run's issue."""
+    return f"<!-- serge-triage-run:{_STATE_SOURCE}:"
+
+
+def find_prior_tracking_issues(
+    repo: str, github_token: str | None, *, exclude: int | None = None
+) -> list[int]:
+    """Open issues carrying this source's triage marker for *any* run, minus
+    ``exclude`` (today's issue). Lets the run close the issues it supersedes so
+    they don't pile up open and unassigned. Best-effort: returns ``[]`` on error
+    or without a token. The issues endpoint also lists PRs — skip those."""
+    if "/" not in repo or not github_token:
+        return []
+    owner, name = repo.split("/", 1)
+    prefix = _tracking_issue_marker_prefix()
+    headers = _gh_headers(github_token)
+    found: list[int] = []
+    page = 1
+    while True:
+        params = urllib.parse.urlencode(
+            {"state": "open", "per_page": 100, "page": page}
+        )
+        url = f"https://api.github.com/repos/{owner}/{name}/issues?{params}"
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                items = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.HTTPError, urllib.error.URLError) as e:
+            print(
+                f"      warning: could not list prior triage issues: "
+                f"{getattr(e, 'reason', e)}",
+                flush=True,
+            )
+            return found
+        if not items:
+            return found
+        for it in items:
+            if it.get("pull_request"):
+                continue
+            num = int(it["number"])
+            if num == exclude:
+                continue
+            if prefix in (it.get("body") or ""):
+                found.append(num)
+        page += 1
+
+
+def _issue_api(
+    repo: str,
+    issue_number: int,
+    github_token: str | None,
+    *,
+    method: str,
+    payload: dict,
+) -> bool:
+    """POST/PATCH a single issue endpoint. Best-effort → True on 2xx else False."""
+    if "/" not in repo or not github_token:
+        return False
+    owner, name = repo.split("/", 1)
+    suffix = "/comments" if method == "POST" else ""
+    url = f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}{suffix}"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method=method,
+        headers={**_gh_headers(github_token), "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30):
+            return True
+    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        print(
+            f"      warning: issue #{issue_number} {method} failed: "
+            f"{getattr(e, 'reason', e)}",
+            flush=True,
+        )
+        return False
+
+
+def assign_tracking_issue(
+    repo: str,
+    issue_number: int | None,
+    github_token: str | None,
+    *,
+    assignees: list[str] | None = None,
+    labels: list[str] | None = None,
+) -> None:
+    """Best-effort: set assignees and/or labels on the tracking issue so a human
+    owns it. No-op when neither is configured (or without a token)."""
+    if issue_number is None:
+        return
+    patch: dict[str, object] = {}
+    if assignees:
+        patch["assignees"] = assignees
+    if labels:
+        patch["labels"] = labels
+    if not patch:
+        return
+    if _issue_api(repo, issue_number, github_token, method="PATCH", payload=patch):
+        who = ", ".join(assignees or []) or "—"
+        print(
+            f"      tracking issue #{issue_number} assigned to {who}"
+            + (f", labels {labels}" if labels else ""),
+            flush=True,
+        )
+
+
+def close_superseded_tracking_issues(
+    repo: str,
+    new_issue_number: int | None,
+    github_token: str | None,
+) -> list[int]:
+    """Close every *other* open triage issue, leaving a ``Superseded by #N``
+    comment so the thread points forward to today's run. Keeps the tracker from
+    accumulating stale open issues. Best-effort; returns the numbers closed."""
+    if new_issue_number is None or not github_token:
+        return []
+    closed: list[int] = []
+    for num in find_prior_tracking_issues(repo, github_token, exclude=new_issue_number):
+        commented = _issue_api(
+            repo,
+            num,
+            github_token,
+            method="POST",
+            payload={
+                "body": (
+                    f"Superseded by #{new_issue_number} — closing this stale "
+                    "nightly integration-failure triage issue. Open PRs stay "
+                    "linked from the current issue."
+                )
+            },
+        )
+        if _issue_api(
+            repo,
+            num,
+            github_token,
+            method="PATCH",
+            payload={"state": "closed", "state_reason": "not_planned"},
+        ):
+            closed.append(num)
+        elif commented:
+            # commented but couldn't close — leave it, next run retries
+            pass
+    return closed
+
+
 def reconcile_tracking_issue(
     targets: list[dict],
     *,
@@ -1253,6 +1402,12 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+def _csv_env(name: str) -> list[str]:
+    """Parse a comma/space-separated env var into a list of trimmed tokens."""
+    raw = (os.environ.get(name) or "").replace(",", " ")
+    return [tok for tok in raw.split() if tok]
+
+
 def dispatch_targets(
     targets: list[dict],
     *,
@@ -1402,11 +1557,34 @@ def main(argv: list[str] | None = None) -> int:
         "(0 disables; default 300)",
     )
     p.add_argument(
+        "--assignee",
+        action="append",
+        default=None,
+        help="GitHub login to assign the tracking issue to (repeatable). "
+        "Defaults to the ITF_TRIAGE_ASSIGNEES env var (comma/space-separated).",
+    )
+    p.add_argument(
+        "--label",
+        action="append",
+        default=None,
+        help="label to add to the tracking issue (repeatable). "
+        "Defaults to the ITF_TRIAGE_LABELS env var (comma/space-separated).",
+    )
+    p.add_argument(
+        "--keep-superseded-issues",
+        action="store_true",
+        default=_env_bool("ITF_KEEP_SUPERSEDED_ISSUES", False),
+        help="do NOT close prior open triage issues (default: close them with a "
+        "'Superseded by #N' comment so they don't accumulate)",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="compute + print everything but POST nothing to Serge",
     )
     args = p.parse_args(argv)
+    assignees = args.assignee or _csv_env("ITF_TRIAGE_ASSIGNEES")
+    labels = args.label or _csv_env("ITF_TRIAGE_LABELS")
 
     print(f"[1/4] Fetching last {args.window} daily CI reports…", flush=True)
     daily = fetch_last_n(args.window, cache_dir=args.cache_dir)
@@ -1526,6 +1704,20 @@ def main(argv: list[str] | None = None) -> int:
             "new PRs link on the next run",
             flush=True,
         )
+        # Hand the new issue to a human and retire the ones it supersedes, so the
+        # tracker doesn't grow a pile of open, unassigned per-day issues.
+        assign_tracking_issue(
+            args.repo, issue_number, gh_token, assignees=assignees, labels=labels
+        )
+        if not args.keep_superseded_issues:
+            closed = close_superseded_tracking_issues(args.repo, issue_number, gh_token)
+            if closed:
+                print(
+                    "      closed "
+                    + ", ".join(f"#{n}" for n in closed)
+                    + f" as superseded by #{issue_number}",
+                    flush=True,
+                )
     else:
         print(
             "      no tracking issue (missing token/permission or API error); continuing",
