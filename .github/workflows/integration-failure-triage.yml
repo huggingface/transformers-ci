@@ -28,6 +28,10 @@ on:
         description: "Seconds to wait for Serge to accept each task"
         type: string
         default: ""
+      reconcile_timeout:
+        description: "Seconds to poll Serge/GitHub after dispatch and refresh the tracking-issue table in place (0 disables)"
+        type: string
+        default: ""
       slack_channel:
         description: "Optional Slack channel for Serge task notifications"
         type: string
@@ -87,6 +91,7 @@ jobs:
             --base-ref "$BASE_REF" \
             --serge-url "$SERGE_URL" \
             --serge-timeout "$SERGE_TIMEOUT" \
+            --reconcile-timeout "$RECONCILE_TIMEOUT" \
             --report-out triage-report.md \
             $NOTIFY_TASK_FINISHED_ARG \
             $SLACK_CHANNEL_ARG \
@@ -96,6 +101,10 @@ jobs:
           BASE_REF: ${{ inputs.base_ref || 'main' }}
           SERGE_URL: ${{ inputs.serge_url || vars.SERGE_URL || 'https://serge.huggingface.tech' }}
           SERGE_TIMEOUT: ${{ inputs.serge_timeout || vars.SERGE_TIMEOUT || '240' }}
+          # Poll long enough to cover a full run: this run's tasks finished +2.7..+9.7 min
+          # after dispatch (first PR at +7.6 min), so the old 300s default gave up before
+          # any group resolved. Reconcile stops early once all groups resolve.
+          RECONCILE_TIMEOUT: ${{ inputs.reconcile_timeout || vars.ITF_RECONCILE_TIMEOUT || '1200' }}
           SERGE_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
           GITHUB_TOKEN: ${{ github.token }}
           NOTIFY_TASK_FINISHED_ARG: ${{ inputs.notify_task_finished && '--notify-task-finished' || '' }}
