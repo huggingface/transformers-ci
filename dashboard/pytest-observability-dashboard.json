@@ -27,6 +27,21 @@
   "refresh": "1m",
   "panels": [
     {
+      "type": "text",
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 100,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;gap:8px;align-items:center;height:100%;\">\n  <a class=\"gf-form-button gf-form-button--primary\" href=\"/d/pytest-observability/overview\">CI health</a>\n  <a class=\"gf-form-button\" href=\"/d/pytest-test-health/test-health\">Tests Health</a>\n</div>"
+      }
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -290,7 +305,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 2
       },
       "id": 10,
       "options": {
@@ -643,7 +658,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 13
+        "y": 15
       },
       "id": 11,
       "options": {
@@ -788,360 +803,6 @@
           "id": "limit",
           "options": {
             "limitField": 10
-          }
-        }
-      ],
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Last Failure"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "Open last failing trace",
-                    "url": "/explore?schemaVersion=1&orgId=1&panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22query%22:%22${__data.fields[\"Last Failure\"]}%22,%22queryType%22:%22traceql%22,%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22tempo%22,%22uid%22:%22tempo%22%7D%7D%5D,%22range%22:%7B%22from%22:%22now-24h%22,%22to%22:%22now%22%7D,%22panelsState%22:%7B%22trace%22:%7B%22spanFilters%22:%7B%22tags%22:%5B%7B%22id%22:%22err%22,%22operator%22:%22=%22,%22key%22:%22otel.status_code%22,%22value%22:%22ERROR%22%7D%5D%7D%7D%7D%7D%7D",
-                    "targetBlank": true
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Job"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View job details",
-                    "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${__value.raw}",
-                    "targetBlank": false
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Error"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View test",
-                    "url": "/d/pytest-test/pytest-test?var-trace_id=${__data.fields[\"Last Failure\"]}&var-test_nodeid=${__data.fields[\"test_nodeid\"]}",
-                    "targetBlank": false
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "test_nodeid"
-            },
-            "properties": [
-              {
-                "id": "custom.hidden",
-                "value": true
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Last Failed"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "dateTimeFromNow"
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 13,
-        "w": 24,
-        "x": 0,
-        "y": 26
-      },
-      "id": 9,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true,
-        "sortBy": [
-          {
-            "desc": true,
-            "displayName": "Failures"
-          }
-        ]
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "topk(10, timestamp(max without (instance) (last_over_time(pytest_test_last_failure_info{pr=\"main\"}[$__range]))) * 1000)",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Currently Failing Tests (main branch)",
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true,
-              "instance": true,
-              "job": true,
-              "pr": true,
-              "provider": true,
-              "service_name": true,
-              "test_class": true,
-              "test_module": true
-            },
-            "indexByName": {
-              "test_job": 0,
-              "test_function": 1,
-              "exception_type": 2,
-              "trace_id": 3,
-              "Value": 4
-            },
-            "renameByName": {
-              "Value": "Last Failed",
-              "exception_type": "Error",
-              "test_function": "Function",
-              "test_job": "Job",
-              "trace_id": "Last Failure"
-            }
-          }
-        }
-      ],
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Avg Duration"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "s"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "PR"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View PR",
-                    "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${__value.raw}",
-                    "targetBlank": false
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Job"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View job details",
-                    "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${__value.raw}",
-                    "targetBlank": false
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Function"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View test",
-                    "url": "/d/pytest-test/pytest-test?var-test_nodeid=${__data.fields[\"test_nodeid\"]}",
-                    "targetBlank": false
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "test_nodeid"
-            },
-            "properties": [
-              {
-                "id": "custom.hidden",
-                "value": true
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 14,
-        "w": 24,
-        "x": 0,
-        "y": 39
-      },
-      "id": 4,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": true
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "format": "table",
-          "instant": true,
-          "range": false,
-          "legendFormat": "__auto",
-          "refId": "A",
-          "expr": "sort_desc(topk(20, last_over_time(pytest_test:duration_avg_main:top20_7d[20m])))"
-        }
-      ],
-      "title": "Slowest Tests By Average Duration (main branch)",
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true,
-              "instance": true,
-              "job": true,
-              "pr": true,
-              "provider": true,
-              "service_name": true,
-              "status_code": true
-            },
-            "indexByName": {
-              "Value": 0,
-              "test_job": 1,
-              "test_module": 2,
-              "test_class": 3,
-              "test_function": 4
-            },
-            "renameByName": {
-              "Value": "Avg Duration",
-              "test_module": "Module",
-              "test_class": "Class",
-              "test_function": "Function",
-              "test_job": "Job"
-            }
           }
         }
       ],

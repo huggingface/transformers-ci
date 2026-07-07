@@ -191,7 +191,7 @@ data:
         interval: 15m
         rules:
           - record: pytest_test:duration_avg_main:top20_7d
-            expr: topk(20, avg by (test_job, test_module, test_class, test_function) (last_over_time(pytest_test_duration_seconds{pr="main"}[7d])))
+            expr: topk(20, avg by (test_nodeid, test_job, test_module, test_class, test_function) (last_over_time(pytest_test_duration_seconds{pr="main"}[7d])))
 ---
 apiVersion: apps/v1
 kind: StatefulSet

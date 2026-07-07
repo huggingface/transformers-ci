@@ -1481,15 +1481,15 @@
     "name": "dashboard_version",
     "type": "constant",
     "label": "Dashboard version",
-    "query": "0.1.14",
+    "query": "0.1.15",
     "current": {
-     "text": "0.1.14",
-     "value": "0.1.14"
+     "text": "0.1.15",
+     "value": "0.1.15"
     },
     "options": [
      {
-      "text": "0.1.14",
-      "value": "0.1.14",
+      "text": "0.1.15",
+      "value": "0.1.15",
       "selected": true
      }
     ],
