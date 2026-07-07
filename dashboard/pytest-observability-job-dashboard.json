@@ -28,19 +28,13 @@
       "targetBlank": false,
       "title": "Back to Overview",
       "type": "link",
-      "url": "/d/pytest-observability/pytest-observability"
+      "url": "/d/pytest-observability/overview"
     },
     {
       "targetBlank": false,
       "title": "Back to PR",
       "type": "link",
       "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr}"
-    },
-    {
-      "targetBlank": true,
-      "title": "Grafana Explore",
-      "type": "link",
-      "url": "/explore?orgId=1"
     }
   ],
   "panels": [
@@ -445,6 +439,7 @@
         "label": "Service",
         "multi": false,
         "name": "service",
+        "hide": 2,
         "options": [],
         "query": {
           "qryType": 1,
@@ -470,6 +465,7 @@
         "label": "Job",
         "multi": false,
         "name": "job",
+        "hide": 2,
         "options": [],
         "query": {
           "qryType": 1,
@@ -496,6 +492,7 @@
         "label": "PR",
         "multi": false,
         "name": "pr",
+        "hide": 2,
         "options": [],
         "query": {
           "qryType": 1,
@@ -514,6 +511,7 @@
         },
         "label": "Run ID",
         "name": "run_id",
+        "hide": 2,
         "options": [
           {
             "selected": true,
@@ -532,6 +530,7 @@
         },
         "label": "Show",
         "name": "status_filter",
+        "hide": 2,
         "options": [
           {
             "selected": true,
@@ -559,6 +558,7 @@
         "label": "Row limit",
         "multi": false,
         "name": "test_limit",
+        "hide": 2,
         "options": [
           {
             "selected": false,
@@ -589,6 +589,9 @@
   "time": {
     "from": "now-24h",
     "to": "now"
+  },
+  "timepicker": {
+    "hidden": true
   },
   "timezone": "browser",
   "title": "Pytest Observability - Job",

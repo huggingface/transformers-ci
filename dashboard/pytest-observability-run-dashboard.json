@@ -28,7 +28,7 @@
       "targetBlank": false,
       "title": "Back to Overview",
       "type": "link",
-      "url": "/d/pytest-observability/pytest-observability"
+      "url": "/d/pytest-observability/overview"
     },
     {
       "targetBlank": false,
@@ -555,6 +555,7 @@
         },
         "label": "Run ID",
         "name": "run_id",
+        "hide": 2,
         "options": [
           {
             "selected": true,
