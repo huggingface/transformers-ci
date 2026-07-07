@@ -108,7 +108,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           # Hand the tracking issue to a human and (by default) auto-close the
           # prior day's issue with a "Superseded by #N" link so they don't pile up.
-          ITF_TRIAGE_ASSIGNEES: ${{ inputs.assignees || vars.ITF_TRIAGE_ASSIGNEES || '' }}
+          # Falls back to tarekziade when no input/repo-var overrides it.
+          ITF_TRIAGE_ASSIGNEES: ${{ inputs.assignees || vars.ITF_TRIAGE_ASSIGNEES || 'tarekziade' }}
           ITF_TRIAGE_LABELS: ${{ inputs.labels || vars.ITF_TRIAGE_LABELS || '' }}
           NOTIFY_TASK_FINISHED_ARG: ${{ inputs.notify_task_finished && '--notify-task-finished' || '' }}
           SLACK_CHANNEL_ARG: ${{ inputs.slack_channel != '' && format('--slack-channel {0}', inputs.slack_channel) || '' }}
