@@ -25,20 +25,26 @@
   "graphTooltip": 0,
   "links": [
     {
-      "asDropdown": false,
-      "icon": "external link",
-      "tags": [],
       "targetBlank": false,
-      "title": "Back to Job",
+      "title": "Back to Test Health",
+      "type": "link",
+      "url": "/d/pytest-test-health/test-health"
+    },
+    {
+      "targetBlank": false,
+      "title": "Back to Overview",
+      "type": "link",
+      "url": "/d/pytest-observability/overview"
+    },
+    {
+      "targetBlank": false,
+      "title": "Job",
       "type": "link",
       "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${run_id:raw}&var-pr=${pr:raw}"
     },
     {
-      "asDropdown": false,
-      "icon": "external link",
-      "tags": [],
       "targetBlank": false,
-      "title": "Back to PR",
+      "title": "PR",
       "type": "link",
       "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr:raw}"
     }
@@ -46,15 +52,15 @@
   "panels": [
     {
       "gridPos": {
-        "h": 5,
+        "h": 7,
         "w": 18,
         "x": 0,
         "y": 0
       },
       "id": 1,
       "options": {
-        "content": "**`${test_nodeid:raw}`** · **Status:** `${status_code:raw}` · **Module:** `${test_module:raw}`\n\n**Reproduce locally** — pytest test: `pytest -svx ${test_nodeid:raw}` · utils/checkers.py QA check: `python utils/checkers.py ${test_function:raw}`\n\n**Job:** [${test_job:raw}](/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${run_id:raw}&var-pr=${pr:raw}) | **Run:** [${run_id:raw}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id:raw}) | **PR:** [${pr:raw}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr:raw}) | <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"14\" height=\"14\" alt=\"GH\"/> [Full logs](https://github.com/${repository:raw}/actions/runs/${gh_run_id:raw}) | [Open trace in Tempo](/explore?schemaVersion=1&orgId=1&panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22query%22:%22${trace_id:raw}%22,%22queryType%22:%22traceql%22,%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22tempo%22,%22uid%22:%22tempo%22%7D%7D%5D,%22range%22:%7B%22from%22:%22now-24h%22,%22to%22:%22now%22%7D%7D%7D)\n\n<sub>The panel below shows this run's failure output — a pytest traceback or, for a utils/checkers.py QA check, the checker's command output — served by the trace exporter. Use <b>Open trace in Tempo</b> for the span timing.</sub>",
-        "mode": "markdown"
+        "mode": "html",
+        "content": "<iframe title=\"test summary\" style=\"width:100%;height:100%;min-height:210px;border:0;background:#181b1f\" srcdoc=\"<style>html,body{margin:0;background:#181b1f;color:#d8d9da;font:14px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}body{padding:2px 0;background:#181b1f}.node{font-size:15px;font-weight:650;color:#f1f5f9;overflow-wrap:anywhere}.meta{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:8px;color:#aeb7c2}.label{color:#7d8b99}.cmdLabel{margin-top:14px;color:#aeb7c2;font-weight:600}.cmd{display:block;margin-top:6px;padding:10px 12px;border:1px solid #343b45;border-radius:4px;background:#0b0f14;color:#f8fafc;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}</style><body><div class='node' id='node'></div><div class='meta'><span><span class='label'>Status</span> <span id='status'></span></span><span><span class='label'>Module</span> <span id='module'></span></span><span><span class='label'>Job</span> <span id='job'></span></span><span><span class='label'>PR</span> <span id='pr'></span></span></div><div class='cmdLabel'>Reproduce locally</div><code class='cmd' id='cmd'></code><script>function setText(id,value){document.getElementById(id).textContent=value||''}var node='${test_nodeid:raw}';var fn='${test_function:raw}';setText('node',node);setText('status','${status_code:raw}');setText('module','${test_module:raw}');setText('job','${test_job:raw}');setText('pr','${pr:raw}');var command=node.indexOf('utils/checkers.py::')===0?'make '+(fn||node.split('::').pop()):'pytest -svx '+node;setText('cmd',command);</script></body>\"></iframe>"
       },
       "pluginVersion": "12.0.0",
       "title": "Summary",
@@ -84,7 +90,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 5,
+        "h": 7,
         "w": 6,
         "x": 18,
         "y": 0
@@ -123,7 +129,7 @@
         "h": 24,
         "w": 24,
         "x": 0,
-        "y": 5
+        "y": 7
       },
       "id": 3,
       "pluginVersion": "12.0.0",
@@ -161,7 +167,8 @@
           }
         ],
         "query": "",
-        "type": "textbox"
+        "type": "textbox",
+        "hide": 2
       },
       {
         "current": {
@@ -179,7 +186,8 @@
           }
         ],
         "query": "",
-        "type": "textbox"
+        "type": "textbox",
+        "hide": 2
       },
       {
         "current": {
@@ -300,7 +308,8 @@
           }
         ],
         "query": "",
-        "type": "textbox"
+        "type": "textbox",
+        "hide": 2
       },
       {
         "current": {
@@ -317,7 +326,8 @@
           }
         ],
         "query": "",
-        "type": "textbox"
+        "type": "textbox",
+        "hide": 2
       },
       {
         "current": {
@@ -438,13 +448,17 @@
           }
         ],
         "query": "",
-        "type": "textbox"
+        "type": "textbox",
+        "hide": 2
       }
     ]
   },
   "time": {
     "from": "now-24h",
     "to": "now"
+  },
+  "timepicker": {
+    "hidden": true
   },
   "timezone": "browser",
   "title": "Test",

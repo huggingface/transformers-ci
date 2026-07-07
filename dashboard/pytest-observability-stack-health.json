@@ -28,7 +28,13 @@
    "targetBlank": false,
    "title": "Back to Overview",
    "type": "link",
-   "url": "/d/pytest-observability/pytest-observability"
+   "url": "/d/pytest-observability/overview"
+  },
+  {
+   "targetBlank": false,
+   "title": "Tests Health",
+   "type": "link",
+   "url": "/d/pytest-test-health/test-health"
   }
  ],
  "panels": [

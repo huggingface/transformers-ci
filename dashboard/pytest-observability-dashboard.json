@@ -23,24 +23,22 @@
   },
   "editable": true,
   "graphTooltip": 0,
-  "links": [],
+  "links": [
+    {
+      "targetBlank": false,
+      "title": "CI Health",
+      "type": "link",
+      "url": "/d/pytest-observability-stack-health/ci-health?orgId=1&from=now-24h&to=now&timezone=browser&refresh=30s"
+    },
+    {
+      "targetBlank": false,
+      "title": "Tests Health",
+      "type": "link",
+      "url": "/d/pytest-test-health/test-health"
+    }
+  ],
   "refresh": "1m",
   "panels": [
-    {
-      "type": "text",
-      "title": "",
-      "gridPos": {
-        "h": 2,
-        "w": 24,
-        "x": 0,
-        "y": 0
-      },
-      "id": 100,
-      "options": {
-        "mode": "html",
-        "content": "<div style=\"display:flex;gap:8px;align-items:center;height:100%;\">\n  <a class=\"gf-form-button gf-form-button--primary\" href=\"/d/pytest-observability/overview\">CI health</a>\n  <a class=\"gf-form-button\" href=\"/d/pytest-test-health/test-health\">Tests Health</a>\n</div>"
-      }
-    },
     {
       "datasource": {
         "type": "prometheus",
@@ -207,6 +205,11 @@
                   {
                     "type": "value",
                     "options": {
+                      "0": {
+                        "text": "closed",
+                        "color": "#808080",
+                        "index": 2
+                      },
                       "1": {
                         "text": "open",
                         "color": "green",
@@ -216,11 +219,6 @@
                         "text": "merged",
                         "color": "#1f6feb",
                         "index": 1
-                      },
-                      "0": {
-                        "text": "closed",
-                        "color": "#808080",
-                        "index": 2
                       }
                     }
                   }
@@ -305,7 +303,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 2
+        "y": 0
       },
       "id": 10,
       "options": {
@@ -658,7 +656,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 15
+        "y": 13
       },
       "id": 11,
       "options": {
