@@ -44,6 +44,14 @@ on:
         description: "Ref of huggingface/transformers-ci to install the triage tooling from"
         type: string
         default: main
+      assignees:
+        description: "Comma/space-separated GitHub logins to assign the tracking issue to"
+        type: string
+        default: ""
+      labels:
+        description: "Comma/space-separated labels to add to the tracking issue"
+        type: string
+        default: ""
       dry_run:
         description: "Compute the report but do not dispatch to Serge"
         type: boolean
@@ -107,6 +115,10 @@ jobs:
           RECONCILE_TIMEOUT: ${{ inputs.reconcile_timeout || vars.ITF_RECONCILE_TIMEOUT || '1200' }}
           SERGE_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
           GITHUB_TOKEN: ${{ github.token }}
+          # Hand the tracking issue to a human and (by default) auto-close the
+          # prior day's issue with a "Superseded by #N" link so they don't pile up.
+          ITF_TRIAGE_ASSIGNEES: ${{ inputs.assignees || vars.ITF_TRIAGE_ASSIGNEES || '' }}
+          ITF_TRIAGE_LABELS: ${{ inputs.labels || vars.ITF_TRIAGE_LABELS || '' }}
           NOTIFY_TASK_FINISHED_ARG: ${{ inputs.notify_task_finished && '--notify-task-finished' || '' }}
           SLACK_CHANNEL_ARG: ${{ inputs.slack_channel != '' && format('--slack-channel {0}', inputs.slack_channel) || '' }}
           DRY_RUN_ARG: ${{ inputs.dry_run && '--dry-run' || '' }}

@@ -716,5 +716,93 @@ class TrackingIssueTest(unittest.TestCase):
         lop.assert_not_called()
 
 
+class _Resp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class TestTrackingIssueLifecycle(unittest.TestCase):
+    _MARK = itf._tracking_issue_marker_prefix()
+
+    def test_find_prior_matches_marker_excludes_self_and_prs(self):
+        page1 = [
+            {"number": 10, "body": self._MARK + "2026-06-18 -->"},
+            {"number": 11, "body": self._MARK + "2026-06-19 -->"},  # today (excluded)
+            {"number": 12, "body": "unrelated issue"},
+            {
+                "number": 13,
+                "body": self._MARK + "x -->",
+                "pull_request": {"url": "https://api.github.com/…/pulls/13"},  # a PR
+            },
+        ]
+        with patch.object(
+            itf.urllib.request,
+            "urlopen",
+            side_effect=[_Resp(itf.json.dumps(page1).encode()), _Resp(b"[]")],
+        ):
+            found = itf.find_prior_tracking_issues("o/r", "tok", exclude=11)
+        self.assertEqual(found, [10])
+
+    def test_find_prior_noop_without_token(self):
+        self.assertEqual(itf.find_prior_tracking_issues("o/r", None), [])
+
+    def test_close_superseded_comments_then_closes(self):
+        calls = []
+
+        def fake_api(repo, num, tok, *, method, payload):
+            calls.append((num, method, payload))
+            return True
+
+        with (
+            patch.object(itf, "find_prior_tracking_issues", return_value=[10, 20]),
+            patch.object(itf, "_issue_api", side_effect=fake_api),
+        ):
+            closed = itf.close_superseded_tracking_issues("o/r", 30, "tok")
+        self.assertEqual(closed, [10, 20])
+        # each prior issue: one POST comment naming the superseding issue, then a PATCH close
+        self.assertEqual([c[1] for c in calls], ["POST", "PATCH", "POST", "PATCH"])
+        self.assertIn("#30", calls[0][2]["body"])
+        self.assertEqual(
+            calls[1][2], {"state": "closed", "state_reason": "not_planned"}
+        )
+
+    def test_close_superseded_noop_without_issue(self):
+        with patch.object(itf, "find_prior_tracking_issues") as fp:
+            self.assertEqual(
+                itf.close_superseded_tracking_issues("o/r", None, "tok"), []
+            )
+            fp.assert_not_called()
+
+    def test_assign_sets_assignees_and_labels(self):
+        seen = {}
+
+        def fake_api(repo, num, tok, *, method, payload):
+            seen["method"], seen["payload"] = method, payload
+            return True
+
+        with patch.object(itf, "_issue_api", side_effect=fake_api):
+            itf.assign_tracking_issue(
+                "o/r", 42, "tok", assignees=["alice"], labels=["ci-triage"]
+            )
+        self.assertEqual(seen["method"], "PATCH")
+        self.assertEqual(
+            seen["payload"], {"assignees": ["alice"], "labels": ["ci-triage"]}
+        )
+
+    def test_assign_noop_when_nothing_to_set(self):
+        with patch.object(itf, "_issue_api") as api:
+            itf.assign_tracking_issue("o/r", 42, "tok", assignees=[], labels=[])
+            api.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
