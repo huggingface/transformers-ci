@@ -284,6 +284,22 @@ grafana:
       orgRole: Viewer
     disableLoginForm: false
     adminPassword: ""
+    # GitHub OAuth login (an ADDITIONAL login method — an identity layer, not the
+    # security boundary). Disabled by default; the chart renders and deploys
+    # unchanged until you enable it. Turn on ONLY after (1) a GitHub OAuth App
+    # exists and (2) its client secret is in the secret store under
+    # secrets.keys.githubOauthClientSecret — enabling without the secret present
+    # makes the Grafana pod fail to start (missing secretKeyRef). Keep
+    # auth.anonymous.enabled true so the public read-only dashboards + datasource
+    # proxy keep working.
+    # Login is hardcoded to members of the `huggingface` GitHub org
+    # (allowed_organizations in the rendered grafana.ini) — not configurable here.
+    github:
+      enabled: false
+      # Config, not a credential — safe to set in tracked values.
+      clientId: ""
+      # Let huggingface-org members create their Grafana account on first login.
+      allowSignUp: true
 
   domain: grafana.example.com
 
@@ -304,6 +320,15 @@ grafana:
       - pytest-test-dashboard.json
       - pytest-test-health-dashboard.json
       - pytest-observability-stack-health.json
+    # Dashboards provisioned into a separate folder that can be access-restricted.
+    # Empty by default (all dashboards public). A private deployment moves a
+    # dashboard here AND removes it from `files` above. The folder is auto-created;
+    # its Viewer permission is stripped post-deploy by
+    # deploy/scripts/grafana-restrict-folder.py so only authenticated members see it.
+    # Must NOT match any dashboard title — Grafana looks up the provider folder by
+    # title and errors ("expected folder, found dashboard") on a collision.
+    restrictedFolder: "Restricted"
+    restrictedFiles: []
 
 #------------------------------------------------------------------------------
 # CI Data Publisher
@@ -383,12 +408,16 @@ secrets:
     grafanaAdminPassword: grafana-admin-password
     githubToken: gh-token
     hfToken: hf-token
+    # Grafana GitHub-OAuth client secret. Only consumed when
+    # grafana.auth.github.enabled is true.
+    githubOauthClientSecret: grafana-github-oauth-client-secret
   placeholder:
     # Only used when secrets.create is true
     traceApiKey: ""
     grafanaAdminPassword: ""
     githubToken: ""
     hfToken: ""
+    githubOauthClientSecret: ""
 
 #------------------------------------------------------------------------------
 # External Secret Resource

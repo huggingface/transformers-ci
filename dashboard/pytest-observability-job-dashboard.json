@@ -530,7 +530,7 @@
         },
         "label": "Show",
         "name": "status_filter",
-        "hide": 2,
+        "hide": 0,
         "options": [
           {
             "selected": true,
@@ -594,7 +594,7 @@
     "hidden": true
   },
   "timezone": "browser",
-  "title": "Pytest Observability - Job",
+  "title": "Job",
   "uid": "pytest-observability-by-job",
   "version": 1
 }

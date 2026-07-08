@@ -147,6 +147,21 @@ data:
 
     [auth]
     disable_login_form = {{ .Values.grafana.auth.disableLoginForm }}
+    {{- if .Values.grafana.auth.github.enabled }}
+
+    [auth.github]
+    enabled = true
+    client_id = {{ .Values.grafana.auth.github.clientId }}
+    # Secret injected via the GF_AUTH_GITHUB_CLIENT_SECRET env override (see Deployment).
+    client_secret = ${GF_AUTH_GITHUB_CLIENT_SECRET}
+    scopes = user:email,read:org
+    auth_url = https://github.com/login/oauth/authorize
+    token_url = https://github.com/login/oauth/access_token
+    api_url = https://api.github.com/user
+    allow_sign_up = {{ .Values.grafana.auth.github.allowSignUp }}
+    # Hardcoded: only members of the `huggingface` GitHub org may log in.
+    allowed_organizations = huggingface
+    {{- end }}
 
     [security]
     admin_user = admin
@@ -154,6 +169,13 @@ data:
 
     [users]
     viewers_can_edit = false
+    {{- if .Values.grafana.auth.github.enabled }}
+    # Authenticated (huggingface-org) members are auto-assigned Editor so they can
+    # access the access-restricted "CI Health" folder, whose Viewer permission is
+    # removed post-deploy. Anonymous access keeps its own Viewer role and stays
+    # excluded from that folder while all other dashboards remain public.
+    auto_assign_org_role = Editor
+    {{- end }}
 
     [analytics]
     reporting_enabled = false
@@ -228,6 +250,21 @@ data:
         editable: true
         options:
           path: /var/lib/grafana/dashboards
+      {{- if .Values.grafana.dashboards.restrictedFiles }}
+      # Access-restricted folder. A provider assigns its folder to ALL dashboards
+      # under its path, so restricted dashboards live in a separate path/ConfigMap.
+      # The folder is auto-created here; the Viewer permission is stripped
+      # post-deploy (see deploy/scripts/grafana-restrict-folder.py) so only
+      # authenticated huggingface-org members see it.
+      - name: 'restricted'
+        orgId: 1
+        folder: {{ .Values.grafana.dashboards.restrictedFolder | quote }}
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards-restricted
+      {{- end }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -241,6 +278,23 @@ metadata:
 data:
 {{- if .Values.grafana.dashboards.enabled }}
 {{- range .Values.grafana.dashboards.files }}
+  {{ . }}: |
+{{ $.Files.Get (printf "dashboards/%s" .) | indent 4 }}
+{{- end }}
+{{- end }}
+{{- if .Values.grafana.dashboards.restrictedFiles }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-restricted
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+    grafana_dashboard: "1"
+data:
+{{- range .Values.grafana.dashboards.restrictedFiles }}
   {{ . }}: |
 {{ $.Files.Get (printf "dashboards/%s" .) | indent 4 }}
 {{- end }}
@@ -301,6 +355,13 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.secrets.name }}
                   key: {{ .Values.secrets.keys.grafanaAdminPassword }}
+            {{- if .Values.grafana.auth.github.enabled }}
+            - name: GF_AUTH_GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.githubOauthClientSecret }}
+            {{- end }}
             - name: GF_PANELS_DISABLE_SANITIZE_HTML
               value: "true"
             - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
@@ -339,6 +400,10 @@ spec:
               mountPath: /etc/grafana/provisioning/dashboards
             - name: dashboards
               mountPath: /var/lib/grafana/dashboards
+            {{- if .Values.grafana.dashboards.restrictedFiles }}
+            - name: dashboards-restricted
+              mountPath: /var/lib/grafana/dashboards-restricted
+            {{- end }}
             - name: alerting
               mountPath: /etc/grafana/provisioning/alerting
           livenessProbe:
@@ -366,6 +431,11 @@ spec:
         - name: dashboards
           configMap:
             name: grafana-dashboards
+        {{- if .Values.grafana.dashboards.restrictedFiles }}
+        - name: dashboards-restricted
+          configMap:
+            name: grafana-dashboards-restricted
+        {{- end }}
         - name: alerting
           configMap:
             name: grafana-alerting
