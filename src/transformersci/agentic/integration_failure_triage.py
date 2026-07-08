@@ -79,6 +79,20 @@ from collections.abc import Iterable
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError
 
+from .github_api import (
+    gh_headers as _gh_headers,
+    list_open_pulls,
+    match_pr,
+    update_issue_body,
+)
+from .serge_dispatch import (
+    SergeDispatchError,
+    build_task_payload as _build_serge_payload,
+    dispatch_to_serge,
+    mint_serge_oidc_token,
+    poll_serge_status,
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fetch — last N daily run_models_gpu reports from the CI dataset.
@@ -758,66 +772,12 @@ def add_state_marker(
     return "\n".join(lines)
 
 
-def _gh_headers(github_token: str | None) -> dict[str, str]:
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    if github_token:
-        headers["Authorization"] = f"Bearer {github_token}"
-    return headers
-
-
-def list_open_pulls(repo: str, github_token: str | None) -> list[dict]:
-    """All open PRs for ``repo`` (paginated). Returns ``[]`` on error so the
-    caller treats 'could not check' the same as 'no existing PR'. Fetched once
-    per run and matched in-memory against every group's fingerprint."""
-    if "/" not in repo:
-        return []
-    owner, name = repo.split("/", 1)
-    headers = _gh_headers(github_token)
-
-    pulls_all: list[dict] = []
-    page = 1
-    while True:
-        params = urllib.parse.urlencode(
-            {"state": "open", "per_page": 100, "page": page}
-        )
-        url = f"https://api.github.com/repos/{owner}/{name}/pulls?{params}"
-        req = urllib.request.Request(url, headers=headers)
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                pulls = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")
-            print(
-                f"      warning: could not query open PRs for task state: {e.code} {detail}",
-                flush=True,
-            )
-            return pulls_all
-        except urllib.error.URLError as e:
-            print(
-                f"      warning: could not query open PRs for task state: {e.reason}",
-                flush=True,
-            )
-            return pulls_all
-        if not pulls:
-            return pulls_all
-        pulls_all.extend(pulls)
-        page += 1
-
-
 def match_existing_pr(pulls: list[dict], fingerprint: str) -> int | None:
     """Return the number of an open PR already tracking ``fingerprint`` (by the
     HTML marker in its body or its ``serge/fix/itf-<fp>`` branch), else None."""
-    marker = fingerprint_marker(fingerprint)
-    branch_prefix = task_branch_prefix(fingerprint)
-    for pr in pulls:
-        body = pr.get("body") or ""
-        head_ref = (pr.get("head") or {}).get("ref") or ""
-        if marker in body or head_ref.startswith(branch_prefix):
-            return int(pr["number"])
-    return None
+    return match_pr(
+        pulls, fingerprint_marker(fingerprint), task_branch_prefix(fingerprint)
+    )
 
 
 def find_open_task_pr(
@@ -988,31 +948,6 @@ def ensure_tracking_issue(
             flush=True,
         )
         return None
-
-
-def update_issue_body(
-    repo: str, issue_number: int, body: str, github_token: str | None
-) -> bool:
-    """PATCH an existing issue's body in place. Best-effort: returns True on
-    success, False on any error (the run continues without a refresh)."""
-    if "/" not in repo or not github_token:
-        return False
-    owner, name = repo.split("/", 1)
-    url = f"https://api.github.com/repos/{owner}/{name}/issues/{issue_number}"
-    data = json.dumps({"body": body}).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        method="PATCH",
-        headers={**_gh_headers(github_token), "Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30):
-            return True
-    except (urllib.error.HTTPError, urllib.error.URLError) as e:
-        reason = getattr(e, "reason", e)
-        print(f"      warning: could not refresh tracking issue: {reason}", flush=True)
-        return False
 
 
 def _tracking_issue_marker_prefix() -> str:
@@ -1294,105 +1229,22 @@ def build_task_payload(
     notify_pr_created: bool = True,
     notify_task_finished: bool = False,
 ) -> dict:
-    if existing_pr is not None:
-        output: dict = {"mode": "existing_pr", "pr_number": existing_pr}
-    else:
-        output = {"mode": "new_pr", "branch_prefix": task_branch_prefix(fingerprint)}
-    if title:
-        output["title"] = title
-    payload = {
-        "repo": repo,
-        "base_ref": base_ref,
-        "instruction": _INSTRUCTION,
-        "context": context,
-        "output": output,
-    }
-    # A no_fix group opens no PR, so this PR-driven reconciler never links it.
-    # Tell Serge the tracking issue so it comments the outcome there directly.
-    if tracking_issue is not None:
-        payload["tracking_issue"] = tracking_issue
-    notifications: dict[str, str | bool] = {
-        "pr_created": notify_pr_created,
-        "task_finished": notify_task_finished,
-    }
-    if slack_channel:
-        notifications["slack_channel"] = slack_channel
-    if slack_channel or notify_task_finished or not notify_pr_created:
-        payload["notifications"] = notifications
-    return payload
-
-
-class SergeDispatchError(Exception):
-    """A single ``POST /tasks`` failed. Raised (not ``SystemExit``) so the
-    fan-out loop can record the failure and continue to the next group."""
-
-
-def dispatch_to_serge(
-    serge_url: str, token: str, payload: dict, timeout: int = 240
-) -> dict:
-    """POST the task to Serge. Returns the parsed 202 response body."""
-    url = serge_url.rstrip("/") + "/tasks"
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
+    """Build the ``POST /tasks`` body for one failure group, over the shared
+    :func:`serge_dispatch.build_task_payload` — this triage's fingerprint maps
+    to the ``serge/fix/itf-<fp>`` branch and the constant ``_INSTRUCTION``."""
+    return _build_serge_payload(
+        repo,
+        base_ref,
+        _INSTRUCTION,
+        context,
+        title,
+        branch_prefix=task_branch_prefix(fingerprint),
+        existing_pr=existing_pr,
+        tracking_issue=tracking_issue,
+        slack_channel=slack_channel,
+        notify_pr_created=notify_pr_created,
+        notify_task_finished=notify_task_finished,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8")
-            return json.loads(body) if body else {}
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")
-        raise SergeDispatchError(
-            f"Serge POST /tasks failed: {e.code} {e.reason}\n{detail}"
-        )
-    except urllib.error.URLError as e:
-        raise SergeDispatchError(f"could not reach Serge at {url}: {e.reason}")
-
-
-def poll_serge_status(
-    serge_url: str, token: str, repo: str, job_id: str, timeout: int = 15
-) -> str | None:
-    """Best-effort GET of a task's status from Serge, OIDC-authorized with the
-    same bearer used to dispatch (``GET /tasks/{owner}/{repo}/{job_id}/status``).
-
-    Returns the status string (``running`` / ``published`` / ``no_fix`` /
-    ``error`` / …) or ``None`` on any error — the caller treats ``None`` as
-    "unknown, try again later" and never fails the run over it."""
-    url = f"{serge_url.rstrip('/')}/tasks/{repo}/{job_id}/status"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = json.loads(resp.read().decode("utf-8") or "{}")
-    except (urllib.error.HTTPError, urllib.error.URLError, ValueError):
-        return None
-    status = body.get("status")
-    return str(status) if status else None
-
-
-def mint_serge_oidc_token() -> str | None:
-    """Re-mint a fresh Serge-audience OIDC token from the GitHub Actions token
-    service (the same exchange the workflow's mint step does in bash). Used to
-    refresh the bearer during the reconcile poll, since the token minted at
-    start can expire before every task finishes. Returns ``None`` outside
-    Actions (no request env) so callers fall back to the initial token."""
-    base = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
-    rtok = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
-    if not base or not rtok:
-        return None
-    req = urllib.request.Request(
-        f"{base}&audience=serge", headers={"Authorization": f"Bearer {rtok}"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8")).get("value") or None
-    except (urllib.error.HTTPError, urllib.error.URLError, ValueError):
-        return None
 
 
 def _env_bool(name: str, default: bool = False) -> bool:

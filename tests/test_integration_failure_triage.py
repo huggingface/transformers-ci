@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 from transformersci.agentic import integration_failure_triage as itf
+from transformersci.agentic import serge_dispatch as sd
 
 
 def _failure(model, gpu, test, trace, mode="output_mismatch", days=6):
@@ -639,17 +640,19 @@ class TrackingIssueTest(unittest.TestCase):
             def __exit__(self, *a):
                 return False
 
+        # poll_serge_status now lives in the shared serge_dispatch module, so the
+        # network is stubbed there rather than on itf's urllib.
         with patch.object(
-            itf.urllib.request, "urlopen", return_value=_Resp(b'{"status": "no_fix"}')
+            sd.urllib.request, "urlopen", return_value=_Resp(b'{"status": "no_fix"}')
         ):
             st = itf.poll_serge_status("http://s", "tok", "o/r", "j1")
         self.assertEqual(st, "no_fix")
 
     def test_poll_serge_status_swallows_errors(self):
         def boom(*a, **k):
-            raise itf.urllib.error.URLError("down")
+            raise sd.urllib.error.URLError("down")
 
-        with patch.object(itf.urllib.request, "urlopen", side_effect=boom):
+        with patch.object(sd.urllib.request, "urlopen", side_effect=boom):
             self.assertIsNone(itf.poll_serge_status("http://s", "tok", "o/r", "j1"))
 
     def test_reconcile_marks_no_fix_from_serge_status(self):
