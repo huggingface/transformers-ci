@@ -234,60 +234,10 @@
               {
                 "id": "unit",
                 "value": "s"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "PR"
-            },
-            "properties": [
+              },
               {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View PR",
-                    "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${__value.raw}",
-                    "targetBlank": false
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Job"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View job details",
-                    "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${__value.raw}",
-                    "targetBlank": false
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Function"
-            },
-            "properties": [
-              {
-                "id": "links",
-                "value": [
-                  {
-                    "title": "View test",
-                    "url": "/d/pytest-test/pytest-test?var-test_nodeid=${__data.fields[\"test_nodeid\"]}",
-                    "targetBlank": false
-                  }
-                ]
+                "id": "custom.width",
+                "value": 100
               }
             ]
           },
