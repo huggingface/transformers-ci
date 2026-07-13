@@ -315,17 +315,6 @@ jobs:
         if: github.ref != 'refs/heads/main'
         run: git fetch origin main:main
 
-#      # TODO: A better way to handle (some) python scripts
-#      # Discard the entire local utils/ first so that any file a contributor may
-#      # have added (but that does not exist upstream) cannot survive into CI.
-#      # Then repopulate exclusively from the upstream HuggingFace transformers
-#      # main branch, guaranteeing only canonical tooling is executed.
-#      - name: Sync utils/ from upstream HuggingFace transformers (main)
-#        run: |
-#          rm -rf utils/
-#          git fetch https://github.com/huggingface/transformers.git main
-#          git checkout FETCH_HEAD -- utils/
-
       - name: Install system dependencies
         run: apt-get update && apt-get install -y make
 
@@ -482,6 +471,13 @@ jobs:
 
   # Origin: examples_torch_job in .circleci/create_circleci_config.py
   # NOTE: job_name has no "tests_" prefix ("examples" in name).
+  #
+  # FIX (OOM / exit 137): pytest_num_workers reduced from 4 to 2.
+  # The examples_torch suite includes memory-heavy tests (e.g. speech/audio
+  # models such as test_run_speech_recognition_seq2seq) that, combined with
+  # 4 parallel pytest-xdist workers, exceeded the self-hosted runner's
+  # container memory limit and got SIGKILL'd (exit code 137). Lowering
+  # parallelism reduces peak concurrent memory usage for this job only.
   examples_torch:
     needs: [test-preparation, check_code_quality]
     if: needs.test-preparation.outputs.run_examples_torch == 'true'
@@ -490,7 +486,7 @@ jobs:
       job_name:           "examples_torch"
       docker_image:       "huggingface/transformers-examples-torch"
       install_steps:      "uv pip install -e . && uv pip install -r examples/pytorch/_tests_requirements.txt"
-      pytest_num_workers: 4
+      pytest_num_workers: 2
       omp_num_threads:    8
       use_dev_image:      ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
     secrets: inherit
@@ -627,17 +623,6 @@ jobs:
         with:
           path: outputs/
 
-#      # TODO: A better way to handle (some) python scripts
-#      # Discard the entire local utils/ first so that any file a contributor may
-#      # have added (but that does not exist upstream) cannot survive into CI.
-#      # Then repopulate exclusively from the upstream HuggingFace transformers
-#      # main branch, guaranteeing only canonical tooling is executed.
-#      - name: Sync utils/ from upstream HuggingFace transformers (main)
-#        run: |
-#          rm -rf utils/
-#          git fetch https://github.com/huggingface/transformers.git main
-#          git checkout FETCH_HEAD -- utils/
-
       - name: Aggregate test reports
         # Equivalent of process_circleci_workflow_test_reports.py
         # Script path updated: .circleci/ → utils/ (or wherever it lives in GHA)
@@ -716,12 +701,22 @@ jobs:
               success|skipped)
                 # Both are fine — skipped means the test list was empty for that job.
                 ;;
-              failure|cancelled)
+              failure|cancelled|timed_out)
                 echo "  ✗ at least one job reported: $result"
                 failed=true
                 ;;
+              neutral|action_required|stale)
+                # Non-success but not necessarily a hard failure (e.g. required
+                # workflow gates or manual-approval states). Log it, but do not
+                # fail CI outright — flip to `failed=true` here if you'd rather
+                # treat these as hard failures.
+                echo "  ! job reported non-standard-but-known result: $result"
+                ;;
               *)
-                echo "  ? unexpected result value: $result"
+                # Any genuinely unknown value still fails CI, but now the message
+                # explicitly says which value slipped through, instead of just
+                # tripping the default branch on any string GitHub adds later.
+                echo "  ? unexpected result value: '$result' (please update this case statement to handle it)"
                 failed=true
                 ;;
             esac
