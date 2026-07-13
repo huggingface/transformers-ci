@@ -211,6 +211,11 @@ jobs:
           # OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_TOKEN are injected by the self-
           # hosted runner. When absent, OTEL_WRAP stays empty and the pytest
           # command below is identical to the un-instrumented upstream one.
+          # Stamp the hardware name (single-gpu / multi-gpu) so the exporter can
+          # split this test_job per hardware and the dashboards map it to GPU/xGPU.
+          # $machine_type is set by the "Set machine_type" step above.
+          export OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES},transformers.test.hardware=${machine_type}"
+
           OTEL_WRAP=""
           if [ -n "$OTEL_EXPORTER_OTLP_ENDPOINT" ]; then
             # Confirm the collector is reachable (diagnostic only, never fatal).

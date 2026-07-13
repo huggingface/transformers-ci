@@ -83,6 +83,7 @@ def make_trace(
     job_tag_key: str = "transformers.test.job",
     commit_sha: str = "",
     ci_event: str = "",
+    hardware: str = "",
 ) -> dict:
     tags = [
         make_tag("transformers.test.provider", provider),
@@ -96,6 +97,8 @@ def make_trace(
         tags.append(make_tag("vcs.ref.head.revision", commit_sha))
     if ci_event:
         tags.append(make_tag("transformers.test.ci_event", ci_event))
+    if hardware:
+        tags.append(make_tag("transformers.test.hardware", hardware))
     return {
         "processes": {
             "pytest-process": {
@@ -646,6 +649,119 @@ def test_run_rollup_metrics_carry_ci_event_label() -> None:
     legacy_run_lines = metric_lines(legacy_metrics, "pytest_run_start_time_seconds")
     assert len(legacy_run_lines) == 1
     assert 'ci_event="none"' in legacy_run_lines[0]
+
+
+def test_extract_trace_rows_reads_hardware_and_falls_back_by_job_name() -> None:
+    """Explicit transformers.test.hardware is used verbatim; legacy traces (no
+    attr) fall back to a coarse class derived from the job name."""
+    explicit = make_trace(
+        trace_id="t-hw",
+        run_id="r-hw",
+        job="run_models_gpu",
+        pr="main",
+        hardware="multi-gpu",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/models/bert/test_modeling_bert.py::T::t",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    info, _ = trace_exporter.extract_trace_rows(explicit)
+    assert info["hardware"] == "multi-gpu"
+
+    gpu_legacy = make_trace(
+        trace_id="t-g",
+        run_id="r-g",
+        job="run_kernels_gpu",
+        pr="main",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/kernels/test_kernels.py::T::t",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    assert trace_exporter.extract_trace_rows(gpu_legacy)[0]["hardware"] == "gpu"
+
+    cpu_legacy = make_trace(
+        trace_id="t-c",
+        run_id="r-c",
+        job="tests_torch",
+        pr="42",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_torch.py::T::t",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    assert trace_exporter.extract_trace_rows(cpu_legacy)[0]["hardware"] == "cpu"
+
+
+def test_run_rollup_splits_same_job_across_hardware() -> None:
+    """The same test_job on two hardware variants (e.g. daily run_models_gpu on
+    single- and multi-GPU) yields two distinct job rows, each labelled with its
+    hardware and its own counts — not merged into one."""
+    single = make_trace(
+        trace_id="t-single",
+        run_id="run-hw:1",
+        job="run_models_gpu",
+        pr="main",
+        ci_event="daily",
+        hardware="single-gpu",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/models/bert/test_modeling_bert.py::T::t_pass",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    multi = make_trace(
+        trace_id="t-multi",
+        run_id="run-hw:1",
+        job="run_models_gpu",
+        pr="main",
+        ci_event="daily",
+        hardware="multi-gpu",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/models/bert/test_modeling_bert.py::T::t_a",
+                start_time=1_000_000,
+                duration=1_000_000,
+            ),
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/models/bert/test_modeling_bert.py::T::t_b",
+                start_time=1_000_000,
+                duration=1_000_000,
+                status_code="ERROR",
+            ),
+        ],
+    )
+    metrics = trace_exporter.extract_per_run_metrics([single, multi])
+    total_lines = metric_lines(metrics, "pytest_run_job_total_tests")
+    # Two rows for the same test_job, split by hardware.
+    assert any(
+        'hardware="single-gpu"' in ln and ln.endswith(" 1") for ln in total_lines
+    )
+    assert any('hardware="multi-gpu"' in ln and ln.endswith(" 2") for ln in total_lines)
+    failed_lines = metric_lines(metrics, "pytest_run_job_failed_tests")
+    assert any(
+        'hardware="multi-gpu"' in ln and ln.endswith(" 1") for ln in failed_lines
+    )
+    assert any(
+        'hardware="single-gpu"' in ln and ln.endswith(" 0") for ln in failed_lines
+    )
 
 
 def test_extract_trace_rows_falls_back_to_legacy_suite_tag() -> None:

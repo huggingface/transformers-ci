@@ -1598,6 +1598,18 @@ def latest_trace(traces: list[dict]) -> dict | None:
     return max(traces, key=trace_start_time)
 
 
+def hardware_from_job(test_job: str) -> str:
+    """Coarse hardware class for a trace that carries no explicit hardware attr.
+
+    Legacy/PR traces have no ``transformers.test.hardware`` resource attribute.
+    CPU vs GPU is inferable from the job name (``*_gpu`` jobs run on GPU); single-
+    vs multi-GPU is NOT, so this returns the coarse class and explicit emission
+    (``single-gpu``/``multi-gpu``/``cpu``) refines it when present. The dashboards
+    map the raw value to a CPU/GPU/xGPU display via a value-mapping table.
+    """
+    return "gpu" if "gpu" in (test_job or "").lower() else "cpu"
+
+
 def extract_trace_rows(
     trace: dict,
 ) -> tuple[dict[str, str | int], list[dict[str, str | float]]]:
@@ -1626,6 +1638,7 @@ def extract_trace_rows(
     process_repository = ""
     process_commit_sha = ""
     process_ci_event = ""
+    process_hardware = ""
     service_name = ""
     end_time = 0
     start_time = 0
@@ -1686,6 +1699,12 @@ def extract_trace_rows(
         process_ci_event = process_tags.get(
             "transformers.test.ci_event", process_ci_event
         )
+        # Hardware class name (e.g. "single-gpu"/"multi-gpu"/"cpu"). Stamped by
+        # the CI job; falls back to a coarse class derived from the job name for
+        # legacy traces. The dashboards value-map it to CPU/GPU/xGPU.
+        process_hardware = process_tags.get(
+            "transformers.test.hardware", process_hardware
+        )
 
         span_tags = tag_map(span.get("tags", []))
         nodeid = span_tags.get("pytest.nodeid")
@@ -1709,6 +1728,7 @@ def extract_trace_rows(
                 "run_id": process_run_id or trace_id,
                 "service_name": service_name or "unknown",
                 "status_code": span_tags.get("otel.status_code", "UNSET"),
+                "hardware": process_hardware or hardware_from_job(process_job),
                 "test_class": node_parts["test_class"],
                 "test_function": node_parts["test_function"],
                 "test_line": extract_test_line(exc_stacktrace, nodeid),
@@ -1726,6 +1746,7 @@ def extract_trace_rows(
 
     return {
         "ci_event": process_ci_event or "none",
+        "hardware": process_hardware or hardware_from_job(process_job),
         "commit_sha": process_commit_sha,
         "end_time": end_time,
         "latest_start_time": latest_start_time,
@@ -2566,11 +2587,20 @@ def extract_run_rollup_metrics(
         ):
             aggregate["start_time"] = trace_start_time
 
+        # Same fallback as the store path (_update_run_store_counts) so job_key and
+        # the reconcile store key always agree, even if `hardware` is absent.
+        hardware = str(
+            trace_info.get("hardware")
+            or hardware_from_job(str(trace_info.get("test_job", "unknown")))
+        )
         job_names = aggregate["job_names"]
         assert isinstance(job_names, set)
-        job_names.add(str(trace_info.get("test_job", "unknown")))
+        # Track (test_job, hardware) pairs: the same test_job can run on more than
+        # one hardware in a run (e.g. daily run_models_gpu on single- and multi-GPU),
+        # which are distinct job executions.
+        job_names.add((str(trace_info.get("test_job", "unknown")), hardware))
 
-        job_key = run_key + (str(trace_info.get("test_job", "unknown")),)
+        job_key = run_key + (str(trace_info.get("test_job", "unknown")), hardware)
         if job_key not in job_aggregates:
             job_aggregates[job_key] = {
                 "ci_event": str(trace_info.get("ci_event", "none")),
@@ -2604,13 +2634,17 @@ def extract_run_rollup_metrics(
     # practice, so this simply heals the snapshot. The counts come from an
     # in-memory cache populated by persist_run_rows this render — no extra I/O.
     store_counts = _run_store_counts_snapshot()
-    reconciled_jobs: dict[tuple[str, str, str, str, str], tuple[int, int, float]] = {}
+    reconciled_jobs: dict[
+        tuple[str, str, str, str, str, str], tuple[int, int, float]
+    ] = {}
     reconciled_runs: dict[tuple[str, str, str, str], tuple[int, int, float]] = {}
     for job_key, job_aggregate in job_aggregates.items():
         total = int(job_aggregate["total"])
         failed = int(job_aggregate["failed"])
         duration = float(job_aggregate["total_duration"])
-        stored = store_counts.get(job_key[3], {}).get(job_key[4])
+        # Store counts are keyed by (test_job, hardware) so a test_job that ran on
+        # more than one hardware reconciles each variant against its own totals.
+        stored = store_counts.get(job_key[3], {}).get((job_key[4], job_key[5]))
         if stored is not None:
             total = max(total, int(stored["total"]))
             failed = max(failed, int(stored["failed"]))
@@ -2628,7 +2662,7 @@ def extract_run_rollup_metrics(
     for (service_name, provider, pr, run_id), aggregate in sorted(
         run_aggregates.items()
     ):
-        job_names = sorted(str(job_name) for job_name in aggregate["job_names"])
+        job_pairs = sorted(aggregate["job_names"])
         total, failed, total_duration = reconciled_runs.get(
             (service_name, provider, pr, run_id),
             (
@@ -2675,18 +2709,20 @@ def extract_run_rollup_metrics(
             f"pytest_run_wall_seconds{metric_labels(run_labels)} {run_wall_seconds:.6f}"
         )
         lines.append(
-            f"pytest_run_job_count{metric_labels(run_labels)} {len(job_names)}"
+            f"pytest_run_job_count{metric_labels(run_labels)} "
+            f"{len({name for name, _hw in job_pairs})}"
         )
-        for job_name in job_names:
+        for job_name, hardware in job_pairs:
             job_labels = dict(run_labels)
             job_labels["test_job"] = job_name
+            job_labels["hardware"] = hardware
             lines.append(f"pytest_run_job_member_info{metric_labels(job_labels)} 1")
 
-    for (service_name, provider, pr, run_id, test_job), aggregate in sorted(
+    for (service_name, provider, pr, run_id, test_job, hardware), aggregate in sorted(
         job_aggregates.items()
     ):
         total, failed, job_duration = reconciled_jobs.get(
-            (service_name, provider, pr, run_id, test_job),
+            (service_name, provider, pr, run_id, test_job, hardware),
             (
                 int(aggregate["total"]),
                 int(aggregate["failed"]),
@@ -2695,6 +2731,7 @@ def extract_run_rollup_metrics(
         )
         job_labels = {
             "ci_event": str(aggregate.get("ci_event", "none")),
+            "hardware": hardware,
             "pr": pr,
             "provider": provider,
             "run_id": run_id,
@@ -2779,12 +2816,17 @@ def _update_run_store_counts(
     Called from :func:`persist_run_rows` with the already-built union, so it adds
     only one O(rows) pass over data we just merged — no additional I/O.
     """
-    counts: dict[str, dict[str, float]] = {}
+    counts: dict[tuple[str, str], dict[str, float]] = {}
     for r in rows:
         job = str(r.get("test_job", "") or "")
-        entry = counts.get(job)
+        # Key by (test_job, hardware) to match the rollup's job_key. Use the same
+        # job-name fallback as the trace path so legacy store rows (written before
+        # the hardware field existed) land on the same key and keep reconciling.
+        hardware = str(r.get("hardware") or hardware_from_job(job))
+        key = (job, hardware)
+        entry = counts.get(key)
         if entry is None:
-            entry = counts[job] = {"total": 0.0, "failed": 0.0, "duration": 0.0}
+            entry = counts[key] = {"total": 0.0, "failed": 0.0, "duration": 0.0}
         entry["total"] += 1
         if str(r.get("status_code")) == "ERROR":
             entry["failed"] += 1
@@ -4060,6 +4102,7 @@ def _refresh_loop(interval: float) -> None:
 _RUN_STORE_FIELDS = (
     "test_nodeid",
     "test_job",
+    "hardware",
     "status_code",
     "duration_seconds",
     "trace_id",
