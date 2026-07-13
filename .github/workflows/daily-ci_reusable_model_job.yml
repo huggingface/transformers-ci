@@ -84,6 +84,12 @@ jobs:
       # GITHUB_RUN_ID on branch `main` (the "branch" dashboard variant).
       TRANSFORMERSCI_OTEL_DEBUG: "1"
       TRANSFORMERS_TEST_OTEL_SUITE: ${{ inputs.report_name_prefix }}
+      # Distinguish scheduled daily runs from push-to-main merge runs on the
+      # dashboards: both otherwise collapse to pr="main" (no PR number).
+      # configure-ci-otel folds this into the span resource attributes, and the
+      # trace-exporter promotes transformers.test.ci_event to the `ci_event`
+      # Prometheus label consumed by the daily dashboard.
+      OTEL_RESOURCE_ATTRIBUTES: "transformers.test.ci_event=daily"
     outputs:
       machine_type: ${{ steps.set_machine_type.outputs.machine_type }}
     steps:

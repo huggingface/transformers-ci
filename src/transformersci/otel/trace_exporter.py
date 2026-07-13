@@ -1625,6 +1625,7 @@ def extract_trace_rows(
     process_pr_url = ""
     process_repository = ""
     process_commit_sha = ""
+    process_ci_event = ""
     service_name = ""
     end_time = 0
     start_time = 0
@@ -1678,6 +1679,13 @@ def extract_trace_rows(
         process_commit_sha = process_tags.get(
             "vcs.ref.head.revision", process_commit_sha
         )
+        # CI event / run source (e.g. "daily", "merge"). Push-to-main merges and
+        # scheduled daily runs both collapse to pr="main" (no vcs.change.id), so
+        # this is the only attribute that tells them apart. Stamped by the daily
+        # caller via OTEL_RESOURCE_ATTRIBUTES=transformers.test.ci_event=daily.
+        process_ci_event = process_tags.get(
+            "transformers.test.ci_event", process_ci_event
+        )
 
         span_tags = tag_map(span.get("tags", []))
         nodeid = span_tags.get("pytest.nodeid")
@@ -1717,6 +1725,7 @@ def extract_trace_rows(
         process_pr_url = github_pr_html_url(process_repository, process_pr)
 
     return {
+        "ci_event": process_ci_event or "none",
         "commit_sha": process_commit_sha,
         "end_time": end_time,
         "latest_start_time": latest_start_time,
@@ -2531,6 +2540,7 @@ def extract_run_rollup_metrics(
         )
         if run_key not in run_aggregates:
             run_aggregates[run_key] = {
+                "ci_event": str(trace_info.get("ci_event", "none")),
                 "end_time": int(trace_info.get("end_time", 0) or 0),
                 "failed": 0,
                 "start_time": int(trace_info.get("start_time", 0) or 0),
@@ -2563,6 +2573,7 @@ def extract_run_rollup_metrics(
         job_key = run_key + (str(trace_info.get("test_job", "unknown")),)
         if job_key not in job_aggregates:
             job_aggregates[job_key] = {
+                "ci_event": str(trace_info.get("ci_event", "none")),
                 "failed": 0,
                 "total": 0,
                 "total_duration": 0.0,
@@ -2629,6 +2640,7 @@ def extract_run_rollup_metrics(
         start_time_seconds = int(aggregate["start_time"]) / 1_000_000
         end_time_seconds = int(aggregate["end_time"]) / 1_000_000
         run_labels = {
+            "ci_event": str(aggregate.get("ci_event", "none")),
             "pr": pr,
             "provider": provider,
             "run_id": run_id,
@@ -2682,6 +2694,7 @@ def extract_run_rollup_metrics(
             ),
         )
         job_labels = {
+            "ci_event": str(aggregate.get("ci_event", "none")),
             "pr": pr,
             "provider": provider,
             "run_id": run_id,

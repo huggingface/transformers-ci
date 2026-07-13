@@ -82,6 +82,7 @@ def make_trace(
     service_name: str = "transformers-tests",
     job_tag_key: str = "transformers.test.job",
     commit_sha: str = "",
+    ci_event: str = "",
 ) -> dict:
     tags = [
         make_tag("transformers.test.provider", provider),
@@ -93,6 +94,8 @@ def make_trace(
     ]
     if commit_sha:
         tags.append(make_tag("vcs.ref.head.revision", commit_sha))
+    if ci_event:
+        tags.append(make_tag("transformers.test.ci_event", ci_event))
     return {
         "processes": {
             "pytest-process": {
@@ -554,6 +557,95 @@ def test_extract_trace_rows_falls_back_to_branch_name_when_no_pr() -> None:
     trace_info, rows = trace_exporter.extract_trace_rows(trace)
     assert trace_info["pr"] == "main"
     assert rows[0]["pr"] == "main"
+
+
+def test_extract_trace_rows_reads_ci_event_from_resource_attribute() -> None:
+    """Scheduled daily runs stamp transformers.test.ci_event=daily so they can be
+    told apart from push-to-main merge runs (both otherwise share pr="main")."""
+    trace = make_trace(
+        trace_id="trace-daily",
+        run_id="run-daily",
+        job="run_models_gpu",
+        pr="main",
+        ci_event="daily",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/models/bert/test_modeling_bert.py::T::test_x",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    trace_info, rows = trace_exporter.extract_trace_rows(trace)
+    assert trace_info["ci_event"] == "daily"
+
+
+def test_extract_trace_rows_defaults_ci_event_to_none_for_legacy_data() -> None:
+    """Backward compatibility: existing prod traces (PR + merge) carry no
+    transformers.test.ci_event attribute, so ci_event must default to "none"
+    rather than being absent — the new label is always present and queryable."""
+    trace = make_trace(
+        trace_id="trace-legacy",
+        run_id="run-legacy",
+        job="tests_torch",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_torch.py::T::test_x",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    trace_info, _rows = trace_exporter.extract_trace_rows(trace)
+    assert trace_info["ci_event"] == "none"
+
+
+def test_run_rollup_metrics_carry_ci_event_label() -> None:
+    """The `ci_event` label is emitted on the run- and job-level rollup metrics
+    the dashboards query: "daily" for scheduled runs, "none" for legacy traces."""
+    daily = make_trace(
+        trace_id="trace-daily",
+        run_id="run-daily",
+        job="run_models_gpu",
+        pr="main",
+        ci_event="daily",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/models/bert/test_modeling_bert.py::T::test_x",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    metrics = trace_exporter.extract_per_run_metrics([daily])
+    run_lines = metric_lines(metrics, "pytest_run_start_time_seconds")
+    assert len(run_lines) == 1
+    assert 'ci_event="daily"' in run_lines[0]
+    job_failed = metric_lines(metrics, "pytest_run_job_failed_tests")
+    assert len(job_failed) == 1
+    assert 'ci_event="daily"' in job_failed[0]
+
+    # A legacy trace (no attribute) still gets a queryable ci_event="none" label.
+    legacy = make_trace(
+        trace_id="trace-legacy",
+        run_id="run-legacy",
+        job="tests_torch",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_torch.py::T::test_x",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    legacy_metrics = trace_exporter.extract_per_run_metrics([legacy])
+    legacy_run_lines = metric_lines(legacy_metrics, "pytest_run_start_time_seconds")
+    assert len(legacy_run_lines) == 1
+    assert 'ci_event="none"' in legacy_run_lines[0]
 
 
 def test_extract_trace_rows_falls_back_to_legacy_suite_tag() -> None:
