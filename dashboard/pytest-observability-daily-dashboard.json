@@ -206,6 +206,44 @@
                 "value": "s"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hardware"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "cpu": {
+                        "text": "CPU",
+                        "index": 0
+                      },
+                      "gpu": {
+                        "text": "GPU",
+                        "index": 1
+                      },
+                      "single-gpu": {
+                        "text": "GPU",
+                        "index": 2
+                      },
+                      "multi-gpu": {
+                        "text": "xGPU",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
           }
         ]
       },
@@ -250,7 +288,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])) * on (run_id) group_left() max by (run_id)(max without (instance) (last_over_time(pytest_run_start_time_seconds{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))) * 1000"
+          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])) * on (run_id) group_left() max by (run_id)(max without (instance) (last_over_time(pytest_run_start_time_seconds{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))) * 1000"
         },
         {
           "refId": "Duration",
@@ -259,7 +297,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_duration_seconds{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
+          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_duration_seconds{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
         },
         {
           "refId": "Pass",
@@ -268,7 +306,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_passed_tests{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
+          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_passed_tests{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
         },
         {
           "refId": "Fail",
@@ -277,7 +315,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_failed_tests{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
+          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_failed_tests{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
         },
         {
           "refId": "Active",
@@ -286,7 +324,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "",
-          "expr": "max by (test_job)(last_over_time(pytest_run_job_active{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[5m])) or (((max by (test_job)(last_over_time(pytest_run_job_failed_tests{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])) >= bool 1) * 3) > 0) or ((max by (test_job)(last_over_time(pytest_run_job_passed_tests{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])) >= bool 0) * 2)"
+          "expr": "max by (test_job, hardware)(last_over_time(pytest_run_job_active{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[5m])) or (((max by (test_job, hardware)(last_over_time(pytest_run_job_failed_tests{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])) >= bool 1) * 3) > 0) or ((max by (test_job, hardware)(last_over_time(pytest_run_job_passed_tests{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])) >= bool 0) * 2)"
         },
         {
           "refId": "Wall",
@@ -295,7 +333,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_wall_seconds{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
+          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_wall_seconds{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
         }
       ],
       "title": "Latest Run Jobs",
@@ -313,11 +351,12 @@
             "indexByName": {
               "Value #Active": 0,
               "test_job": 1,
-              "Value #Started": 2,
-              "Value #Duration": 3,
-              "Value #Pass": 5,
-              "Value #Fail": 6,
-              "Value #Wall": 4
+              "hardware": 2,
+              "Value #Started": 3,
+              "Value #Duration": 4,
+              "Value #Wall": 5,
+              "Value #Pass": 6,
+              "Value #Fail": 7
             },
             "renameByName": {
               "test_job": "Job",
@@ -326,7 +365,8 @@
               "Value #Pass": "Pass",
               "Value #Fail": "Fail",
               "Value #Active": "Status",
-              "Value #Wall": "Wall"
+              "Value #Wall": "Wall",
+              "hardware": "Hardware"
             }
           }
         }
