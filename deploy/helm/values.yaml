@@ -317,6 +317,7 @@ grafana:
       - pytest-observability-job-dashboard.json
       - pytest-observability-pr-dashboard.json
       - pytest-observability-run-dashboard.json
+      - pytest-observability-daily-dashboard.json
       - pytest-test-dashboard.json
       - pytest-test-health-dashboard.json
       - pytest-observability-stack-health.json

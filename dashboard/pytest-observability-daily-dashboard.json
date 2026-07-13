@@ -1,0 +1,729 @@
+{
+  "uid": "pytest-observability-daily",
+  "title": "Daily",
+  "tags": [
+    "pytest-observability",
+    "daily"
+  ],
+  "schemaVersion": 41,
+  "timezone": "browser",
+  "editable": true,
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "refresh": "",
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(topk(1, last_over_time(pytest_run_start_time_seconds{ci_event=\"daily\"}[90d]) or timestamp(last_over_time(pytest_run_active{ci_event=\"daily\"}[5m]))))",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "latest_run_id",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(topk(1, last_over_time(pytest_run_start_time_seconds{ci_event=\"daily\"}[90d]) or timestamp(last_over_time(pytest_run_active{ci_event=\"daily\"}[5m]))))",
+          "refId": "Prometheus-latest_run_id-Variable-Query"
+        },
+        "regex": "/.*run_id=\"([^\"]+)\".*/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Per-job breakdown of the most recent run for this PR. Each row is one job; columns count tests by pass/fail status.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Job"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View job",
+                    "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${__value.raw}&var-run_id=${latest_run_id}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Fail"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Test Time"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "image"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 46
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PC9zdmc+",
+                        "index": 0
+                      },
+                      "2": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iIzNmYjk1MCIvPjxwYXRoIGQ9Ik00LjUgOC4zbDIuMSAyLjEgNC45LTUuMSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjEuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+",
+                        "index": 1
+                      },
+                      "3": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iI2Y4NTE0OSIvPjxwYXRoIGQ9Ik01LjQgNS40bDUuMiA1LjJNMTAuNiA1LjRsLTUuMiA1LjIiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjgiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Wall"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 13,
+      "links": [
+        {
+          "title": "View this run",
+          "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${latest_run_id}",
+          "targetBlank": false
+        }
+      ],
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Fail"
+          }
+        ]
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "Started",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])) * on (run_id) group_left() max by (run_id)(max without (instance) (last_over_time(pytest_run_start_time_seconds{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))) * 1000"
+        },
+        {
+          "refId": "Duration",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_duration_seconds{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
+        },
+        {
+          "refId": "Pass",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_passed_tests{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
+        },
+        {
+          "refId": "Fail",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_failed_tests{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
+        },
+        {
+          "refId": "Active",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "",
+          "expr": "max by (test_job)(last_over_time(pytest_run_job_active{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[5m])) or (((max by (test_job)(last_over_time(pytest_run_job_failed_tests{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])) >= bool 1) * 3) > 0) or ((max by (test_job)(last_over_time(pytest_run_job_passed_tests{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])) >= bool 0) * 2)"
+        },
+        {
+          "refId": "Wall",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_wall_seconds{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
+        }
+      ],
+      "title": "Latest Run Jobs",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "Value #Active": 0,
+              "test_job": 1,
+              "Value #Started": 2,
+              "Value #Duration": 3,
+              "Value #Pass": 5,
+              "Value #Fail": 6,
+              "Value #Wall": 4
+            },
+            "renameByName": {
+              "test_job": "Job",
+              "Value #Started": "Started",
+              "Value #Duration": "Test Time",
+              "Value #Pass": "Pass",
+              "Value #Fail": "Fail",
+              "Value #Active": "Status",
+              "Value #Wall": "Wall"
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Result"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 90
+                    },
+                    {
+                      "color": "green",
+                      "value": 99
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Commit"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View this run",
+                    "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${__data.fields.run_id}",
+                    "targetBlank": false
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 560
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "run_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Test Time"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failures"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Job Count"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Wall"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "id": 5,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Started"
+          }
+        ]
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))) * 1000",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Start"
+        },
+        {
+          "editorMode": "code",
+          "expr": "count by (run_id, pr) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Jobs"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Total"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (run_id, pr, commit_message, commit_sha) (max without (instance) (last_over_time(pytest_run_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Commit"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_duration_seconds{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Duration"
+        },
+        {
+          "editorMode": "code",
+          "expr": "floor((100 * (1 - max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))) / max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))))) * 100) / 100",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Result"
+        },
+        {
+          "datasource": null,
+          "editorMode": "code",
+          "expr": "max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Failures"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_wall_seconds{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Wall"
+        }
+      ],
+      "title": "Past Runs",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "provider": true,
+              "service_name": true,
+              "pr": true,
+              "Value #Commit": true,
+              "commit_sha": true
+            },
+            "indexByName": {
+              "run_id": 0,
+              "commit_message": 1,
+              "Value #Start": 2,
+              "Value #Jobs": 3,
+              "Value #Total": 4,
+              "Value #Failures": 5,
+              "Value #Result": 6,
+              "Value #Duration": 7,
+              "Value #Wall": 8
+            },
+            "renameByName": {
+              "commit_message": "Commit",
+              "Value #Jobs": "Job Count",
+              "Value #Total": "Tests",
+              "Value #Start": "Started",
+              "Value #Duration": "Test Time",
+              "Value #Result": "Result",
+              "Value #Failures": "Failures",
+              "Value #Wall": "Wall"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Started",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "limit",
+          "options": {
+            "limitField": 10
+          }
+        }
+      ],
+      "type": "table"
+    }
+  ],
+  "links": [
+    {
+      "targetBlank": false,
+      "title": "Back to overview",
+      "type": "link",
+      "url": "/d/pytest-observability/overview"
+    },
+    {
+      "targetBlank": false,
+      "title": "CI Health",
+      "type": "link",
+      "url": "/d/pytest-observability-stack-health/ci-health?orgId=1&from=now-24h&to=now&timezone=browser&refresh=30s"
+    }
+  ],
+  "timepicker": {
+    "hidden": true
+  }
+}
