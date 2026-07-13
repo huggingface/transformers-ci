@@ -361,6 +361,38 @@ def test_render_run_html_sorts_filters_and_links() -> None:
     assert "test_slow" in allrows and "test_boom" in allrows
 
 
+def test_render_run_html_hardware_column_and_filter() -> None:
+    rows = [
+        {
+            "test_nodeid": "tests/models/bert/test_x.py::T::t",
+            "test_job": "run_models_gpu",
+            "status_code": "OK",
+            "trace_id": "s",
+            "pr": "main",
+            "hardware": "single-gpu",
+            "duration_seconds": 2.0,
+        },
+        {
+            "test_nodeid": "tests/models/bert/test_y.py::T::t",
+            "test_job": "run_models_gpu",
+            "status_code": "OK",
+            "trace_id": "m",
+            "pr": "main",
+            "hardware": "multi-gpu",
+            "duration_seconds": 1.0,
+        },
+    ]
+    out = trace_exporter.render_run_html("9:1", rows)
+    # Hardware column present with mapped display values (single-gpu->GPU, multi-gpu->xGPU).
+    assert "<th>Hardware</th>" in out
+    assert ">GPU<" in out and ">xGPU<" in out
+    # hardware filter keeps only the matching rows; sentinels mean no filter.
+    only_multi = trace_exporter.render_run_html("9:1", rows, hardware="multi-gpu")
+    assert "test_y" in only_multi and "test_x" not in only_multi
+    both = trace_exporter.render_run_html("9:1", rows, hardware="All")
+    assert "test_x" in both and "test_y" in both
+
+
 def test_gather_run_test_rows_from_membership(monkeypatch: pytest.MonkeyPatch) -> None:
     """A run in the in-memory membership map is reconstructed from the trace
     cache without any Tempo network call."""

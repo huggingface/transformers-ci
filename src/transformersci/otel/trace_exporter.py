@@ -1610,6 +1610,20 @@ def hardware_from_job(test_job: str) -> str:
     return "gpu" if "gpu" in (test_job or "").lower() else "cpu"
 
 
+# Map a raw hardware name (single-gpu/multi-gpu/cpu/gpu) to its display label.
+# Kept in one place so the /run table and the dashboards use the same vocabulary.
+_HARDWARE_DISPLAY = {
+    "cpu": "CPU",
+    "gpu": "GPU",
+    "single-gpu": "GPU",
+    "multi-gpu": "xGPU",
+}
+
+
+def hardware_display(raw: str) -> str:
+    return _HARDWARE_DISPLAY.get((raw or "").lower(), raw or "")
+
+
 def extract_trace_rows(
     trace: dict,
 ) -> tuple[dict[str, str | int], list[dict[str, str | float]]]:
@@ -4388,6 +4402,7 @@ def render_run_html(
     job: str = "",
     status: str = "",
     limit: int = 200,
+    hardware: str = "",
 ) -> str:
     """Render the per-run test table (sortable, links to the per-test page).
 
@@ -4396,7 +4411,15 @@ def render_run_html(
     Grafana host via ingress) and open in the parent frame.
     """
     esc = html.escape
-    job_rows = [r for r in rows if not job or str(r.get("test_job", "")) == job]
+    # Optional hardware filter (raw name, e.g. "single-gpu"). Sentinels from the
+    # dashboard's includeAll variable mean "no filter".
+    hardware_active = bool(hardware) and hardware not in (".+", ".*", "All", "$__all")
+    job_rows = [
+        r
+        for r in rows
+        if (not job or str(r.get("test_job", "")) == job)
+        and (not hardware_active or str(r.get("hardware", "")) == hardware)
+    ]
     # The Run/Job dashboards pass $status_filter as either "ERROR" (Failing) or a
     # regex-all sentinel (".+"/".*"/"All") meaning no filter.
     status_active = bool(status) and status not in (".+", ".*", "All")
@@ -4469,7 +4492,7 @@ def render_run_html(
     )
     out.append(
         "<table><thead><tr><th>Status</th><th>Test</th><th>Job</th>"
-        "<th style='text-align:right'>Duration</th></tr></thead><tbody>"
+        "<th>Hardware</th><th style='text-align:right'>Duration</th></tr></thead><tbody>"
     )
     for row in shown:
         nodeid = str(row.get("test_nodeid", ""))
@@ -4499,6 +4522,7 @@ def render_run_html(
             f"<td class='nodeid'><a target='_parent' href=\"{esc(href)}\">"
             f"{esc(nodeid)}</a></td>"
             f"<td>{esc(str(row.get('test_job', '')))}</td>"
+            f"<td>{esc(hardware_display(str(row.get('hardware', ''))))}</td>"
             f"<td class='dur'>{dur:.3f}s</td></tr>"
         )
     out.append("</tbody></table></body></html>")
@@ -4627,6 +4651,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         run_id = (params.get("run_id") or [""])[0].strip()
         job = (params.get("job") or [""])[0].strip()
         status = (params.get("status") or [""])[0].strip()
+        hardware = (params.get("hardware") or [""])[0].strip()
         try:
             limit = int((params.get("limit") or ["200"])[0])
         except ValueError:
@@ -4646,9 +4671,9 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self._send(
             200,
             "text/html; charset=utf-8",
-            render_run_html(run_id, rows, job=job, status=status, limit=limit).encode(
-                "utf-8"
-            ),
+            render_run_html(
+                run_id, rows, job=job, status=status, limit=limit, hardware=hardware
+            ).encode("utf-8"),
             cache_control=_public_cache_control_header(),
         )
 
