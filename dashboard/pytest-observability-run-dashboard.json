@@ -314,7 +314,7 @@
       "transparent": true,
       "options": {
         "mode": "html",
-        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&status='+encodeURIComponent('${status_filter}')+'&limit='+encodeURIComponent('${test_limit}')+'&from=${__from}&to=${__to}';location.replace(u);</script>\"></iframe>"
+        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+'&from=${__from}&to=${__to}';location.replace(u);</script>\"></iframe>"
       }
     },
     {
@@ -429,6 +429,44 @@
                 "value": "s"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hardware"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "cpu": {
+                        "text": "CPU",
+                        "index": 0
+                      },
+                      "gpu": {
+                        "text": "GPU",
+                        "index": 1
+                      },
+                      "single-gpu": {
+                        "text": "GPU",
+                        "index": 2
+                      },
+                      "multi-gpu": {
+                        "text": "xGPU",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
           }
         ]
       },
@@ -466,7 +504,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_member_info{run_id=~\"$run_id\"}[90d])) * on (run_id) group_left() max by (run_id)(max without (instance) (last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\"}[90d])))) * 1000"
+          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_member_info{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])) * on (run_id) group_left() max by (run_id)(max without (instance) (last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])))) * 1000"
         },
         {
           "refId": "Duration",
@@ -475,7 +513,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_duration_seconds{run_id=~\"$run_id\"}[90d])))"
+          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_duration_seconds{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])))"
         },
         {
           "refId": "Pass",
@@ -484,7 +522,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_passed_tests{run_id=~\"$run_id\"}[90d])))"
+          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_passed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])))"
         },
         {
           "refId": "Fail",
@@ -493,7 +531,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d])))"
+          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])))"
         },
         {
           "refId": "Wall",
@@ -502,7 +540,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job) (max without (instance) (last_over_time(pytest_run_job_wall_seconds{run_id=~\"$run_id\"}[90d])))"
+          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_wall_seconds{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])))"
         }
       ],
       "title": "Jobs",
@@ -519,11 +557,12 @@
             },
             "indexByName": {
               "test_job": 0,
-              "Value #Started": 1,
-              "Value #Duration": 2,
-              "Value #Pass": 4,
-              "Value #Fail": 5,
-              "Value #Wall": 3
+              "hardware": 1,
+              "Value #Started": 2,
+              "Value #Duration": 3,
+              "Value #Wall": 4,
+              "Value #Pass": 5,
+              "Value #Fail": 6
             },
             "renameByName": {
               "test_job": "Job",
@@ -531,7 +570,8 @@
               "Value #Duration": "Test Time",
               "Value #Pass": "Pass",
               "Value #Fail": "Fail",
-              "Value #Wall": "Wall"
+              "Value #Wall": "Wall",
+              "hardware": "Hardware"
             }
           }
         }
@@ -565,6 +605,33 @@
         ],
         "query": "",
         "type": "textbox"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(pytest_run_job_member_info{run_id=~\"$run_id\"}, hardware)",
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "Hardware",
+        "multi": false,
+        "name": "hardware",
+        "hide": 0,
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_run_job_member_info{run_id=~\"$run_id\"}, hardware)",
+          "refId": "Prometheus-hardware-Variable-Query"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
       },
       {
         "current": {

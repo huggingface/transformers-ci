@@ -41,7 +41,7 @@
     {
       "gridPos": {
         "h": 5,
-        "w": 6,
+        "w": 4,
         "x": 0,
         "y": 0
       },
@@ -53,6 +53,64 @@
       "pluginVersion": "12.0.0",
       "title": "Job",
       "type": "text"
+    },
+    {
+      "id": 27,
+      "type": "stat",
+      "title": "Hardware",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 2,
+        "h": 5
+      },
+      "pluginVersion": "12.0.0",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "purple"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace(label_replace(label_replace(label_replace(group by (hardware) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])),\"hw\",\"CPU\",\"hardware\",\"cpu\"),\"hw\",\"GPU\",\"hardware\",\"gpu\"),\"hw\",\"GPU\",\"hardware\",\"single-gpu\"),\"hw\",\"xGPU\",\"hardware\",\"multi-gpu\")",
+          "instant": true,
+          "legendFormat": "{{hw}}",
+          "range": false,
+          "refId": "A"
+        }
+      ]
     },
     {
       "datasource": {
@@ -100,7 +158,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_total_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range])))",
+          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_total_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -156,7 +214,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_passed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))) or vector(0)",
+          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_passed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))) or vector(0)",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -217,7 +275,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))) or vector(0)",
+          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))) or vector(0)",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -274,7 +332,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range])))",
+          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -331,7 +389,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "max(max without (instance) (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range]))) * 1000",
+          "expr": "max(max without (instance) (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))) * 1000",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -354,7 +412,7 @@
       "transparent": true,
       "options": {
         "mode": "html",
-        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&job='+encodeURIComponent('${job}')+'&status='+encodeURIComponent('${status_filter}')+'&limit='+encodeURIComponent('${test_limit}')+'&from=${__from}&to=${__to}';location.replace(u);</script>\"></iframe>"
+        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&job='+encodeURIComponent('${job}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+'&from=${__from}&to=${__to}';location.replace(u);</script>\"></iframe>"
       }
     },
     {
@@ -404,7 +462,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "max(max without (instance) (last_over_time(pytest_run_job_wall_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}[$__range])))",
+          "expr": "max(max without (instance) (last_over_time(pytest_run_job_wall_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -521,6 +579,33 @@
         ],
         "query": ".*",
         "type": "textbox"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "label_values(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}, hardware)",
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "Hardware",
+        "multi": false,
+        "name": "hardware",
+        "hide": 0,
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\"}, hardware)",
+          "refId": "Prometheus-hardware-Variable-Query"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
       },
       {
         "current": {
