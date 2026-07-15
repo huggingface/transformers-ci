@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from transformersci.otel import span_pruning
@@ -124,3 +126,148 @@ def test_failure_status_and_exception_land_on_protocol_span(in_memory_tracer) ->
     # the exception event recorded during the (dropped) ::call phase is on it
     event_names = [e.name for e in span.events]
     assert "exception" in event_names, event_names
+
+
+# --- end-to-end: pruning must hold in a REAL pytest run, incl. xdist workers ---
+#
+# The tests above wire spans through one hand-installed tracer, so they can't
+# catch a regression where the *real* plugin routes some spans around the wrap
+# (the prod symptom that started this: ~2.76 spans/test instead of ~1, from an
+# unpinned pytest-opentelemetry — see the [otel] pin in pyproject.toml and
+# docs/plan-failure-visibility-regression-2026-07-15.md). These run an actual
+# pytest session with the installed transformersci_otel plugin and assert only
+# run + per-test protocol spans are exported — first single-process, then under
+# xdist where each worker is a fresh process that must re-install the wrap.
+
+# A conftest that attaches a file-writing exporter to the live tracer provider
+# AFTER pytest-opentelemetry configured it (trylast), recording exactly the spans
+# that survive the wrap — in the controller and in every xdist worker subprocess.
+_PROBE_CONFTEST = """
+import os
+import pytest
+
+
+class _FileExporter:
+    def __init__(self, path):
+        self._path = path
+
+    def export(self, spans):
+        from opentelemetry.sdk.trace.export import SpanExportResult
+
+        with open(self._path, "a") as fh:
+            for s in spans:
+                fh.write(f"{s.attributes.get('pytest.span_type')}\\t{s.name}\\n")
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self):
+        pass
+
+    def force_flush(self, timeout_millis=30000):
+        return True
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_configure(config):
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    provider = trace.get_tracer_provider()
+    if not hasattr(provider, "add_span_processor"):
+        return
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    out = os.path.join(os.environ["PRUNE_PROBE_DIR"], f"spans-{worker}.tsv")
+    provider.add_span_processor(SimpleSpanProcessor(_FileExporter(out)))
+"""
+
+# 6 passing tests (each pulling a fixture, so setup/call/teardown + fixture spans
+# all fire) + 1 failing test — every span type pytest-opentelemetry emits.
+_PROBE_TESTS = """
+import pytest
+
+
+@pytest.fixture
+def client():
+    yield "c"
+
+
+@pytest.mark.parametrize("i", range(6))
+def test_ok(i, client):
+    assert client == "c"
+
+
+def test_fail(client):
+    assert client == "WRONG"
+"""
+
+_N_TESTS = 7  # 6 parametrized + 1 failing
+
+
+def _run_and_collect_spans(tmp_path, extra_args):
+    """Run a real, isolated pytest session with the installed plugin and return
+    the (span_type, name) rows it actually exported. Uses a subprocess (not the
+    pytester fixture) so xdist workers are genuine processes and the transformersci
+    plugin loads via its installed pytest11 entry point exactly as in CI (we do
+    NOT pass -p for it — that would double-register it and abort the run)."""
+    import subprocess
+    import sys
+
+    pytest.importorskip("pytest_opentelemetry")
+    (tmp_path / "conftest.py").write_text(_PROBE_CONFTEST)
+    (tmp_path / "test_probe.py").write_text(_PROBE_TESTS)
+    env = dict(os.environ, PRUNE_PROBE_DIR=str(tmp_path))
+    env.pop("PYTEST_DISABLE_PLUGIN_AUTOLOAD", None)  # entry-point load is the point
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "-q",
+            str(tmp_path / "test_probe.py"),
+            *extra_args,
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        # The suite intentionally contains a failing test, so a non-zero exit is
+        # expected; we assert on the exported spans, not the return code.
+        check=False,
+    )
+    rows = []
+    for f in sorted(tmp_path.glob("spans-*.tsv")):
+        for line in f.read_text().splitlines():
+            if line:
+                span_type, _, name = line.partition("\t")
+                rows.append((span_type, name))
+    return rows
+
+
+def _assert_only_run_and_protocol(rows):
+    assert rows, "no spans were exported — the probe conftest did not attach"
+    # No phase or fixture spans leaked through the wrap.
+    for span_type, name in rows:
+        assert span_type in ("run", "test"), (span_type, name)
+        assert "::setup" not in name, name
+        assert "::call" not in name, name
+        assert "::teardown" not in name, name
+    test_spans = [n for t, n in rows if t == "test"]
+    assert len(test_spans) == _N_TESTS, rows
+    assert any(t == "run" for t, _ in rows), rows
+
+
+def test_real_run_prunes_to_run_and_protocol_only(tmp_path):
+    rows = _run_and_collect_spans(tmp_path, [])
+    _assert_only_run_and_protocol(rows)
+    # ~1 span/test (protocol) + 1 run span — the whole point of pruning.
+    assert len(rows) == _N_TESTS + 1, rows
+
+
+def test_real_run_prunes_under_xdist_workers(tmp_path):
+    pytest.importorskip("xdist")
+    rows = _run_and_collect_spans(tmp_path, ["-n", "2"])
+    # The wrap must survive into each worker process: still no phase/fixture spans,
+    # still exactly one protocol span per test (run spans: 1 controller + workers).
+    _assert_only_run_and_protocol(rows)
+    run_spans = [n for t, n in rows if t == "run"]
+    assert len(run_spans) >= 2, rows  # controller + at least one worker session span

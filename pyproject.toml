@@ -19,7 +19,15 @@ otel = [
   "opentelemetry-api",
   "opentelemetry-exporter-otlp",
   "opentelemetry-sdk",
-  "pytest-opentelemetry",
+  # PINNED: span_pruning wraps pytest-opentelemetry's module-global `tracer` to
+  # drop phase/fixture spans. That coupling is version-specific — an unpinned
+  # `transformers-ci[otel] @ ...@main` docker build silently pulling a version
+  # whose span routing escapes the wrap gives *partial* pruning (~2.76 spans/test
+  # instead of ~1), the traces stay large, and the read path truncates failures
+  # off the dashboard. 1.1.0 is verified fully effective (single-process + xdist);
+  # bump deliberately and re-run tests/test_span_pruning.py before raising it.
+  # See docs/plan-failure-visibility-regression-2026-07-15.md (fix #1).
+  "pytest-opentelemetry==1.1.0",
 ]
 pytest-plugin = [
   "psutil",
@@ -42,7 +50,7 @@ dev = [
   "opentelemetry-sdk",
   "psutil",
   "pytest>=8.0",
-  "pytest-opentelemetry",
+  "pytest-opentelemetry==1.1.0",  # keep in sync with the [otel] extra above
 ]
 
 [project.scripts]
