@@ -69,6 +69,33 @@ def make_test_span(
     }
 
 
+def make_run_span(
+    *,
+    process_id: str,
+    status_code: str,
+    name: str = "test run",
+    start_time: int = 1_000_000,
+    duration: int = 1_000_000,
+) -> dict:
+    """A pytest-opentelemetry session/run span (``pytest.span_type == "run"``).
+
+    Carries the pytest process's overall exit status but no ``pytest.nodeid``,
+    so it never becomes a test row — the exporter reads only its status as a
+    per-job failure floor.
+    """
+    return {
+        "duration": duration,
+        "logs": [],
+        "operationName": name,
+        "processID": process_id,
+        "startTime": start_time,
+        "tags": [
+            make_tag("pytest.span_type", "run"),
+            make_tag("otel.status_code", status_code),
+        ],
+    }
+
+
 def make_trace(
     *,
     trace_id: str,
@@ -2676,6 +2703,243 @@ def test_run_rollup_reconciles_late_failure_from_store(tmp_path, monkeypatch) ->
     )
     bare = trace_exporter.extract_run_rollup_metrics(_extracted=window)
     assert metric_lines(bare, "pytest_run_failed_tests")[0].endswith(" 0")
+
+
+# ---------------------------------------------------------------------------
+# Run-span failure floor
+# (docs/plan-failure-visibility-regression-2026-07-15.md)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_trace_rows_flags_run_span_failure() -> None:
+    """A trace whose run/session span errored is flagged run_failed=1, and the
+    run span itself never becomes a test row."""
+    pid = "pytest-process"
+    trace = make_trace(
+        trace_id="t1",
+        run_id="42:1",
+        job="tests_torch",
+        spans=[
+            make_run_span(process_id=pid, status_code="ERROR"),
+            make_test_span(
+                process_id=pid,
+                nodeid="tests/test_a.py::T::test_pass",
+                start_time=2_000_000,
+                duration=1_000_000,
+                status_code="OK",
+            ),
+        ],
+    )
+    trace_info, rows = trace_exporter.extract_trace_rows(trace)
+    assert trace_info["run_failed"] == 1
+    assert [r["test_nodeid"] for r in rows] == ["tests/test_a.py::T::test_pass"]
+
+
+def test_extract_trace_rows_run_span_ok_is_not_flagged() -> None:
+    pid = "pytest-process"
+    trace = make_trace(
+        trace_id="t2",
+        run_id="42:1",
+        job="tests_torch",
+        spans=[
+            make_run_span(process_id=pid, status_code="OK"),
+            make_test_span(
+                process_id=pid,
+                nodeid="tests/test_a.py::T::test_pass",
+                start_time=2_000_000,
+                duration=1_000_000,
+                status_code="OK",
+            ),
+        ],
+    )
+    trace_info, _ = trace_exporter.extract_trace_rows(trace)
+    assert trace_info["run_failed"] == 0
+
+
+def _run_failed_extract(rows, *, run_failed=1, run_id="29334708040:1", hardware="cpu"):
+    return [
+        (
+            {
+                "run_id": run_id,
+                "test_job": "tests_torch",
+                "service_name": "transformers-tests",
+                "provider": "github_actions",
+                "pr": "46766",
+                "hardware": hardware,
+                "run_failed": run_failed,
+                "start_time": 1_000_000,
+                "end_time": 5_000_000,
+            },
+            rows,
+        )
+    ]
+
+
+def test_rollup_run_span_floor_keeps_truncated_failed_job_red(monkeypatch) -> None:
+    """Regression guard for the red->green inversion. A large shard trace whose
+    single ERROR *test* span was dropped by a truncated read (every read-back row
+    is OK) still reports the job as failed, because its run/session span errored.
+    Mirrors real run 29334708040 / PR #46766 (the moonshine assertion).
+    See docs/plan-failure-visibility-regression-2026-07-15.md."""
+    monkeypatch.setattr(
+        trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
+    )
+    extracted = _run_failed_extract(
+        [{"status_code": "OK", "duration_seconds": 1.0} for _ in range(3)]
+    )
+    rollup = trace_exporter.extract_run_rollup_metrics(_extracted=extracted)
+    assert metric_lines(rollup, "pytest_run_job_failed_tests")[0].endswith(" 1")
+    assert metric_lines(rollup, "pytest_run_failed_tests")[0].endswith(" 1")
+    # total is what was read (3); passed is clamped so it never goes negative.
+    assert metric_lines(rollup, "pytest_run_job_total_tests")[0].endswith(" 3")
+    assert metric_lines(rollup, "pytest_run_job_passed_tests")[0].endswith(" 2")
+
+
+def test_rollup_run_span_floor_does_not_double_count(monkeypatch) -> None:
+    """When the ERROR test span WAS read, the run-span floor is a no-op (it is a
+    max, not a sum): one real failure plus an errored run span stays at 1."""
+    monkeypatch.setattr(
+        trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
+    )
+    extracted = _run_failed_extract(
+        [
+            {"status_code": "OK", "duration_seconds": 1.0},
+            {"status_code": "ERROR", "duration_seconds": 1.0},
+        ]
+    )
+    rollup = trace_exporter.extract_run_rollup_metrics(_extracted=extracted)
+    assert metric_lines(rollup, "pytest_run_job_failed_tests")[0].endswith(" 1")
+
+
+def test_rollup_run_span_floor_with_zero_read_rows(monkeypatch) -> None:
+    """A shard whose read returned NO rows but whose run span errored is still
+    emitted as a failed job (failed=1, total=0, passed clamped to 0)."""
+    monkeypatch.setattr(
+        trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
+    )
+    rollup = trace_exporter.extract_run_rollup_metrics(
+        _extracted=_run_failed_extract([])
+    )
+    assert metric_lines(rollup, "pytest_run_job_failed_tests")[0].endswith(" 1")
+    assert metric_lines(rollup, "pytest_run_job_total_tests")[0].endswith(" 0")
+    assert metric_lines(rollup, "pytest_run_job_passed_tests")[0].endswith(" 0")
+
+
+def test_rollup_run_span_ok_stays_green(monkeypatch) -> None:
+    """The floor never invents a failure: an all-OK read with an OK run span
+    reports zero failures."""
+    monkeypatch.setattr(
+        trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
+    )
+    extracted = _run_failed_extract(
+        [{"status_code": "OK", "duration_seconds": 1.0} for _ in range(3)],
+        run_failed=0,
+    )
+    rollup = trace_exporter.extract_run_rollup_metrics(_extracted=extracted)
+    assert metric_lines(rollup, "pytest_run_job_failed_tests")[0].endswith(" 0")
+
+
+def test_persist_run_rows_failed_traces_floor(tmp_path, monkeypatch) -> None:
+    """A failed shard recorded in failed_traces holds the store's per-job failed
+    count at >=1 even when none of that job's persisted rows are ERROR — the
+    durable, aged-out counterpart of the rollup's in-window run-span floor."""
+    d = str(tmp_path)
+    monkeypatch.setattr(
+        trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
+    )
+    trace_exporter.persist_run_rows(
+        "77:1",
+        [
+            {
+                "test_nodeid": "tests/test_a.py::T::test_pass",
+                "test_job": "tests_torch",
+                "hardware": "cpu",
+                "status_code": "OK",
+                "duration_seconds": 1.0,
+                "trace_id": "shardA",
+                "pr": "1",
+            }
+        ],
+        failed_traces={"shardA": {"test_job": "tests_torch", "hardware": "cpu"}},
+        directory=d,
+    )
+    counts = trace_exporter._run_store_counts_snapshot()["77:1"]
+    assert counts[("tests_torch", "cpu")]["failed"] == 1.0
+    assert counts[("tests_torch", "cpu")]["total"] == 1.0
+
+    # A later render whose window has only the passing shard still reconciles red.
+    window = [
+        (
+            {
+                "run_id": "77:1",
+                "test_job": "tests_torch",
+                "service_name": "svc",
+                "provider": "github",
+                "pr": "1",
+                "hardware": "cpu",
+                "run_failed": 0,
+                "start_time": 1_000_000,
+                "end_time": 2_000_000,
+            },
+            [{"status_code": "OK", "duration_seconds": 1.0}],
+        )
+    ]
+    rollup = trace_exporter.extract_run_rollup_metrics(_extracted=window)
+    assert metric_lines(rollup, "pytest_run_job_failed_tests")[0].endswith(" 1")
+
+
+def test_persist_run_rows_failed_traces_merge_and_backward_compat(
+    tmp_path, monkeypatch
+) -> None:
+    """failed_traces unions across renders, and a legacy store file written
+    without the key still loads (its rows are unaffected)."""
+    d = str(tmp_path)
+    monkeypatch.setattr(
+        trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
+    )
+    # First render: legacy-style write (no failed_traces).
+    trace_exporter.persist_run_rows(
+        "88:1",
+        [
+            {
+                "test_nodeid": "x",
+                "test_job": "j",
+                "hardware": "cpu",
+                "status_code": "OK",
+                "duration_seconds": 1.0,
+                "trace_id": "s1",
+                "pr": "1",
+            }
+        ],
+        directory=d,
+    )
+    assert (
+        trace_exporter._run_store_counts_snapshot()["88:1"][("j", "cpu")]["failed"]
+        == 0.0
+    )
+    # Second render adds a failed shard; earlier rows stay, floor now applies.
+    trace_exporter.persist_run_rows(
+        "88:1",
+        [
+            {
+                "test_nodeid": "y",
+                "test_job": "j",
+                "hardware": "cpu",
+                "status_code": "OK",
+                "duration_seconds": 1.0,
+                "trace_id": "s2",
+                "pr": "1",
+            }
+        ],
+        failed_traces={"s2": {"test_job": "j", "hardware": "cpu"}},
+        directory=d,
+    )
+    rows = trace_exporter.load_run_rows("88:1", directory=d)
+    assert {r["test_nodeid"] for r in rows} == {"x", "y"}
+    assert (
+        trace_exporter._run_store_counts_snapshot()["88:1"][("j", "cpu")]["failed"]
+        == 1.0
+    )
 
 
 # ---------------------------------------------------------------------------
