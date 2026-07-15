@@ -1640,6 +1640,7 @@ def extract_trace_rows(
             "end_time": 0,
             "latest_start_time": 0,
             "run_id": "unknown",
+            "run_failed": 0,
             "start_time": 0,
             "trace_id": "unknown",
         }, []
@@ -1658,6 +1659,7 @@ def extract_trace_rows(
     start_time = 0
     latest_start_time = 0
     rows: list[dict[str, str | float]] = []
+    run_failed = False
 
     for span in spans:
         if not isinstance(span, dict):
@@ -1724,6 +1726,17 @@ def extract_trace_rows(
         nodeid = span_tags.get("pytest.nodeid")
         span_type = span_tags.get("pytest.span_type")
         operation_name = span.get("operationName")
+        # The pytest-opentelemetry session/run span (``pytest.span_type == "run"``,
+        # plus its per-xdist-worker children) carries the process's overall exit
+        # status: ERROR whenever the pytest run exited non-zero. We record it as a
+        # failure *floor* (see extract_run_rollup_metrics) so a truncated large
+        # trace — which can silently drop the one ERROR *test* span, turning a red
+        # run green — can never make a genuinely-failed job report zero failures.
+        # The run span is tiny and near the trace root, so it survives partial
+        # reads that lose per-test spans. See
+        # docs/plan-failure-visibility-regression-2026-07-15.md.
+        if span_type == "run" and span_tags.get("otel.status_code") == "ERROR":
+            run_failed = True
         if nodeid is None or span_type != "test" or operation_name != nodeid:
             continue
 
@@ -1769,6 +1782,7 @@ def extract_trace_rows(
         "provider": process_provider or "unknown",
         "repository": process_repository,
         "run_id": process_run_id or trace_id,
+        "run_failed": 1 if run_failed else 0,
         "service_name": service_name or "unknown",
         "start_time": start_time,
         "test_job": process_job or "unknown",
@@ -2561,11 +2575,22 @@ def extract_run_rollup_metrics(
     job_aggregates: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
 
     for trace_info, rows in extracted:
-        if not rows:
+        # A trace whose run span errored must still register even if the read
+        # returned no test rows for it (heavy truncation), so its failure floor
+        # is not silently dropped.
+        run_failed = 1 if int(trace_info.get("run_failed", 0) or 0) else 0
+        if not rows and not run_failed:
             continue
 
         total = len(rows)
-        failed = sum(1 for r in rows if str(r["status_code"]) == "ERROR")
+        # Failure floor: never report fewer failures than the run/session span's
+        # non-zero exit status implies. A truncated large trace can lose the one
+        # ERROR *test* span (making a red run look green) but still carries the
+        # ERROR run span, so max(...) keeps the job red. See
+        # docs/plan-failure-visibility-regression-2026-07-15.md.
+        failed = max(
+            sum(1 for r in rows if str(r["status_code"]) == "ERROR"), run_failed
+        )
         total_duration = fsum(float(r["duration_seconds"]) for r in rows)
         run_key = (
             str(trace_info.get("service_name", "unknown")),
@@ -2753,8 +2778,11 @@ def extract_run_rollup_metrics(
             "test_job": test_job,
         }
         lines.append(f"pytest_run_job_total_tests{metric_labels(job_labels)} {total}")
+        # Clamp: the run-span failure floor can push `failed` above the number of
+        # test rows actually read for a heavily-truncated trace, which would make
+        # a naive `total - failed` go negative.
         lines.append(
-            f"pytest_run_job_passed_tests{metric_labels(job_labels)} {total - failed}"
+            f"pytest_run_job_passed_tests{metric_labels(job_labels)} {max(0, total - failed)}"
         )
         lines.append(f"pytest_run_job_failed_tests{metric_labels(job_labels)} {failed}")
         lines.append(
@@ -2823,12 +2851,21 @@ _RUN_STORE_COUNTS_MAX = 20000
 
 
 def _update_run_store_counts(
-    run_id: str, rows: "Iterator[dict[str, str | float | None]]"
+    run_id: str,
+    rows: "Iterator[dict[str, str | float | None]]",
+    failed_traces: dict[str, dict[str, str]] | None = None,
 ) -> None:
     """Recompute a run's per-job counts from its merged store rows and cache them.
 
     Called from :func:`persist_run_rows` with the already-built union, so it adds
     only one O(rows) pass over data we just merged — no additional I/O.
+
+    ``failed_traces`` is the run's persisted ``trace_id -> {test_job, hardware}``
+    map of shards whose run/session span errored (see :func:`persist_run_rows`).
+    Each such shard raises its job's ``failed`` count to at least the number of
+    failed shards, so a job whose ERROR *test* rows were never read back — the
+    aged-out counterpart of the rollup's run-span floor — still reconciles to a
+    non-zero failure count instead of decaying to a misleading "0 failed".
     """
     counts: dict[tuple[str, str], dict[str, float]] = {}
     for r in rows:
@@ -2848,6 +2885,18 @@ def _update_run_store_counts(
             entry["duration"] += float(r.get("duration_seconds") or 0.0)
         except (TypeError, ValueError):
             pass
+    if failed_traces:
+        floor: dict[tuple[str, str], int] = {}
+        for meta in failed_traces.values():
+            job = str((meta or {}).get("test_job", "") or "")
+            hardware = str((meta or {}).get("hardware") or hardware_from_job(job))
+            key = (job, hardware)
+            floor[key] = floor.get(key, 0) + 1
+        for key, n in floor.items():
+            entry = counts.get(key)
+            if entry is None:
+                entry = counts[key] = {"total": 0.0, "failed": 0.0, "duration": 0.0}
+            entry["failed"] = max(entry["failed"], float(n))
     with _run_store_counts_lock:
         _run_store_counts[run_id] = counts
         _run_store_counts.move_to_end(run_id)
@@ -4134,10 +4183,21 @@ def _run_store_path(directory: str, run_id: str) -> str:
     return os.path.join(directory, f"{safe}.json.gz")
 
 
+def _load_run_store(run_id: str, directory: str) -> dict:
+    """Return a run's persisted store dict (``{}`` if missing / unreadable)."""
+    try:
+        with gzip.open(_run_store_path(directory, run_id), "rb") as fh:
+            data = json.loads(fh.read())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def persist_run_rows(
     run_id: str,
     rows: list[dict[str, str | float]],
     *,
+    failed_traces: dict[str, dict[str, str]] | None = None,
     directory: str | None = None,
 ) -> None:
     """Merge a run's slim test rows into the store (atomic; best-effort).
@@ -4148,23 +4208,43 @@ def persist_run_rows(
     in the window. Unioning across renders (keyed by trace_id+test_nodeid) lets
     the store accumulate the COMPLETE run as its shards rotate through the
     window, instead of being capped at one render's partial view.
+
+    ``failed_traces`` (``trace_id -> {test_job, hardware}``) records shards whose
+    run/session span errored. It is merged and persisted alongside the rows —
+    NOT as synthetic test rows (which would leak into the /run drill-down) — so
+    :func:`_update_run_store_counts` can hold a job's failure count at >= 1 even
+    after every shard whose ERROR test rows we never read has aged out of the
+    caches. The rollup's in-window run-span floor and this store-side floor are
+    the two halves of the same guarantee: a failed job never renders green.
     """
     directory = _run_store_dir() if directory is None else directory
     if not directory or not run_id:
         return
     try:
         os.makedirs(directory, exist_ok=True)
+        existing = _load_run_store(run_id, directory)
         merged: dict[tuple[str, str], dict[str, str | float | None]] = {}
-        for r in load_run_rows(run_id, directory=directory) or []:
+        existing_rows = existing.get("rows")
+        for r in existing_rows if isinstance(existing_rows, list) else []:
             merged[(str(r.get("trace_id", "")), str(r.get("test_nodeid", "")))] = r
         for r in rows:
             slim_row = {k: r.get(k) for k in _RUN_STORE_FIELDS}
             merged[(str(r.get("trace_id", "")), str(r.get("test_nodeid", "")))] = (
                 slim_row
             )
-        payload = json.dumps({"run_id": run_id, "rows": list(merged.values())}).encode(
-            "utf-8"
-        )
+        merged_failed: dict[str, dict[str, str]] = {}
+        existing_failed = existing.get("failed_traces")
+        if isinstance(existing_failed, dict):
+            merged_failed.update(existing_failed)
+        if failed_traces:
+            merged_failed.update(failed_traces)
+        payload = json.dumps(
+            {
+                "run_id": run_id,
+                "rows": list(merged.values()),
+                "failed_traces": merged_failed,
+            }
+        ).encode("utf-8")
         path = _run_store_path(directory, run_id)
         tmp = f"{path}.{os.getpid()}.tmp"
         with gzip.open(tmp, "wb") as fh:
@@ -4172,7 +4252,9 @@ def persist_run_rows(
         os.replace(tmp, path)  # atomic swap so a reader never sees a torn file
         # Cache the authoritative per-job counts from the union we just merged,
         # so the rollup can reconcile against them without re-reading the store.
-        _update_run_store_counts(run_id, iter(merged.values()))
+        _update_run_store_counts(
+            run_id, iter(merged.values()), failed_traces=merged_failed
+        )
     except OSError:
         pass
 
@@ -4184,12 +4266,8 @@ def load_run_rows(
     directory = _run_store_dir() if directory is None else directory
     if not directory or not run_id:
         return None
-    try:
-        with gzip.open(_run_store_path(directory, run_id), "rb") as fh:
-            data = json.loads(fh.read())
-    except (OSError, ValueError):
-        return None
-    rows = data.get("rows") if isinstance(data, dict) else None
+    data = _load_run_store(run_id, directory)
+    rows = data.get("rows")
     return rows if isinstance(rows, list) else None
 
 
@@ -4204,12 +4282,31 @@ def persist_settled_runs(
     if not directory:
         return
     by_run: dict[str, list[dict[str, str | float]]] = {}
+    failed_by_run: dict[str, dict[str, dict[str, str]]] = {}
     for trace_info, rows in rollup_extracted:
         run_id = str(trace_info.get("run_id", ""))
-        if run_id:
-            by_run.setdefault(run_id, []).extend(rows)
+        if not run_id:
+            continue
+        by_run.setdefault(run_id, []).extend(rows)
+        # Record shards whose run/session span errored so the store keeps a
+        # non-zero failure floor for their job even after every unread-failure
+        # shard ages out (mirrors the rollup's in-window run-span floor).
+        if int(trace_info.get("run_failed", 0) or 0):
+            trace_id = str(trace_info.get("trace_id", ""))
+            if trace_id:
+                job = str(trace_info.get("test_job", "unknown"))
+                hardware = str(trace_info.get("hardware") or hardware_from_job(job))
+                failed_by_run.setdefault(run_id, {})[trace_id] = {
+                    "test_job": job,
+                    "hardware": hardware,
+                }
     for run_id, rows in by_run.items():
-        persist_run_rows(run_id, rows, directory=directory)
+        persist_run_rows(
+            run_id,
+            rows,
+            failed_traces=failed_by_run.get(run_id),
+            directory=directory,
+        )
 
 
 def prune_run_store(
