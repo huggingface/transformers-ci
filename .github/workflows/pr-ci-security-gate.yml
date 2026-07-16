@@ -90,17 +90,112 @@ jobs:
       - name: Install Bandit
         run: pip install bandit==1.9.4
 
-      - name: Checkout PR code for static analysis
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
+      - name: Materialize changed Python files from immutable blobs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_FILES_JSON: /tmp/pr_files.json
+          PR_SOURCE_DIR: /tmp/pr-source
+          PY_FILES_LIST: /tmp/py_files.txt
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'EOF'
+          import base64
+          import json
+          import os
+          import re
+          import shutil
+          import subprocess
+          import sys
+          from pathlib import Path, PurePosixPath
+
+          def fail(message):
+              print(f"::error::{message}", file=sys.stderr)
+              raise SystemExit(1)
+
+          repo = os.environ["REPO"]
+          if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+              fail(f"Invalid repository name: {repo!r}")
+
+          try:
+              with open(os.environ["PR_FILES_JSON"], encoding="utf-8") as handle:
+                  pr_files = json.load(handle)
+              with open(os.environ["PY_FILES_LIST"], encoding="utf-8") as handle:
+                  python_files = [line.rstrip("\n") for line in handle if line.rstrip("\n")]
+          except (OSError, json.JSONDecodeError) as error:
+              fail(f"Failed to read Bandit inputs: {error}")
+
+          entries = {}
+          for entry in pr_files:
+              filename = entry.get("filename")
+              if not isinstance(filename, str):
+                  fail("PR file entry is missing a filename")
+              if filename in entries:
+                  fail(f"Duplicate PR file entry: {filename}")
+              entries[filename] = entry
+
+          source_root = Path(os.environ["PR_SOURCE_DIR"])
+          if source_root.exists():
+              shutil.rmtree(source_root)
+          source_root.mkdir(parents=True)
+
+          materialized = 0
+          for filename in python_files:
+              relative_path = PurePosixPath(filename)
+              if (
+                  relative_path.is_absolute()
+                  or relative_path.as_posix() != filename
+                  or any(part in {".", ".."} for part in relative_path.parts)
+              ):
+                  fail(f"Unsafe Python path: {filename!r}")
+              if not filename.endswith(".py"):
+                  fail(f"Non-Python file in Bandit input: {filename!r}")
+
+              entry = entries.get(filename)
+              if entry is None or entry.get("status") == "removed":
+                  fail(f"Python file is missing from the PR file list: {filename!r}")
+              sha = entry.get("sha")
+              if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+                  fail(f"Invalid blob SHA for {filename!r}: {sha!r}")
+
+              response = subprocess.run(
+                  ["gh", "api", f"repos/{repo}/git/blobs/{sha}"],
+                  capture_output=True,
+                  text=True,
+              )
+              if response.returncode != 0:
+                  fail(f"Failed to download blob {sha} for {filename!r}: {response.stderr.strip()}")
+              try:
+                  blob = json.loads(response.stdout)
+              except json.JSONDecodeError as error:
+                  fail(f"Invalid blob response for {filename!r}: {error}")
+              if blob.get("sha") != sha or blob.get("encoding") != "base64":
+                  fail(f"Unexpected blob metadata for {filename!r}")
+
+              try:
+                  encoded = "".join(blob["content"].split())
+                  content = base64.b64decode(encoded, validate=True)
+              except (KeyError, ValueError) as error:
+                  fail(f"Invalid base64 blob content for {filename!r}: {error}")
+              if len(content) != blob.get("size"):
+                  fail(f"Blob size mismatch for {filename!r}")
+
+              destination = source_root.joinpath(*relative_path.parts)
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              destination.write_bytes(content)
+              materialized += 1
+
+          print(f"Materialized {materialized} changed Python file(s) from immutable Git blobs")
+          EOF
 
       - name: Run Bandit on changed Python files
+        env:
+          PR_SOURCE_DIR: /tmp/pr-source
+          PY_FILES_LIST: /tmp/py_files.txt
         run: |
+          cd "$PR_SOURCE_DIR"
           # -d '\n': split on newlines only (handles filenames with spaces)
           # --: end of options, prevents filenames starting with '-' being treated as flags
-          xargs -d '\n' bandit --format json -l --ignore-nosec -o /tmp/bandit_report.json -- < /tmp/py_files.txt || true
+          xargs -d '\n' bandit --format json -l --ignore-nosec -o /tmp/bandit_report.json -- < "$PY_FILES_LIST" || true
 
       - name: Check for new high severity issues
         run: |
