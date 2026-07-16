@@ -67,6 +67,7 @@ import datetime
 import hashlib
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -91,6 +92,7 @@ from .serge_dispatch import (
     dispatch_to_serge,
     mint_serge_oidc_token,
     poll_serge_status,
+    poll_serge_task,
 )
 
 
@@ -1279,6 +1281,10 @@ def dispatch_targets(
     existing_prs: dict[str, int | None] | None = None,
     slack_channel: str | None = None,
     notify_task_finished: bool = False,
+    serge_concurrency: int = 0,
+    retry_attempts: int = 0,
+    retry_base_seconds: float = 120.0,
+    poll_seconds: float = 20.0,
 ) -> tuple[int, int, dict[str, str]]:
     """Dispatch one Serge task per failure group — one PR per group — so a
     single run iterates over every group instead of fixing only the first.
@@ -1295,6 +1301,26 @@ def dispatch_targets(
         existing_prs = resolve_existing_prs(
             targets, list_open_pulls(repo, github_token)
         )
+    if serge_concurrency > 0 or retry_attempts > 0:
+        return _dispatch_targets_bounded(
+            targets,
+            repo=repo,
+            base_ref=base_ref,
+            serge_url=serge_url,
+            token=token,
+            window=window,
+            timeout=timeout,
+            trace_chars=trace_chars,
+            issue_number=issue_number,
+            existing_prs=existing_prs,
+            slack_channel=slack_channel,
+            notify_task_finished=notify_task_finished,
+            serge_concurrency=serge_concurrency,
+            retry_attempts=retry_attempts,
+            retry_base_seconds=retry_base_seconds,
+            poll_seconds=poll_seconds,
+        )
+
     accepted = failed = 0
     job_ids: dict[str, str] = {}
     total = len(targets)
@@ -1334,6 +1360,170 @@ def dispatch_targets(
         job_url = resp.get("url")
         suffix = f" → {serge_url.rstrip('/')}{job_url}" if job_url else ""
         print(f"        ✅ accepted {resp.get('id', '?')}{suffix}", flush=True)
+    return accepted, failed, job_ids
+
+
+_SERGE_TERMINAL_STATUSES = {"done", "published", "no_fix", "error", "discarded"}
+_SERGE_RATE_LIMIT_PAT = re.compile(
+    r"\b429\b|too many requests|rate limit exceeded", re.IGNORECASE
+)
+
+
+def _is_retryable_serge_error(status: str | None, error: str | None) -> bool:
+    return status == "error" and bool(error and _SERGE_RATE_LIMIT_PAT.search(error))
+
+
+def _retry_sleep_seconds(base: float, attempt: int) -> float:
+    """Exponential backoff with jitter for transient LLM-provider rate limits."""
+    return max(0.0, base) * (2 ** max(0, attempt - 1)) + random.uniform(0, 10)
+
+
+def _dispatch_targets_bounded(
+    targets: list[dict],
+    *,
+    repo: str,
+    base_ref: str,
+    serge_url: str,
+    token: str,
+    window: list[str],
+    timeout: int,
+    trace_chars: int,
+    issue_number: int | None,
+    existing_prs: dict[str, int | None],
+    slack_channel: str | None,
+    notify_task_finished: bool,
+    serge_concurrency: int,
+    retry_attempts: int,
+    retry_base_seconds: float,
+    poll_seconds: float,
+) -> tuple[int, int, dict[str, str]]:
+    """Dispatch Serge tasks with bounded active jobs and 429 retry/backoff.
+
+    The historical path fired every group immediately. That is fine for small
+    runs, but the nightly integration-failure batch can create many expensive
+    Kimi tasks at once and trip model/provider limits. This path keeps at most
+    ``serge_concurrency`` jobs active and retries only terminal provider 429s.
+    """
+    limit = serge_concurrency if serge_concurrency > 0 else 1
+    pending: list[tuple[int, dict, int]] = [
+        (idx, target, 0) for idx, target in enumerate(targets, start=1)
+    ]
+    active: dict[str, dict] = {}
+    accepted = failed = 0
+    job_ids: dict[str, str] = {}
+    total = len(targets)
+    final: set[str] = set()
+
+    print(
+        f"      Serge dispatch throttle: max {limit} active task(s), "
+        f"{retry_attempts} retry attempt(s) for provider 429s",
+        flush=True,
+    )
+
+    while pending or active:
+        while pending and len(active) < limit:
+            idx, target, attempt = pending.pop(0)
+            fingerprint = target_fingerprint(target)
+            context = add_state_marker(
+                render_serge_context([target], window, trace_chars=trace_chars),
+                fingerprint,
+                issue_number=issue_number,
+            )
+            title = f"[serge] Fix {target['label']}"[:120]
+            existing_pr = existing_prs.get(fingerprint)
+            where = f"follow-up on PR #{existing_pr}" if existing_pr else "new PR"
+            retry_note = f" retry {attempt}/{retry_attempts}" if attempt else ""
+            print(f"  [{idx}/{total}] {target['label']}{retry_note}", flush=True)
+            print(f"        fingerprint {fingerprint[:12]} → {where}", flush=True)
+            payload = build_task_payload(
+                repo,
+                base_ref,
+                context,
+                title,
+                fingerprint=fingerprint,
+                existing_pr=existing_pr,
+                tracking_issue=issue_number,
+                slack_channel=slack_channel,
+                notify_task_finished=notify_task_finished,
+            )
+            try:
+                resp = dispatch_to_serge(serge_url, token, payload, timeout=timeout)
+            except SergeDispatchError as e:
+                print(f"        ✗ {e}", flush=True)
+                if attempt < retry_attempts and _SERGE_RATE_LIMIT_PAT.search(str(e)):
+                    sleep_for = _retry_sleep_seconds(retry_base_seconds, attempt + 1)
+                    print(
+                        f"        rate-limited during POST; retrying in {sleep_for:.1f}s",
+                        flush=True,
+                    )
+                    time.sleep(sleep_for)
+                    pending.insert(0, (idx, target, attempt + 1))
+                else:
+                    failed += 1
+                    final.add(fingerprint)
+                continue
+            job_id = resp.get("id")
+            if not job_id:
+                print("        ✗ Serge accepted task without a job id", flush=True)
+                failed += 1
+                final.add(fingerprint)
+                continue
+            job_id = str(job_id)
+            job_ids[fingerprint] = job_id
+            job_url = resp.get("url")
+            suffix = f" → {serge_url.rstrip('/')}{job_url}" if job_url else ""
+            print(f"        accepted {job_id}{suffix}", flush=True)
+            active[fingerprint] = {
+                "idx": idx,
+                "target": target,
+                "attempt": attempt,
+                "job_id": job_id,
+            }
+
+        if not active:
+            continue
+
+        token = mint_serge_oidc_token() or token
+        completed: list[str] = []
+        for fp, item in list(active.items()):
+            detail = poll_serge_task(serge_url, token, repo, item["job_id"])
+            status = str(detail.get("status") or "") if detail else ""
+            if status not in _SERGE_TERMINAL_STATUSES:
+                continue
+            error = str(detail.get("error") or "")
+            completed.append(fp)
+            if (
+                _is_retryable_serge_error(status, error)
+                and item["attempt"] < retry_attempts
+            ):
+                next_attempt = item["attempt"] + 1
+                sleep_for = _retry_sleep_seconds(retry_base_seconds, next_attempt)
+                print(
+                    f"        {item['job_id']} ended with provider rate limit; "
+                    f"retry {next_attempt}/{retry_attempts} in {sleep_for:.1f}s",
+                    flush=True,
+                )
+                time.sleep(sleep_for)
+                pending.append((item["idx"], item["target"], next_attempt))
+            else:
+                accepted += 1
+                final.add(fp)
+                if status == "error":
+                    msg = error[:240] if error else "unknown error"
+                    print(f"        {item['job_id']} terminal error: {msg}", flush=True)
+                else:
+                    print(
+                        f"        {item['job_id']} terminal status: {status}",
+                        flush=True,
+                    )
+        for fp in completed:
+            active.pop(fp, None)
+        if active:
+            time.sleep(poll_seconds)
+
+    incomplete = max(0, total - len(final))
+    if incomplete:
+        failed += incomplete
     return accepted, failed, job_ids
 
 
@@ -1385,6 +1575,33 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=int(os.environ.get("ITF_MAX_GROUPS", "20")),
         help="cap how many ordered failure groups are dispatched to Serge (0 = no cap)",
+    )
+    p.add_argument(
+        "--serge-concurrency",
+        type=int,
+        default=int(os.environ.get("ITF_SERGE_CONCURRENCY", "3")),
+        help="maximum active Serge tasks at once when dispatching integration-failure groups "
+        "(0 = fire all tasks immediately; default 3)",
+    )
+    p.add_argument(
+        "--serge-retry-attempts",
+        type=int,
+        default=int(os.environ.get("ITF_SERGE_RETRY_ATTEMPTS", "2")),
+        help="retry count for Serge tasks that end in provider 429/rate-limit errors "
+        "(default 2)",
+    )
+    p.add_argument(
+        "--serge-retry-base-seconds",
+        type=float,
+        default=float(os.environ.get("ITF_SERGE_RETRY_BASE_SECONDS", "180")),
+        help="base delay for exponential backoff after provider 429/rate-limit errors "
+        "(default 180)",
+    )
+    p.add_argument(
+        "--serge-poll-seconds",
+        type=float,
+        default=float(os.environ.get("ITF_SERGE_POLL_SECONDS", "20")),
+        help="seconds between status polls while throttled Serge tasks are active",
     )
     p.add_argument(
         "--trace-chars",
@@ -1594,6 +1811,10 @@ def main(argv: list[str] | None = None) -> int:
         issue_number=issue_number,
         slack_channel=args.slack_channel,
         notify_task_finished=args.notify_task_finished,
+        serge_concurrency=args.serge_concurrency,
+        retry_attempts=args.serge_retry_attempts,
+        retry_base_seconds=args.serge_retry_base_seconds,
+        poll_seconds=args.serge_poll_seconds,
     )
     print(
         f"      dispatched {accepted}/{len(targets)} group(s) to Serge"

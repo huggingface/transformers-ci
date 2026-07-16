@@ -448,6 +448,112 @@ class DispatchTargetsTest(unittest.TestCase):
         self.assertEqual((accepted, failed), (1, 1))
         self.assertEqual(len(calls), 2)  # second group still attempted
 
+    def test_bounded_dispatch_limits_active_serge_tasks(self):
+        targets = self._targets() + [
+            {
+                "kind": "model_failures",
+                "label": "g3",
+                "model": "c",
+                "failure_mode": "output_mismatch",
+                "cluster": None,
+                "failures": [
+                    {
+                        "model": "c",
+                        "gpu": "single",
+                        "test": "t::CIntegrationTest::a",
+                        "trace": "z",
+                        "latest_trace": "z",
+                        "days_seen": 6,
+                        "failure_mode": "output_mismatch",
+                    }
+                ],
+            }
+        ]
+        live = set()
+        max_live = 0
+        calls = []
+
+        def fake_dispatch(serge_url, token, payload, timeout=240):
+            nonlocal max_live
+            job_id = f"job{len(calls) + 1}"
+            calls.append(payload)
+            live.add(job_id)
+            max_live = max(max_live, len(live))
+            return {"id": job_id, "url": f"/tasks/o/r/{job_id}"}
+
+        def fake_poll(serge_url, token, repo, job_id):
+            live.discard(job_id)
+            return {"status": "published", "error": None}
+
+        with (
+            patch.object(itf, "list_open_pulls", return_value=[]),
+            patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
+            patch.object(itf, "poll_serge_task", side_effect=fake_poll),
+            patch.object(itf, "mint_serge_oidc_token", return_value=None),
+            patch.object(itf.time, "sleep", lambda _s: None),
+        ):
+            accepted, failed, _job_ids = itf.dispatch_targets(
+                targets,
+                repo="o/r",
+                base_ref="main",
+                serge_url="http://s",
+                token="tok",
+                window=["2026-06-19"],
+                timeout=10,
+                github_token=None,
+                serge_concurrency=2,
+                retry_attempts=0,
+                poll_seconds=0,
+            )
+
+        self.assertEqual((accepted, failed), (3, 0))
+        self.assertEqual(len(calls), 3)
+        self.assertLessEqual(max_live, 2)
+
+    def test_bounded_dispatch_retries_terminal_rate_limit_error(self):
+        target = self._targets()[:1]
+        jobs = []
+
+        def fake_dispatch(serge_url, token, payload, timeout=240):
+            job_id = f"job{len(jobs) + 1}"
+            jobs.append(job_id)
+            return {"id": job_id, "url": f"/tasks/o/r/{job_id}"}
+
+        def fake_poll(serge_url, token, repo, job_id):
+            if job_id == "job1":
+                return {
+                    "status": "error",
+                    "error": "LLM endpoint returned 429 Too Many Requests: rate limit exceeded",
+                }
+            return {"status": "published", "error": None}
+
+        with (
+            patch.object(itf, "list_open_pulls", return_value=[]),
+            patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
+            patch.object(itf, "poll_serge_task", side_effect=fake_poll),
+            patch.object(itf, "mint_serge_oidc_token", return_value=None),
+            patch.object(itf.random, "uniform", return_value=0),
+            patch.object(itf.time, "sleep", lambda _s: None),
+        ):
+            accepted, failed, job_ids = itf.dispatch_targets(
+                target,
+                repo="o/r",
+                base_ref="main",
+                serge_url="http://s",
+                token="tok",
+                window=["2026-06-19"],
+                timeout=10,
+                github_token=None,
+                serge_concurrency=1,
+                retry_attempts=1,
+                retry_base_seconds=1,
+                poll_seconds=0,
+            )
+
+        self.assertEqual((accepted, failed), (1, 0))
+        self.assertEqual(jobs, ["job1", "job2"])
+        self.assertEqual(job_ids[itf.target_fingerprint(target[0])], "job2")
+
 
 class TrackingIssueTest(unittest.TestCase):
     def _target(self, label="g1", model="a"):
@@ -647,6 +753,31 @@ class TrackingIssueTest(unittest.TestCase):
         ):
             st = itf.poll_serge_status("http://s", "tok", "o/r", "j1")
         self.assertEqual(st, "no_fix")
+
+    def test_poll_serge_task_returns_error_detail(self):
+        class _Resp:
+            def __init__(self, data):
+                self._d = data
+
+            def read(self):
+                return self._d
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        with patch.object(
+            sd.urllib.request,
+            "urlopen",
+            return_value=_Resp(
+                b'{"status": "error", "error": "429 Too Many Requests"}'
+            ),
+        ):
+            detail = itf.poll_serge_task("http://s", "tok", "o/r", "j1")
+        self.assertEqual(detail["status"], "error")
+        self.assertIn("429", detail["error"])
 
     def test_poll_serge_status_swallows_errors(self):
         def boom(*a, **k):
