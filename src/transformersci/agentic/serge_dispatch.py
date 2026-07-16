@@ -122,15 +122,28 @@ def poll_serge_status(
     Returns the status string (``running`` / ``published`` / ``no_fix`` /
     ``error`` / …) or ``None`` on any error — the caller treats ``None`` as
     "unknown, try again later" and never fails the run over it."""
+    detail = poll_serge_task(serge_url, token, repo, job_id, timeout=timeout)
+    status = detail.get("status") if detail else None
+    return str(status) if status else None
+
+
+def poll_serge_task(
+    serge_url: str, token: str, repo: str, job_id: str, timeout: int = 15
+) -> dict:
+    """Best-effort GET of a task's machine-readable status payload.
+
+    Unlike :func:`poll_serge_status`, this returns the whole JSON body, including
+    ``error``. Callers that need to distinguish retryable provider failures
+    from permanent task failures can inspect that text.
+    """
     url = f"{serge_url.rstrip('/')}/tasks/{repo}/{job_id}/status"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = json.loads(resp.read().decode("utf-8") or "{}")
     except (urllib.error.HTTPError, urllib.error.URLError, ValueError):
-        return None
-    status = body.get("status")
-    return str(status) if status else None
+        return {}
+    return body if isinstance(body, dict) else {}
 
 
 def mint_serge_oidc_token() -> str | None:
