@@ -53,6 +53,150 @@ class FailureSignatureTest(unittest.TestCase):
         self.assertEqual(itf.failure_signature(""), "unknown")
 
 
+# Realistic pytest failure blocks: each ends in a real ``E   <Exc>: ...`` line
+# and a ``path:line: <Exc>`` location line, and — crucially — the printed test
+# BODY contains ``self.assertEqual(...)``. The classifier must key off the
+# terminal exception, not that assert text.
+_TRACE_DTYPE_CRASH = """\
+    def test_large_generation(self):
+        model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large")
+        transcript = processor.batch_decode(generated_ids)
+>       self.assertEqual(transcript, EXPECTED_TRANSCRIPT)
+
+    hidden_states = nn.functional.gelu(self.conv1(input_features))
+E       RuntimeError: Input type (float) and bias type (c10::Half) should be the same
+
+src/transformers/models/whisper/modeling_whisper.py:905: RuntimeError
+"""
+
+_TRACE_UNBOUND_CRASH = """\
+    def test_speculative_decoding_distil(self):
+        transcription_non_ass = ...
+>       self.assertEqual(transcription_ass, transcription_non_ass)
+
+    if is_cross_attention and past_key_values and is_updated:
+E       UnboundLocalError: local variable 'is_updated' referenced before assignment
+
+src/transformers/models/whisper/modeling_whisper.py:323: UnboundLocalError
+"""
+
+_TRACE_TENSOR_MISMATCH = """\
+    def test_small_token_timestamp_generation(self):
+>       torch.testing.assert_close(generate_outputs["token_timestamps"].to("cpu"), EXPECTED_OUTPUT)
+E       AssertionError: Tensor-likes are not close!
+E
+E       Mismatched elements: 56 / 164 (34.1%)
+
+tests/models/whisper/test_modeling_whisper.py:2023: AssertionError
+"""
+
+_TRACE_LIST_MISMATCH = """\
+    def test_tiny_en_generation(self):
+>       self.assertListEqual(decoded_all, EXPECTED_TEXT)
+E       AssertionError: Lists differ: [' Mr'] != [' Mister']
+
+tests/models/whisper/test_modeling_whisper.py:1399: AssertionError
+"""
+
+_TRACE_KEYERROR_CRASH = """\
+    def test_tiny_timestamp_generation(self):
+>       self.assertEqual(decoded, expected_output)
+E       KeyError: 0
+
+tests/models/whisper/test_modeling_whisper.py:1882: KeyError
+"""
+
+
+class ClassifyTest(unittest.TestCase):
+    def test_dtype_runtimeerror_is_not_output_mismatch(self):
+        # The old classifier saw `self.assertEqual` in the body and mislabeled
+        # this crash `output_mismatch`. It must be `cuda_runtime` now.
+        self.assertEqual(itf.classify(_TRACE_DTYPE_CRASH), "cuda_runtime")
+
+    def test_unbound_local_crash_is_other_not_mismatch(self):
+        self.assertEqual(itf.classify(_TRACE_UNBOUND_CRASH), "other")
+
+    def test_keyerror_crash_is_other(self):
+        self.assertEqual(itf.classify(_TRACE_KEYERROR_CRASH), "other")
+
+    def test_genuine_tensor_mismatch_is_output_mismatch(self):
+        self.assertEqual(itf.classify(_TRACE_TENSOR_MISMATCH), "output_mismatch")
+
+    def test_genuine_list_mismatch_is_output_mismatch(self):
+        self.assertEqual(itf.classify(_TRACE_LIST_MISMATCH), "output_mismatch")
+
+    def test_oom_still_wins(self):
+        self.assertEqual(
+            itf.classify("E   torch.OutOfMemoryError: CUDA out of memory"), "OOM"
+        )
+
+    def test_bare_symptom_without_exception_type_falls_back(self):
+        # No `E  <Exc>:` line at all — legacy symptom fallback still applies.
+        self.assertEqual(itf.classify("Tensor-likes are not close!"), "output_mismatch")
+        self.assertEqual(itf.classify("nothing useful here"), "other")
+
+
+class TerminalExceptionTest(unittest.TestCase):
+    def test_extracts_raised_exception_over_body_asserts(self):
+        etype, msg = itf.terminal_exception(_TRACE_DTYPE_CRASH)
+        self.assertEqual(etype, "RuntimeError")
+        self.assertIn("bias type", msg)
+
+    def test_assertion_error(self):
+        etype, _ = itf.terminal_exception(_TRACE_TENSOR_MISMATCH)
+        self.assertEqual(etype, "AssertionError")
+
+    def test_none_when_no_exception(self):
+        self.assertEqual(itf.terminal_exception("just a plain line"), (None, ""))
+
+    def test_crash_site_is_raising_frame(self):
+        self.assertEqual(
+            itf.crash_site(_TRACE_UNBOUND_CRASH),
+            "src/transformers/models/whisper/modeling_whisper.py:323",
+        )
+
+
+class GroupingSplitsHeterogeneousFailuresTest(unittest.TestCase):
+    def _filtered(self, test, trace):
+        return {
+            "model": "whisper",
+            "gpu": "single",
+            "test": f"tests/models/whisper/test_modeling_whisper.py::WhisperModelIntegrationTests::{test}",
+            "trace": trace,
+            "latest_trace": trace,
+            "days_seen": 6,
+        }
+
+    def test_one_whisper_bucket_splits_by_root_cause(self):
+        # Four whisper failures that the old pipeline lumped into ONE
+        # `output_mismatch` group (unfixable by a single PR) must now split into
+        # coherent per-root-cause groups: dtype crash, is_updated crash, and the
+        # true mismatches (tensor + list) grouped together.
+        filtered = [
+            self._filtered("test_large_generation", _TRACE_DTYPE_CRASH),
+            self._filtered("test_speculative_decoding_distil", _TRACE_UNBOUND_CRASH),
+            self._filtered(
+                "test_small_token_timestamp_generation", _TRACE_TENSOR_MISMATCH
+            ),
+            self._filtered("test_tiny_en_generation", _TRACE_LIST_MISMATCH),
+        ]
+        report = itf.cluster_failures(filtered, None)
+        targets = itf.pick_targets(report)
+
+        modes = sorted(t["failure_mode"] for t in targets)
+        self.assertEqual(modes, ["cuda_runtime", "other", "output_mismatch"])
+        # The two genuine mismatches share one "refresh expected values" group.
+        mismatch = next(t for t in targets if t["failure_mode"] == "output_mismatch")
+        self.assertEqual(len(mismatch["failures"]), 2)
+        # The crash groups name their raised exception in the label.
+        crash = next(t for t in targets if t["failure_mode"] == "cuda_runtime")
+        self.assertIn("RuntimeError", crash["label"])
+        # Every dispatched group is a single coherent unit (no mixed exceptions).
+        for t in targets:
+            excs = {f["terminal_exc"] for f in t["failures"]}
+            self.assertEqual(len(excs), 1, f"group {t['label']} mixes {excs}")
+
+
 class PickTargetsGroupingTest(unittest.TestCase):
     def _report(self, unpinned, clusters=None, flaky=None):
         return {

@@ -237,23 +237,61 @@ _OOM_PAT = re.compile(
     r"OutOfMemoryError|CUDA out of memory|MallocFailure|HIP out of memory",
     re.IGNORECASE,
 )
+# Load/download failures. NOTE: deliberately does NOT include a bare
+# ``from_pretrained``: every integration test calls it in its body, so matching
+# it against the whole trace mislabels unrelated crashes as ``load_error``.
+# These markers are specific enough not to appear in a passing test body; the
+# ``from_pretrained``/loading signal is instead recovered from the terminal
+# exception type via ``_LOAD_EXC`` in ``classify``.
 _LOAD_PAT = re.compile(
-    r"from_pretrained|safetensors\.|HFValidationError|Repository Not Found|gated|"
-    r"Cannot read|UnboundLocalError.*loading|FileNotFoundError|access requested|"
-    r"401 Client Error|403 Client Error",
+    r"safetensors\.(?:SafetensorError|safe_open)|HFValidationError|"
+    r"Repository Not Found|RepositoryNotFound|gated repo|"
+    r"access requested|401 Client Error|403 Client Error|"
+    r"does not appear to have a file named|is not a local folder",
     re.IGNORECASE,
+)
+# Exception types raised when model/tokenizer loading fails.
+_LOAD_EXC = frozenset(
+    {
+        "HFValidationError",
+        "RepositoryNotFoundError",
+        "GatedRepoError",
+        "EntryNotFoundError",
+        "LocalEntryNotFoundError",
+    }
 )
 _CUDA_RUNTIME_PAT = re.compile(
     r"CUDA error|CUBLAS_STATUS|CUDNN_STATUS|cudnn[_ ]frontend|nvrtc|"
     r"triton\.compiler|RuntimeError: Triton|c10::Error|NCCL.*error",
     re.IGNORECASE,
 )
-_OUTPUT_MISMATCH_PAT = re.compile(
-    r"Tensor-likes are not close|"
-    r"assertEqual|assertSequenceEqual|self\.assertListEqual|"
-    r"assertAlmostEqual|assertGreater|expected_text|"
-    r"AssertionError",  # generic fallback — most assertion failures are output mismatches
-    re.IGNORECASE | re.DOTALL,
+# Device/dtype `RuntimeError`s that the CUDA-only pattern above misses — e.g.
+# ``RuntimeError: Input type (float) and bias type (c10::Half) should be the
+# same``. These are genuine crashes, NOT output mismatches. Matched only
+# against the terminal exception message (see ``classify``), never the whole
+# trace, so an unrelated phrase in the printed test body can't trigger it.
+_DEVICE_DTYPE_PAT = re.compile(
+    r"bias type|input type|should be the same|"
+    r"expected (?:all tensors|.*(?:dtype|scalar type|device))|"
+    r"same (?:dtype|device)|different device|"
+    r"can't convert|Placeholder storage",
+    re.IGNORECASE,
+)
+# A terminal AssertionError (incl. ``torch.testing.assert_close``) is the ONLY
+# thing that means "output mismatch". We deliberately do NOT scan the whole
+# trace for ``assertEqual``/``AssertionError`` here: a pytest traceback prints
+# the test body, which contains the test's own ``self.assertEqual(...)`` calls,
+# so a crash (RuntimeError, UnboundLocalError, …) would otherwise be mislabeled
+# an output mismatch and merged into an unfixable bucket.
+_TENSOR_MISMATCH_PAT = re.compile(
+    r"Tensor-likes are not (?:close|equal)", re.IGNORECASE
+)
+# Fallback only, for traces that name no exception type at all (e.g. a bare
+# symptom string): the legacy broad symptom scan.
+_MISMATCH_SYMPTOM_PAT = re.compile(
+    r"Tensor-likes are not close|Lists? differ|Tuples? differ|Dicts? differ|"
+    r"not almost equal|expected_text",
+    re.IGNORECASE,
 )
 _IMPORT_CFG_PAT = re.compile(
     r"^.*ImportError|ModuleNotFoundError|"
@@ -263,19 +301,82 @@ _IMPORT_CFG_PAT = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# The actual raised exception, extracted from pytest's ``E   <Exc>: ...`` marker
+# lines (or, failing that, the last bare ``<Exc>: ...`` line). Everything after
+# OOM/load/CUDA keys off THIS, not a substring search of the full trace.
+_E_EXC_PAT = re.compile(
+    r"^\s*E\s+(?:[\w.]+\.)?([A-Za-z_]\w*(?:Error|Exception)):?(.*)$"
+)
+_BARE_EXC_PAT = re.compile(r"^(?:[\w.]+\.)?([A-Za-z_]\w*(?:Error|Exception)):?(.*)$")
+# The location pytest prints for the raising frame: ``path/to/file.py:123: ExcType``.
+_CRASH_SITE_PAT = re.compile(
+    r"^([\w./-]+\.py):(\d+):\s+[A-Za-z_]\w*(?:Error|Exception)\b"
+)
+
+
+def terminal_exception(trace: str) -> tuple[str | None, str]:
+    """Return ``(exc_type, message)`` for the exception that actually propagated.
+
+    Prefers the last pytest ``E   <Exc>: ...`` marker line (the real raised
+    exception), else the last bare ``<Exc>: ...`` line. ``(None, "")`` when the
+    trace names no exception. This is the key that lets ``classify`` distinguish
+    a crash from an output mismatch instead of matching ``assertEqual`` text that
+    merely appears in the printed test body."""
+    etype: str | None = None
+    msg = ""
+    for line in trace.splitlines():
+        m = _E_EXC_PAT.match(line)
+        if m:
+            etype, msg = m.group(1), m.group(2)
+    if etype is None:
+        for line in trace.splitlines():
+            m = _BARE_EXC_PAT.match(line.strip())
+            if m:
+                etype, msg = m.group(1), m.group(2)
+    return (etype, msg.strip())
+
+
+def crash_site(trace: str) -> str:
+    """``path/to/file.py:123`` of the raising frame, from pytest's location line.
+
+    Empty string when absent. Same exception type at the same site ≈ same root
+    cause, so this joins ``(model, terminal exception)`` as the grouping key —
+    it keeps e.g. an fp16-dtype crash separate from an unrelated crash that
+    happens to raise the same exception type elsewhere."""
+    site = ""
+    for line in trace.splitlines():
+        m = _CRASH_SITE_PAT.match(line.strip())
+        if m:
+            site = f"{m.group(1)}:{m.group(2)}"
+    return site
+
 
 def classify(trace: str) -> str:
     if not trace:
         return "other"
-    for tag, pat in (
-        ("OOM", _OOM_PAT),
-        ("load_error", _LOAD_PAT),
-        ("cuda_runtime", _CUDA_RUNTIME_PAT),
-        ("import_or_config", _IMPORT_CFG_PAT),
-        ("output_mismatch", _OUTPUT_MISMATCH_PAT),
+    # Specific, unambiguous whole-trace markers first.
+    if _OOM_PAT.search(trace):
+        return "OOM"
+    exc_type, terminal_msg = terminal_exception(trace)
+    if _LOAD_PAT.search(trace) or exc_type in _LOAD_EXC:
+        return "load_error"
+    # Device/dtype crashes — incl. the fp16 conv RuntimeError the CUDA-only
+    # pattern misses. Keyed off the terminal exception, not the whole trace.
+    if _CUDA_RUNTIME_PAT.search(trace) or (
+        exc_type == "RuntimeError" and _DEVICE_DTYPE_PAT.search(terminal_msg)
     ):
-        if pat.search(trace):
-            return tag
+        return "cuda_runtime"
+    if _IMPORT_CFG_PAT.search(trace):
+        return "import_or_config"
+    if exc_type is not None:
+        # ``output_mismatch`` ONLY when the exception that actually propagated is
+        # an assertion. Any other terminal exception is a genuine crash.
+        if exc_type == "AssertionError" or _TENSOR_MISMATCH_PAT.search(terminal_msg):
+            return "output_mismatch"
+        return "other"
+    # No exception type parsed (bare symptom string): legacy symptom fallback.
+    if _MISMATCH_SYMPTOM_PAT.search(trace):
+        return "output_mismatch"
     return "other"
 
 
@@ -409,9 +510,13 @@ def cluster_failures(filtered: list[dict], new_failures_latest: dict | None) -> 
     for f in filtered:
         key = (f["model"], f["gpu"], f["test"])
         rec = attr.get(key)
+        trace = f.get("latest_trace") or f.get("trace") or ""
+        exc_type, _ = terminal_exception(trace)
         f = {
             **f,
-            "failure_mode": classify(f.get("latest_trace") or f.get("trace") or ""),
+            "failure_mode": classify(trace),
+            "terminal_exc": exc_type or "other",
+            "crash_site": crash_site(trace),
         }
         if rec is None:
             unpinned.append(f)
@@ -509,33 +614,60 @@ def pick_targets(report: dict) -> list[dict]:
         )
 
     pool = list(report.get("unpinned") or []) + list(report.get("flaky") or [])
-    by_model_mode: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    by_group: dict[tuple[str, str, str, str], list[dict]] = defaultdict(list)
     for f in pool:
-        by_model_mode[(f["model"], f.get("failure_mode") or "other")].append(f)
+        by_group[_group_key(f)].append(f)
 
     model_groups: list[dict] = []
-    for (model, mode), items in by_model_mode.items():
+    for (model, mode, exc, site), items in by_group.items():
         sig_str = signature_summary(items)
         n = len(items)
+        # For crashes, name the raised exception (and site) so the group is a
+        # single coherent fix unit — not a coarse-mode bucket of mixed causes.
+        crash_hint = ""
+        if mode != "output_mismatch" and exc not in ("", "other"):
+            crash_hint = f", raising `{exc}`" + (f" at `{site}`" if site else "")
         model_groups.append(
             {
                 "kind": "model_failures",
                 "label": (
                     f"{n} integration test{'s' if n != 1 else ''} for model `{model}` "
-                    f"failing with `{mode}` ({sig_str})"
+                    f"failing with `{mode}`{crash_hint} ({sig_str})"
                 ),
                 "failures": items,
                 "cluster": None,
                 "model": model,
                 "failure_mode": mode,
+                "terminal_exc": exc,
+                "crash_site": site,
             }
         )
-    # Largest coherent per-model groups first; stable tie-break on name/mode.
+    # Largest coherent group first; stable tie-break on name/mode/exception.
     model_groups.sort(
-        key=lambda t: (-len(t["failures"]), t["model"], t["failure_mode"])
+        key=lambda t: (
+            -len(t["failures"]),
+            t["model"],
+            t["failure_mode"],
+            t.get("terminal_exc") or "",
+        )
     )
     targets.extend(model_groups)
     return targets
+
+
+def _group_key(f: dict) -> tuple[str, str, str, str]:
+    """Grouping key for unattributed failures: a cheap proxy for "same root
+    cause". Splits by ``(model, failure_mode, terminal_exception)`` always, and
+    additionally by ``crash_site`` for genuine crashes — same exception type at
+    the same raising line ≈ one bug. Assertion mismatches are NOT split by site:
+    each test asserts at its own line, so that would fragment a single "refresh
+    expected values" fix into one PR per test."""
+    model = f["model"]
+    mode = f.get("failure_mode") or "other"
+    exc = f.get("terminal_exc") or "other"
+    if mode == "output_mismatch" or exc == "AssertionError":
+        return (model, mode, exc, "")
+    return (model, mode, exc, f.get("crash_site") or "")
 
 
 def pick_target(report: dict) -> dict | None:
