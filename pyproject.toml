@@ -60,6 +60,7 @@ report-ci-start = "transformersci.otel.report_start:main"
 pytest-trace-exporter = "transformersci.otel.trace_exporter:main"
 integration-failure-triage = "transformersci.agentic.integration_failure_triage:main"
 dashboard-failure-triage = "transformersci.agentic.dashboard_failure_triage:main"
+serge-verify-verdict = "transformersci.agentic.serge_verify_verdict:main"
 
 [project.entry-points.pytest11]
 transformersci_otel = "transformersci.otel.resource_plugin"

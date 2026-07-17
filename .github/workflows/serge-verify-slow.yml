@@ -1,0 +1,184 @@
+name: serge verify slow (GPU)
+
+# =============================================================================
+# Reusable GPU verify job for the serge auto-fix loop.
+#
+# serge produces a candidate patch for a coherent failure group (see
+# integration_failure_triage.py) and needs to know whether it actually turns the
+# targeted @slow tests red -> green WITHOUT breaking neighbours, before opening a
+# PR. This runs the targeted node-ids twice — on the pre-patch tree (baseline)
+# and on serge's candidate (patched) — and emits a machine-readable verdict.
+#
+# It is a thin variant of transformers-ci's daily-ci_reusable_model_job.yml
+# (itself ported from transformers model_jobs.yml): SAME prebaked image, SAME
+# warm model cache (HF_HOME=/mnt/cache + the -v mount), SAME GPU runner groups.
+# We do NOT rebuild any of that. The only differences: we run a specific set of
+# node-ids (not a whole tests/models/<model> folder), we run it twice, and we
+# emit reports/verify-result.json via the `serge-verify-verdict` console script.
+#
+# A caller in huggingface/transformers (workflow_dispatch, behind the same
+# maintainer allow-list as run-slow) invokes this; serge triggers that caller
+# and polls the `serge-verify-result` artifact. See
+# transformers-ci-playbooks docs/plans/serge-gpu-verify-loop.md.
+# =============================================================================
+
+on:
+  workflow_call:
+    inputs:
+      base_sha:
+        description: "Pre-patch tree — targeted tests MUST be red here (baseline-red guard)"
+        required: true
+        type: string
+      commit_sha:
+        description: "serge's candidate tree — targeted tests should be green here"
+        required: true
+        type: string
+      test_nodeids:
+        description: "Space-separated pytest node-ids for the group"
+        required: true
+        type: string
+      model:
+        description: "Model folder for the optional collateral suite, e.g. `whisper`"
+        required: true
+        type: string
+      machine_type:
+        description: "Runner group: aws-g5-4xlarge-cache (single) / aws-g5-12xlarge-cache (multi)"
+        required: true
+        type: string
+      docker:
+        description: "Prebaked GPU image (same as run-slow)"
+        required: false
+        type: string
+        default: huggingface/transformers-all-latest-gpu
+      run_collateral:
+        description: "Also run the full tests/models/<model> slow suite on both trees"
+        required: false
+        type: boolean
+        default: false
+      transformersci_ref:
+        description: "Ref of huggingface/transformers-ci to install the verdict tool from"
+        required: false
+        type: string
+        default: main
+    secrets:
+      HF_HUB_READ_TOKEN:
+        required: true
+    outputs:
+      verdict:
+        description: "fixed | not_fixed | already_passing | broke_others | error"
+        value: ${{ jobs.verify.outputs.verdict }}
+
+env:
+  HF_HOME: /mnt/cache               # reuse the warm, node-local model cache
+  TRANSFORMERS_IS_CI: yes
+  RUN_SLOW: yes
+  HF_TOKEN: ${{ secrets.HF_HUB_READ_TOKEN }}
+  CUDA_VISIBLE_DEVICES: 0,1
+  NO_COLOR: 1
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify ${{ inputs.model }} (${{ inputs.machine_type }})
+    runs-on:
+      group: '${{ inputs.machine_type }}'          # same runner groups / ARC scale sets as run-slow
+    container:
+      image: ${{ inputs.docker }}                  # same prebaked image
+      options: --gpus all --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
+    outputs:
+      verdict: ${{ steps.verdict.outputs.verdict }}
+    steps:
+      - name: Install the verdict tool (transformers-ci)
+        run: python3 -m pip install "transformers-ci[agentic] @ git+https://github.com/huggingface/transformers-ci@${TRANSFORMERSCI_REF}"
+        env:
+          TRANSFORMERSCI_REF: ${{ inputs.transformersci_ref || 'main' }}
+
+      - name: Prepare reports dir
+        working-directory: /transformers
+        run: mkdir -p reports && rm -f reports/*.xml
+
+      # ---- Baseline: pre-patch tree. Targeted tests must be RED here. ----
+      - name: Checkout baseline tree
+        working-directory: /transformers
+        env:
+          base_sha: ${{ inputs.base_sha }}
+        run: |
+          git fetch origin "$base_sha" && git checkout "$base_sha"
+          python3 -m pip uninstall -y transformers && python3 -m pip install -e .
+
+      - name: Run targeted tests (baseline)
+        working-directory: /transformers
+        env:
+          nodeids: ${{ inputs.test_nodeids }}
+        run: |
+          # shellcheck disable=SC2086  # $nodeids is a space-separated list of pytest args — must word-split
+          python3 -m pytest -rsfE -v --junitxml=reports/baseline.xml $nodeids || true
+
+      - name: Run collateral suite (baseline)
+        if: ${{ inputs.run_collateral }}
+        working-directory: /transformers
+        env:
+          model: ${{ inputs.model }}
+        run: |
+          python3 -m pytest -rsfE -q --junitxml=reports/collateral_baseline.xml "tests/models/${model}" || true
+
+      # ---- Patched: serge's candidate. Targeted tests should be GREEN here. ----
+      - name: Checkout patched tree
+        working-directory: /transformers
+        env:
+          commit_sha: ${{ inputs.commit_sha }}
+        run: |
+          git fetch origin "$commit_sha" && git checkout "$commit_sha"
+          python3 -m pip install -e .
+
+      - name: Run targeted tests (patched)
+        working-directory: /transformers
+        env:
+          nodeids: ${{ inputs.test_nodeids }}
+        run: |
+          # shellcheck disable=SC2086  # $nodeids is a space-separated list of pytest args — must word-split
+          python3 -m pytest -rsfE -v --junitxml=reports/patched.xml $nodeids || true
+
+      - name: Run collateral suite (patched)
+        if: ${{ inputs.run_collateral }}
+        working-directory: /transformers
+        env:
+          model: ${{ inputs.model }}
+        run: |
+          python3 -m pytest -rsfE -q --junitxml=reports/collateral.xml "tests/models/${model}" || true
+
+      # ---- Verdict. serge decides off this JSON, not the exit code. ----
+      - name: Compute verdict
+        id: verdict
+        working-directory: /transformers
+        env:
+          nodeids: ${{ inputs.test_nodeids }}
+          base_sha: ${{ inputs.base_sha }}
+          commit_sha: ${{ inputs.commit_sha }}
+          machine_type: ${{ inputs.machine_type }}
+        run: |
+          collateral_args=""
+          if [ -f reports/collateral.xml ]; then
+            collateral_args="--collateral reports/collateral.xml"
+            [ -f reports/collateral_baseline.xml ] && collateral_args="$collateral_args --collateral-baseline reports/collateral_baseline.xml"
+          fi
+          # shellcheck disable=SC2086  # $collateral_args intentionally expands to 0/2/4 separate flags
+          serge-verify-verdict \
+            --nodeids "$nodeids" \
+            --baseline reports/baseline.xml \
+            --patched reports/patched.xml \
+            $collateral_args \
+            --base-sha "$base_sha" --commit-sha "$commit_sha" --machine-type "$machine_type" \
+            --out reports/verify-result.json || true
+          cat reports/verify-result.json
+          verdict=$(python3 -c "import json;print(json.load(open('reports/verify-result.json'))['verdict'])")
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+
+      - name: Upload verify result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: serge-verify-result-${{ inputs.machine_type }}
+          path: /transformers/reports/verify-result.json
