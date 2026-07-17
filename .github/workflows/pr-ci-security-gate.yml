@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       pull-requests: read
+      contents: read
     outputs:
       has_py: ${{ steps.py-check.outputs.has_py }}
     steps:
@@ -65,6 +66,26 @@ jobs:
             echo "has_py=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Fetch changed Python files at PR head (no fork checkout)
+        if: steps.py-check.outputs.has_py == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Fetch each changed .py file's blob at the PR head SHA via the REST contents
+          # API and stage it under /tmp/pr_py, preserving its path. This never checks out
+          # (nor executes) fork code — Bandit only parses the file's AST — so it is safe
+          # under pull_request_target, avoiding actions/checkout's fork-checkout refusal
+          # ("pwn request" hardening) without opting into allow-unsafe-pr-checkout.
+          mkdir -p /tmp/pr_py
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            mkdir -p "/tmp/pr_py/$(dirname "$f")"
+            gh api -H "Accept: application/vnd.github.raw" \
+              "repos/$REPO/contents/$f?ref=$HEAD_SHA" > "/tmp/pr_py/$f"
+          done < /tmp/py_files.txt
+
       - name: Upload Bandit inputs
         if: steps.py-check.outputs.has_py == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -73,13 +94,13 @@ jobs:
           path: |
             /tmp/pr_files.json
             /tmp/py_files.txt
+            /tmp/pr_py
 
   bandit-check:
     needs: get-changed-files
     if: needs.get-changed-files.outputs.has_py == 'true'
     runs-on: ubuntu-22.04
-    permissions:
-      contents: read
+    permissions: {}
     steps:
       - name: Download Bandit inputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -90,14 +111,13 @@ jobs:
       - name: Install Bandit
         run: pip install bandit==1.9.4
 
-      - name: Checkout PR code for static analysis
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
       - name: Run Bandit on changed Python files
         run: |
+          # Bandit runs against the file blobs staged by get-changed-files (fetched via
+          # the contents API, not a fork checkout). Run from /tmp/pr_py so the relative
+          # paths in py_files.txt resolve and Bandit's reported filenames match the API
+          # filenames used for patch mapping in the next step.
+          cd /tmp/pr_py
           # -d '\n': split on newlines only (handles filenames with spaces)
           # --: end of options, prevents filenames starting with '-' being treated as flags
           xargs -d '\n' bandit --format json -l --ignore-nosec -o /tmp/bandit_report.json -- < /tmp/py_files.txt || true
