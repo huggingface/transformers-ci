@@ -28,7 +28,7 @@ feed back to the LLM. We deliberately do NOT reuse transformers' ``--make-
 reports`` output here — that pipeline targets the daily-CI HF dataset, whereas
 we just need per-nodeid pass/fail for a handful of tests we already know.
 
-Verdicts:
+Verdicts (``mode=verify``, the default — baseline + patched):
   fixed            every targeted test was red at baseline and green when patched
   not_fixed        at least one targeted test is still red when patched
   already_passing  a targeted test was NOT red at baseline (self-healed / flaky)
@@ -38,7 +38,16 @@ Verdicts:
   error            a targeted test could not be verified (missing / skipped /
                    collection error)
 
-See ``docs/plans/serge-gpu-verify-loop.md`` in transformers-ci-playbooks.
+Verdicts (``mode=reproduce`` — baseline only, run BEFORE serge investigates):
+  reproduced       every targeted test is red at ``base_sha`` — a real, confirmed
+                   failure; serge captures the traceback and proceeds to investigate
+  not_reproduced   a targeted test is green at ``base_sha`` (stale / flaky / env) —
+                   serge must NOT investigate, and bails to the next group
+  error            a targeted test could not be verified (missing / skipped /
+                   collection error)
+
+See ``docs/plans/serge-gpu-verify-loop.md`` and ``docs/plans/serge-reproduce-first.md``
+in transformers-ci-playbooks.
 """
 
 from __future__ import annotations
@@ -180,6 +189,7 @@ def build_verdict(
         verdict = "fixed"
 
     return {
+        "mode": "verify",
         "base_sha": base_sha,
         "commit_sha": commit_sha,
         "machine_type": machine_type,
@@ -190,13 +200,76 @@ def build_verdict(
     }
 
 
+def build_reproduce_verdict(
+    nodeids: list[str],
+    baseline: dict[tuple[str, str], dict],
+    *,
+    base_sha: str = "",
+    machine_type: str = "",
+) -> dict:
+    """Compute the reproduce verdict from the baseline-only JUnit report.
+
+    Runs BEFORE serge investigates: confirms the group's failure is real at
+    ``base_sha`` before spending any LLM budget. Verdict is ``reproduced`` only
+    when every targeted test is red at baseline — the same conservatism as the
+    ``verify`` baseline-red guard, so a ``reproduced`` group is exactly one the
+    later ``verify`` step can adjudicate. Pure function — I/O lives in ``main``."""
+    targeted: list[dict] = []
+    tracebacks: dict[str, str] = {}
+    any_passing = False
+    any_unverifiable = False
+    any_red = False
+
+    for nodeid in nodeids:
+        b = _lookup(baseline, nodeid)
+        targeted.append({"nodeid": nodeid, "baseline": b["outcome"]})
+        if b["outcome"] == "green":
+            any_passing = True
+        elif b["outcome"] in ("missing", "skipped"):
+            any_unverifiable = True
+        elif b["outcome"] in ("failed", "error"):
+            any_red = True
+            if b["detail"]:
+                tracebacks[nodeid] = b["detail"]
+
+    if any_passing:
+        verdict = "not_reproduced"
+    elif any_unverifiable:
+        verdict = "error"
+    elif any_red:
+        verdict = "reproduced"
+    else:
+        # No node-ids, or none classifiable — nothing to reproduce.
+        verdict = "not_reproduced"
+
+    return {
+        "mode": "reproduce",
+        "base_sha": base_sha,
+        "machine_type": machine_type,
+        "targeted": targeted,
+        "verdict": verdict,
+        "tracebacks": tracebacks,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Compute the serge verify-loop verdict.")
+    ap.add_argument(
+        "--mode",
+        choices=("verify", "reproduce"),
+        default="verify",
+        help="verify: baseline+patched red→green gate (default). "
+        "reproduce: baseline only, confirm the failure is real before investigating.",
+    )
     ap.add_argument("--nodeids", required=True, help="space-separated pytest node-ids")
     ap.add_argument(
         "--baseline", required=True, help="JUnit XML from the pre-patch run"
     )
-    ap.add_argument("--patched", required=True, help="JUnit XML from the patched run")
+    ap.add_argument(
+        "--patched",
+        default=None,
+        help="JUnit XML from the patched run (required for mode=verify)",
+    )
     ap.add_argument(
         "--collateral", default=None, help="JUnit XML: patched full-model run"
     )
@@ -218,25 +291,35 @@ def main(argv: list[str] | None = None) -> int:
         print("no node-ids supplied", file=sys.stderr)
         return 2
 
-    verdict = build_verdict(
-        nodeids,
-        parse_junit(args.baseline),
-        parse_junit(args.patched),
-        collateral=parse_junit(args.collateral),
-        collateral_baseline=parse_junit(args.collateral_baseline),
-        base_sha=args.base_sha,
-        commit_sha=args.commit_sha,
-        machine_type=args.machine_type,
-    )
+    if args.mode == "reproduce":
+        verdict = build_reproduce_verdict(
+            nodeids,
+            parse_junit(args.baseline),
+            base_sha=args.base_sha,
+            machine_type=args.machine_type,
+        )
+        ok = "reproduced"
+    else:
+        verdict = build_verdict(
+            nodeids,
+            parse_junit(args.baseline),
+            parse_junit(args.patched),
+            collateral=parse_junit(args.collateral),
+            collateral_baseline=parse_junit(args.collateral_baseline),
+            base_sha=args.base_sha,
+            commit_sha=args.commit_sha,
+            machine_type=args.machine_type,
+        )
+        ok = "fixed"
     text = json.dumps(verdict, indent=2)
     if args.out == "-":
         print(text)
     else:
         with open(args.out, "w") as fh:
             fh.write(text + "\n")
-    # Non-zero exit for the not-fixed verdicts so the workflow step reflects it,
+    # Non-zero exit for the non-success verdicts so the workflow step reflects it,
     # but serge decides off the JSON `verdict`, not the exit code.
-    return 0 if verdict["verdict"] == "fixed" else 1
+    return 0 if verdict["verdict"] == ok else 1
 
 
 if __name__ == "__main__":
