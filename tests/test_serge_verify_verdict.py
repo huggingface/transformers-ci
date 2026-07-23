@@ -158,6 +158,57 @@ class BuildVerdictTest(unittest.TestCase):
         self.assertEqual(out["collateral_new_failures"], [])
 
 
+class BuildReproduceVerdictTest(unittest.TestCase):
+    def _rep(self, mapping):
+        return {(CLS, m): {"outcome": o, "detail": d} for m, (o, d) in mapping.items()}
+
+    def test_reproduced_when_baseline_red(self):
+        baseline = self._rep(
+            {"test_small_token_timestamp_generation": ("failed", "boom")}
+        )
+        out = v.build_reproduce_verdict([TS], baseline)
+        self.assertEqual(out["mode"], "reproduce")
+        self.assertEqual(out["verdict"], "reproduced")
+        self.assertIn("boom", out["tracebacks"][TS])
+        self.assertEqual(out["targeted"][0], {"nodeid": TS, "baseline": "failed"})
+        self.assertNotIn("patched", out["targeted"][0])
+
+    def test_reproduced_from_error_outcome(self):
+        baseline = self._rep(
+            {"test_small_token_timestamp_generation": ("error", "RuntimeError")}
+        )
+        out = v.build_reproduce_verdict([TS], baseline)
+        self.assertEqual(out["verdict"], "reproduced")
+        self.assertIn("RuntimeError", out["tracebacks"][TS])
+
+    def test_not_reproduced_when_baseline_green(self):
+        # The failure self-healed / is flaky at base → serge must NOT investigate.
+        baseline = self._rep({"test_small_token_timestamp_generation": ("green", "")})
+        out = v.build_reproduce_verdict([TS], baseline)
+        self.assertEqual(out["verdict"], "not_reproduced")
+
+    def test_error_when_target_missing(self):
+        out = v.build_reproduce_verdict([TS], {})
+        self.assertEqual(out["verdict"], "error")
+
+    def test_error_when_skipped(self):
+        baseline = self._rep({"test_small_token_timestamp_generation": ("skipped", "")})
+        out = v.build_reproduce_verdict([TS], baseline)
+        self.assertEqual(out["verdict"], "error")
+
+    def test_all_targets_must_be_red(self):
+        # One green among the group is enough to bail — mirrors the verify
+        # baseline-red guard's conservatism.
+        baseline = self._rep(
+            {
+                "test_small_token_timestamp_generation": ("failed", "a"),
+                "test_tiny_generation": ("green", ""),
+            }
+        )
+        out = v.build_reproduce_verdict([TS, GEN], baseline)
+        self.assertEqual(out["verdict"], "not_reproduced")
+
+
 class ParseJunitTest(unittest.TestCase):
     def setUp(self):
         import tempfile
@@ -220,6 +271,54 @@ class ParseJunitTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         data = json.loads(out.read_text())
         self.assertEqual(data["verdict"], "fixed")
+
+    def test_main_reproduce_mode_without_patched(self):
+        # mode=reproduce needs only --baseline; a red baseline → rc 0, reproduced.
+        baseline = _write(
+            self.tmp,
+            "b.xml",
+            {"test_small_token_timestamp_generation": ("failed", "boom")},
+        )
+        out = self.tmp / "verdict.json"
+        rc = v.main(
+            [
+                "--mode",
+                "reproduce",
+                "--nodeids",
+                TS,
+                "--baseline",
+                baseline,
+                "--out",
+                str(out),
+            ]
+        )
+        self.assertEqual(rc, 0)
+        data = json.loads(out.read_text())
+        self.assertEqual(data["mode"], "reproduce")
+        self.assertEqual(data["verdict"], "reproduced")
+        self.assertIn("boom", data["tracebacks"][TS])
+
+    def test_main_reproduce_mode_not_reproduced_is_nonzero(self):
+        baseline = _write(
+            self.tmp,
+            "b.xml",
+            {"test_small_token_timestamp_generation": ("green", "")},
+        )
+        out = self.tmp / "verdict.json"
+        rc = v.main(
+            [
+                "--mode",
+                "reproduce",
+                "--nodeids",
+                TS,
+                "--baseline",
+                baseline,
+                "--out",
+                str(out),
+            ]
+        )
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(out.read_text())["verdict"], "not_reproduced")
 
 
 if __name__ == "__main__":

@@ -16,6 +16,12 @@ name: serge verify slow (GPU)
 # node-ids (not a whole tests/models/<model> folder), we run it twice, and we
 # emit reports/verify-result.json via the `serge-verify-verdict` console script.
 #
+# Two modes (input `mode`):
+#   verify    (default) — baseline + patched, red→green gate (fixed | not_fixed | …)
+#   reproduce           — baseline only, run BEFORE serge investigates to confirm the
+#                         failure is real (reproduced | not_reproduced | error). Skips
+#                         the patched checkout/run entirely.
+#
 # A caller in huggingface/transformers (workflow_dispatch, behind the same
 # maintainer allow-list as run-slow) invokes this; serge triggers that caller
 # and polls the `serge-verify-result` artifact. See
@@ -25,14 +31,20 @@ name: serge verify slow (GPU)
 on:
   workflow_call:
     inputs:
+      mode:
+        description: "verify (baseline+patched red→green gate) | reproduce (baseline only, confirm the failure is real before serge investigates)"
+        required: false
+        type: string
+        default: verify
       base_sha:
         description: "Pre-patch tree — targeted tests MUST be red here (baseline-red guard)"
         required: true
         type: string
       commit_sha:
-        description: "serge's candidate tree — targeted tests should be green here"
-        required: true
+        description: "serge's candidate tree — targeted tests should be green here (unused when mode=reproduce)"
+        required: false
         type: string
+        default: ""
       test_nodeids:
         description: "Space-separated pytest node-ids for the group"
         required: true
@@ -65,7 +77,7 @@ on:
         required: true
     outputs:
       verdict:
-        description: "fixed | not_fixed | already_passing | broke_others | error"
+        description: "verify: fixed | not_fixed | already_passing | broke_others | error · reproduce: reproduced | not_reproduced | error"
         value: ${{ jobs.verify.outputs.verdict }}
 
 env:
@@ -117,7 +129,7 @@ jobs:
           python3 -m pytest -rsfE -v --junitxml=reports/baseline.xml $nodeids || true
 
       - name: Run collateral suite (baseline)
-        if: ${{ inputs.run_collateral }}
+        if: ${{ inputs.mode == 'verify' && inputs.run_collateral }}
         working-directory: /transformers
         env:
           model: ${{ inputs.model }}
@@ -125,7 +137,9 @@ jobs:
           python3 -m pytest -rsfE -q --junitxml=reports/collateral_baseline.xml "tests/models/${model}" || true
 
       # ---- Patched: serge's candidate. Targeted tests should be GREEN here. ----
+      # Skipped entirely for mode=reproduce, which only confirms the baseline failure.
       - name: Checkout patched tree
+        if: ${{ inputs.mode == 'verify' }}
         working-directory: /transformers
         env:
           commit_sha: ${{ inputs.commit_sha }}
@@ -134,6 +148,7 @@ jobs:
           python3 -m pip install -e .
 
       - name: Run targeted tests (patched)
+        if: ${{ inputs.mode == 'verify' }}
         working-directory: /transformers
         env:
           nodeids: ${{ inputs.test_nodeids }}
@@ -142,7 +157,7 @@ jobs:
           python3 -m pytest -rsfE -v --junitxml=reports/patched.xml $nodeids || true
 
       - name: Run collateral suite (patched)
-        if: ${{ inputs.run_collateral }}
+        if: ${{ inputs.mode == 'verify' && inputs.run_collateral }}
         working-directory: /transformers
         env:
           model: ${{ inputs.model }}
@@ -154,21 +169,26 @@ jobs:
         id: verdict
         working-directory: /transformers
         env:
+          mode: ${{ inputs.mode }}
           nodeids: ${{ inputs.test_nodeids }}
           base_sha: ${{ inputs.base_sha }}
           commit_sha: ${{ inputs.commit_sha }}
           machine_type: ${{ inputs.machine_type }}
         run: |
+          # --patched only exists in verify mode; --collateral only when that suite ran.
+          patched_args=""
+          [ -f reports/patched.xml ] && patched_args="--patched reports/patched.xml"
           collateral_args=""
           if [ -f reports/collateral.xml ]; then
             collateral_args="--collateral reports/collateral.xml"
             [ -f reports/collateral_baseline.xml ] && collateral_args="$collateral_args --collateral-baseline reports/collateral_baseline.xml"
           fi
-          # shellcheck disable=SC2086  # $collateral_args intentionally expands to 0/2/4 separate flags
+          # shellcheck disable=SC2086  # $patched_args/$collateral_args intentionally expand to separate flags
           serge-verify-verdict \
+            --mode "$mode" \
             --nodeids "$nodeids" \
             --baseline reports/baseline.xml \
-            --patched reports/patched.xml \
+            $patched_args \
             $collateral_args \
             --base-sha "$base_sha" --commit-sha "$commit_sha" --machine-type "$machine_type" \
             --out reports/verify-result.json || true
