@@ -91,7 +91,6 @@ from .serge_dispatch import (
     build_task_payload as _build_serge_payload,
     dispatch_to_serge,
     mint_serge_oidc_token,
-    poll_serge_status,
     poll_serge_task,
 )
 
@@ -941,12 +940,87 @@ def tracking_issue_marker(run_key: str) -> str:
     return f"<!-- serge-triage-run:{_STATE_SOURCE}:{run_key} -->"
 
 
+_SERGE_MARKER_RE = re.compile(r"<!--\s*serge-task:.*?-->", re.DOTALL)
+
+
+def _distill_outcome(detail: dict) -> dict:
+    """From a Serge ``/status`` payload, pull the fields the recap needs:
+    a one-line human reason, the LLM model, and token spend. Tolerant of missing
+    keys (older Serge builds don't return ``model``/tokens)."""
+    result = detail.get("result") if isinstance(detail.get("result"), dict) else {}
+    status = detail.get("status") or ""
+    verdict = result.get("verify_verdict")
+    # Reason: the verify/reproduce bail message or the LLM's no-patch explanation
+    # for no_fix; the raw error for error. Strip Serge's HTML marker + boilerplate.
+    if status == "error":
+        reason = detail.get("error") or "task failed"
+    else:
+        reason = result.get("message") or ""
+    reason = _SERGE_MARKER_RE.sub("", reason)
+    reason = re.sub(r"(?m)^\s*Relates to #\d+\s*$", "", reason).strip()
+    reason = reason.splitlines()[0].strip() if reason else ""
+    if verdict:
+        reason = f"[{verdict}] {reason}".strip()
+    return {
+        "reason": reason,
+        "model": detail.get("model"),
+        "prompt_tokens": detail.get("prompt_tokens"),
+        "completion_tokens": detail.get("completion_tokens"),
+    }
+
+
+def _fmt_tokens(n: object) -> str:
+    return f"{n:,}" if isinstance(n, int) else "—"
+
+
+def _render_outcome_recap(
+    targets: list[dict],
+    existing_prs: dict[str, int | None],
+    details: dict[str, dict] | None,
+) -> list[str]:
+    """Recap lines for groups that produced NO PR (no_fix/error): the reason and
+    the token spend, which are otherwise only visible in the Serge dashboard.
+    Empty when there is nothing to report."""
+    details = details or {}
+    rows: list[str] = []
+    for target in targets:
+        fp = target_fingerprint(target)
+        if existing_prs.get(fp):  # a PR is the outcome; no recap needed
+            continue
+        distilled = details.get(fp)
+        if not distilled:
+            continue
+        model_cell = f"`{target['model']}`" if target.get("model") else "—"
+        spend = f"{_fmt_tokens(distilled.get('prompt_tokens'))} / {_fmt_tokens(distilled.get('completion_tokens'))}"
+        cells = [
+            model_cell,
+            distilled.get("reason") or "—",
+            f"`{distilled['model']}`" if distilled.get("model") else "—",
+            spend,
+        ]
+        rows.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
+    if not rows:
+        return []
+    return [
+        "",
+        "## Outcome recap",
+        "",
+        "Why each group that opened no PR ended without one, and what it cost — "
+        "surfaced here from the Serge dashboard.",
+        "",
+        "| Group | Reason | LLM | Tokens (in / out) |",
+        "| --- | --- | --- | --- |",
+        *rows,
+    ]
+
+
 def render_tracking_issue_body(
     targets: list[dict],
     window: list[str],
     run_key: str,
     existing_prs: dict[str, int | None] | None = None,
     statuses: dict[str, str] | None = None,
+    details: dict[str, dict] | None = None,
 ) -> str:
     """Markdown body for the per-run tracking issue. When a group already has an
     open Serge PR (a follow-up), its number is written inline as ``#<pr>`` — that
@@ -999,6 +1073,7 @@ def render_tracking_issue_body(
             pr_cell = f"`{task_branch_prefix(fp)}` (pending)"
         cells = [model_cell, error_cell, str(len(target["failures"])), pr_cell]
         lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
+    lines += _render_outcome_recap(targets, existing_prs, details)
     lines += [
         "",
         f"_Generated {datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()}._",
@@ -1269,6 +1344,7 @@ def reconcile_tracking_issue(
     last_key: tuple[int, int] = (-1, -1)
     existing_prs: dict[str, int | None] = {}
     statuses: dict[str, str] = {}
+    details: dict[str, dict] = {}
     print(
         f"      reconciling tracking issue #{issue_number} for up to "
         f"{timeout_seconds}s as Serge runs…",
@@ -1288,9 +1364,13 @@ def reconcile_tracking_issue(
                 jid = (job_ids or {}).get(fp)
                 if not jid:
                     continue
-                st = poll_serge_status(serge_url, serge_token, repo, jid)
+                detail = poll_serge_task(serge_url, serge_token, repo, jid)
+                st = detail.get("status") if detail else None
                 if st:
-                    statuses[fp] = st
+                    statuses[fp] = str(st)
+                    # Capture the reason + spend for the recap once terminal.
+                    if st in ("no_fix", "error"):
+                        details[fp] = _distill_outcome(detail)
         linked = sum(1 for v in existing_prs.values() if v)
         terminal = sum(
             1
@@ -1300,7 +1380,7 @@ def reconcile_tracking_issue(
         resolved = linked + terminal
         if (linked, terminal) != last_key:
             body = render_tracking_issue_body(
-                targets, window, run_key, existing_prs, statuses
+                targets, window, run_key, existing_prs, statuses, details
             )
             update_issue_body(repo, issue_number, body, github_token)
             print(

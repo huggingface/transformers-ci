@@ -876,6 +876,73 @@ class TrackingIssueTest(unittest.TestCase):
         self.assertIn("no fix", body)
         self.assertIn("task failed", body)
 
+    def test_render_outcome_recap_reason_and_spend(self):
+        targets = [self._target("g1", "gemma"), self._target("g2", "whisper")]
+        fp0 = itf.target_fingerprint(targets[0])
+        fp1 = itf.target_fingerprint(targets[1])
+        details = {
+            fp0: {
+                "reason": "[not_reproduced] targeted tests passed at base",
+                "model": "moonshotai/Kimi-K2.7-Code",
+                "prompt_tokens": 12345,
+                "completion_tokens": 678,
+            },
+            fp1: {
+                "reason": "no safe change found",
+                "model": "moonshotai/Kimi-K2.7-Code",
+                "prompt_tokens": 2041248,
+                "completion_tokens": 7310,
+            },
+        }
+        body = itf.render_tracking_issue_body(
+            targets,
+            ["2026-06-19"],
+            "2026-06-19",
+            existing_prs={},
+            statuses={fp0: "no_fix", fp1: "no_fix"},
+            details=details,
+        )
+        self.assertIn("## Outcome recap", body)
+        self.assertIn("not_reproduced", body)
+        self.assertIn("no safe change found", body)
+        self.assertIn("2,041,248", body)  # spend rendered with thousands sep
+        self.assertIn("Kimi-K2.7-Code", body)
+
+    def test_recap_skips_groups_with_a_pr(self):
+        targets = [self._target("g1", "gemma")]
+        fp0 = itf.target_fingerprint(targets[0])
+        body = itf.render_tracking_issue_body(
+            targets,
+            ["2026-06-19"],
+            "2026-06-19",
+            existing_prs={fp0: 123},  # a PR is the outcome → no recap row
+            statuses={},
+            details={fp0: {"reason": "x", "prompt_tokens": 1, "completion_tokens": 2}},
+        )
+        self.assertNotIn("## Outcome recap", body)
+
+    def test_distill_outcome_strips_marker_and_uses_verdict(self):
+        detail = {
+            "status": "no_fix",
+            "result": {
+                "message": "<!-- serge-task:foo:sha256:abc -->\nRelates to #47515\n"
+                "The 14 GemmaIntegrationTest cases are all output_mismatch.",
+                "verify_verdict": "not_reproduced",
+            },
+            "model": "kimi",
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+        }
+        out = itf._distill_outcome(detail)
+        self.assertNotIn("serge-task", out["reason"])
+        self.assertNotIn("Relates to", out["reason"])
+        self.assertTrue(out["reason"].startswith("[not_reproduced]"))
+        self.assertEqual(out["prompt_tokens"], 100)
+
+    def test_distill_outcome_error_uses_error_text(self):
+        out = itf._distill_outcome({"status": "error", "error": "boom", "result": None})
+        self.assertEqual(out["reason"], "boom")
+
     def test_poll_serge_status_parses_status(self):
         class _Resp:
             def __init__(self, data):
@@ -895,7 +962,7 @@ class TrackingIssueTest(unittest.TestCase):
         with patch.object(
             sd.urllib.request, "urlopen", return_value=_Resp(b'{"status": "no_fix"}')
         ):
-            st = itf.poll_serge_status("http://s", "tok", "o/r", "j1")
+            st = sd.poll_serge_status("http://s", "tok", "o/r", "j1")
         self.assertEqual(st, "no_fix")
 
     def test_poll_serge_task_returns_error_detail(self):
@@ -928,7 +995,7 @@ class TrackingIssueTest(unittest.TestCase):
             raise sd.urllib.error.URLError("down")
 
         with patch.object(sd.urllib.request, "urlopen", side_effect=boom):
-            self.assertIsNone(itf.poll_serge_status("http://s", "tok", "o/r", "j1"))
+            self.assertIsNone(sd.poll_serge_status("http://s", "tok", "o/r", "j1"))
 
     def test_reconcile_marks_no_fix_from_serge_status(self):
         # A group that opens no PR but ends no_fix must show on the issue —
@@ -945,7 +1012,7 @@ class TrackingIssueTest(unittest.TestCase):
             patch.object(itf, "list_open_pulls", return_value=[]),
             patch.object(itf, "update_issue_body", side_effect=fake_update),
             patch.object(itf, "mint_serge_oidc_token", return_value=None),
-            patch.object(itf, "poll_serge_status", return_value="no_fix"),
+            patch.object(itf, "poll_serge_task", return_value={"status": "no_fix"}),
             patch.object(itf.time, "sleep", lambda _s: None),
         ):
             itf.reconcile_tracking_issue(
