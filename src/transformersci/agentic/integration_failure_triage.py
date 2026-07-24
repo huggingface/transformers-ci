@@ -654,6 +654,31 @@ def pick_targets(report: dict) -> list[dict]:
     return targets
 
 
+def select_dispatch_targets(
+    targets: list[dict],
+    max_groups: int,
+    *,
+    shuffle: bool,
+    rng: random.Random | None = None,
+) -> list[dict]:
+    """Choose which failure groups to dispatch when capping at ``max_groups``.
+
+    ``shuffle=False`` keeps the historical top-N-by-priority behavior.
+    ``shuffle=True`` draws a random sample instead, so a nightly run attempts
+    DIFFERENT groups rather than re-trying the same biggest (and often
+    genuinely unfixable) failures every night — the point being that the top
+    groups keep coming back ``no_fix``, so cycling gives smaller, maybe-fixable
+    groups a turn. The sample is returned in the original priority order for a
+    stable within-run dispatch sequence. ``max_groups <= 0`` means no cap."""
+    if max_groups <= 0 or len(targets) <= max_groups:
+        return targets
+    if not shuffle:
+        return targets[:max_groups]
+    rng = rng or random.Random()
+    chosen = sorted(rng.sample(range(len(targets)), max_groups))
+    return [targets[i] for i in chosen]
+
+
 def _group_key(f: dict) -> tuple[str, str, str, str]:
     """Grouping key for unattributed failures: a cheap proxy for "same root
     cause". Splits by ``(model, failure_mode, terminal_exception)`` always, and
@@ -1789,6 +1814,31 @@ def main(argv: list[str] | None = None) -> int:
         help="cap how many ordered failure groups are dispatched to Serge (0 = no cap)",
     )
     p.add_argument(
+        "--shuffle-groups",
+        dest="shuffle_groups",
+        action="store_true",
+        default=os.environ.get("ITF_SHUFFLE_GROUPS", "1") not in ("", "0", "false"),
+        help="when --max-groups caps the list, dispatch a RANDOM sample instead of "
+        "the top-N, so different failures are attempted each run (default on; "
+        "set ITF_SHUFFLE_GROUPS=0 to keep top-N by priority)",
+    )
+    p.add_argument(
+        "--no-shuffle-groups",
+        dest="shuffle_groups",
+        action="store_false",
+        help="dispatch the top-N failure groups by priority (disable shuffling)",
+    )
+    p.add_argument(
+        "--shuffle-seed",
+        type=int,
+        default=(
+            int(os.environ["ITF_SHUFFLE_SEED"])
+            if os.environ.get("ITF_SHUFFLE_SEED")
+            else None
+        ),
+        help="seed the group shuffle for a reproducible selection (default: random)",
+    )
+    p.add_argument(
         "--serge-concurrency",
         type=int,
         default=int(os.environ.get("ITF_SERGE_CONCURRENCY", "3")),
@@ -1895,12 +1945,26 @@ def main(argv: list[str] | None = None) -> int:
     targets = pick_targets(report)
     if args.max_groups and len(targets) > args.max_groups:
         dropped = len(targets) - args.max_groups
+        how = (
+            "a random sample of"
+            if getattr(args, "shuffle_groups", False)
+            else "the top"
+        )
         print(
-            f"      note: {len(targets)} group(s) found; dispatching the top "
-            f"{args.max_groups}, dropping {dropped} lower-priority group(s) this run",
+            f"      note: {len(targets)} group(s) found; dispatching {how} "
+            f"{args.max_groups}, dropping {dropped} this run",
             flush=True,
         )
-        targets = targets[: args.max_groups]
+        targets = select_dispatch_targets(
+            targets,
+            args.max_groups,
+            shuffle=getattr(args, "shuffle_groups", False),
+            rng=(
+                random.Random(args.shuffle_seed)
+                if getattr(args, "shuffle_seed", None) is not None
+                else None
+            ),
+        )
 
     report_md = render_report(report, targets, window)
     if args.report_out:

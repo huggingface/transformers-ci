@@ -1149,5 +1149,53 @@ class TestTrackingIssueLifecycle(unittest.TestCase):
             api.assert_not_called()
 
 
+class SelectDispatchTargetsTest(unittest.TestCase):
+    def _targets(self, n):
+        return [{"id": i} for i in range(n)]
+
+    def test_no_cap_returns_all(self):
+        t = self._targets(5)
+        self.assertIs(itf.select_dispatch_targets(t, 0, shuffle=True), t)
+
+    def test_under_cap_returns_all(self):
+        t = self._targets(3)
+        self.assertEqual(itf.select_dispatch_targets(t, 5, shuffle=True), t)
+
+    def test_no_shuffle_takes_top_n(self):
+        t = self._targets(10)
+        out = itf.select_dispatch_targets(t, 3, shuffle=False)
+        self.assertEqual([x["id"] for x in out], [0, 1, 2])
+
+    def test_shuffle_samples_and_preserves_priority_order(self):
+        import random
+
+        t = self._targets(10)
+        out = itf.select_dispatch_targets(t, 3, shuffle=True, rng=random.Random(42))
+        ids = [x["id"] for x in out]
+        self.assertEqual(len(ids), 3)
+        self.assertEqual(len(set(ids)), 3)  # no dupes
+        self.assertEqual(ids, sorted(ids))  # returned in original priority order
+
+    def test_shuffle_varies_across_seeds(self):
+        import random
+
+        t = self._targets(20)
+        a = [
+            x["id"]
+            for x in itf.select_dispatch_targets(
+                t, 3, shuffle=True, rng=random.Random(1)
+            )
+        ]
+        b = [
+            x["id"]
+            for x in itf.select_dispatch_targets(
+                t, 3, shuffle=True, rng=random.Random(2)
+            )
+        ]
+        # Different seeds should (very probably) pick a different set — proves we
+        # are not always returning the top-3.
+        self.assertNotEqual(a, b)
+
+
 if __name__ == "__main__":
     unittest.main()
