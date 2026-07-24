@@ -113,6 +113,12 @@ jobs:
           # after dispatch (first PR at +7.6 min), so the old 300s default gave up before
           # any group resolved. Reconcile stops early once all groups resolve.
           RECONCILE_TIMEOUT: ${{ inputs.reconcile_timeout || vars.ITF_RECONCILE_TIMEOUT || '1200' }}
+          # Cap how many failure groups become Serge tasks per nightly run (the
+          # top-N highest-priority groups; the rest are dropped with a note).
+          # Held low while the reproduce-first loop is being validated in prod;
+          # raise the ITF_MAX_GROUPS repo variable (or restore the script default
+          # of 20) once we trust it. See docs/plans/serge-reproduce-first.md.
+          ITF_MAX_GROUPS: ${{ vars.ITF_MAX_GROUPS || '3' }}
           SERGE_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
           GITHUB_TOKEN: ${{ github.token }}
           # Hand the tracking issue to a human and (by default) auto-close the
