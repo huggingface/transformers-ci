@@ -1046,6 +1046,7 @@ def render_tracking_issue_body(
     existing_prs: dict[str, int | None] | None = None,
     statuses: dict[str, str] | None = None,
     details: dict[str, dict] | None = None,
+    carry_rows: list[str] | None = None,
 ) -> str:
     """Markdown body for the per-run tracking issue. When a group already has an
     open Serge PR (a follow-up), its number is written inline as ``#<pr>`` — that
@@ -1098,6 +1099,10 @@ def render_tracking_issue_body(
             pr_cell = f"`{task_branch_prefix(fp)}` (pending)"
         cells = [model_cell, error_cell, str(len(target["failures"])), pr_cell]
         lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
+    # Rows carried from earlier same-day runs that already have a PR / outcome, so
+    # a re-run's shuffled groups don't drop them (and their PR links) from the table.
+    for row in carry_rows or []:
+        lines.append(row)
     lines += _render_outcome_recap(targets, existing_prs, details)
     lines += [
         "",
@@ -1113,9 +1118,10 @@ def _md_cell(text: str) -> str:
 
 def _find_open_tracking_issue(
     repo: str, run_key: str, github_token: str | None
-) -> int | None:
-    """Open issue carrying this run's marker, if any. The issues endpoint also
-    lists PRs, so skip anything with a ``pull_request`` field."""
+) -> tuple[int, str] | None:
+    """Open issue carrying this run's marker, as ``(number, body)`` if any. The
+    body lets a re-run carry forward the prior table rows. The issues endpoint
+    also lists PRs, so skip anything with a ``pull_request`` field."""
     owner, name = repo.split("/", 1)
     marker = tracking_issue_marker(run_key)
     headers = _gh_headers(github_token)
@@ -1133,9 +1139,42 @@ def _find_open_tracking_issue(
         for it in items:
             if it.get("pull_request"):
                 continue
-            if marker in (it.get("body") or ""):
-                return int(it["number"])
+            body = it.get("body") or ""
+            if marker in body:
+                return int(it["number"]), body
         page += 1
+
+
+def _carry_forward_rows(existing_body: str, targets: list[dict]) -> list[str]:
+    """Table rows from the issue's prior state that already have an open PR
+    (``#<n>``) or a terminal marker (``🚫``/``⚠️``), for groups NOT in this run's
+    targets. A later same-day run re-renders the table from its own (shuffled)
+    groups; without this, already-acted-on groups — and their PR links — vanish
+    from the table. Still-``(pending)`` prior rows are dropped (never acted on)."""
+    if not existing_body:
+        return []
+    current = {(t.get("model") or "").strip() for t in targets}
+    rows: list[str] = []
+    in_table = False
+    for line in existing_body.splitlines():
+        s = line.strip()
+        if s.startswith("| Model ") and "| PR |" in s:
+            in_table = True
+            continue
+        if in_table and s.startswith("| ---"):
+            continue
+        if in_table:
+            if not s.startswith("|"):
+                break  # table ended
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if len(cells) < 4:
+                continue
+            model = cells[0].strip("`").strip()
+            pr_cell = cells[-1]
+            resolved = pr_cell.startswith("#") or "🚫" in pr_cell or "⚠️" in pr_cell
+            if resolved and model not in current:
+                rows.append(line.rstrip())
+    return rows
 
 
 def ensure_tracking_issue(
@@ -1149,8 +1188,9 @@ def ensure_tracking_issue(
         return None
     owner, name = repo.split("/", 1)
     try:
-        existing = _find_open_tracking_issue(repo, run_key, github_token)
-        if existing is not None:
+        found = _find_open_tracking_issue(repo, run_key, github_token)
+        if found is not None:
+            existing = found[0]
             url = f"https://api.github.com/repos/{owner}/{name}/issues/{existing}"
             data = json.dumps({"body": body}).encode("utf-8")
             req = urllib.request.Request(
@@ -1346,6 +1386,7 @@ def reconcile_tracking_issue(
     serge_token: str | None = None,
     timeout_seconds: int = 300,
     poll_seconds: int = 20,
+    carry_rows: list[str] | None = None,
 ) -> dict[str, int | None]:
     """Poll open PRs after dispatch and refresh the tracking-issue table in
     place, so outcomes Serge produces during THIS run show immediately instead
@@ -1405,7 +1446,7 @@ def reconcile_tracking_issue(
         resolved = linked + terminal
         if (linked, terminal) != last_key:
             body = render_tracking_issue_body(
-                targets, window, run_key, existing_prs, statuses, details
+                targets, window, run_key, existing_prs, statuses, details, carry_rows
             )
             update_issue_body(repo, issue_number, body, github_token)
             print(
@@ -1993,7 +2034,22 @@ def main(argv: list[str] | None = None) -> int:
 
     run_key = window[-1] if window else "unknown"
     issue_title = f"[serge] integration failure triage - {run_key}"
-    issue_body = render_tracking_issue_body(targets, window, run_key, existing_prs)
+    # Carry forward PR'd / resolved rows from an earlier same-day run so this run's
+    # (shuffled) groups don't drop them from the table. Best-effort, read-only.
+    carry_rows: list[str] = []
+    try:
+        found = (
+            _find_open_tracking_issue(args.repo, run_key, gh_token)
+            if gh_token
+            else None
+        )
+        if found is not None:
+            carry_rows = _carry_forward_rows(found[1], targets)
+    except (urllib.error.HTTPError, urllib.error.URLError):
+        pass
+    issue_body = render_tracking_issue_body(
+        targets, window, run_key, existing_prs, carry_rows=carry_rows
+    )
 
     if args.dry_run:
         for idx, target in enumerate(targets, start=1):
@@ -2112,6 +2168,7 @@ def main(argv: list[str] | None = None) -> int:
             serge_url=args.serge_url,
             serge_token=token,
             timeout_seconds=args.reconcile_timeout,
+            carry_rows=carry_rows,
         )
     # Surface a hard failure only when we had work but landed nothing.
     return 1 if accepted == 0 else 0

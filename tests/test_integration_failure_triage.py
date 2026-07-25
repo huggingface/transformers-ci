@@ -754,6 +754,46 @@ class TrackingIssueTest(unittest.TestCase):
         self.assertIn("#62", body)  # follow-up group links its PR directly
         self.assertIn(itf.task_branch_prefix(fp1), body)  # new-PR group shows branch
 
+    def test_carry_forward_rows_keeps_resolved_drops_pending(self):
+        # A prior same-day run: convnextv2 got a PR, oldpending is still pending.
+        prior = [self._target("g1", "convnextv2"), self._target("g2", "oldpending")]
+        prior_body = itf.render_tracking_issue_body(
+            prior,
+            ["2026-07-25"],
+            "2026-07-25",
+            existing_prs={itf.target_fingerprint(prior[0]): 47540},
+        )
+        # This run picked a different (shuffled) group.
+        carried = itf._carry_forward_rows(prior_body, [self._target("g3", "helium")])
+        joined = "\n".join(carried)
+        self.assertIn("#47540", joined)  # PR'd group kept
+        self.assertIn("`convnextv2`", joined)
+        self.assertNotIn("oldpending", joined)  # still-(pending) group dropped
+
+    def test_carry_forward_skips_group_in_current_run(self):
+        prior = [self._target("g1", "convnextv2")]
+        prior_body = itf.render_tracking_issue_body(
+            prior,
+            ["2026-07-25"],
+            "2026-07-25",
+            existing_prs={itf.target_fingerprint(prior[0]): 47540},
+        )
+        # convnextv2 is in THIS run too -> its live row wins, don't duplicate it.
+        self.assertEqual(
+            itf._carry_forward_rows(prior_body, [self._target("g1", "convnextv2")]), []
+        )
+
+    def test_render_appends_carry_rows_to_table(self):
+        body = itf.render_tracking_issue_body(
+            [self._target("g1", "helium")],
+            ["2026-07-25"],
+            "2026-07-25",
+            carry_rows=["| `convnextv2` | output_mismatch — x | 2 | #47540 |"],
+        )
+        self.assertIn("`helium`", body)
+        self.assertIn("`convnextv2`", body)
+        self.assertIn("#47540", body)
+
     def test_resolve_existing_prs(self):
         targets = [self._target("g1", "a"), self._target("g2", "b")]
         fp0 = itf.target_fingerprint(targets[0])
