@@ -111,6 +111,27 @@ jobs:
         working-directory: /transformers
         run: mkdir -p reports && rm -f reports/*.xml
 
+      # A verify-only pytest plugin that makes the ACTUAL output visible to serge.
+      # torch.testing.assert_close prints only diff STATS, never the actual tensor,
+      # so for stale-logits test failures the LLM has nothing to rewrite the
+      # expected values from. Raising torch's print threshold + running pytest with
+      # --showlocals dumps the failing frame's locals (incl. the actual output) IN
+      # FULL into the traceback longrepr — which is what serge reads (JUnit
+      # <failure> body). Loaded via `-p serge_showlocals` (a root conftest.py would
+      # clobber transformers' own).
+      - name: Install serge showlocals plugin
+        run: |
+          cat > /tmp/serge_showlocals.py <<'PLUGIN'
+          import torch
+
+          def pytest_configure(config):
+              # threshold: print tensors up to 10k elements in full (no `[…]`);
+              # sci_mode off + fixed precision so values are copy-pasteable.
+              torch.set_printoptions(
+                  threshold=10_000, precision=6, sci_mode=False, linewidth=200
+              )
+          PLUGIN
+
       # ---- Baseline: pre-patch tree. Targeted tests must be RED here. ----
       - name: Checkout baseline tree
         working-directory: /transformers
@@ -126,11 +147,13 @@ jobs:
           nodeids: ${{ inputs.test_nodeids }}
         run: |
           # shellcheck disable=SC2086  # $nodeids is a space-separated list of pytest args — must word-split
-          # -vv (not -v): disables pytest's assertion-diff truncation ("Diff is N
-          # characters long"), so the FULL actual output lands in baseline.xml.
-          # serge seeds these tracebacks into the fix prompt; without the full
-          # generated strings the LLM can't reconstruct stale expected values.
-          python3 -m pytest -rsfE -vv --junitxml=reports/baseline.xml $nodeids || true
+          # -vv: disables pytest's assertion-diff truncation ("Diff is N characters
+          # long"). --showlocals + the serge_showlocals plugin: dump the failing
+          # frame's locals (incl. the actual output tensor, in full) into the
+          # traceback so serge can reconstruct stale expected values. Both land in
+          # baseline.xml, which serge seeds into the fix prompt.
+          PYTHONPATH=/tmp python3 -m pytest -p serge_showlocals --showlocals \
+            -rsfE -vv --junitxml=reports/baseline.xml $nodeids || true
 
       - name: Run collateral suite (baseline)
         if: ${{ inputs.mode == 'verify' && inputs.run_collateral }}
@@ -158,9 +181,11 @@ jobs:
           nodeids: ${{ inputs.test_nodeids }}
         run: |
           # shellcheck disable=SC2086  # $nodeids is a space-separated list of pytest args — must word-split
-          # -vv: full assertion diffs (see the baseline step) for the retry-round
-          # feedback serge seeds when a patch is still not_fixed.
-          python3 -m pytest -rsfE -vv --junitxml=reports/patched.xml $nodeids || true
+          # -vv + --showlocals + serge_showlocals: full diffs and actual-output
+          # locals (see the baseline step) for the retry-round feedback serge seeds
+          # when a patch is still not_fixed.
+          PYTHONPATH=/tmp python3 -m pytest -p serge_showlocals --showlocals \
+            -rsfE -vv --junitxml=reports/patched.xml $nodeids || true
 
       - name: Run collateral suite (patched)
         if: ${{ inputs.mode == 'verify' && inputs.run_collateral }}
