@@ -130,6 +130,13 @@ jobs:
               torch.set_printoptions(
                   threshold=10_000, precision=6, sci_mode=False, linewidth=200
               )
+              # Collapse nn.Module reprs to one line. --showlocals otherwise dumps
+              # the ENTIRE model (~150KB for a big model) as a local, which crowds
+              # out the actual/expected tensors within serge's REPRODUCE_TB_CHARS
+              # budget (the tensors get tail-truncated away). The model structure is
+              # noise for fixing a stale-expectation assertion; the tensors are the
+              # signal. Verify pod is ephemeral, so monkeypatching the repr is safe.
+              torch.nn.Module.__repr__ = lambda self: f"<{type(self).__name__}>"
           PLUGIN
 
       # ---- Baseline: pre-patch tree. Targeted tests must be RED here. ----
