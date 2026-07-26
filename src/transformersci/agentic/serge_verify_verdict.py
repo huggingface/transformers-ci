@@ -69,6 +69,61 @@ def nodeid_key(nodeid: str) -> tuple[str, str]:
     return (cls, method)
 
 
+# Literal prefixes whose (paren-balanced) bodies we cap in a failure traceback.
+# These are the big numeric dumps `pytest --showlocals` (+ the serge_showlocals
+# plugin) emits — model outputs, intermediate embeddings, logits — that bury the
+# tiny asserted slice under tens of KB. torch tensors and numpy arrays cover the
+# integration-test failures serge fixes.
+_BIG_LITERAL_PREFIXES = ("tensor(", "array(")
+
+
+def distill_failure(text: str, tensor_cap: int = 320) -> str:
+    """Deterministically shrink a pytest ``--showlocals`` failure longrepr.
+
+    Caps every ``tensor(...)`` / ``array(...)`` literal to ``tensor_cap`` chars of
+    its body and leaves everything else — the assertion header, the mismatch
+    stats, the source, and every variable name — untouched. The asserted slice
+    (a handful of elements) prints in full; the KB-scale intermediate tensors get
+    elided, whether they are frame locals or fields nested inside a big
+    ``ModelOutput(...)`` repr. Nesting-agnostic and stable, so the actual-vs-
+    expected the LLM needs survives instead of being pushed out by a blunt tail/
+    head truncation (see the owlvit case: a 100 KB traceback where the asserted
+    ``pred_boxes`` sat behind ~90 KB of intermediate embeddings)."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        # earliest next big-literal prefix from i
+        j, prefix = -1, ""
+        for pre in _BIG_LITERAL_PREFIXES:
+            p = text.find(pre, i)
+            if p != -1 and (j == -1 or p < j):
+                j, prefix = p, pre
+        if j == -1:
+            out.append(text[i:])
+            break
+        out.append(text[i:j])
+        # walk to the matching close paren of the literal
+        k = j + len(prefix) - 1  # index of the opening '('
+        depth = 0
+        while k < n:
+            ch = text[k]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    k += 1
+                    break
+            k += 1
+        body = text[j:k]
+        if len(body) <= tensor_cap:
+            out.append(body)
+        else:
+            out.append(f"{body[:tensor_cap]}…<+{len(body) - tensor_cap} chars elided>)")
+        i = k
+    return "".join(out)
+
+
 def _testcase_outcome(tc: ET.Element) -> tuple[str, str]:
     """``(outcome, detail_text)`` for one JUnit ``<testcase>``."""
     failure = tc.find("failure")
@@ -84,12 +139,13 @@ def _testcase_outcome(tc: ET.Element) -> tuple[str, str]:
 
 def _detail(el: ET.Element) -> str:
     """The failure/error text: prefer the element body (full traceback), fall
-    back to the ``message`` attribute."""
+    back to the ``message`` attribute. The traceback is distilled
+    (:func:`distill_failure`) so serge is seeded the assert diff + asserted
+    tensors, not tens of KB of intermediate-tensor ``--showlocals`` noise."""
     body = (el.text or "").strip()
     msg = (el.get("message") or "").strip()
-    if body and msg and msg not in body:
-        return f"{msg}\n{body}"
-    return body or msg
+    combined = f"{msg}\n{body}" if (body and msg and msg not in body) else (body or msg)
+    return distill_failure(combined)
 
 
 def parse_junit(path: str | None) -> dict[tuple[str, str], dict]:
