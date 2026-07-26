@@ -231,25 +231,35 @@ jobs:
           commit_sha: ${{ inputs.commit_sha }}
           machine_type: ${{ inputs.machine_type }}
         run: |
-          shopt -s nullglob  # unmatched globs vanish instead of staying literal
+          # NOTE: GitHub runs these container steps with `sh` (not bash) — keep
+          # this POSIX: no arrays, no `shopt`. Build space-separated arg lists and
+          # let word-splitting expand them into separate args below.
           # One XML per repeated run (see the loops above): pass them all so the
-          # verdict requires stability across every run. --patched only exists in
-          # verify mode; --collateral only when that suite ran.
-          baseline_files=(reports/baseline_*.xml)
-          patched_files=(reports/patched_*.xml)
-          patched_arg=()
-          [ ${#patched_files[@]} -gt 0 ] && patched_arg=(--patched "${patched_files[@]}")
-          collateral_arg=()
+          # verdict requires stability across every run. An unmatched glob stays
+          # literal in sh, so guard each with `-e`. --patched only exists in verify
+          # mode; --collateral only when that suite ran.
+          baseline_files=""
+          for f in reports/baseline_*.xml; do
+            [ -e "$f" ] && baseline_files="$baseline_files $f"
+          done
+          patched_files=""
+          for f in reports/patched_*.xml; do
+            [ -e "$f" ] && patched_files="$patched_files $f"
+          done
+          patched_arg=""
+          [ -n "$patched_files" ] && patched_arg="--patched $patched_files"
+          collateral_arg=""
           if [ -f reports/collateral.xml ]; then
-            collateral_arg=(--collateral reports/collateral.xml)
-            [ -f reports/collateral_baseline.xml ] && collateral_arg+=(--collateral-baseline reports/collateral_baseline.xml)
+            collateral_arg="--collateral reports/collateral.xml"
+            [ -f reports/collateral_baseline.xml ] && collateral_arg="$collateral_arg --collateral-baseline reports/collateral_baseline.xml"
           fi
+          # shellcheck disable=SC2086  # $baseline_files/$patched_arg/$collateral_arg MUST word-split into separate args
           serge-verify-verdict \
             --mode "$mode" \
             --nodeids "$nodeids" \
-            --baseline "${baseline_files[@]}" \
-            "${patched_arg[@]}" \
-            "${collateral_arg[@]}" \
+            --baseline $baseline_files \
+            $patched_arg \
+            $collateral_arg \
             --base-sha "$base_sha" --commit-sha "$commit_sha" --machine-type "$machine_type" \
             --out reports/verify-result.json || true
           cat reports/verify-result.json
