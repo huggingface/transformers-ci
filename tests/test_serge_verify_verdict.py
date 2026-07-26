@@ -321,5 +321,126 @@ class ParseJunitTest(unittest.TestCase):
         self.assertEqual(json.loads(out.read_text())["verdict"], "not_reproduced")
 
 
+class MultiRunVerdictTest(unittest.TestCase):
+    """The targeted tests are run several times (fresh process each) so a flaky
+    pass/fail can't drive the verdict. Each run is a separate parsed report;
+    ``baseline``/``patched`` are the LIST of those reports and the guards must
+    hold across every run."""
+
+    METHOD = "test_small_token_timestamp_generation"
+
+    def _runs(self, per_run: list[tuple[str, str]]):
+        """One parsed report per run: ``per_run[i]`` = (outcome, detail)."""
+        return [{(CLS, self.METHOD): {"outcome": o, "detail": d}} for o, d in per_run]
+
+    def test_collect_gathers_every_run(self):
+        runs = v._collect(self._runs([("failed", "a"), ("failed", "b")]), TS)
+        self.assertEqual([r["outcome"] for r in runs], ["failed", "failed"])
+
+    def test_collect_missing_when_absent_from_all_runs(self):
+        # One "missing" per run when the node-id is in none of them...
+        self.assertEqual(
+            [r["outcome"] for r in v._collect([{}, {}], TS)], ["missing"] * 2
+        )
+        # ...and a single "missing" when there were no runs at all.
+        self.assertEqual(v._collect([], TS), [{"outcome": "missing", "detail": ""}])
+
+    def test_single_dict_coerced_to_one_run(self):
+        rep = {(CLS, self.METHOD): {"outcome": "failed", "detail": "x"}}
+        self.assertEqual(len(v._collect(rep, TS)), 1)
+
+    def test_fixed_only_when_every_run_flips(self):
+        baseline = self._runs([("failed", "x")] * 5)
+        patched = self._runs([("green", "")] * 5)
+        out = v.build_verdict([TS], baseline, patched)
+        self.assertEqual(out["verdict"], "fixed")
+        self.assertEqual(out["runs"], 5)
+
+    def test_not_fixed_when_one_patched_run_red(self):
+        baseline = self._runs([("failed", "x")] * 5)
+        patched = self._runs(
+            [
+                ("green", ""),
+                ("green", ""),
+                ("failed", "flaky"),
+                ("green", ""),
+                ("green", ""),
+            ]
+        )
+        out = v.build_verdict([TS], baseline, patched)
+        self.assertEqual(out["verdict"], "not_fixed")
+        self.assertIn("flaky", out["tracebacks"][TS])
+
+    def test_already_passing_when_one_baseline_run_green(self):
+        baseline = self._runs([("failed", "x"), ("green", ""), ("failed", "x")])
+        patched = self._runs([("green", "")] * 3)
+        out = v.build_verdict([TS], baseline, patched)
+        self.assertEqual(out["verdict"], "already_passing")
+
+    def test_reproduce_requires_every_run_red(self):
+        out = v.build_reproduce_verdict([TS], self._runs([("failed", "boom")] * 5))
+        self.assertEqual(out["verdict"], "reproduced")
+        self.assertEqual(out["runs"], 5)
+        self.assertIn("boom", out["tracebacks"][TS])
+
+    def test_reproduce_not_reproduced_when_one_run_green(self):
+        out = v.build_reproduce_verdict(
+            [TS], self._runs([("failed", "boom"), ("green", ""), ("failed", "boom")])
+        )
+        self.assertEqual(out["verdict"], "not_reproduced")
+
+    def test_main_aggregates_multiple_xml_files(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            # 3 baseline + 3 patched XMLs (one per run), all red -> all green.
+            base_files, patch_files = [], []
+            for i in range(3):
+                b = tmp / f"baseline_{i}.xml"
+                p = tmp / f"patched_{i}.xml"
+                b.write_text(_suite({self.METHOD: ("failed", "x")}))
+                p.write_text(_suite({self.METHOD: ("green", "")}))
+                base_files.append(str(b))
+                patch_files.append(str(p))
+            out = tmp / "v.json"
+            rc = v.main(
+                ["--nodeids", TS, "--baseline", *base_files, "--patched", *patch_files]
+                + ["--out", str(out)]
+            )
+            self.assertEqual(rc, 0)
+            data = json.loads(out.read_text())
+            self.assertEqual(data["verdict"], "fixed")
+            self.assertEqual(data["runs"], 3)
+
+    def test_main_not_fixed_when_one_of_many_patched_files_red(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            base_files, patch_files = [], []
+            for i in range(3):
+                b = tmp / f"baseline_{i}.xml"
+                b.write_text(_suite({self.METHOD: ("failed", "x")}))
+                base_files.append(str(b))
+                p = tmp / f"patched_{i}.xml"
+                # middle run flaky-fails
+                p.write_text(
+                    _suite(
+                        {self.METHOD: ("failed", "flake") if i == 1 else ("green", "")}
+                    )
+                )
+                patch_files.append(str(p))
+            out = tmp / "v.json"
+            rc = v.main(
+                ["--nodeids", TS, "--baseline", *base_files, "--patched", *patch_files]
+                + ["--out", str(out)]
+            )
+            self.assertEqual(rc, 1)
+            self.assertEqual(json.loads(out.read_text())["verdict"], "not_fixed")
+
+
 if __name__ == "__main__":
     unittest.main()
