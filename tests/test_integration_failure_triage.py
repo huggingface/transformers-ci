@@ -1237,5 +1237,181 @@ class SelectDispatchTargetsTest(unittest.TestCase):
         self.assertNotEqual(a, b)
 
 
+def _target(mode, exc="AssertionError", site="", n=1, model="dac", kind=None):
+    """A minimal ``pick_targets``-shaped descriptor for the per-category tests."""
+    return {
+        "kind": kind or "model_failures",
+        "label": f"{n} test(s) for `{model}` failing with `{mode}`",
+        "failures": [
+            _failure(
+                model,
+                "single",
+                f"tests/models/{model}/t.py::T::t{i}",
+                "AssertionError: Tensor-likes are not close!",
+                mode=mode,
+            )
+            for i in range(n)
+        ],
+        "cluster": None,
+        "model": model,
+        "failure_mode": mode,
+        "terminal_exc": exc,
+        "crash_site": site,
+    }
+
+
+class InstructionAddendumTest(unittest.TestCase):
+    """The failure mode is known before any GPU minute or token is spent; the
+    agent's marching orders must reflect it rather than being one constant."""
+
+    def test_mismatch_gets_expectation_guidance(self):
+        text = itf.build_instruction(_target("output_mismatch"))
+        self.assertIn(itf._INSTRUCTION, text)  # trunk preserved
+        self.assertIn("output_mismatch", text)
+        # The sibling-model heuristic belongs to assertion failures.
+        self.assertIn("sibling architectures", text)
+        self.assertIn("prefer correcting the test", text)
+
+    def test_mismatch_forbids_inventing_a_tolerance_but_allows_precedent(self):
+        text = itf.build_instruction(_target("output_mismatch"))
+        self.assertIn("Do not invent a tolerance", text)
+        # A value that already exists in a comparable test is legitimate, cited.
+        self.assertIn("ALREADY appears in a comparable test", text)
+        self.assertIn("name that precedent", text)
+        # …but the escape hatch must not swallow a real regression.
+        self.assertIn("far larger than such a precedent would cover", text)
+
+    def test_crash_forbids_test_side_edits_and_names_the_site(self):
+        text = itf.build_instruction(
+            _target("cuda_runtime", exc="RuntimeError", site="src/transformers/x.py:42")
+        )
+        self.assertIn("src/transformers/x.py:42", text)
+        self.assertIn("library/model bug until", text)
+        self.assertIn("Do NOT resolve this by editing the test", text)
+        # The mismatch-only advice must NOT leak into a crash group.
+        self.assertNotIn("prefer correcting the test", text)
+
+    def test_assertion_reported_as_other_still_gets_mismatch_guidance(self):
+        # `classify` labels an AssertionError-with-no-marker group `other`; it is
+        # still an assertion, so it must not be told "this is a library bug".
+        text = itf.build_instruction(_target("other", exc="AssertionError"))
+        self.assertIn("Do not invent a tolerance", text)
+        self.assertNotIn("library/model bug until", text)
+
+    def test_load_and_import_modes_get_their_own_blocks(self):
+        load = itf.build_instruction(_target("load_error", exc="OSError"))
+        self.assertIn("gated on the Hub", load)
+        imp = itf.build_instruction(_target("import_or_config", exc="AttributeError"))
+        self.assertIn("version pin or a dependency bump", imp)
+
+    def test_cluster_and_unknown_get_the_trunk_alone(self):
+        # A bad-commit cluster already carries a much stronger signal.
+        self.assertEqual(
+            itf.build_instruction(_target("output_mismatch", kind="cluster")),
+            itf._INSTRUCTION,
+        )
+        self.assertEqual(itf.build_instruction(None), itf._INSTRUCTION)
+        self.assertEqual(itf.build_instruction(_target("")), itf._INSTRUCTION)
+
+    def test_payload_carries_the_per_category_instruction(self):
+        payload = itf.build_task_payload(
+            "huggingface/transformers",
+            "main",
+            "ctx",
+            "title",
+            fingerprint="f" * 64,
+            target=_target("cuda_runtime", exc="RuntimeError"),
+        )
+        self.assertIn("Do NOT resolve this by editing the test", payload["instruction"])
+        # Omitting the target keeps today's behaviour exactly.
+        bare = itf.build_task_payload(
+            "huggingface/transformers", "main", "ctx", "title", fingerprint="f" * 64
+        )
+        self.assertEqual(bare["instruction"], itf._INSTRUCTION)
+
+
+class PartitionTargetsTest(unittest.TestCase):
+    """Groups no minimal patch can fix must not spend a GPU reproduce run, an
+    investigation, or a --max-groups slot."""
+
+    def test_oom_is_deferred_with_a_reason(self):
+        oom = _target("OOM", exc="OutOfMemoryError", model="big")
+        mismatch = _target("output_mismatch", model="dac")
+        dispatch, deferred = itf.partition_targets([oom, mismatch])
+        self.assertEqual([t["model"] for t in dispatch], ["dac"])
+        self.assertEqual([t["model"] for t in deferred], ["big"])
+        self.assertIn("device memory", deferred[0]["defer_reason"])
+
+    def test_missing_dependency_is_deferred_but_other_config_errors_are_not(self):
+        dep = _target("import_or_config", exc="ModuleNotFoundError")
+        api = _target("import_or_config", exc="AttributeError")
+        dispatch, deferred = itf.partition_targets([dep, api])
+        self.assertEqual(len(deferred), 1)
+        self.assertEqual(deferred[0]["terminal_exc"], "ModuleNotFoundError")
+        self.assertEqual(dispatch[0]["terminal_exc"], "AttributeError")
+
+    def test_clusters_are_never_deferred(self):
+        # An attributed bad commit is a stronger signal than its members' modes.
+        cluster = _target("OOM", exc="OutOfMemoryError", kind="cluster")
+        dispatch, deferred = itf.partition_targets([cluster])
+        self.assertEqual(len(dispatch), 1)
+        self.assertEqual(deferred, [])
+
+    def test_opt_out_dispatches_everything(self):
+        oom = _target("OOM", exc="OutOfMemoryError")
+        with patch.dict("os.environ", {"ITF_DEFER_ENV_GROUPS": "0"}):
+            dispatch, deferred = itf.partition_targets([oom])
+        self.assertEqual(len(dispatch), 1)
+        self.assertEqual(deferred, [])
+
+    def test_deferred_groups_are_reported_in_the_tracking_issue(self):
+        oom = _target("OOM", exc="OutOfMemoryError", model="big")
+        dispatch, deferred = itf.partition_targets([oom, _target("output_mismatch")])
+        body = itf.render_tracking_issue_body(
+            dispatch, ["2026-07-20"], "2026-07-20", deferred=deferred
+        )
+        self.assertIn("Not dispatched — environment / dependency", body)
+        self.assertIn("`big`", body)
+        # The deferred table must not be mistaken for a dispatched row on a
+        # later same-day run (that parser keys off a `| PR |` header).
+        carried = itf._carry_forward_rows(body, [])
+        self.assertFalse(any("big" in row for row in carried))
+
+
+class TraceBudgetByCategoryTest(unittest.TestCase):
+    """A crash group is N copies of one traceback (it was keyed by `crash_site`);
+    a mismatch group's members each carry different expected values."""
+
+    def test_crash_group_renders_few_full_traces_but_keeps_every_nodeid(self):
+        target = _target(
+            "cuda_runtime", exc="RuntimeError", site="src/x.py:1", n=10, model="big"
+        )
+        lines = itf._render_serge_target(target, 7)
+        text = "\n".join(lines)
+        # Every node-id survives — serge parses them to build the reproduce run.
+        for i in range(10):
+            self.assertIn(f"::T::t{i}`", text)
+        self.assertEqual(text.count("  ```"), 2 * itf._CRASH_TRACE_LIMIT)
+        self.assertIn("SAME raising line", text)
+
+    def test_mismatch_group_renders_a_trace_for_every_failure(self):
+        target = _target("output_mismatch", n=10, model="dac")
+        text = "\n".join(itf._render_serge_target(target, 7))
+        self.assertEqual(text.count("  ```"), 20)
+        self.assertNotIn("SAME raising line", text)
+
+    def test_crash_traces_get_more_room_each_than_mismatch_traces(self):
+        crash = _target("cuda_runtime", exc="RuntimeError", site="src/x.py:1", n=40)
+        mismatch = _target("output_mismatch", n=40)
+        self.assertTrue(itf._groups_by_crash_site(crash))
+        self.assertFalse(itf._groups_by_crash_site(mismatch))
+        # Same budget, fewer traces → each crash traceback is allowed to be
+        # complete instead of being cut to ~1/40th of the budget.
+        self.assertGreater(
+            itf._SERGE_TRACE_BUDGET // itf._CRASH_TRACE_LIMIT,
+            itf._SERGE_TRACE_BUDGET // itf._FULL_TRACE_LIMIT,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
