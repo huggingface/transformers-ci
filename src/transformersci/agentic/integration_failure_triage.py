@@ -679,6 +679,54 @@ def select_dispatch_targets(
     return [targets[i] for i in chosen]
 
 
+_DEP_EXC = frozenset({"ImportError", "ModuleNotFoundError"})
+
+
+def env_only_reason(target: dict) -> str:
+    """Why this group cannot be fixed by a minimal source patch — ``""`` when it
+    can (or when we can't tell, which dispatches, as before).
+
+    The failure mode is known here, before any GPU minute or LLM token is spent.
+    An `OOM` is a fact about the runner's memory and a missing module is a fact
+    about the environment; neither is a diff. Dispatching them anyway costs a
+    real GPU reproduce run plus an investigation that ends ``no_fix`` — the
+    2.08M-token llava_next group in the reproduce-first notes is what that looks
+    like. Bad-commit clusters are never deferred: the attributed commit is a much
+    stronger signal than the mode mix, whatever modes its members happen to show.
+    """
+    if target.get("kind") != "model_failures":
+        return ""
+    mode = target.get("failure_mode") or ""
+    exc = target.get("terminal_exc") or ""
+    if mode == "OOM":
+        return "runner ran out of device memory — needs runner capacity, not a patch"
+    if mode == "import_or_config" and exc in _DEP_EXC:
+        return f"`{exc}` — needs a dependency pin/bump, not a source patch"
+    return ""
+
+
+def partition_targets(targets: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split ordered groups into ``(dispatch, deferred)``.
+
+    ``deferred`` groups are reported in the tracking issue for a human instead of
+    being handed to the agent, and they do NOT consume a ``--max-groups`` slot —
+    that cap exists to bound agent work, so spending it on a group that cannot
+    produce a patch wastes the run. Each deferred target carries its reason in
+    ``defer_reason``. Set ``ITF_DEFER_ENV_GROUPS=0`` to dispatch everything (the
+    per-category instruction blocks then tell the agent how to handle them)."""
+    if not _env_bool("ITF_DEFER_ENV_GROUPS", True):
+        return list(targets), []
+    dispatch: list[dict] = []
+    deferred: list[dict] = []
+    for t in targets:
+        reason = env_only_reason(t)
+        if reason:
+            deferred.append({**t, "defer_reason": reason})
+        else:
+            dispatch.append(t)
+    return dispatch, deferred
+
+
 def _group_key(f: dict) -> tuple[str, str, str, str]:
     """Grouping key for unattributed failures: a cheap proxy for "same root
     cause". Splits by ``(model, failure_mode, terminal_exception)`` always, and
@@ -712,6 +760,25 @@ _GH = "https://github.com/huggingface/transformers"
 _SERGE_TRACE_BUDGET = 30000
 _DEFAULT_TRACE_CHARS = 3000  # cap on the trace tail kept per failure
 _FULL_TRACE_LIMIT = 40  # max failures rendered with full traces in one group
+# Full tracebacks kept for a group that :func:`_group_key` split by `crash_site`
+# — every member is the same crash, so a few complete traces beat forty truncated
+# ones. The remaining failures still get their bullet + one-line excerpt.
+_CRASH_TRACE_LIMIT = 3
+
+
+def _groups_by_crash_site(target: dict) -> bool:
+    """True when :func:`_group_key` keyed this group by ``crash_site``, i.e. its
+    members are all the same crash at the same raising line.
+
+    This mirrors ``_group_key``'s own condition so the two cannot drift: an
+    ``output_mismatch`` (or any ``AssertionError``) group is NOT split by site —
+    each test asserts at its own line — so its members are genuinely different
+    failures. Everything else is."""
+    if target.get("kind") != "model_failures":
+        return False
+    mode = target.get("failure_mode") or "other"
+    exc = target.get("terminal_exc") or "other"
+    return not (mode == "output_mismatch" or exc == "AssertionError")
 
 
 def _failure_lines(
@@ -719,27 +786,34 @@ def _failure_lines(
     window_len: int,
     limit: int = 60,
     trace_chars: int = 0,
+    trace_limit: int = 0,
 ) -> list[str]:
     """One bullet per failure. When ``trace_chars`` > 0, append the trace tail
     (the actual-vs-expected detail, via :func:`trace_excerpt`) in a fenced block
-    so an agent can write a fix; otherwise just the one-line exception summary."""
+    so an agent can write a fix; otherwise just the one-line exception summary.
+
+    ``trace_limit`` > 0 attaches the fenced traceback to only the first N bullets;
+    the rest keep their one-line excerpt. Every bullet up to ``limit`` is still
+    emitted either way — serge parses the node-ids out of these lines to build its
+    GPU reproduce command, so dropping a bullet would silently shrink the set of
+    tests it reproduces."""
     lines: list[str] = []
     ordered = sorted(
         failures,
         key=lambda f: (f.get("failure_mode") or "", f["model"], f["gpu"], f["test"]),
     )
-    for f in ordered[:limit]:
+    for idx, f in enumerate(ordered[:limit]):
         mode = f.get("failure_mode", "other")
         lines.append(
             f"- `{f['test']}` [{f['gpu']}-gpu] ({mode}, seen {f['days_seen']}/{window_len})"
         )
         trace = f.get("latest_trace") or f.get("trace") or ""
-        if trace_chars > 0:
-            detail = trace_excerpt(trace, trace_chars)
-            if detail:
-                lines.append("  ```")
-                lines.extend("  " + ln for ln in detail.splitlines())
-                lines.append("  ```")
+        with_trace = trace_chars > 0 and (trace_limit <= 0 or idx < trace_limit)
+        detail = trace_excerpt(trace, trace_chars) if with_trace else ""
+        if detail:
+            lines.append("  ```")
+            lines.extend("  " + ln for ln in detail.splitlines())
+            lines.append("  ```")
         else:
             excerpt = short_excerpt(trace)
             if excerpt:
@@ -751,7 +825,12 @@ def _failure_lines(
     return lines
 
 
-def render_report(report: dict, targets: list[dict], window: list[str]) -> str:
+def render_report(
+    report: dict,
+    targets: list[dict],
+    window: list[str],
+    deferred: list[dict] | None = None,
+) -> str:
     """Full Markdown triage summary (for the action log / artifact)."""
     t = report["totals"]
     win = f"{window[0]} → {window[-1]}" if window else "?"
@@ -777,6 +856,11 @@ def render_report(report: dict, targets: list[dict], window: list[str]) -> str:
         out.append(f"**{targets[0]['label']}**")
         out.append("")
         out.extend(_failure_lines(targets[0]["failures"], len(window)))
+        out.append("")
+    if deferred:
+        out.append("## Not dispatched — environment / dependency")
+        for t in deferred:
+            out.append(f"- **{t['label']}** — {t.get('defer_reason') or 'not fixable'}")
         out.append("")
     if report["clusters"]:
         out.append("## Pinned clusters (CI bisect)")
@@ -817,17 +901,36 @@ def _render_serge_target(
         )
         out.append("")
 
-    # Divide the trace budget across the rendered failures so the whole section
-    # fits Serge's context limit while still carrying real detail per test.
+    # Divide the trace budget across the failures that get a full traceback, so
+    # the whole section fits Serge's context limit while still carrying real
+    # detail per test. How many deserve one depends on the category: a group keyed
+    # by `crash_site` is N copies of ONE traceback, so a handful is as informative
+    # as forty and each gets room to be complete; an `output_mismatch` group is
+    # deliberately NOT split by site, so every traceback carries different
+    # expected values the fix needs and they all get rendered.
     failures = target["failures"]
+    homogeneous = _groups_by_crash_site(target)
+    trace_limit = _CRASH_TRACE_LIMIT if homogeneous else 0
     rendered = min(len(failures), _FULL_TRACE_LIMIT)
+    if trace_limit:
+        rendered = min(rendered, trace_limit)
     per_failure = min(trace_chars, max(600, _SERGE_TRACE_BUDGET // max(1, rendered)))
     out.append("Failing tests (with the actual-vs-expected detail from the CI trace):")
     out.extend(
         _failure_lines(
-            failures, window_len, limit=_FULL_TRACE_LIMIT, trace_chars=per_failure
+            failures,
+            window_len,
+            limit=_FULL_TRACE_LIMIT,
+            trace_chars=per_failure,
+            trace_limit=trace_limit,
         )
     )
+    if homogeneous and len(failures) > _CRASH_TRACE_LIMIT:
+        out.append(
+            f"(These {len(failures)} failures were grouped by the SAME raising line, so "
+            f"only the first {_CRASH_TRACE_LIMIT} tracebacks are shown in full — the "
+            "rest are the same crash from a different test.)"
+        )
     out.append("")
 
     if c and c.get("failure_excerpt"):
@@ -998,6 +1101,42 @@ def _fmt_tokens(n: object) -> str:
     return f"{n:,}" if isinstance(n, int) else "—"
 
 
+def _render_deferred_section(deferred: list[dict] | None) -> list[str]:
+    """Groups held back from dispatch because no minimal source patch can fix
+    them (see :func:`env_only_reason`) — surfaced for a human rather than silently
+    dropped. Empty when there are none.
+
+    NB the header deliberately does not contain a ``PR`` column, so
+    :func:`_carry_forward_rows` (which keys off ``| PR |``) never mistakes these
+    rows for dispatched ones on a later same-day run."""
+    if not deferred:
+        return []
+    lines = [
+        "",
+        "## Not dispatched — environment / dependency",
+        "",
+        "These groups were triaged but NOT handed to Serge: their failure mode is a "
+        "property of the runner or the environment, so no minimal source patch can fix "
+        "them. They need a human (runner capacity, a dependency pin).",
+        "",
+        "| Model | Error | Occurrences | Why not dispatched |",
+        "| --- | --- | --- | --- |",
+    ]
+    for target in deferred:
+        model_cell = f"`{target['model']}`" if target.get("model") else "—"
+        summary = signature_summary(target["failures"])
+        mode = target.get("failure_mode") or "mixed"
+        error_cell = f"{mode} — {summary}" if summary else mode
+        cells = [
+            model_cell,
+            error_cell,
+            str(len(target["failures"])),
+            target.get("defer_reason") or "not fixable by a patch",
+        ]
+        lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
+    return lines
+
+
 def _render_outcome_recap(
     targets: list[dict],
     existing_prs: dict[str, int | None],
@@ -1047,6 +1186,7 @@ def render_tracking_issue_body(
     statuses: dict[str, str] | None = None,
     details: dict[str, dict] | None = None,
     carry_rows: list[str] | None = None,
+    deferred: list[dict] | None = None,
 ) -> str:
     """Markdown body for the per-run tracking issue. When a group already has an
     open Serge PR (a follow-up), its number is written inline as ``#<pr>`` — that
@@ -1103,6 +1243,7 @@ def render_tracking_issue_body(
     # a re-run's shuffled groups don't drop them (and their PR links) from the table.
     for row in carry_rows or []:
         lines.append(row)
+    lines += _render_deferred_section(deferred)
     lines += _render_outcome_recap(targets, existing_prs, details)
     lines += [
         "",
@@ -1387,6 +1528,7 @@ def reconcile_tracking_issue(
     timeout_seconds: int = 300,
     poll_seconds: int = 20,
     carry_rows: list[str] | None = None,
+    deferred: list[dict] | None = None,
 ) -> dict[str, int | None]:
     """Poll open PRs after dispatch and refresh the tracking-issue table in
     place, so outcomes Serge produces during THIS run show immediately instead
@@ -1446,7 +1588,14 @@ def reconcile_tracking_issue(
         resolved = linked + terminal
         if (linked, terminal) != last_key:
             body = render_tracking_issue_body(
-                targets, window, run_key, existing_prs, statuses, details, carry_rows
+                targets,
+                window,
+                run_key,
+                existing_prs,
+                statuses,
+                details,
+                carry_rows,
+                deferred=deferred,
             )
             update_issue_body(repo, issue_number, body, github_token)
             print(
@@ -1470,10 +1619,6 @@ _INSTRUCTION = (
     "The report identifies ordered failure groups from the latest daily CI run. "
     "Investigate the current group, determine the root cause of the shared failure, "
     "and propose a minimal patch that makes it pass without touching unrelated code. "
-    "Before you introduce a fix, look at a few similar models (sibling architectures in "
-    "the same family, or the model this one was ported from): if they take the same code "
-    "path without needing the change you are about to make, the test itself may be what is "
-    "wrong — prefer correcting the test over adding model code. "
     "If the current group cannot be fixed safely, produce no patch so Serge can move "
     "to the next group in a full new cycle. If the correct expected values genuinely "
     "changed, update them; if the regression is in library code, fix the library code.\n\n"
@@ -1500,6 +1645,133 @@ _INSTRUCTION = (
 )
 
 
+# ── Per-category guidance ────────────────────────────────────────────────────
+# The coarse failure mode is known here, before a single GPU minute or LLM token
+# is spent, but until now it only shaped the group *label*: every group got the
+# byte-identical `_INSTRUCTION`. The blocks below are appended to that shared
+# trunk so the agent's marching orders match the kind of failure it is looking
+# at — an assertion on stale expected values and a `RuntimeError` propagating
+# out of `src/transformers/` need opposite instincts. They live in the trusted
+# `instruction` channel (NOT the untrusted report), so they carry real authority.
+
+_MISMATCH_GUIDANCE = (
+    "── This group's failure mode: `output_mismatch` (an assertion, not a crash) ──\n"
+    "The test ran to completion and its assertion failed, so the question is which "
+    "side is wrong: the expected values or the code that produced them.\n"
+    "  - Before you change model code, look at a few similar models (sibling "
+    "architectures in the same family, or the model this one was ported from). If they "
+    "take the same code path without needing the change you are about to make, the "
+    "test itself may be what is wrong — prefer correcting the test's expectations "
+    "over adding model code.\n"
+    "  - When the expected values genuinely changed, take the new values from the "
+    "reproduced traceback in the report (the actual-vs-expected diff), and put them "
+    "where the test file already keeps its expectations. Do not hand-compute them.\n"
+    "  - **Do not invent a tolerance.** You may set `atol`/`rtol` to a value that "
+    "ALREADY appears in a comparable test (the same test file, a sibling model in the "
+    "family, or the shared tester mixin) — if you do, name that precedent (file and "
+    "value) in the PR body, and do not exceed it. Widening beyond any existing "
+    "precedent, or tuning a tolerance until the test goes green, is not a fix.\n"
+    "  - If the reproduced difference is far larger than such a precedent would cover, "
+    "it is a real regression, not numerical noise: fix the source, or produce no patch "
+    "and say so.\n"
+    "  - Do not delete, weaken, or comment out the assertion, and do not skip the test."
+)
+
+_CRASH_GUIDANCE = (
+    "── This group's failure mode: a CRASH (an exception propagated out of the code "
+    "under test, not a failed assertion) ──\n"
+    "Treat a crash as a library/model bug until you have positive evidence otherwise. "
+    "The test never got far enough to compare values, so its expectations are not "
+    "what is wrong.\n"
+    "  - Fix it at the raising frame or the caller that reached it{site_clause}. Read "
+    "that file before you diff it.\n"
+    "  - Do NOT resolve this by editing the test: not by widening a tolerance, not by "
+    "wrapping the call in a `try`/`except`, not by adding a skip or a `@require_*` "
+    "decorator, not by weakening an assertion. A skipped test is treated as "
+    "unverifiable and will be rejected.\n"
+    "  - Sibling architectures are still useful, but as a source of the CORRECT code "
+    "path: find one that does not crash and align this model's implementation with it.\n"
+    "  - If the crash comes from outside the repository (a dependency, the runner's "
+    "CUDA/driver, the Hub) and no source change fixes it, produce no patch and explain "
+    "that in `body`."
+)
+
+_LOAD_GUIDANCE = (
+    "── This group's failure mode: `load_error` (the model or its config would not "
+    "load) ──\n"
+    "Check, in this order: the checkpoint id the test asks for, the `from_pretrained` "
+    "kwargs it passes, and the config/architecture keys the loader expects. A rename "
+    "or a moved key in the config class is a real, fixable library bug.\n"
+    "  - If the checkpoint itself is gone, renamed, or gated on the Hub, that is not "
+    "fixable by a source patch: produce no patch and name the checkpoint in `body`.\n"
+    "  - Do not resolve this by skipping the test or by pointing it at a different, "
+    "unrelated checkpoint."
+)
+
+_IMPORT_CFG_GUIDANCE = (
+    "── This group's failure mode: `import_or_config` ──\n"
+    "This is usually a dependency's API moving under us, or a config key that no "
+    "longer exists. A minimal source patch is the right fix ONLY when the repository's "
+    "own code is calling the moved API.\n"
+    "  - If the real fix is a version pin or a dependency bump, produce no patch — say "
+    "which package and version in `body` so a human can pin it.\n"
+    "  - Never add a bare `try: import … except ImportError: pass` to make the failure "
+    "disappear."
+)
+
+_OOM_GUIDANCE = (
+    "── This group's failure mode: `OOM` (the runner ran out of device memory) ──\n"
+    "This is usually a property of the runner, not a bug in the diff-able code, and it "
+    "is very often NOT fixable by a source patch. Only propose one if you can point at "
+    "a concrete, unnecessary allocation the test or the model makes (e.g. a dtype or "
+    "`device_map` the test should have set, a tensor kept alive across the loop).\n"
+    "  - Do not lower the test's coverage to fit memory — no shrinking the model, no "
+    "cutting sequence length, no skip decorators.\n"
+    "  - If it is the runner's capacity, produce no patch and say so in `body`."
+)
+
+# Modes whose terminal exception means "the code under test raised", i.e. a crash.
+_CRASH_MODES = frozenset({"cuda_runtime", "other"})
+
+
+def instruction_addendum(target: dict) -> str:
+    """The per-category block appended to ``_INSTRUCTION`` for one failure group.
+
+    Empty for bad-commit clusters: those span several modes and already carry a
+    much stronger signal (the attributed commit), so the shared trunk is right.
+    Returns "" for anything unrecognized — the trunk alone is today's behaviour.
+    """
+    if target.get("kind") != "model_failures":
+        return ""
+    mode = target.get("failure_mode") or ""
+    if mode == "output_mismatch":
+        return _MISMATCH_GUIDANCE
+    if mode == "load_error":
+        return _LOAD_GUIDANCE
+    if mode == "import_or_config":
+        return _IMPORT_CFG_GUIDANCE
+    if mode == "OOM":
+        return _OOM_GUIDANCE
+    if mode in _CRASH_MODES:
+        # An `AssertionError` reaching us as `other` is still an assertion, so it
+        # gets the mismatch guidance rather than "this is a library bug".
+        if target.get("terminal_exc") == "AssertionError":
+            return _MISMATCH_GUIDANCE
+        site = target.get("crash_site") or ""
+        site_clause = f" — the CI traceback raises at `{site}`" if site else ""
+        return _CRASH_GUIDANCE.format(site_clause=site_clause)
+    return ""
+
+
+def build_instruction(target: dict | None = None) -> str:
+    """The trusted task directive for one failure group: the shared trunk plus
+    this group's category-specific block. ``None`` yields the trunk alone."""
+    if target is None:
+        return _INSTRUCTION
+    addendum = instruction_addendum(target)
+    return f"{_INSTRUCTION}\n\n{addendum}" if addendum else _INSTRUCTION
+
+
 def build_task_payload(
     repo: str,
     base_ref: str,
@@ -1512,14 +1784,17 @@ def build_task_payload(
     slack_channel: str | None = None,
     notify_pr_created: bool = True,
     notify_task_finished: bool = False,
+    target: dict | None = None,
 ) -> dict:
     """Build the ``POST /tasks`` body for one failure group, over the shared
     :func:`serge_dispatch.build_task_payload` — this triage's fingerprint maps
-    to the ``serge/fix/itf-<fp>`` branch and the constant ``_INSTRUCTION``."""
+    to the ``serge/fix/itf-<fp>`` branch and the instruction is
+    :func:`build_instruction` (the shared trunk plus ``target``'s per-category
+    block; the trunk alone when no ``target`` is given)."""
     return _build_serge_payload(
         repo,
         base_ref,
-        _INSTRUCTION,
+        build_instruction(target),
         context,
         title,
         branch_prefix=task_branch_prefix(fingerprint),
@@ -1624,6 +1899,7 @@ def dispatch_targets(
             tracking_issue=issue_number,
             slack_channel=slack_channel,
             notify_task_finished=notify_task_finished,
+            target=target,
         )
         try:
             resp = dispatch_to_serge(serge_url, token, payload, timeout=timeout)
@@ -1723,6 +1999,7 @@ def _dispatch_targets_bounded(
                 tracking_issue=issue_number,
                 slack_channel=slack_channel,
                 notify_task_finished=notify_task_finished,
+                target=target,
             )
             try:
                 resp = dispatch_to_serge(serge_url, token, payload, timeout=timeout)
@@ -1984,6 +2261,15 @@ def main(argv: list[str] | None = None) -> int:
     nf_latest = daily[max(daily)].get("new_failures")
     report = cluster_failures(kept, nf_latest)
     targets = pick_targets(report)
+    # Hold back groups no minimal patch can fix (runner OOM, missing dependency)
+    # BEFORE the --max-groups cap, so they don't spend a dispatch slot on a run
+    # that could only end no_fix. They are reported for a human instead.
+    targets, deferred = partition_targets(targets)
+    for t in deferred:
+        print(
+            f"      deferred (not agent-fixable): {t['label']} — {t['defer_reason']}",
+            flush=True,
+        )
     if args.max_groups and len(targets) > args.max_groups:
         dropped = len(targets) - args.max_groups
         how = (
@@ -2007,7 +2293,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
 
-    report_md = render_report(report, targets, window)
+    report_md = render_report(report, targets, window, deferred=deferred)
     if args.report_out:
         with open(args.report_out, "w") as f:
             f.write(report_md)
@@ -2048,7 +2334,12 @@ def main(argv: list[str] | None = None) -> int:
     except (urllib.error.HTTPError, urllib.error.URLError):
         pass
     issue_body = render_tracking_issue_body(
-        targets, window, run_key, existing_prs, carry_rows=carry_rows
+        targets,
+        window,
+        run_key,
+        existing_prs,
+        carry_rows=carry_rows,
+        deferred=deferred,
     )
 
     if args.dry_run:
@@ -2072,6 +2363,7 @@ def main(argv: list[str] | None = None) -> int:
             fingerprint=fp,
             slack_channel=args.slack_channel,
             notify_task_finished=args.notify_task_finished,
+            target=sample,
         )
         print(f"\n--- DRY RUN: tracking issue '{issue_title}' ---", flush=True)
         print(issue_body, flush=True)
@@ -2169,6 +2461,7 @@ def main(argv: list[str] | None = None) -> int:
             serge_token=token,
             timeout_seconds=args.reconcile_timeout,
             carry_rows=carry_rows,
+            deferred=deferred,
         )
     # Surface a hard failure only when we had work but landed nothing.
     return 1 if accepted == 0 else 0
