@@ -442,5 +442,74 @@ class MultiRunVerdictTest(unittest.TestCase):
             self.assertEqual(json.loads(out.read_text())["verdict"], "not_fixed")
 
 
+class DistillFailureTest(unittest.TestCase):
+    """The distiller caps big tensor/array literals so the asserted slice + diff
+    survive instead of being buried under KB-scale --showlocals dumps."""
+
+    def _huge_tensor(self, elems=4000):
+        return "tensor([" + ", ".join(f"{i * 0.001:.6f}" for i in range(elems)) + "])"
+
+    def test_small_tensor_untouched(self):
+        text = "expected = tensor([[0.0679, 0.0422, 0.1347]])"
+        self.assertEqual(v.distill_failure(text), text)
+
+    def test_large_tensor_elided_header_kept(self):
+        header = (
+            "AssertionError: Tensor-likes are not close!\nMismatched elements: 6 / 9\n"
+        )
+        small = "expected_slice = tensor([[0.0679, 0.0422]])\n"
+        huge = "image_embeds = " + self._huge_tensor() + "\n"
+        out = v.distill_failure(header + small + huge)
+        self.assertIn("Mismatched elements: 6 / 9", out)
+        self.assertIn("expected_slice = tensor([[0.0679, 0.0422]])", out)  # kept whole
+        self.assertIn("chars elided", out)  # huge one elided
+        self.assertLess(len(out), len(header + small + huge) // 2)
+
+    def test_nested_field_inside_modeloutput(self):
+        # actual asserted tensor is a FIELD inside a big ModelOutput repr, right
+        # after a huge sibling field — must survive.
+        huge = self._huge_tensor()
+        text = f"outputs = OwlViTOutput(image_embeds={huge}, pred_boxes=tensor([[0.11, 0.22, 0.33]]))"
+        out = v.distill_failure(text)
+        self.assertIn(
+            "pred_boxes=tensor([[0.11, 0.22, 0.33]])", out
+        )  # asserted slice intact
+        self.assertIn("chars elided", out)  # the huge sibling elided
+
+    def test_numpy_array_capped(self):
+        huge = "array([" + ", ".join(str(i) for i in range(4000)) + "])"
+        out = v.distill_failure(f"logits = {huge}")
+        self.assertIn("chars elided", out)
+        self.assertLess(len(out), 500)
+
+    def test_no_literals_unchanged(self):
+        text = "RuntimeError: CUDA out of memory.\n  File 'x.py', line 5, in f\n"
+        self.assertEqual(v.distill_failure(text), text)
+
+    def test_detail_distills_from_junit(self):
+        huge = self._huge_tensor()
+        xml = (
+            '<?xml version="1.0"?><testsuites><testsuite>'
+            f'<testcase classname="tests.models.owlvit.test_modeling_owlvit.{CLS}" '
+            'name="test_x"><failure>AssertionError: Tensor-likes are not close!\n'
+            "Mismatched elements: 6 / 9\n"
+            "expected_slice = tensor([[0.0679]])\n"
+            f"image_embeds = {huge}\n"
+            "</failure></testcase></testsuite></testsuites>"
+        )
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "r.xml"
+            p.write_text(xml)
+            rep = v.parse_junit(str(p))
+        detail = rep[(CLS, "test_x")]["detail"]
+        self.assertIn("Mismatched elements: 6 / 9", detail)
+        self.assertIn("expected_slice = tensor([[0.0679]])", detail)
+        self.assertIn("chars elided", detail)
+        self.assertLess(len(detail), len(huge))  # noise gone
+
+
 if __name__ == "__main__":
     unittest.main()
