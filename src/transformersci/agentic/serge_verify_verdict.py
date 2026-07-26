@@ -15,11 +15,12 @@
 """Verdict computer for the serge GPU verify loop.
 
 The verify workflow (``.github/workflows/serge-verify-slow.yml``) runs the
-targeted failing tests twice — once on the pre-patch tree (``baseline``) and
-once on serge's candidate (``patched``) — writing a pytest JUnit XML per phase.
-This tool reads those XMLs and emits the machine-readable verdict serge polls
-for, deciding whether the patch actually turned the targeted tests red → green
-without breaking neighbours.
+targeted failing tests on two trees — the pre-patch tree (``baseline``) and
+serge's candidate (``patched``) — and repeats each tree's run several times
+(fresh process each) to rule out flakiness, writing one pytest JUnit XML per
+run. This tool reads all of them (one ``--baseline`` / ``--patched`` XML per
+run) and emits the machine-readable verdict serge polls for: the patch turned
+the targeted tests red → green on EVERY run, without breaking neighbours.
 
 Why JUnit XML: it is built into pytest core (no extra dependency in the CI
 container), gives one structured ``<testcase>`` per test with an explicit
@@ -113,24 +114,76 @@ def parse_junit(path: str | None) -> dict[tuple[str, str], dict]:
     return out
 
 
-def _lookup(report: dict[tuple[str, str], dict], nodeid: str) -> dict:
-    """Outcome for one node-id in a parsed report. Exact ``(class, method)``
-    match, then a method-only fallback (handles module/classname skew).
-    ``missing`` when the test is absent from the report."""
-    key = nodeid_key(nodeid)
-    if key in report:
-        return report[key]
-    _, method = key
-    by_method = [val for (_c, m), val in report.items() if m == method]
-    if len(by_method) == 1:
-        return by_method[0]
+def _as_reports(
+    reports: dict[tuple[str, str], dict] | list[dict[tuple[str, str], dict]] | None,
+) -> list[dict[tuple[str, str], dict]]:
+    """Normalise a phase's parsed reports to a list. Each phase (baseline /
+    patched) is run several times — once per JUnit XML — so callers pass a list
+    of reports. A bare dict (a single run) or ``None`` is accepted for
+    convenience and coerced."""
+    if reports is None:
+        return []
+    if isinstance(reports, dict):
+        return [reports]
+    return list(reports)
+
+
+def _one(report: dict[tuple[str, str], dict], nodeid: str) -> dict:
+    """Outcome for one node-id in ONE run's report. Exact ``(class, method)``
+    match, then a method-only fallback for classname/module skew — taken only
+    when unambiguous (that method lives in exactly one class). ``missing`` when
+    the test is absent from this run."""
+    cls, method = nodeid_key(nodeid)
+    if (cls, method) in report:
+        return report[(cls, method)]
+    grouped: dict[str, dict] = {c: v for (c, n), v in report.items() if n == method}
+    if len(grouped) == 1:
+        return next(iter(grouped.values()))
     return {"outcome": "missing", "detail": ""}
+
+
+def _collect(
+    reports: dict[tuple[str, str], dict] | list[dict[tuple[str, str], dict]] | None,
+    nodeid: str,
+) -> list[dict]:
+    """Every run's outcome for one node-id, one entry per repeated run.
+
+    The targeted tests are run several times (fresh process each) so a flaky
+    pass/fail can't drive the verdict; this gathers all those runs so the caller
+    can require stability across every one. ``[{"outcome": "missing"}]`` when the
+    node-id is absent from every run."""
+    runs = [_one(report, nodeid) for report in _as_reports(reports)]
+    return runs or [{"outcome": "missing", "detail": ""}]
+
+
+# Display precedence for collapsing the repeated runs into the single outcome
+# shown per node-id in the verdict's ``targeted`` list. The authoritative
+# pass/fail decision is the verdict itself; this is diagnostic, and surfaces the
+# "worst" outcome across runs. Order chosen so a single run reproduces that run's
+# outcome exactly.
+_DISPLAY_ORDER = ("failed", "error", "missing", "skipped", "green")
+
+
+def _summarize(runs: list[dict]) -> str:
+    present = {r["outcome"] for r in runs}
+    for outcome in _DISPLAY_ORDER:
+        if outcome in present:
+            return outcome
+    return "green"
+
+
+def _first_detail(runs: list[dict]) -> str:
+    """First non-empty failure/error traceback among the repeated runs."""
+    for r in runs:
+        if r["outcome"] in ("failed", "error") and r["detail"]:
+            return r["detail"]
+    return ""
 
 
 def build_verdict(
     nodeids: list[str],
-    baseline: dict[tuple[str, str], dict],
-    patched: dict[tuple[str, str], dict],
+    baseline: dict[tuple[str, str], dict] | list[dict[tuple[str, str], dict]],
+    patched: dict[tuple[str, str], dict] | list[dict[tuple[str, str], dict]],
     collateral: dict[tuple[str, str], dict] | None = None,
     collateral_baseline: dict[tuple[str, str], dict] | None = None,
     *,
@@ -139,7 +192,14 @@ def build_verdict(
     machine_type: str = "",
 ) -> dict:
     """Compute the verify verdict from parsed JUnit reports. Pure function —
-    all I/O happens in ``main``/``parse_junit`` — so it is trivially testable."""
+    all I/O happens in ``main``/``parse_junit`` — so it is trivially testable.
+
+    ``baseline`` and ``patched`` are each a list of parsed reports — one per
+    repeated run of the targeted tests (a bare dict is accepted as a single
+    run). The guards are evaluated across ALL runs, and the conservative outcome
+    wins: a single green baseline run makes the failure untrustworthy
+    (``already_passing``); a single red patched run makes the fix unstable
+    (``not_fixed``). ``fixed`` therefore requires every run to flip red→green."""
     targeted: list[dict] = []
     tracebacks: dict[str, str] = {}
     any_baseline_passing = False
@@ -147,21 +207,30 @@ def build_verdict(
     any_unverifiable = False
 
     for nodeid in nodeids:
-        b = _lookup(baseline, nodeid)
-        p = _lookup(patched, nodeid)
+        b_runs = _collect(baseline, nodeid)
+        p_runs = _collect(patched, nodeid)
+        b_outcomes = {r["outcome"] for r in b_runs}
+        p_outcomes = {r["outcome"] for r in p_runs}
         targeted.append(
-            {"nodeid": nodeid, "baseline": b["outcome"], "patched": p["outcome"]}
+            {
+                "nodeid": nodeid,
+                "baseline": _summarize(b_runs),
+                "patched": _summarize(p_runs),
+            }
         )
-        # Baseline-red guard: the test must have been failing before the patch.
-        if b["outcome"] == "green":
+        # Baseline-red guard: the test must have been failing before the patch —
+        # on EVERY run. Any green baseline run = flaky/self-healed.
+        if "green" in b_outcomes:
             any_baseline_passing = True
-        elif b["outcome"] in ("missing", "skipped"):
+        elif b_outcomes & {"missing", "skipped"}:
             any_unverifiable = True
-        if p["outcome"] == "failed" or p["outcome"] == "error":
+        # Green-patched gate: any red run means the fix is not stable.
+        if p_outcomes & {"failed", "error"}:
             any_still_red = True
-            if p["detail"]:
-                tracebacks[nodeid] = p["detail"]
-        elif p["outcome"] in ("missing", "skipped"):
+            detail = _first_detail(p_runs)
+            if detail:
+                tracebacks[nodeid] = detail
+        elif p_outcomes & {"missing", "skipped"}:
             any_unverifiable = True
 
     # New failures the patch introduced outside the targeted set. Only sound
@@ -193,6 +262,9 @@ def build_verdict(
         "base_sha": base_sha,
         "commit_sha": commit_sha,
         "machine_type": machine_type,
+        # How many times each targeted test was run per tree (baseline/patched).
+        # serge surfaces this in the PR body ("run N times to rule out flakiness").
+        "runs": len(_as_reports(baseline)),
         "targeted": targeted,
         "collateral_new_failures": sorted(collateral_new_failures),
         "verdict": verdict,
@@ -202,18 +274,22 @@ def build_verdict(
 
 def build_reproduce_verdict(
     nodeids: list[str],
-    baseline: dict[tuple[str, str], dict],
+    baseline: dict[tuple[str, str], dict] | list[dict[tuple[str, str], dict]],
     *,
     base_sha: str = "",
     machine_type: str = "",
 ) -> dict:
-    """Compute the reproduce verdict from the baseline-only JUnit report.
+    """Compute the reproduce verdict from the baseline-only JUnit reports.
 
     Runs BEFORE serge investigates: confirms the group's failure is real at
     ``base_sha`` before spending any LLM budget. Verdict is ``reproduced`` only
     when every targeted test is red at baseline — the same conservatism as the
     ``verify`` baseline-red guard, so a ``reproduced`` group is exactly one the
-    later ``verify`` step can adjudicate. Pure function — I/O lives in ``main``."""
+    later ``verify`` step can adjudicate. Pure function — I/O lives in ``main``.
+
+    ``baseline`` is a list of parsed reports (one per repeated run; a bare dict
+    is accepted as a single run). A single green baseline run makes the failure
+    flaky → ``not_reproduced``; ``reproduced`` requires every run to be red."""
     targeted: list[dict] = []
     tracebacks: dict[str, str] = {}
     any_passing = False
@@ -221,16 +297,18 @@ def build_reproduce_verdict(
     any_red = False
 
     for nodeid in nodeids:
-        b = _lookup(baseline, nodeid)
-        targeted.append({"nodeid": nodeid, "baseline": b["outcome"]})
-        if b["outcome"] == "green":
+        b_runs = _collect(baseline, nodeid)
+        b_outcomes = {r["outcome"] for r in b_runs}
+        targeted.append({"nodeid": nodeid, "baseline": _summarize(b_runs)})
+        if "green" in b_outcomes:
             any_passing = True
-        elif b["outcome"] in ("missing", "skipped"):
+        elif b_outcomes & {"missing", "skipped"}:
             any_unverifiable = True
-        elif b["outcome"] in ("failed", "error"):
+        elif b_outcomes & {"failed", "error"}:
             any_red = True
-            if b["detail"]:
-                tracebacks[nodeid] = b["detail"]
+            detail = _first_detail(b_runs)
+            if detail:
+                tracebacks[nodeid] = detail
 
     if any_passing:
         verdict = "not_reproduced"
@@ -246,6 +324,7 @@ def build_reproduce_verdict(
         "mode": "reproduce",
         "base_sha": base_sha,
         "machine_type": machine_type,
+        "runs": len(_as_reports(baseline)),
         "targeted": targeted,
         "verdict": verdict,
         "tracebacks": tracebacks,
@@ -263,12 +342,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--nodeids", required=True, help="space-separated pytest node-ids")
     ap.add_argument(
-        "--baseline", required=True, help="JUnit XML from the pre-patch run"
+        "--baseline",
+        required=True,
+        nargs="+",
+        help="JUnit XML(s) from the pre-patch runs — one per repeated run. The "
+        "targeted tests are run several times; pass every baseline_*.xml so a "
+        "flaky pass can't slip past the baseline-red guard.",
     )
     ap.add_argument(
         "--patched",
-        default=None,
-        help="JUnit XML from the patched run (required for mode=verify)",
+        nargs="*",
+        default=[],
+        help="JUnit XML(s) from the patched runs — one per repeated run "
+        "(required for mode=verify). The fix counts as fixed only if every run "
+        "is green.",
     )
     ap.add_argument(
         "--collateral", default=None, help="JUnit XML: patched full-model run"
@@ -291,10 +378,13 @@ def main(argv: list[str] | None = None) -> int:
         print("no node-ids supplied", file=sys.stderr)
         return 2
 
+    baseline_runs = [parse_junit(p) for p in args.baseline]
+    patched_runs = [parse_junit(p) for p in args.patched]
+
     if args.mode == "reproduce":
         verdict = build_reproduce_verdict(
             nodeids,
-            parse_junit(args.baseline),
+            baseline_runs,
             base_sha=args.base_sha,
             machine_type=args.machine_type,
         )
@@ -302,8 +392,8 @@ def main(argv: list[str] | None = None) -> int:
     else:
         verdict = build_verdict(
             nodeids,
-            parse_junit(args.baseline),
-            parse_junit(args.patched),
+            baseline_runs,
+            patched_runs,
             collateral=parse_junit(args.collateral),
             collateral_baseline=parse_junit(args.collateral_baseline),
             base_sha=args.base_sha,
