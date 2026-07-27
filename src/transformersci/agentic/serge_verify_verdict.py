@@ -77,18 +77,22 @@ def nodeid_key(nodeid: str) -> tuple[str, str]:
 _BIG_LITERAL_PREFIXES = ("tensor(", "array(")
 
 
-def distill_failure(text: str, tensor_cap: int = 320) -> str:
+def distill_failure(text: str, tensor_cap: int = 2500) -> str:
     """Deterministically shrink a pytest ``--showlocals`` failure longrepr.
 
     Caps every ``tensor(...)`` / ``array(...)`` literal to ``tensor_cap`` chars of
     its body and leaves everything else — the assertion header, the mismatch
-    stats, the source, and every variable name — untouched. The asserted slice
-    (a handful of elements) prints in full; the KB-scale intermediate tensors get
-    elided, whether they are frame locals or fields nested inside a big
-    ``ModelOutput(...)`` repr. Nesting-agnostic and stable, so the actual-vs-
-    expected the LLM needs survives instead of being pushed out by a blunt tail/
-    head truncation (see the owlvit case: a 100 KB traceback where the asserted
-    ``pred_boxes`` sat behind ~90 KB of intermediate embeddings)."""
+    stats, the source, and every variable name — untouched. The KB-scale
+    intermediate tensors (embeddings, hidden states) get elided, whether they are
+    frame locals or fields nested inside a big ``ModelOutput(...)`` repr;
+    nesting-agnostic and stable. The cap is deliberately generous (~2.5 KB): the
+    asserted *actual* value can itself be a moderately large tensor the model must
+    copy verbatim — e.g. a generated token sequence (the instructblip case) — so a
+    tighter cap would eat the answer, while KB-scale intermediates are still elided
+    (the owlvit case: a 100 KB traceback where the asserted ``pred_boxes`` sat
+    behind ~90 KB of embeddings). Pair with a large enough
+    ``reproduce_tb_chars``/verify budget on the serge side so the distilled head
+    (assert diff + asserted output) is not tail-truncated away."""
     out: list[str] = []
     i, n = 0, len(text)
     while i < n:
