@@ -480,7 +480,17 @@ class DistillFailureTest(unittest.TestCase):
         huge = "array([" + ", ".join(str(i) for i in range(4000)) + "])"
         out = v.distill_failure(f"logits = {huge}")
         self.assertIn("chars elided", out)
-        self.assertLess(len(out), 500)
+        self.assertLess(len(out), len(huge) // 2)
+
+    def test_moderate_asserted_output_kept_whole(self):
+        # The asserted ACTUAL value can itself be a moderately large tensor the
+        # model must copy verbatim (e.g. a generated token sequence — instructblip).
+        # At the generous cap it must survive intact, not be elided.
+        seq = "tensor([[" + ", ".join(str(i) for i in range(300)) + "]])"  # ~1.2 KB
+        self.assertLess(len(seq), 2500)
+        out = v.distill_failure(f"outputs = {seq}")
+        self.assertNotIn("chars elided", out)
+        self.assertIn(seq, out)
 
     def test_no_literals_unchanged(self):
         text = "RuntimeError: CUDA out of memory.\n  File 'x.py', line 5, in f\n"
