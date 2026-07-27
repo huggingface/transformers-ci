@@ -46,6 +46,10 @@ on:
       pytest_marker:
         required: false
         type: string
+      ci_event:
+        required: false
+        default: Daily CI
+        type: string
 
 env:
   HF_HOME: /mnt/cache
@@ -86,10 +90,13 @@ jobs:
       TRANSFORMERS_TEST_OTEL_SUITE: ${{ inputs.report_name_prefix }}
       # Distinguish scheduled daily runs from push-to-main merge runs on the
       # dashboards: both otherwise collapse to pr="main" (no PR number).
-      # configure-ci-otel folds this into the span resource attributes, and the
-      # trace-exporter promotes transformers.test.ci_event to the `ci_event`
-      # Prometheus label consumed by the daily dashboard.
-      OTEL_RESOURCE_ATTRIBUTES: "transformers.test.ci_event=daily"
+      # The "Run all tests on GPU" step slugifies this into
+      # transformers.test.ci_event; configure-ci-otel folds it into the span
+      # resource attributes and the trace-exporter promotes it to the `ci_event`
+      # Prometheus label consumed by the daily dashboard. Every caller family
+      # (daily, nightly, past, flash-attn, PR comment CI, push) therefore lands
+      # on its own label value instead of all reporting as "daily".
+      CI_EVENT: ${{ inputs.ci_event }}
     outputs:
       machine_type: ${{ steps.set_machine_type.outputs.machine_type }}
     steps:
@@ -214,7 +221,18 @@ jobs:
           # Stamp the hardware name (single-gpu / multi-gpu) so the exporter can
           # split this test_job per hardware and the dashboards map it to GPU/xGPU.
           # $machine_type is set by the "Set machine_type" step above.
-          export OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES},transformers.test.hardware=${machine_type}"
+          #
+          # $CI_EVENT is the caller's human-readable ci_event ("Daily CI",
+          # "Nightly CI", "PR Comment CI", "Past CI - pytorch-1.13", "push").
+          # Slugify it into a stable, low-cardinality label value; the trailing
+          # " ci" is dropped so "Daily CI" keeps emitting exactly "daily" and
+          # existing dashboard queries are unchanged.
+          ci_event_slug="$(printf '%s' "$CI_EVENT" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E -e 's/ ci$//' -e 's/[^a-z0-9._]+/-/g' -e 's/^-+//' -e 's/-+$//')"
+          [ -n "$ci_event_slug" ] || ci_event_slug="daily"
+          echo "ci_event=${CI_EVENT} -> ci_event_slug=${ci_event_slug}"
+          export OTEL_RESOURCE_ATTRIBUTES="transformers.test.ci_event=${ci_event_slug},transformers.test.hardware=${machine_type}"
 
           OTEL_WRAP=""
           if [ -n "$OTEL_EXPORTER_OTLP_ENDPOINT" ]; then
