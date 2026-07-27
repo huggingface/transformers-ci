@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import gzip
 import json
 import urllib.parse
 from unittest.mock import patch
@@ -294,6 +295,9 @@ def test_extract_per_run_metrics_aggregates_job_traces_into_one_run() -> None:
     assert any('test_job="tests_tf"' in line for line in duration_lines)
     assert any('test_job="tests_flax"' in line for line in duration_lines)
 
+    main_duration_lines = metric_lines(metrics, "pytest_main_test_duration_seconds")
+    assert main_duration_lines == []
+
 
 def test_per_test_duration_dedups_same_test_across_runs() -> None:
     """The per-test metric is no longer keyed by run, so the same test seen in
@@ -334,6 +338,102 @@ def test_per_test_duration_dedups_same_test_across_runs() -> None:
     assert len(lines) == 1
     assert "run_id=" not in lines[0] and "trace_id=" not in lines[0]
     assert lines[0].endswith(" 5.000000000")  # newer run wins
+
+
+def test_main_per_test_duration_is_branch_keyed_without_regressing_pr_cardinality() -> None:
+    process_id = "pytest-process"
+    main = make_trace(
+        trace_id="trace-main",
+        run_id="main-run",
+        job="tests_torch",
+        pr="main",
+        pr_url="",
+        spans=[
+            make_test_span(
+                process_id=process_id,
+                nodeid="tests/test_torch.py::T::test_main",
+                start_time=1_000_000,
+                duration=3_000_000,
+            )
+        ],
+    )
+    pr = make_trace(
+        trace_id="trace-pr",
+        run_id="pr-run",
+        job="tests_torch",
+        pr="12345",
+        spans=[
+            make_test_span(
+                process_id=process_id,
+                nodeid="tests/test_torch.py::T::test_pr",
+                start_time=1_000_000,
+                duration=9_000_000,
+            )
+        ],
+    )
+
+    general_lines = metric_lines(
+        trace_exporter.extract_per_test_duration_metrics([main, pr]),
+        "pytest_test_duration_seconds",
+    )
+    main_lines = metric_lines(
+        trace_exporter.extract_main_per_test_duration_metrics([main, pr]),
+        "pytest_main_test_duration_seconds",
+    )
+
+    assert len(general_lines) == 2
+    assert all('pr="' not in line for line in general_lines)
+    assert len(main_lines) == 1
+    assert 'pr="main"' in main_lines[0]
+    assert "test_main" in main_lines[0]
+    assert "test_pr" not in main_lines[0]
+
+
+def test_main_per_test_duration_includes_recent_persisted_main_rows(
+    monkeypatch, tmp_path
+) -> None:
+    trace_exporter._main_run_store_rows_cache = (0.0, [])
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_RUN_STORE", str(tmp_path))
+    payload = {
+        "run_id": "main-run",
+        "rows": [
+            {
+                "test_nodeid": "tests/test_torch.py::T::test_slow",
+                "test_job": "tests_torch",
+                "status_code": "OK",
+                "duration_seconds": 11.0,
+                "trace_id": "trace-main",
+                "pr": "main",
+            },
+            {
+                "test_nodeid": "tests/test_torch.py::T::test_pr",
+                "test_job": "tests_torch",
+                "status_code": "OK",
+                "duration_seconds": 99.0,
+                "trace_id": "trace-pr",
+                "pr": "12345",
+            },
+        ],
+    }
+    with gzip.open(tmp_path / "main-run.json.gz", "wb") as fh:
+        fh.write(json.dumps(payload).encode())
+
+    lines = metric_lines(
+        trace_exporter.extract_main_per_test_duration_metrics(
+            _extracted=[],  # Force the store-backed path.
+        ),
+        "pytest_main_test_duration_seconds",
+    )
+    assert len(lines) == 1
+    assert 'pr="main"' in lines[0]
+    assert "test_slow" in lines[0]
+    assert "test_pr" not in lines[0]
+
+    rows = trace_exporter.iter_recent_main_run_store_rows(
+        now=1_000_000, directory=str(tmp_path)
+    )
+    assert len(rows) == 1
+    assert rows[0][0]["test_nodeid"] == "tests/test_torch.py::T::test_slow"
 
 
 def test_render_run_html_sorts_filters_and_links() -> None:

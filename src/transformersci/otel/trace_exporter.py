@@ -113,6 +113,9 @@ DEFAULT_ACTIVE_LOOKBACK_SECONDS = 6 * 3600.0
 # can't make one render fan out unboundedly; exceeding it can only under-report a
 # running job, never invent one.
 DEFAULT_ACTIVE_JOBS_PAGES = 5
+DEFAULT_MAIN_DURATION_STORE_MAX_FILES = 25
+DEFAULT_MAIN_DURATION_STORE_MAX_SERIES = 500
+DEFAULT_MAIN_DURATION_STORE_MAX_AGE_SECONDS = 8 * 86400.0
 # The Actions jobs listing for a big reusable-workflow run (~90 jobs) routinely
 # takes 8-10s to respond — well past the 5s default used for the small PR-info
 # calls — so the run-activity calls get their own, longer timeout. Too short and
@@ -2488,6 +2491,112 @@ def extract_per_test_duration_metrics(
     return lines
 
 
+def extract_main_per_test_duration_metrics(
+    traces: list[dict] | None = None,
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
+) -> list[str]:
+    """Emit per-test durations for main-branch traces only.
+
+    ``pytest_test_duration_seconds`` deliberately omits ``pr`` to keep
+    cardinality flat across PRs. The slowest-main dashboard still needs a
+    branch-keyed input, so this companion metric is limited to ``pr="main"`` and
+    capped to the slowest observed main tests. Recent persisted run-store rows
+    are included so the metric is not empty between sparse main-branch runs.
+    """
+    extracted = (
+        _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
+    )
+    lines = [
+        "# HELP pytest_main_test_duration_seconds Duration of main-branch pytest test spans.",
+        "# TYPE pytest_main_test_duration_seconds gauge",
+    ]
+    latest: dict[tuple[str, ...], tuple[int, float]] = {}
+    for trace_info, rows in extracted:
+        if str(trace_info.get("pr") or "") != "main":
+            continue
+        trace_start = int(
+            trace_info.get("latest_start_time", 0)
+            or trace_info.get("start_time", 0)
+            or 0
+        )
+        for row in rows:
+            key = (
+                str(row["provider"]),
+                str(row["service_name"]),
+                "main",
+                str(row["status_code"]),
+                str(row["test_class"]),
+                str(row["test_function"]),
+                str(row["test_job"]),
+                str(row["test_module"]),
+                str(row["test_nodeid"]),
+            )
+            duration = float(row["duration_seconds"])
+            existing = latest.get(key)
+            if existing is None or trace_start >= existing[0]:
+                latest[key] = (trace_start, duration)
+    store_now = time.time()
+    for row, mtime in iter_recent_main_run_store_rows(now=store_now):
+        nodeid = str(row.get("test_nodeid") or "")
+        if not nodeid:
+            continue
+        node_parts = split_pytest_nodeid(nodeid)
+        key = (
+            "github_actions",
+            str(row.get("service_name") or os.getenv("PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME)),
+            "main",
+            str(row.get("status_code") or "UNSET"),
+            node_parts["test_class"],
+            node_parts["test_function"],
+            str(row.get("test_job") or "unknown"),
+            node_parts["test_module"],
+            nodeid,
+        )
+        duration = float(row.get("duration_seconds") or 0.0)
+        existing = latest.get(key)
+        if existing is None or int(mtime) >= existing[0]:
+            latest[key] = (int(mtime), duration)
+    max_series = env_int(
+        "PYTEST_TRACE_EXPORTER_MAIN_DURATION_MAX_SERIES",
+        DEFAULT_MAIN_DURATION_STORE_MAX_SERIES,
+    )
+    if max_series > 0 and len(latest) > max_series:
+        latest = dict(
+            sorted(latest.items(), key=lambda item: item[1][1], reverse=True)[
+                :max_series
+            ]
+        )
+    for key, (_trace_start, duration) in sorted(latest.items()):
+        (
+            provider,
+            service_name,
+            pr,
+            status_code,
+            test_class,
+            test_function,
+            test_job,
+            test_module,
+            test_nodeid,
+        ) = key
+        test_labels = {
+            "provider": provider,
+            "service_name": service_name,
+            "pr": pr,
+            "status_code": status_code,
+            "test_class": test_class,
+            "test_function": test_function,
+            "test_job": test_job,
+            "test_module": test_module,
+            "test_nodeid": test_nodeid,
+        }
+        lines.append(
+            f"pytest_main_test_duration_seconds{metric_labels(test_labels)} {duration:.9f}"
+        )
+    return lines
+
+
 def extract_ci_runner_execution_metrics(
     traces: list[dict] | None = None,
     *,
@@ -2818,6 +2927,8 @@ def extract_per_run_metrics(
         _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
     )
     return extract_per_test_duration_metrics(
+        _extracted=extracted
+    ) + extract_main_per_test_duration_metrics(
         _extracted=extracted
     ) + extract_run_rollup_metrics(_extracted=extracted)
 
@@ -3422,6 +3533,7 @@ def _iter_metric_lines() -> Iterator[str]:
     )
     yield from extract_ci_runner_execution_metrics(_extracted=extracted)
     yield from extract_per_test_duration_metrics(_extracted=per_test_extracted)
+    yield from extract_main_per_test_duration_metrics(_extracted=per_test_extracted)
     yield from extract_run_rollup_metrics(_extracted=rollup_extracted)
     yield from extract_run_info_metrics(_extracted=rollup_extracted)
     yield from extract_pr_info_metrics([], _extracted=extracted)
@@ -4175,6 +4287,83 @@ _RUN_STORE_FIELDS = (
 
 def _run_store_dir() -> str:
     return os.getenv("PYTEST_TRACE_EXPORTER_RUN_STORE", "").rstrip("/")
+
+
+_main_run_store_rows_cache: tuple[float, list[tuple[dict, float]]] = (0.0, [])
+_main_run_store_rows_lock = threading.Lock()
+
+
+def iter_recent_main_run_store_rows(
+    *,
+    now: float | None = None,
+    directory: str | None = None,
+) -> list[tuple[dict, float]]:
+    """Return recent persisted main-branch rows for slowest-test metrics.
+
+    The run store can be several GiB, so this is intentionally bounded and
+    cached. It scans newest files first, keeps only rows carrying ``pr=main``,
+    then caps the returned rows to the slowest durations.
+    """
+    global _main_run_store_rows_cache
+    directory = _run_store_dir() if directory is None else directory
+    if not directory:
+        return []
+    now = time.time() if now is None else now
+    with _main_run_store_rows_lock:
+        cached_at, cached_rows = _main_run_store_rows_cache
+        if now - cached_at < DEFAULT_REFRESH_COOLDOWN_SECONDS:
+            return list(cached_rows)
+    max_files = env_int(
+        "PYTEST_TRACE_EXPORTER_MAIN_DURATION_STORE_MAX_FILES",
+        DEFAULT_MAIN_DURATION_STORE_MAX_FILES,
+    )
+    max_series = env_int(
+        "PYTEST_TRACE_EXPORTER_MAIN_DURATION_MAX_SERIES",
+        DEFAULT_MAIN_DURATION_STORE_MAX_SERIES,
+    )
+    max_age = float(
+        env_int(
+            "PYTEST_TRACE_EXPORTER_MAIN_DURATION_STORE_MAX_AGE_SECONDS",
+            int(DEFAULT_MAIN_DURATION_STORE_MAX_AGE_SECONDS),
+        )
+    )
+    try:
+        files = [
+            (entry.path, entry.stat().st_mtime)
+            for entry in os.scandir(directory)
+            if entry.name.endswith(".json.gz") and entry.is_file()
+        ]
+    except OSError:
+        return []
+    files.sort(key=lambda item: item[1], reverse=True)
+    rows: list[tuple[dict, float]] = []
+    for path, mtime in files[: max(max_files, 0)]:
+        if max_age > 0 and now - mtime > max_age:
+            continue
+        try:
+            with gzip.open(path, "rb") as fh:
+                data = json.loads(fh.read())
+        except (OSError, ValueError):
+            continue
+        stored_rows = data.get("rows")
+        for row in stored_rows if isinstance(stored_rows, list) else []:
+            if str(row.get("pr") or "") == "main":
+                rows.append((row, mtime))
+        if max_series > 0 and len(rows) > max_series * 5:
+            rows = sorted(
+                rows,
+                key=lambda item: float(item[0].get("duration_seconds") or 0.0),
+                reverse=True,
+            )[:max_series]
+    if max_series > 0 and len(rows) > max_series:
+        rows = sorted(
+            rows,
+            key=lambda item: float(item[0].get("duration_seconds") or 0.0),
+            reverse=True,
+        )[:max_series]
+    with _main_run_store_rows_lock:
+        _main_run_store_rows_cache = (now, list(rows))
+    return rows
 
 
 def _run_store_path(directory: str, run_id: str) -> str:

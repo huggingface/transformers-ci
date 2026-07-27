@@ -1,3 +1,15 @@
+{{- define "transformers-ci.prometheus-recording-rules" -}}
+groups:
+  - name: slowest_tests_main
+    # The per-test pytest_test_duration_seconds metric is high-cardinality, so
+    # scanning it over a long window is slow (a 90d ad-hoc query timed out the
+    # "Slowest Tests By Average Duration" panel at ~30s). Precompute the top 20
+    # here on a slow cadence; the dashboard reads this 20-series result instantly.
+    interval: 15m
+    rules:
+      - record: pytest_test:duration_avg_main:top20_7d
+        expr: topk(20, avg by (test_nodeid, test_job, test_module, test_class, test_function) (last_over_time(pytest_main_test_duration_seconds{pr="main"}[7d])))
+{{- end }}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -182,16 +194,7 @@ data:
             regex: ([^:]+)(?::\d+)?;(\d+)
             replacement: $1:$2
   recording_rules.yml: |
-    groups:
-      - name: slowest_tests_main
-        # The per-test pytest_test_duration_seconds metric is high-cardinality, so
-        # scanning it over a long window is slow (a 90d ad-hoc query timed out the
-        # "Slowest Tests By Average Duration" panel at ~30s). Precompute the top 20
-        # here on a slow cadence; the dashboard reads this 20-series result instantly.
-        interval: 15m
-        rules:
-          - record: pytest_test:duration_avg_main:top20_7d
-            expr: topk(20, avg by (test_nodeid, test_job, test_module, test_class, test_function) (last_over_time(pytest_test_duration_seconds{pr="main"}[7d])))
+{{ include "transformers-ci.prometheus-recording-rules" . | indent 4 }}
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -213,6 +216,8 @@ spec:
       labels:
         {{- include "transformers-ci.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: prometheus
+      annotations:
+        checksum/recording-rules: {{ include "transformers-ci.prometheus-recording-rules" . | sha256sum }}
     spec:
       serviceAccountName: prometheus
       securityContext:
