@@ -65,6 +65,18 @@ _INSTRUCTION = (
     "quadratic or worse work on a critical execution path, repeated expensive "
     "setup inside parametrized cases, avoidable compilation/generation work, or "
     "test code that exercises a much larger model/configuration than needed.\n\n"
+    "Do not treat expected framework overhead as a source bug. For example, CPU "
+    "`torch.compile` can be inherently slow even for a tiny model. If your "
+    "inspection finds only expected compile overhead, and no concrete excessive "
+    "test size, repeated setup, avoidable generation work, or model-code "
+    "complexity issue, stop and return a no-patch result. Do not propose a CPU "
+    "skip merely because the test is slow; propose skipping only when there is "
+    "clear evidence that CPU coverage is invalid or redundant with a stronger "
+    "accelerator-only signal.\n\n"
+    "Keep the investigation bounded: inspect the inherited test implementation, "
+    "the target model tester/config, and at most a few comparable model-specific "
+    "overrides. Once those checks explain the runtime as healthy or identify a "
+    "specific fix, produce the final JSON. Do not loop over the same tradeoff.\n\n"
     "Use reproduce-first / verify-before-PR discipline. First run the targeted "
     "node id on the baseline tree and record its duration. If the test does not "
     "pass on the baseline, bail without LLM work. If the slowness appears "
@@ -316,6 +328,11 @@ def render_context(
         "critical path. If the slowness is healthy, produce no patch. Only "
         "publish a PR after the patched tree passes that same node id and the "
         "runtime is plausibly improved.",
+        "",
+        "Decision rule: if the only plausible explanation is expected framework "
+        "cost, such as CPU `torch.compile` compilation overhead on an already "
+        "tiny test model, return no patch. A skip is a coverage deletion and "
+        "requires stronger evidence than runtime alone.",
         "",
         f"- Test: `{nodeid}`",
         f"- Job: `{candidate.get('test_job') or '?'}`",
