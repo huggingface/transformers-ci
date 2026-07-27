@@ -76,7 +76,13 @@ _INSTRUCTION = (
     "Keep the investigation bounded: inspect the inherited test implementation, "
     "the target model tester/config, and at most a few comparable model-specific "
     "overrides. Once those checks explain the runtime as healthy or identify a "
-    "specific fix, produce the final JSON. Do not loop over the same tradeoff.\n\n"
+    "specific fix, produce the final JSON. Do not loop over the same tradeoff. "
+    "For inherited generic generation/compile tests, this normally means: read "
+    "the inherited test, read the target model tester/config, inspect no more "
+    "than three comparable model-specific overrides, then decide. If you reach "
+    "the conclusion that the runtime is expected framework overhead, do not run "
+    "more searches; immediately return final JSON with an empty patch and a body "
+    "explaining the no-patch decision.\n\n"
     "Use reproduce-first / verify-before-PR discipline. First run the targeted "
     "node id on the baseline tree and record its duration. If the test does not "
     "pass on the baseline, bail without LLM work. If the slowness appears "
@@ -85,6 +91,11 @@ _INSTRUCTION = (
     "same targeted node id passes and compare its duration to the baseline. Do "
     "not open a PR unless the targeted test still passes and the patch "
     "plausibly improves unhealthy runtime without reducing meaningful coverage.\n\n"
+    "If the local tool environment cannot execute shell commands, do not get "
+    "stuck trying to reproduce. Treat the Prometheus duration in the report as "
+    "the baseline timing evidence, continue with code inspection, and only "
+    "return a patch if the inspection finds a concrete issue. Otherwise return "
+    "no patch.\n\n"
     "Investigate the test and production code before editing. If a model has a "
     "`modular_<name>.py`, edit that source rather than generated modeling files. "
     "If no safe speedup is available, produce no patch."
@@ -333,6 +344,11 @@ def render_context(
         "cost, such as CPU `torch.compile` compilation overhead on an already "
         "tiny test model, return no patch. A skip is a coverage deletion and "
         "requires stronger evidence than runtime alone.",
+        "",
+        "Stop rule: after reading the inherited test, this model tester/config, "
+        "and at most three comparable overrides, make the decision. If that "
+        "decision is healthy framework overhead, do not perform additional "
+        "searches; emit final JSON with an empty patch.",
         "",
         f"- Test: `{nodeid}`",
         f"- Job: `{candidate.get('test_job') or '?'}`",

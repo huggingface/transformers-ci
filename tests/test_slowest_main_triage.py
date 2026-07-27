@@ -154,7 +154,10 @@ class PayloadTest(unittest.TestCase):
         self.assertIn("quadratic or worse work", payload["instruction"])
         self.assertIn("Do not treat expected framework overhead", payload["instruction"])
         self.assertIn("Do not loop over the same tradeoff", payload["instruction"])
+        self.assertIn("immediately return final JSON with an empty patch", payload["instruction"])
+        self.assertIn("If the local tool environment cannot execute shell commands", payload["instruction"])
         self.assertIn("A skip is a coverage deletion", context)
+        self.assertIn("Stop rule", context)
 
     def test_tracking_issue_body_has_daily_marker_task_and_pr_columns(self):
         candidate = {
