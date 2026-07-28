@@ -38,7 +38,7 @@
     },
     {
       "targetBlank": false,
-      "title": "Tests Health",
+      "title": "Main health",
       "type": "link",
       "url": "/d/pytest-test-health/test-health"
     }
