@@ -26,7 +26,7 @@
   "links": [
     {
       "targetBlank": false,
-      "title": "Back to Test Health",
+      "title": "Back to Main health",
       "type": "link",
       "url": "/d/pytest-test-health/test-health"
     },

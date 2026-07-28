@@ -32,7 +32,13 @@
   },
   {
    "targetBlank": false,
-   "title": "Tests Health",
+   "title": "Daily runs",
+   "type": "link",
+   "url": "/d/pytest-observability-daily/daily"
+  },
+  {
+   "targetBlank": false,
+   "title": "Main health",
    "type": "link",
    "url": "/d/pytest-test-health/test-health"
   }

@@ -758,6 +758,12 @@
     },
     {
       "targetBlank": false,
+      "title": "Main health",
+      "type": "link",
+      "url": "/d/pytest-test-health/test-health"
+    },
+    {
+      "targetBlank": false,
       "title": "CI Health",
       "type": "link",
       "url": "/d/pytest-observability-stack-health/ci-health?orgId=1&from=now-24h&to=now&timezone=browser&refresh=30s"

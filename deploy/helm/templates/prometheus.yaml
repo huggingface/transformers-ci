@@ -5,10 +5,24 @@ groups:
     # scanning it over a long window is slow (a 90d ad-hoc query timed out the
     # "Slowest Tests By Average Duration" panel at ~30s). Precompute the top 20
     # here on a slow cadence; the dashboard reads this 20-series result instantly.
+    #
+    # Split by device. Accelerator jobs dominate on raw duration: once the rule
+    # had a full 7 days of data the combined top 20 was 100% `run_models_gpu`
+    # (2026-07-28: 303-1695s, vs ~165s for the slowest CPU test), which buried
+    # every actionable CPU test in one shared list. Two rules -> two panels, and
+    # the slow-test triage reads the CPU one (it can only reproduce CPU work on
+    # its CPU timing lane).
+    #
+    # `_GPU_JOBS` below must stay in sync with DEFAULT_EXCLUDE_JOBS in
+    # src/transformersci/agentic/slowest_main_triage.py. Any job naming a GPU,
+    # plus the FSDP and tensor-parallel jobs which are multi-accelerator by
+    # definition.
     interval: 15m
     rules:
-      - record: pytest_test:duration_avg_main:top20_7d
-        expr: topk(20, avg by (test_nodeid, test_job, test_module, test_class, test_function) (last_over_time(pytest_main_test_duration_seconds{pr="main"}[7d])))
+      - record: pytest_test:duration_avg_main_cpu:top20_7d
+        expr: topk(20, avg by (test_nodeid, test_job, test_module, test_class, test_function) (last_over_time(pytest_main_test_duration_seconds{pr="main", test_job!~".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci"}[7d])))
+      - record: pytest_test:duration_avg_main_gpu:top20_7d
+        expr: topk(20, avg by (test_nodeid, test_job, test_module, test_class, test_function) (last_over_time(pytest_main_test_duration_seconds{pr="main", test_job=~".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci"}[7d])))
 {{- end }}
 ---
 apiVersion: v1
