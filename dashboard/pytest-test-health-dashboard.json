@@ -107,24 +107,51 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Last Failed"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "dateTimeFromNow"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
               "options": "Last Failure"
             },
             "properties": [
               {
                 "id": "custom.hidden",
                 "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Streak"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "custom.width",
+                "value": 74
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "orange",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 3
+                    }
+                  ]
+                }
               }
             ]
           }
@@ -159,7 +186,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, topk by (test_job, test_nodeid) (1, timestamp(max without (instance) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) * 1000))",
+          "expr": "topk(10, (topk by (test_nodeid, test_job) (1, last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) * on (test_nodeid, test_job) group_left() (count by (test_nodeid, test_job) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) > 1))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -167,7 +194,7 @@
           "refId": "A"
         }
       ],
-      "title": "Failing (CPU)",
+      "title": "Sticky Failures (CPU)",
       "transformations": [
         {
           "id": "organize",
@@ -191,7 +218,7 @@
               "Value": 4
             },
             "renameByName": {
-              "Value": "Last Failed",
+              "Value": "Streak",
               "exception_type": "Error",
               "test_function": "Function",
               "test_job": "Job",
@@ -200,7 +227,8 @@
           }
         }
       ],
-      "type": "table"
+      "type": "table",
+      "description": "Tests that keep failing on main: ranked by how many DISTINCT RUNS each one failed in over the selected time range ('Streak'). A test runs in exactly one shard per run, so its distinct failure traces are its distinct failing runs. Single failures are excluded (streak > 1), so an empty panel means nothing is repeatedly broken. Scope is the time range, NOT the last N runs or commits: pytest_test_last_failure_info carries no run_id/commit_sha, so a failure cannot be attributed to a run or a commit \u2014 and 'is it still failing in the newest run' is likewise not expressible (a run of run_models_gpu is ~19 per-model traces). The linked failure is one representative occurrence, not necessarily the most recent."
     },
     {
       "datasource": {
@@ -263,24 +291,51 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Last Failed"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "dateTimeFromNow"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
               "options": "Last Failure"
             },
             "properties": [
               {
                 "id": "custom.hidden",
                 "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Streak"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "custom.width",
+                "value": 74
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "basic",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "orange",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 3
+                    }
+                  ]
+                }
               }
             ]
           }
@@ -315,7 +370,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, topk by (test_job, test_nodeid) (1, timestamp(max without (instance) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) * 1000))",
+          "expr": "topk(10, (topk by (test_nodeid, test_job) (1, last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) * on (test_nodeid, test_job) group_left() (count by (test_nodeid, test_job) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) > 1))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -323,7 +378,7 @@
           "refId": "A"
         }
       ],
-      "title": "Failing (GPU)",
+      "title": "Sticky Failures (GPU)",
       "transformations": [
         {
           "id": "organize",
@@ -347,7 +402,7 @@
               "Value": 4
             },
             "renameByName": {
-              "Value": "Last Failed",
+              "Value": "Streak",
               "exception_type": "Error",
               "test_function": "Function",
               "test_job": "Job",
@@ -356,7 +411,8 @@
           }
         }
       ],
-      "type": "table"
+      "type": "table",
+      "description": "Tests that keep failing on main: ranked by how many DISTINCT RUNS each one failed in over the selected time range ('Streak'). A test runs in exactly one shard per run, so its distinct failure traces are its distinct failing runs. Single failures are excluded (streak > 1), so an empty panel means nothing is repeatedly broken. Scope is the time range, NOT the last N runs or commits: pytest_test_last_failure_info carries no run_id/commit_sha, so a failure cannot be attributed to a run or a commit \u2014 and 'is it still failing in the newest run' is likewise not expressible (a run of run_models_gpu is ~19 per-model traces). The linked failure is one representative occurrence, not necessarily the most recent."
     },
     {
       "datasource": {
