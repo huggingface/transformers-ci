@@ -2545,7 +2545,10 @@ def extract_main_per_test_duration_metrics(
         node_parts = split_pytest_nodeid(nodeid)
         key = (
             "github_actions",
-            str(row.get("service_name") or os.getenv("PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME)),
+            str(
+                row.get("service_name")
+                or os.getenv("PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME)
+            ),
             "main",
             str(row.get("status_code") or "UNSET"),
             node_parts["test_class"],
@@ -2926,11 +2929,11 @@ def extract_per_run_metrics(
     extracted = (
         _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
     )
-    return extract_per_test_duration_metrics(
-        _extracted=extracted
-    ) + extract_main_per_test_duration_metrics(
-        _extracted=extracted
-    ) + extract_run_rollup_metrics(_extracted=extracted)
+    return (
+        extract_per_test_duration_metrics(_extracted=extracted)
+        + extract_main_per_test_duration_metrics(_extracted=extracted)
+        + extract_run_rollup_metrics(_extracted=extracted)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3133,6 +3136,11 @@ def extract_average_metrics(
     for trace_info, rows in extracted:
         trace_start = int(trace_info.get("latest_start_time", 0) or 0)
         trace_id = str(trace_info.get("trace_id", "unknown"))
+        # The CI run the failure belongs to. Needed because a trace is NOT a run:
+        # one `run_models_gpu` run produces ~19 per-model traces, so `trace_id`
+        # alone cannot answer "has this test failed in the last N runs of its
+        # job?" — the question the dashboard's Sticky Failures panels ask.
+        run_id = str(trace_info.get("run_id", "") or "unknown")
         for row in rows:
             key = (
                 str(row["service_name"]),
@@ -3147,6 +3155,7 @@ def extract_average_metrics(
                     "failure_count": 0,
                     "last_failure_start_time": 0,
                     "last_failure_trace_id": "",
+                    "last_failure_run_id": "",
                     "last_failure_exception_type": "",
                     "test_class": str(row["test_class"]),
                     "test_function": str(row["test_function"]),
@@ -3158,6 +3167,7 @@ def extract_average_metrics(
                 if trace_start >= aggregates[key]["last_failure_start_time"]:
                     aggregates[key]["last_failure_start_time"] = trace_start
                     aggregates[key]["last_failure_trace_id"] = trace_id
+                    aggregates[key]["last_failure_run_id"] = run_id
                     aggregates[key]["last_failure_exception_type"] = (
                         str(row.get("exception_type", "")) or "unknown"
                     )
@@ -3179,6 +3189,14 @@ def extract_average_metrics(
             "test_module": str(aggregate["test_module"]),
             "test_nodeid": test_nodeid,
             "trace_id": str(aggregate["last_failure_trace_id"]),
+            # Additive, with a safe default: every existing consumer ignores
+            # unknown labels, and queries that group by the old label set are
+            # unaffected. Series churn on this pointer metric is what makes a
+            # failure history queryable at all — each time the latest failure
+            # moves, a new (trace_id, run_id) series appears and Prometheus keeps
+            # the old one, so `count by (test_nodeid, test_job)` over a window
+            # counts failing RUNS once run_id is present.
+            "run_id": str(aggregate["last_failure_run_id"]) or "unknown",
             # No stacktrace label here — the trace_id pointer is enough for the
             # dashboard to deep-link into the Tempo trace view.
             "exception_type": str(aggregate["last_failure_exception_type"]),
