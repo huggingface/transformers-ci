@@ -340,7 +340,9 @@ def test_per_test_duration_dedups_same_test_across_runs() -> None:
     assert lines[0].endswith(" 5.000000000")  # newer run wins
 
 
-def test_main_per_test_duration_is_branch_keyed_without_regressing_pr_cardinality() -> None:
+def test_main_per_test_duration_is_branch_keyed_without_regressing_pr_cardinality() -> (
+    None
+):
     process_id = "pytest-process"
     main = make_trace(
         trace_id="trace-main",
@@ -3341,3 +3343,151 @@ def test_pr_badge_prefers_prometheus_job_rollups_for_latest_run(monkeypatch) -> 
     assert "1 failed" in svg
     assert "4 tests" in svg
     assert "2 jobs" in svg
+
+
+# --- pytest_test_last_failure_info: run_id -----------------------------------
+# A trace is NOT a run: one run_models_gpu run emits ~19 per-model traces. Without
+# run_id on this pointer metric, "has this test failed in the last N runs of its
+# job?" is unanswerable, which is what the dashboard's Sticky Failures panels ask.
+
+
+def test_last_failure_info_carries_the_run_id_of_the_failing_run() -> None:
+    metrics = trace_exporter.extract_average_metrics(workflow_split_across_three_jobs())
+    lines = metric_lines(metrics, "pytest_test_last_failure_info")
+    assert len(lines) == 1
+    assert 'run_id="12345:2"' in lines[0]
+    assert 'trace_id="trace-torch"' in lines[0]
+
+
+def test_last_failure_info_keeps_every_pre_existing_label() -> None:
+    """Backward-compat guard: run_id is ADDITIVE. Any dashboard/recap query that
+    groups by the old label set must keep working, so none of these may move."""
+    metrics = trace_exporter.extract_average_metrics(workflow_split_across_three_jobs())
+    line = metric_lines(metrics, "pytest_test_last_failure_info")[0]
+    for label in (
+        'pr="4321"',
+        'test_job="tests_torch"',
+        'provider="github_actions"',
+        'service_name="transformers-tests"',
+        'test_class="TestTorch"',
+        'test_function="test_fail"',
+        'test_module="test_torch.py"',
+        'test_nodeid="tests/test_torch.py::TestTorch::test_fail"',
+        'trace_id="trace-torch"',
+        'exception_type="AssertionError"',
+    ):
+        assert label in line, label
+    assert "stacktrace=" not in line
+
+
+def test_last_failure_info_run_id_follows_the_most_recent_failure() -> None:
+    """The pointer tracks the LATEST failure, so run_id must move with it — that
+    is what makes each new failing run appear as a fresh series (and therefore
+    countable as a streak) instead of overwriting the previous one."""
+    nodeid = "tests/test_torch.py::TestTorch::test_flaky"
+    older = make_trace(
+        trace_id="trace-old",
+        run_id="run-1",
+        job="tests_torch",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid=nodeid,
+                start_time=1_000_000,
+                duration=1_000_000,
+                status_code="ERROR",
+                exception_type="AssertionError",
+            )
+        ],
+    )
+    newer = make_trace(
+        trace_id="trace-new",
+        run_id="run-2",
+        job="tests_torch",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid=nodeid,
+                start_time=9_000_000,
+                duration=1_000_000,
+                status_code="ERROR",
+                exception_type="ValueError",
+            )
+        ],
+    )
+    for traces in ([older, newer], [newer, older]):  # order must not matter
+        lines = metric_lines(
+            trace_exporter.extract_average_metrics(traces),
+            "pytest_test_last_failure_info",
+        )
+        assert len(lines) == 1
+        assert 'run_id="run-2"' in lines[0]
+        assert 'trace_id="trace-new"' in lines[0]
+        assert 'exception_type="ValueError"' in lines[0]
+
+
+def test_last_failure_info_run_id_falls_back_to_unknown() -> None:
+    """Safe default: a trace whose run id could not be resolved still emits a
+    valid series rather than an empty label or a crash."""
+    extracted = [
+        (
+            {"trace_id": "trace-x", "latest_start_time": 5},
+            [
+                {
+                    "service_name": "transformers-tests",
+                    "test_job": "tests_torch",
+                    "pr": "main",
+                    "provider": "github_actions",
+                    "test_nodeid": "tests/a.py::A::test_x",
+                    "test_class": "A",
+                    "test_function": "test_x",
+                    "test_module": "a.py",
+                    "duration_seconds": 1.0,
+                    "status_code": "ERROR",
+                    "exception_type": "AssertionError",
+                }
+            ],
+        )
+    ]
+    lines = metric_lines(
+        trace_exporter.extract_average_metrics([], _extracted=extracted),
+        "pytest_test_last_failure_info",
+    )
+    assert len(lines) == 1
+    assert 'run_id="unknown"' in lines[0]
+
+
+def test_last_failure_info_run_id_distinguishes_runs_of_the_same_job() -> None:
+    """Two different tests failing in two different runs of one job must carry
+    their own run_id — the property the per-job 'last N runs' scoping relies on."""
+
+    def failing(trace_id: str, run_id: str, nodeid: str, start: int) -> dict:
+        return make_trace(
+            trace_id=trace_id,
+            run_id=run_id,
+            job="tests_torch",
+            spans=[
+                make_test_span(
+                    process_id="pytest-process",
+                    nodeid=nodeid,
+                    start_time=start,
+                    duration=1_000,
+                    status_code="ERROR",
+                    exception_type="AssertionError",
+                )
+            ],
+        )
+
+    lines = metric_lines(
+        trace_exporter.extract_average_metrics(
+            [
+                failing("t1", "run-1", "tests/test_torch.py::A::test_one", 1_000),
+                failing("t2", "run-2", "tests/test_torch.py::A::test_two", 2_000),
+            ]
+        ),
+        "pytest_test_last_failure_info",
+    )
+    assert len(lines) == 2
+    by_run = {("run-1" if 'run_id="run-1"' in ln else "run-2"): ln for ln in lines}
+    assert "test_one" in by_run["run-1"]
+    assert "test_two" in by_run["run-2"]
