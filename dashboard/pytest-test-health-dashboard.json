@@ -186,7 +186,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, (topk by (test_nodeid, test_job) (1, last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) * on (test_nodeid, test_job) group_left() (count by (test_nodeid, test_job) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) > 1))",
+          "expr": "topk(10, (topk by (test_nodeid, test_job) (1, (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) and on (test_nodeid, test_job, run_id) (topk by (test_nodeid, test_job) (1, (max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) and on (test_job, run_id) topk by (test_job) (5, max by (test_job, run_id) (last_over_time(pytest_run_job_member_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) * on (run_id) group_left() max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range])))) * on (run_id) group_left() max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range])))))) * on (test_nodeid, test_job) group_left() ((count by (test_nodeid, test_job) (max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) and on (test_job, run_id) topk by (test_job) (5, max by (test_job, run_id) (last_over_time(pytest_run_job_member_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) * on (run_id) group_left() max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range]))))) > 1))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -208,7 +208,8 @@
               "provider": true,
               "service_name": true,
               "test_class": true,
-              "test_module": true
+              "test_module": true,
+              "run_id": true
             },
             "indexByName": {
               "test_job": 0,
@@ -228,7 +229,7 @@
         }
       ],
       "type": "table",
-      "description": "Tests that keep failing on main: ranked by how many DISTINCT RUNS each one failed in over the selected time range ('Streak'). A test runs in exactly one shard per run, so its distinct failure traces are its distinct failing runs. Single failures are excluded (streak > 1), so an empty panel means nothing is repeatedly broken. Scope is the time range, NOT the last N runs or commits: pytest_test_last_failure_info carries no run_id/commit_sha, so a failure cannot be attributed to a run or a commit \u2014 and 'is it still failing in the newest run' is likewise not expressible (a run of run_models_gpu is ~19 per-model traces). The linked failure is one representative occurrence, not necessarily the most recent."
+      "description": "Tests that keep failing on main, scoped to the LAST 5 RUNS OF EACH JOB. 'Streak' = how many of those runs the test failed in (orange; red at 3+). The run set comes from pytest_run_job_member_info ranked by pytest_run_start_time_seconds, so it is per job \u2014 a job that ran fewer than 5 times in the range contributes all of its runs. Streak counts distinct run_id values, NOT traces: one run_models_gpu run emits ~19 per-model traces, so counting traces would inflate it, and a test that failed twice within one run (retry, or two shards) counts that run once. Single failures are excluded (streak > 1), so an empty panel means nothing is repeatedly broken. 'Last Failure' links to the most recent failing run in the window. The dashboard time range still bounds which runs exist to be ranked \u2014 widen it to reach back further than each job's last 5 runs."
     },
     {
       "datasource": {
@@ -370,7 +371,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, (topk by (test_nodeid, test_job) (1, last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) * on (test_nodeid, test_job) group_left() (count by (test_nodeid, test_job) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) > 1))",
+          "expr": "topk(10, (topk by (test_nodeid, test_job) (1, (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) and on (test_nodeid, test_job, run_id) (topk by (test_nodeid, test_job) (1, (max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) and on (test_job, run_id) topk by (test_job) (5, max by (test_job, run_id) (last_over_time(pytest_run_job_member_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) * on (run_id) group_left() max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range])))) * on (run_id) group_left() max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range])))))) * on (test_nodeid, test_job) group_left() ((count by (test_nodeid, test_job) (max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) and on (test_job, run_id) topk by (test_job) (5, max by (test_job, run_id) (last_over_time(pytest_run_job_member_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) * on (run_id) group_left() max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range]))))) > 1))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -392,7 +393,8 @@
               "provider": true,
               "service_name": true,
               "test_class": true,
-              "test_module": true
+              "test_module": true,
+              "run_id": true
             },
             "indexByName": {
               "test_job": 0,
@@ -412,7 +414,7 @@
         }
       ],
       "type": "table",
-      "description": "Tests that keep failing on main: ranked by how many DISTINCT RUNS each one failed in over the selected time range ('Streak'). A test runs in exactly one shard per run, so its distinct failure traces are its distinct failing runs. Single failures are excluded (streak > 1), so an empty panel means nothing is repeatedly broken. Scope is the time range, NOT the last N runs or commits: pytest_test_last_failure_info carries no run_id/commit_sha, so a failure cannot be attributed to a run or a commit \u2014 and 'is it still failing in the newest run' is likewise not expressible (a run of run_models_gpu is ~19 per-model traces). The linked failure is one representative occurrence, not necessarily the most recent."
+      "description": "Tests that keep failing on main, scoped to the LAST 5 RUNS OF EACH JOB. 'Streak' = how many of those runs the test failed in (orange; red at 3+). The run set comes from pytest_run_job_member_info ranked by pytest_run_start_time_seconds, so it is per job \u2014 a job that ran fewer than 5 times in the range contributes all of its runs. Streak counts distinct run_id values, NOT traces: one run_models_gpu run emits ~19 per-model traces, so counting traces would inflate it, and a test that failed twice within one run (retry, or two shards) counts that run once. Single failures are excluded (streak > 1), so an empty panel means nothing is repeatedly broken. 'Last Failure' links to the most recent failing run in the window. The dashboard time range still bounds which runs exist to be ranked \u2014 widen it to reach back further than each job's last 5 runs."
     },
     {
       "datasource": {
