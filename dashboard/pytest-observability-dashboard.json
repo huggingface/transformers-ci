@@ -501,6 +501,10 @@
             },
             "properties": [
               {
+                "id": "custom.width",
+                "value": 125
+              },
+              {
                 "id": "unit",
                 "value": "dateTimeFromNow"
               }
@@ -593,10 +597,6 @@
                     "targetBlank": false
                   }
                 ]
-              },
-              {
-                "id": "custom.width",
-                "value": 480
               }
             ]
           },
@@ -606,6 +606,10 @@
               "options": "Test Time"
             },
             "properties": [
+              {
+                "id": "custom.width",
+                "value": 105
+              },
               {
                 "id": "unit",
                 "value": "s"
@@ -644,7 +648,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 80
+                "value": 95
               }
             ]
           },
@@ -654,6 +658,10 @@
               "options": "Wall"
             },
             "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
               {
                 "id": "unit",
                 "value": "s"
@@ -717,6 +725,30 @@
                     }
                   }
                 ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Branch"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tests"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 85
               }
             ]
           }
