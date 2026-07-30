@@ -373,6 +373,91 @@ ciDataPublisher:
       memory: 4Gi
 
 #------------------------------------------------------------------------------
+# PVC backups
+# Daily Restic backups to S3 with 7 daily snapshots retained per target.
+# Credentials stay outside values: `existingSecret` must provide RESTIC_PASSWORD
+# and either AWS_* credentials or the pod must use an IAM-bound service account.
+#------------------------------------------------------------------------------
+backups:
+  enabled: false
+  schedule: "0 2 * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  image:
+    repository: restic/restic
+    tag: "0.17.3"
+    pullPolicy: IfNotPresent
+  # Example: s3:s3.amazonaws.com/my-bucket/transformers-ci
+  repository: ""
+  existingSecret: transformers-ci-backup
+  externalSecret:
+    enabled: false
+    # Optional; defaults to backups.existingSecret when empty.
+    name: ""
+    apiVersion: ""
+    kind: ""
+    spec: {}
+  serviceAccount:
+    create: false
+    # Defaults to "<release>-backup" when empty and create=true.
+    name: ""
+    annotations: {}
+  # Existing ServiceAccount to use when serviceAccount.create=false.
+  serviceAccountName: ""
+  restoreCache:
+    sizeLimit: 1Gi
+  networkPolicy:
+    # When the chart-level NetworkPolicy is enabled, backup pods need external
+    # HTTPS egress for S3-compatible endpoints, STS, and KMS. This policy selects
+    # only backup pods; the broader release pods keep the cluster-boundary policy.
+    allowHttpsEgress: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  targets:
+    - name: tempo
+      pvcName: data-tempo-0
+      path: /var/tempo
+      component: tempo
+    - name: prometheus
+      pvcName: storage-prometheus-0
+      path: /prometheus
+      component: prometheus
+    - name: trace-exporter-run-store
+      pvcName: trace-exporter-run-store
+      path: /var/run-store
+      component: trace-exporter
+
+#------------------------------------------------------------------------------
+# Backup status exporter
+# Scrapes Kubernetes CronJob/Job status for backup jobs and exposes Prometheus
+# metrics used by the CI Health dashboard.
+#------------------------------------------------------------------------------
+backupStatus:
+  enabled: false
+  image:
+    repository: python
+    tag: "3.12-slim"
+    pullPolicy: IfNotPresent
+  port: 8090
+  # Namespace names to monitor. The chart creates read-only RoleBindings in each
+  # listed namespace for the exporter ServiceAccount.
+  namespaces:
+    - transformers-ci
+    - serge
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+#------------------------------------------------------------------------------
 # Network Policies
 # Disabled by default. Enable in private deployment values to constrain chart pods
 # to the cluster/VPC address space and reduce blast radius from public endpoints.
