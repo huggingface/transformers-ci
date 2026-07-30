@@ -982,6 +982,85 @@ class TrackingIssueTest(unittest.TestCase):
     def test_distill_outcome_error_uses_error_text(self):
         out = itf._distill_outcome({"status": "error", "error": "boom", "result": None})
         self.assertEqual(out["reason"], "boom")
+        self.assertIsNone(out["normalizer_error"])
+
+    def test_distill_outcome_surfaces_failing_checker_on_error_path(self):
+        # The 2026-07-29 longcat_flash shape: the terminal error names only the
+        # last symptom, while the normalizer failure is what doomed the run.
+        detail = {
+            "status": "error",
+            "error": "LLM returned unparseable output (finish_reason=stop, 62 LLM turns)",
+            "result": None,
+            "normalizer_error": (
+                "Normalizer failed (exit 1) for `bash -lc make style`:\n"
+                "Docstring formatting\n"
+                "ModuleNotFoundError: No module named "
+                "'transformers.models.granitemoe_swa'\n"
+                "FAILED (12.46s)\n\n1 failed: docstrings"
+            ),
+        }
+        out = itf._distill_outcome(detail)
+        self.assertIn("unparseable output", out["reason"])
+        self.assertIn("normalizer: 1 failed: docstrings", out["reason"])
+        self.assertIn("granitemoe_swa", out["normalizer_error"])
+
+    def test_distill_outcome_normalizer_falls_back_to_exit_line(self):
+        # No checker summary (make style itself died) — still name the failure.
+        out = itf._distill_outcome(
+            {
+                "status": "no_fix",
+                "result": {"message": "no PR opened"},
+                "normalizer_error": "Normalizer failed (exit 137) for `make style`:\nKilled",
+            }
+        )
+        self.assertIn("normalizer: Normalizer failed (exit 137)", out["reason"])
+
+    def test_recap_renders_normalizer_output_block(self):
+        targets = [self._target("g1", "longcat_flash")]
+        fp0 = itf.target_fingerprint(targets[0])
+        body = itf.render_tracking_issue_body(
+            targets,
+            ["2026-07-29"],
+            "2026-07-29",
+            existing_prs={},
+            statuses={fp0: "error"},
+            details={
+                fp0: {
+                    "reason": "unparseable — normalizer: 1 failed: docstrings",
+                    "normalizer_error": "FAILED\nNo module named 'x.granitemoe_swa'\n1 failed: docstrings",
+                    "model": "kimi",
+                    "prompt_tokens": 1,
+                    "completion_tokens": 2,
+                }
+            },
+        )
+        self.assertIn("normalizer output (tail)", body)
+        self.assertIn("granitemoe_swa", body)
+        # The collapsible must sit after the recap table, not inside it.
+        self.assertLess(body.index("| Group | Reason |"), body.index("<details>"))
+
+    def test_recap_normalizer_block_fence_survives_backticks(self):
+        output = "checker said:\n```\nboom\n```\n1 failed: docstrings"
+        lines = itf._render_normalizer_block("`m`", output)
+        block = "\n".join(lines)
+        # Our fence must be longer than any run inside, so it can't close early.
+        self.assertIn("````", block)
+        self.assertIn("boom", block)
+
+    def test_recap_normalizer_block_empty_when_absent(self):
+        self.assertEqual(itf._render_normalizer_block("`m`", None), [])
+        self.assertEqual(itf._render_normalizer_block("`m`", "   "), [])
+
+    def test_recap_normalizer_block_keeps_the_tail(self):
+        output = (
+            "HEAD-MARKER\n"
+            + ("x" * itf._NORMALIZER_DETAIL_CHARS)
+            + "\n1 failed: docstrings"
+        )
+        block = "\n".join(itf._render_normalizer_block("`m`", output))
+        self.assertIn("1 failed: docstrings", block)  # tail survives
+        self.assertNotIn("HEAD-MARKER", block)
+        self.assertIn("omitted", block)
 
     def test_poll_serge_status_parses_status(self):
         class _Resp:

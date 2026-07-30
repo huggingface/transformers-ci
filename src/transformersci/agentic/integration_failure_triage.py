@@ -1071,10 +1071,41 @@ def tracking_issue_marker(run_key: str) -> str:
 _SERGE_MARKER_RE = re.compile(r"<!--\s*serge-task:.*?-->", re.DOTALL)
 
 
+# The repo normalizer (`utils/checkers.py --keep-going`) runs every checker and
+# ends with a "<n> failed: <names>" line. That line is the whole diagnosis, so
+# lift it into the table cell and keep the rest for the collapsible.
+_CHECKER_SUMMARY_RE = re.compile(r"(?m)^\s*(\d+ failed:.*)$")
+# Full normalize output can be tens of KB; a tracking issue body is capped at
+# 65536 chars and may carry one block per group.
+_NORMALIZER_DETAIL_CHARS = 3_000
+
+
+def _normalizer_summary(output: str) -> str:
+    """One line naming which checker(s) the normalizer failed on, e.g.
+    ``1 failed: docstrings``. Falls back to Serge's ``Normalizer failed (exit
+    N)`` preamble when the output has no checker summary (a `make style` crash,
+    a timeout). Empty when neither is present."""
+    matches = _CHECKER_SUMMARY_RE.findall(output)
+    if matches:
+        return matches[-1].strip()
+    head = re.search(r"Normalizer failed \(exit [^)]*\)", output)
+    return head.group(0) if head else ""
+
+
 def _distill_outcome(detail: dict) -> dict:
     """From a Serge ``/status`` payload, pull the fields the recap needs:
     a one-line human reason, the LLM model, and token spend. Tolerant of missing
-    keys (older Serge builds don't return ``model``/tokens)."""
+    keys (older Serge builds don't return ``model``/tokens/``normalizer_error``).
+
+    The normalizer deserves special handling: it is the most common reason a
+    dispatched group opens no PR, and on the ``error`` path Serge's terminal
+    error describes only the *last* symptom — the 2026-07-29 ``longcat_flash``
+    group reported "LLM returned unparseable output" when what actually killed
+    it was the normalizer failing on a checker the patch could not influence.
+    So the failing checker's name goes in the Reason cell and the raw output is
+    kept for a collapsible under the table, giving a reviewer the cause without
+    a Serge dashboard round trip.
+    """
     result = detail.get("result") if isinstance(detail.get("result"), dict) else {}
     status = detail.get("status") or ""
     verdict = result.get("verify_verdict")
@@ -1089,8 +1120,18 @@ def _distill_outcome(detail: dict) -> dict:
     reason = reason.splitlines()[0].strip() if reason else ""
     if verdict:
         reason = f"[{verdict}] {reason}".strip()
+    normalizer = (detail.get("normalizer_error") or "").strip()
+    if normalizer:
+        # The first line of a no_fix message already says "does not pass the
+        # repository's normalizer" but stops at the colon, and an error-path
+        # reason omits the normalizer entirely — either way the checker name is
+        # new information.
+        summary = _normalizer_summary(normalizer)
+        if summary:
+            reason = f"{reason} — normalizer: {summary}" if reason else summary
     return {
         "reason": reason,
+        "normalizer_error": normalizer or None,
         "model": detail.get("model"),
         "prompt_tokens": detail.get("prompt_tokens"),
         "completion_tokens": detail.get("completion_tokens"),
@@ -1147,6 +1188,7 @@ def _render_outcome_recap(
     Empty when there is nothing to report."""
     details = details or {}
     rows: list[str] = []
+    normalizer_blocks: list[str] = []
     for target in targets:
         fp = target_fingerprint(target)
         if existing_prs.get(fp):  # a PR is the outcome; no recap needed
@@ -1163,6 +1205,9 @@ def _render_outcome_recap(
             spend,
         ]
         rows.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
+        normalizer_blocks += _render_normalizer_block(
+            model_cell, distilled.get("normalizer_error")
+        )
     if not rows:
         return []
     return [
@@ -1175,6 +1220,38 @@ def _render_outcome_recap(
         "| Group | Reason | LLM | Tokens (in / out) |",
         "| --- | --- | --- | --- |",
         *rows,
+        *normalizer_blocks,
+    ]
+
+
+def _render_normalizer_block(model_cell: str, output: str | None) -> list[str]:
+    """Collapsible with the tail of the normalizer output for one group, so a
+    reviewer can tell a patch the model got wrong from a normalizer failure the
+    patch never caused (a stale toolchain, a checker crash). Empty when the
+    normalizer never rejected a patch for this group."""
+    output = (output or "").strip()
+    if not output:
+        return []
+    if len(output) > _NORMALIZER_DETAIL_CHARS:
+        omitted = len(output) - _NORMALIZER_DETAIL_CHARS
+        output = (
+            f"--- omitted {omitted} leading chars ---\n\n"
+            + output[-_NORMALIZER_DETAIL_CHARS:].lstrip()
+        )
+    # Normalize output is arbitrary console text and may itself contain a
+    # backtick fence (a checker echoing Markdown). Open with a fence longer than
+    # any backtick run inside it so ours cannot be closed early.
+    longest_run = max((len(m) for m in re.findall(r"`+", output)), default=0)
+    fence = "`" * max(3, longest_run + 1)
+    return [
+        "",
+        f"<details><summary>{model_cell} — normalizer output (tail)</summary>",
+        "",
+        fence,
+        output,
+        fence,
+        "",
+        "</details>",
     ]
 
 
