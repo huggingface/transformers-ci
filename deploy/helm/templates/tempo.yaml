@@ -12,6 +12,9 @@ data:
   tempo.yaml: |
     stream_over_http_enabled: true
 
+    usage_report:
+      reporting_enabled: false
+
     # Bound search memory. Scanning blocks to answer /api/search is the main driver
     # of Tempo's RAM spikes (the exporter polls a 1h window every render; the
     # publisher searches 24h). Defaults (1000 concurrent jobs, unbounded duration)
