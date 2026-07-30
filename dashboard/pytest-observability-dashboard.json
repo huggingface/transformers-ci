@@ -517,6 +517,10 @@
                 "value": "percent"
               },
               {
+                "id": "custom.width",
+                "value": 130
+              },
+              {
                 "id": "custom.cellOptions",
                 "value": {
                   "mode": "gradient",
@@ -664,7 +668,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 130
+                "value": 110
               },
               {
                 "id": "mappings",
