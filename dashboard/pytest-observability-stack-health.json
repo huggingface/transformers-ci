@@ -1071,12 +1071,13 @@
    "id": 502,
    "type": "stat",
    "title": "Backup last schedule age",
-   "description": "Hours since Kubernetes last scheduled each backup CronJob. Catches suspended or unscheduled CronJobs.",
+   "description": "Hours since Kubernetes last scheduled each backup CronJob. Catches suspended or unscheduled CronJobs. Reads \"not yet scheduled\" until the CronJob first fires, because Kubernetes leaves .status.lastScheduleTime unset before then.",
    "fieldConfig": {
     "defaults": {
      "color": {
       "mode": "thresholds"
      },
+     "noValue": "not yet scheduled",
      "unit": "h",
      "thresholds": {
       "mode": "absolute",
@@ -1116,7 +1117,7 @@
    "targets": [
     {
      "editorMode": "code",
-     "expr": "(time() - backup_cronjob_last_schedule_timestamp_seconds) / 3600",
+     "expr": "(time() - backup_cronjob_last_schedule_timestamp_seconds) / 3600 and backup_cronjob_last_schedule_timestamp_seconds > 0",
      "instant": true,
      "range": false,
      "legendFormat": "{{namespace}}/{{cronjob}}",
@@ -1138,12 +1139,13 @@
    "id": 503,
    "type": "stat",
    "title": "Backup latest job problems",
-   "description": "Counts backup CronJobs whose latest job failed, is missing, or has an unknown state, plus exporter scrape errors.",
+   "description": "Counts backup CronJobs whose latest job failed, is missing, or has an unknown state, plus exporter scrape errors. Sums the one-hot status gauge directly so a healthy stack reads 0 rather than empty; \"no exporter data\" means backup-status-exporter itself is not being scraped.",
    "fieldConfig": {
     "defaults": {
      "color": {
       "mode": "thresholds"
      },
+     "noValue": "no exporter data",
      "unit": "short",
      "thresholds": {
       "mode": "absolute",
@@ -1179,7 +1181,7 @@
    "targets": [
     {
      "editorMode": "code",
-     "expr": "sum(backup_cronjob_latest_job_status{status=~\"failed|missing|unknown\"} == 1) + sum(backup_status_scrape_error)",
+     "expr": "sum(backup_cronjob_latest_job_status{status=~\"failed|missing|unknown\"}) + sum(backup_status_scrape_error)",
      "instant": true,
      "range": false,
      "legendFormat": "problems",
