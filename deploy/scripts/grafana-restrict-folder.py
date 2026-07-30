@@ -124,8 +124,10 @@ def describe(items: list[dict]) -> str:
     for item in items:
         who = (
             item.get("role")
-            or item.get("teamId") and f"team:{item['teamId']}"
-            or item.get("userId") and f"user:{item['userId']}"
+            or item.get("teamId")
+            and f"team:{item['teamId']}"
+            or item.get("userId")
+            and f"user:{item['userId']}"
             or "?"
         )
         level = _LEVEL_NAMES.get(item.get("permission"), item.get("permission"))

@@ -128,7 +128,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the last ERROR/Traceback block from recent logs",
     )
-    parser.add_argument("--context", help="Require this kubectl context before reading logs")
+    parser.add_argument(
+        "--context", help="Require this kubectl context before reading logs"
+    )
     return parser
 
 

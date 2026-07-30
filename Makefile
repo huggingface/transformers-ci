@@ -4,7 +4,7 @@ PYTHON ?= python
 RUFF ?= ruff
 
 format:
-	$(RUFF) format src tests
+	$(RUFF) format src tests deploy/scripts
 
 test:
 	$(PYTHON) -m pytest tests/
