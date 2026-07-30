@@ -57,6 +57,20 @@ spec:
                       {{- include "transformers-ci.selectorLabels" $ | nindent 22 }}
                       app.kubernetes.io/component: {{ .component }}
                   topologyKey: kubernetes.io/hostname
+          initContainers:
+            - name: aws-credentials
+              image: "{{ $.Values.backups.awsCredentials.image.repository }}:{{ $.Values.backups.awsCredentials.image.tag }}"
+              imagePullPolicy: {{ $.Values.backups.awsCredentials.image.pullPolicy }}
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  aws configure export-credentials --format env > /aws-credentials/env
+              resources:
+                {{- toYaml $.Values.backups.awsCredentials.resources | nindent 16 }}
+              volumeMounts:
+                - name: aws-credentials
+                  mountPath: /aws-credentials
           containers:
             - name: restic
               image: "{{ $.Values.backups.image.repository }}:{{ $.Values.backups.image.tag }}"
@@ -65,6 +79,7 @@ spec:
                 - /bin/sh
                 - -ec
                 - |
+                  . /aws-credentials/env
                   restic snapshots >/dev/null || restic init
                   restic backup {{ .path }} \
                     --host {{ include "transformers-ci.namespace" $ }} \
@@ -91,6 +106,9 @@ spec:
                   readOnly: true
                 - name: cache
                   mountPath: /.cache/restic
+                - name: aws-credentials
+                  mountPath: /aws-credentials
+                  readOnly: true
           volumes:
             - name: data
               persistentVolumeClaim:
@@ -98,6 +116,9 @@ spec:
             - name: cache
               emptyDir:
                 sizeLimit: {{ $.Values.backups.restoreCache.sizeLimit }}
+            - name: aws-credentials
+              emptyDir:
+                medium: Memory
 {{- end }}
 {{- if and .Values.networkPolicy.enabled .Values.backups.networkPolicy.allowHttpsEgress }}
 ---
