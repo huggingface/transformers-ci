@@ -854,7 +854,7 @@
           "refId": "HW"
         }
       ],
-      "title": "Branch Runs (no PR) - Last 10",
+      "title": "Branch Runs - Last 10",
       "transformations": [
         {
           "id": "merge",
