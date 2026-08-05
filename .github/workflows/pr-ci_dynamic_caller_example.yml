@@ -272,6 +272,16 @@ jobs:
             --staging-protocol grpc \
             -- make check-code-quality
 
+      - name: Show mlinter findings JSON
+        if: always()
+        run: |
+          if [ -f mlinter-findings.json ]; then
+            echo "=== mlinter-findings.json ==="
+            cat mlinter-findings.json
+          else
+            echo "mlinter-findings.json not found"
+          fi
+
 
   check_repository_consistency:
     name: "Check repository consistency"
