@@ -282,6 +282,21 @@ jobs:
             echo "mlinter-findings.json not found"
           fi
 
+      - name: Save PR number for mlinter review
+        if: always()
+        run: echo "${{ github.event.pull_request.number }}" > mlinter-pr-number.txt
+
+      - name: Upload mlinter findings artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: mlinter-findings
+          path: |
+            mlinter-findings.json
+            mlinter-pr-number.txt
+          if-no-files-found: warn
+          retention-days: 3
+
 
   check_repository_consistency:
     name: "Check repository consistency"
