@@ -187,7 +187,7 @@ jobs:
   # Origin: processor_job in .circleci/create_circleci_config.py
   tests_processors:
     needs: [test-preparation]
-    if: needs.test-preparation.outputs.run_tests_processors == "true"
+    if: needs.test-preparation.outputs.run_tests_processors == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_processors"
