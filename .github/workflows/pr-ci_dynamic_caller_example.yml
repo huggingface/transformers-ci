@@ -193,5 +193,5 @@ jobs:
       job_name:          "tests_processors"
       docker_image:      "huggingface/transformers-torch-light"
       parallelism:       8
-      use_dev_image:     ${{ needs.test-preparation.outputs.use_dev_image == "true" }}
+      use_dev_image:     ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
     secrets: inherit
