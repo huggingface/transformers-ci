@@ -218,6 +218,7 @@ def test_runtest_logreport_sets_worker_duration_on_span() -> None:
     """
     from unittest.mock import patch
 
+    # Defined outside the patch block so we can inspect it after the context exits.
     attributes: dict = {}
 
     class _StubSpan:
