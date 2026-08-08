@@ -218,7 +218,9 @@ def test_runtest_logreport_sets_worker_duration_on_span() -> None:
     """
     from unittest.mock import patch
 
-    # Defined outside the patch block so we can inspect it after the context exits.
+    # Defined outside the patch block and modify the set_attribute behavior of
+    # `_StubSpan` below so we can inspect the attribute `pytest.worker_duration_seconds`
+    # after the context exits.
     attributes: dict = {}
 
     class _StubSpan:
@@ -231,8 +233,9 @@ def test_runtest_logreport_sets_worker_duration_on_span() -> None:
     resource_plugin._worker_durations.clear()
     nodeid = "tests/test_foo.py::test_bar"
 
-    # Patch only for the duration of our direct calls so pytest-opentelemetry's
-    # own pytest_runtest_logreport hook (fired for *this* test) is unaffected.
+    # Use a context manager instead of monkeypatch so the stub is only active
+    # during our direct calls and does not leak into other places that call
+    # trace.get_current_span() (e.g. pytest-opentelemetry's own hooks).
     with patch("opentelemetry.trace.get_current_span", return_value=_StubSpan()):
         resource_plugin.pytest_runtest_logreport(_make_report(nodeid, "setup", 0.1))
         resource_plugin.pytest_runtest_logreport(_make_report(nodeid, "call", 0.5))
@@ -246,10 +249,10 @@ def test_runtest_logreport_sets_worker_duration_on_span() -> None:
 def test_runtest_logreport_noop_when_span_not_recording() -> None:
     """Verify that the hook does nothing when no OTEL span is active.
 
-    When OTEL is not configured, or when the hook fires outside a
-    pytest_runtest_protocol hookwrapper (e.g. in non-xdist collection phases),
-    trace.get_current_span() returns a non-recording no-op span.  The hook must
-    silently skip set_attribute in that case rather than crashing.
+    trace.get_current_span() returns a non-recording span when OTEL env vars are
+    not set, or when pytest_runtest_logreport fires outside a
+    pytest_runtest_protocol hookwrapper (e.g. collection failures).  The hook
+    must silently skip set_attribute in that case rather than crashing.
     """
     from unittest.mock import patch
 
