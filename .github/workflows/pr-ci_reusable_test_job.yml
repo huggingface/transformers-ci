@@ -465,7 +465,7 @@ jobs:
       # quickly fix it, let's repeat the installation here.
         run: |
           eval "$INSTALL_STEPS"
-          uv pip install 'transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@main'
+          uv pip install 'transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@fix_xdist_span_duration'
         env:
           INSTALL_STEPS: ${{ inputs.install_steps }}
 
