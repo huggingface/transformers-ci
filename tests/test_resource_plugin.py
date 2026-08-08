@@ -189,6 +189,10 @@ def test_install_staging_span_processor_skips_without_sdk_provider(monkeypatch) 
 
 
 def _make_report(nodeid: str, when: str, duration: float) -> pytest.TestReport:
+    # Minimal pytest TestReport as it would arrive on the controller from an
+    # xdist worker.  We set duration explicitly because the constructor does not
+    # accept it as a keyword argument — pytest populates it after the fact from
+    # timing data collected on the worker.
     report = pytest.TestReport(
         nodeid=nodeid,
         location=("", None, nodeid),
@@ -202,6 +206,16 @@ def _make_report(nodeid: str, when: str, duration: float) -> pytest.TestReport:
 
 
 def test_runtest_logreport_sets_worker_duration_on_span() -> None:
+    """Verify that the three phase durations are summed and written to the span.
+
+    pytest_runtest_logreport is called once per phase (setup/call/teardown) with
+    a report whose duration was measured on the xdist worker.  The hook should
+    accumulate those three values and, after the teardown phase, set
+    pytest.worker_duration_seconds on the currently open OTEL span so dashboards
+    can use the real execution time instead of the inflated controller-side span
+    duration.  The per-nodeid accumulator entry must also be removed once the
+    attribute has been stamped.
+    """
     from unittest.mock import patch
 
     attributes: dict = {}
@@ -229,6 +243,13 @@ def test_runtest_logreport_sets_worker_duration_on_span() -> None:
 
 
 def test_runtest_logreport_noop_when_span_not_recording() -> None:
+    """Verify that the hook does nothing when no OTEL span is active.
+
+    When OTEL is not configured, or when the hook fires outside a
+    pytest_runtest_protocol hookwrapper (e.g. in non-xdist collection phases),
+    trace.get_current_span() returns a non-recording no-op span.  The hook must
+    silently skip set_attribute in that case rather than crashing.
+    """
     from unittest.mock import patch
 
     class _NonRecordingSpan:
