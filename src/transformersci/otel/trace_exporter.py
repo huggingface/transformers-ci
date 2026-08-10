@@ -1747,7 +1747,11 @@ def extract_trace_rows(
         exc_type, exc_stacktrace = extract_exception_info(span)
         rows.append(
             {
-                "duration_seconds": int(span.get("duration", 0)) / 1_000_000,
+                "duration_seconds": (
+                    float(span_tags["pytest.worker_duration_seconds"])
+                    if "pytest.worker_duration_seconds" in span_tags
+                    else int(span.get("duration", 0)) / 1_000_000
+                ),
                 "exception_type": exc_type,
                 # The capped stacktrace is consumed here for test_line only; no
                 # metric emits it, so it is deliberately not retained in the row
