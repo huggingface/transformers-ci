@@ -81,7 +81,7 @@ jobs:
       - name: Debug
         run: |
           uv pip install -U -e .
-          uv pip install 'transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@fix_xdist_span_duration'
+          uv pip install 'transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@main'
           echo $(pwd)
           ls -la
           # We need this, otherwise `tests_fetcher.py` below will fail with `SHA could not be resolved, git returned: b''` when access ``repo.head.commit`.
