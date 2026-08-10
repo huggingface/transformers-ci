@@ -28,7 +28,9 @@ independent jobs via pytest hooks:
   lives).
 
 Hooks: ``pytest_addoption`` (config), ``pytest_sessionstart`` (install the
-mirror), and ``pytest_runtest_protocol`` (sample around each test).
+mirror), ``pytest_runtest_protocol`` (sample around each test), and
+``pytest_runtest_logreport`` (stamp each span with the real worker-measured
+execution time so dashboards are not misled by xdist queue-wait overhead).
 """
 
 from __future__ import annotations
@@ -350,6 +352,49 @@ def pytest_sessionstart(session: pytest.Session) -> None:
             flush=True,
         )
     _wrap_active_tracer_exporters()
+
+
+# Accumulated worker-side phase durations (setup + call + teardown) keyed by
+# nodeid.  Populated by pytest_runtest_logreport; entries are removed once the
+# teardown phase report arrives and the span attribute has been stamped.
+_worker_durations: dict[str, float] = {}
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Stamp the open test span with the real worker-measured execution time.
+
+    Under pytest-xdist the per-test span is opened/closed on the *controller*
+    by pytest-opentelemetry's ``pytest_runtest_protocol`` hookwrapper, but its
+    wall-clock duration includes xdist queue-wait time and IPC overhead — not
+    just the test's execution time.  ``report.duration`` is measured on the
+    *worker* for each phase (setup / call / teardown), so summing the three
+    phases gives the real time the worker spent on the test.
+
+    We set ``pytest.worker_duration_seconds`` on the still-open protocol span
+    (``pytest_runtest_logreport`` is called while still inside the hookwrapper's
+    ``yield``) so dashboards can use it instead of the misleading span duration.
+    In non-xdist runs the two values are identical; the attribute is still set
+    for consistency.
+    """
+    _worker_durations[report.nodeid] = (
+        _worker_durations.get(report.nodeid, 0.0) + report.duration
+    )
+
+    if report.when != "teardown":
+        return
+
+    total = _worker_durations.pop(report.nodeid, 0.0)
+
+    try:
+        from opentelemetry import trace
+    except ImportError:  # pragma: no cover
+        return
+
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return
+
+    span.set_attribute("pytest.worker_duration_seconds", total)
 
 
 @pytest.hookimpl(hookwrapper=True)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from transformersci.otel import resource_plugin
 
 
@@ -184,6 +186,91 @@ def test_install_staging_span_processor_skips_without_sdk_provider(monkeypatch) 
     # must be left untouched, not crash.
     monkeypatch.setattr(trace, "get_tracer_provider", object)
     resource_plugin._install_staging_span_processor()
+
+
+def _make_report(nodeid: str, when: str, duration: float) -> pytest.TestReport:
+    # Minimal pytest TestReport as it would arrive on the controller from an
+    # xdist worker.  We set duration explicitly because the constructor does not
+    # accept it as a keyword argument — pytest populates it after the fact from
+    # timing data collected on the worker.
+    report = pytest.TestReport(
+        nodeid=nodeid,
+        location=("", None, nodeid),
+        keywords={},
+        outcome="passed",
+        longrepr=None,
+        when=when,
+    )
+    report.duration = duration
+    return report
+
+
+def test_runtest_logreport_sets_worker_duration_on_span() -> None:
+    """Verify that the three phase durations are summed and written to the span.
+
+    pytest_runtest_logreport is called once per phase (setup/call/teardown) with
+    a report whose duration was measured on the xdist worker.  The hook should
+    accumulate those three values and, after the teardown phase, set
+    pytest.worker_duration_seconds on the currently open OTEL span so dashboards
+    can use the real execution time instead of the inflated controller-side span
+    duration.  The per-nodeid accumulator entry must also be removed once the
+    attribute has been stamped.
+    """
+    from unittest.mock import patch
+
+    # Defined outside the patch block and modify the set_attribute behavior of
+    # `_StubSpan` below so we can inspect the attribute `pytest.worker_duration_seconds`
+    # after the context exits.
+    attributes: dict = {}
+
+    class _StubSpan:
+        def is_recording(self):
+            return True
+
+        def set_attribute(self, key, value):
+            attributes[key] = value
+
+    resource_plugin._worker_durations.clear()
+    nodeid = "tests/test_foo.py::test_bar"
+
+    # Use a context manager instead of monkeypatch so the stub is only active
+    # during our direct calls and does not leak into other places that call
+    # trace.get_current_span() (e.g. pytest-opentelemetry's own hooks).
+    with patch("opentelemetry.trace.get_current_span", return_value=_StubSpan()):
+        resource_plugin.pytest_runtest_logreport(_make_report(nodeid, "setup", 0.1))
+        resource_plugin.pytest_runtest_logreport(_make_report(nodeid, "call", 0.5))
+        resource_plugin.pytest_runtest_logreport(_make_report(nodeid, "teardown", 0.05))
+
+    assert attributes.get("pytest.worker_duration_seconds") == pytest.approx(0.65)
+    # Entry must be cleaned up after teardown.
+    assert nodeid not in resource_plugin._worker_durations
+
+
+def test_runtest_logreport_noop_when_span_not_recording() -> None:
+    """Verify that the hook does nothing when no OTEL span is active.
+
+    trace.get_current_span() returns a non-recording span when OTEL env vars are
+    not set, or when pytest_runtest_logreport fires outside a
+    pytest_runtest_protocol hookwrapper (e.g. collection failures).  The hook
+    must silently skip set_attribute in that case rather than crashing.
+    """
+    from unittest.mock import patch
+
+    class _NonRecordingSpan:
+        def is_recording(self):
+            return False
+
+        def set_attribute(self, key, value):
+            raise AssertionError("should not be called")
+
+    resource_plugin._worker_durations.clear()
+    nodeid = "tests/test_foo.py::test_baz"
+
+    with patch("opentelemetry.trace.get_current_span", return_value=_NonRecordingSpan()):
+        resource_plugin.pytest_runtest_logreport(_make_report(nodeid, "setup", 0.1))
+        resource_plugin.pytest_runtest_logreport(_make_report(nodeid, "call", 0.2))
+        resource_plugin.pytest_runtest_logreport(_make_report(nodeid, "teardown", 0.05))
+    # No AssertionError means set_attribute was never called — test passes.
 
 
 class _StubProvider:
