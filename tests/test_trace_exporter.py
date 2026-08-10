@@ -340,6 +340,53 @@ def test_per_test_duration_dedups_same_test_across_runs() -> None:
     assert lines[0].endswith(" 5.000000000")  # newer run wins
 
 
+def test_per_test_duration_uses_worker_duration_when_present() -> None:
+    """pytest.worker_duration_seconds (real worker time) takes precedence over
+    the Jaeger span duration (inflated by xdist queue-wait on the controller)."""
+    process_id = "pytest-process"
+    span = make_test_span(
+        process_id=process_id,
+        nodeid="tests/test_foo.py::T::test_x",
+        start_time=1_000_000,
+        duration=11_594_000,  # 11.594s — inflated controller-side span duration
+    )
+    span["tags"].append(make_tag("pytest.worker_duration_seconds", 0.03))
+    trace = make_trace(
+        trace_id="trace-1", run_id="run-1", job="tests_torch", spans=[span]
+    )
+    lines = metric_lines(
+        trace_exporter.extract_per_test_duration_metrics([trace]),
+        "pytest_test_duration_seconds",
+    )
+    assert len(lines) == 1
+    assert lines[0].endswith(" 0.030000000")  # worker time, not 11.594
+
+
+def test_per_test_duration_falls_back_to_span_duration_when_worker_duration_absent() -> None:
+    """Without pytest.worker_duration_seconds the exporter falls back to
+    the Jaeger span duration (existing behaviour for older traces)."""
+    process_id = "pytest-process"
+    trace = make_trace(
+        trace_id="trace-1",
+        run_id="run-1",
+        job="tests_torch",
+        spans=[
+            make_test_span(
+                process_id=process_id,
+                nodeid="tests/test_foo.py::T::test_x",
+                start_time=1_000_000,
+                duration=2_000_000,  # 2.0s in µs
+            )
+        ],
+    )
+    lines = metric_lines(
+        trace_exporter.extract_per_test_duration_metrics([trace]),
+        "pytest_test_duration_seconds",
+    )
+    assert len(lines) == 1
+    assert lines[0].endswith(" 2.000000000")
+
+
 def test_main_per_test_duration_is_branch_keyed_without_regressing_pr_cardinality() -> (
     None
 ):
