@@ -859,7 +859,10 @@ def render_report(
         out.append("")
     if deferred:
         out.append("## Not dispatched — environment / dependency")
-        for t in deferred:
+        oom, other = _split_oom(deferred)
+        if oom:
+            out.append(f"- {_oom_sentence(oom)}")
+        for t in other:
             out.append(f"- **{t['label']}** — {t.get('defer_reason') or 'not fixable'}")
         out.append("")
     if report["clusters"]:
@@ -1142,16 +1145,55 @@ def _fmt_tokens(n: object) -> str:
     return f"{n:,}" if isinstance(n, int) else "—"
 
 
+_OOM_MODEL_CAP = 25  # names listed inline before the OOM line gets a "… and N more"
+
+
+def _plural(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _split_oom(deferred: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split deferred groups into ``(oom, other)``, OOM ranked worst-first.
+
+    OOM gets its own bucket because it is the one deferred mode nobody ever acts
+    on: every row says the same thing (buy runner memory), and a full week can
+    defer 18 of them, so the table crowded out the rows a human can actually do
+    something about (a dependency pin). One sentence carries the same
+    information — which models, how badly."""
+    oom: list[dict] = []
+    other: list[dict] = []
+    for t in deferred:
+        bucket = oom if t.get("failure_mode") == "OOM" and t.get("model") else other
+        bucket.append(t)
+    return sorted(oom, key=lambda t: (-len(t["failures"]), t["model"])), other
+
+
+def _oom_sentence(oom: list[dict]) -> str:
+    """One line for the whole OOM bucket: ``N models OOMed … `model` (hits)``."""
+    total = sum(len(t["failures"]) for t in oom)
+    names = [f"`{t['model']}` ({len(t['failures'])})" for t in oom[:_OOM_MODEL_CAP]]
+    hidden = len(oom) - len(names)
+    if hidden > 0:
+        names.append(f"… and {hidden} more")
+    return (
+        f"**{_plural(len(oom), 'model')} ran out of device memory** "
+        f"({_plural(total, 'failure')}) — needs runner capacity, not a patch, so "
+        f"none of these were dispatched: " + ", ".join(names) + "."
+    )
+
+
 def _render_deferred_section(deferred: list[dict] | None) -> list[str]:
     """Groups held back from dispatch because no minimal source patch can fix
     them (see :func:`env_only_reason`) — surfaced for a human rather than silently
-    dropped. Empty when there are none.
+    dropped. Empty when there are none. OOM groups collapse to one line (see
+    :func:`_split_oom`); anything else keeps its table row.
 
     NB the header deliberately does not contain a ``PR`` column, so
     :func:`_carry_forward_rows` (which keys off ``| PR |``) never mistakes these
     rows for dispatched ones on a later same-day run."""
     if not deferred:
         return []
+    oom, other = _split_oom(deferred)
     lines = [
         "",
         "## Not dispatched — environment / dependency",
@@ -1159,22 +1201,27 @@ def _render_deferred_section(deferred: list[dict] | None) -> list[str]:
         "These groups were triaged but NOT handed to Serge: their failure mode is a "
         "property of the runner or the environment, so no minimal source patch can fix "
         "them. They need a human (runner capacity, a dependency pin).",
-        "",
-        "| Model | Error | Occurrences | Why not dispatched |",
-        "| --- | --- | --- | --- |",
     ]
-    for target in deferred:
-        model_cell = f"`{target['model']}`" if target.get("model") else "—"
-        summary = signature_summary(target["failures"])
-        mode = target.get("failure_mode") or "mixed"
-        error_cell = f"{mode} — {summary}" if summary else mode
-        cells = [
-            model_cell,
-            error_cell,
-            str(len(target["failures"])),
-            target.get("defer_reason") or "not fixable by a patch",
+    if oom:
+        lines += ["", _oom_sentence(oom)]
+    if other:
+        lines += [
+            "",
+            "| Model | Error | Occurrences | Why not dispatched |",
+            "| --- | --- | --- | --- |",
         ]
-        lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
+        for target in other:
+            model_cell = f"`{target['model']}`" if target.get("model") else "—"
+            summary = signature_summary(target["failures"])
+            mode = target.get("failure_mode") or "mixed"
+            error_cell = f"{mode} — {summary}" if summary else mode
+            cells = [
+                model_cell,
+                error_cell,
+                str(len(target["failures"])),
+                target.get("defer_reason") or "not fixable by a patch",
+            ]
+            lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
     return lines
 
 
