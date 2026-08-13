@@ -1798,6 +1798,26 @@ _MISMATCH_GUIDANCE = (
     "  - If the reproduced difference is far larger than such a precedent would cover, "
     "it is a real regression, not numerical noise: fix the source, or produce no patch "
     "and say so.\n"
+    "  - **A new expectation must be a PLAUSIBLE VARIANT of the one it replaces or "
+    "joins — not simply whatever the run produced.** Making the assertion match the "
+    "current output is not a fix; it hides the bug and ships a false green. Before you "
+    "record an actual value as expected, hold it against (a) the expectations the test "
+    "already keeps for other devices/backends (the other `Expectations` keys) and (b) "
+    "the input the test actually feeds in. Small numeric drift, different rounding, the "
+    "same answer worded slightly differently: plausible. Generated text that switches "
+    "language, collapses into repetition, a stub, or fragments, stops describing the "
+    "actual input image/audio, is far shorter than the sibling expectation, or answers a "
+    "different question: NOT a new correct value. That is the symptom of a real bug "
+    "(wrong dtype or attention path, broken preprocessing, a moved checkpoint revision) "
+    "— investigate that, and if you cannot fix it, produce no patch and name what looks "
+    "broken in `body`.\n"
+    '  - Never justify an implausible expectation by blaming the hardware ("this runner '
+    'gives strange values"). A device-keyed `Expectations` entry exists for known SMALL '
+    "divergence between backends, not for enshrining a degenerate output. If the output "
+    "is strange, that is the finding — report it instead of recording it.\n"
+    "  - Whenever you add or change an expectation, state in the PR body how the new "
+    "value compares with the one it joins (which key, what differs, why that difference "
+    "is benign) so a reviewer can judge the divergence without rerunning anything.\n"
     "  - Do not delete, weaken, or comment out the assertion, and do not skip the test."
 )
 

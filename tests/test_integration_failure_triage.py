@@ -1360,6 +1360,23 @@ class InstructionAddendumTest(unittest.TestCase):
         # …but the escape hatch must not swallow a real regression.
         self.assertIn("far larger than such a precedent would cover", text)
 
+    def test_mismatch_requires_a_plausible_expectation_not_the_observed_output(self):
+        # transformers PR #47938 recorded a degenerate A10 completion
+        # ("1. The image is a 1.你好!") as the expectation and went green.
+        text = itf.build_instruction(_target("output_mismatch"))
+        self.assertIn("PLAUSIBLE VARIANT", text)
+        self.assertIn("not simply whatever the run produced", text)
+        # The two tells from that PR: the output stopped describing the image,
+        # and the divergence was excused as a hardware quirk.
+        self.assertIn("stops describing the actual input image", text)
+        self.assertIn("blaming the hardware", text)
+        # A device-keyed entry stays legitimate for small backend divergence.
+        self.assertIn("known SMALL divergence between backends", text)
+
+    def test_plausibility_gate_is_absent_from_crash_guidance(self):
+        text = itf.build_instruction(_target("cuda_runtime", exc="RuntimeError"))
+        self.assertNotIn("PLAUSIBLE VARIANT", text)
+
     def test_crash_forbids_test_side_edits_and_names_the_site(self):
         text = itf.build_instruction(
             _target("cuda_runtime", exc="RuntimeError", site="src/transformers/x.py:42")
