@@ -654,12 +654,31 @@ def pick_targets(report: dict) -> list[dict]:
     return targets
 
 
+def dispatch_category(target: dict) -> str:
+    """The category a group is really in, for selection diversity.
+
+    NOT simply ``failure_mode``: a group whose coarse mode is ``other`` /
+    ``cuda_runtime`` but whose terminal exception is an ``AssertionError`` is an
+    assertion failure wearing a crash's label — :func:`instruction_addendum`
+    already routes it to `_MISMATCH_GUIDANCE`. Counting it as a crash is how a
+    nightly run that looks mode-diverse ends up being three expectation updates
+    in a row. Clusters are one category of their own: what defines them is the
+    attributed commit, not the modes of their members."""
+    if target.get("kind") != "model_failures":
+        return "cluster"
+    mode = target.get("failure_mode") or "other"
+    if mode in _CRASH_MODES and target.get("terminal_exc") == "AssertionError":
+        return "output_mismatch"
+    return mode
+
+
 def select_dispatch_targets(
     targets: list[dict],
     max_groups: int,
     *,
     shuffle: bool,
     rng: random.Random | None = None,
+    mix_categories: bool = True,
 ) -> list[dict]:
     """Choose which failure groups to dispatch when capping at ``max_groups``.
 
@@ -668,15 +687,50 @@ def select_dispatch_targets(
     DIFFERENT groups rather than re-trying the same biggest (and often
     genuinely unfixable) failures every night — the point being that the top
     groups keep coming back ``no_fix``, so cycling gives smaller, maybe-fixable
-    groups a turn. The sample is returned in the original priority order for a
-    stable within-run dispatch sequence. ``max_groups <= 0`` means no cap."""
+    groups a turn.
+
+    ``mix_categories`` then spends the cap on a VARIETY of failure kinds. Both
+    priority order and a uniform random sample follow the pool's own shape, and
+    the pool is overwhelmingly assertion failures (more so since OOM groups stop
+    being dispatched at all), so a cap of 3–5 was reliably 3–5 expectation
+    updates. Round-robin over :func:`dispatch_category` instead: one group from
+    each category per cycle, best-priority category first, so a load error and an
+    `import_or_config` get a turn before a fourth mismatch does. Categories with
+    nothing left simply drop out of the rotation, so a single-category pool
+    behaves exactly as before.
+
+    The selection is returned in the original priority order for a stable
+    within-run dispatch sequence. ``max_groups <= 0`` means no cap."""
     if max_groups <= 0 or len(targets) <= max_groups:
         return targets
-    if not shuffle:
-        return targets[:max_groups]
     rng = rng or random.Random()
-    chosen = sorted(rng.sample(range(len(targets)), max_groups))
-    return [targets[i] for i in chosen]
+    if not mix_categories:
+        if not shuffle:
+            return targets[:max_groups]
+        chosen = sorted(rng.sample(range(len(targets)), max_groups))
+        return [targets[i] for i in chosen]
+
+    buckets: dict[str, list[int]] = defaultdict(list)
+    for i, t in enumerate(targets):
+        buckets[dispatch_category(t)].append(i)
+    if shuffle:
+        # Which member of a category gets its slot still varies run to run.
+        for members in buckets.values():
+            rng.shuffle(members)
+    # Best-priority category first, so the rotation opens on the strongest group.
+    cats = sorted(buckets, key=lambda c: min(buckets[c]))
+    chosen: list[int] = []
+    while len(chosen) < max_groups:
+        before = len(chosen)
+        for c in cats:
+            if not buckets[c]:
+                continue
+            chosen.append(buckets[c].pop(0))
+            if len(chosen) == max_groups:
+                break
+        if len(chosen) == before:  # every category exhausted
+            break
+    return [targets[i] for i in sorted(chosen)]
 
 
 _DEP_EXC = frozenset({"ImportError", "ModuleNotFoundError"})
@@ -2291,6 +2345,16 @@ def main(argv: list[str] | None = None) -> int:
         help="dispatch the top-N failure groups by priority (disable shuffling)",
     )
     p.add_argument(
+        "--no-category-mix",
+        dest="category_mix",
+        action="store_false",
+        default=_env_bool("ITF_CATEGORY_MIX", True),
+        help="spend the --max-groups cap on the top-N/random-N groups regardless of "
+        "failure category (default: round-robin over categories so one run covers a "
+        "variety of failure kinds instead of N expectation updates; equivalently "
+        "ITF_CATEGORY_MIX=0)",
+    )
+    p.add_argument(
         "--shuffle-seed",
         type=int,
         default=(
@@ -2416,11 +2480,12 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.max_groups and len(targets) > args.max_groups:
         dropped = len(targets) - args.max_groups
-        how = (
-            "a random sample of"
-            if getattr(args, "shuffle_groups", False)
-            else "the top"
-        )
+        mix = getattr(args, "category_mix", True)
+        shuffle = getattr(args, "shuffle_groups", False)
+        if mix:
+            how = "one group per failure category from"
+        else:
+            how = "a random sample of" if shuffle else "the top"
         print(
             f"      note: {len(targets)} group(s) found; dispatching {how} "
             f"{args.max_groups}, dropping {dropped} this run",
@@ -2429,12 +2494,19 @@ def main(argv: list[str] | None = None) -> int:
         targets = select_dispatch_targets(
             targets,
             args.max_groups,
-            shuffle=getattr(args, "shuffle_groups", False),
+            shuffle=shuffle,
             rng=(
                 random.Random(args.shuffle_seed)
                 if getattr(args, "shuffle_seed", None) is not None
                 else None
             ),
+            mix_categories=mix,
+        )
+        picked = Counter(dispatch_category(t) for t in targets)
+        print(
+            "      categories dispatched: "
+            + ", ".join(f"{c} ({n})" for c, n in picked.most_common()),
+            flush=True,
         )
 
     report_md = render_report(report, targets, window, deferred=deferred)

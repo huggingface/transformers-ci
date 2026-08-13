@@ -1295,6 +1295,74 @@ class SelectDispatchTargetsTest(unittest.TestCase):
         self.assertEqual(len(set(ids)), 3)  # no dupes
         self.assertEqual(ids, sorted(ids))  # returned in original priority order
 
+    def _modal(self, spec):
+        """`spec` = list of (category-shaping mode, terminal_exc) in priority order."""
+        return [
+            {"id": i, "kind": "model_failures", "failure_mode": m, "terminal_exc": e}
+            for i, (m, e) in enumerate(spec)
+        ]
+
+    def test_mix_spends_the_cap_on_distinct_categories(self):
+        # A realistic pool: mismatches dominate, with one load error and one
+        # dependency error buried below them. Priority order alone (and a
+        # uniform sample) would spend all 3 slots on mismatches.
+        t = self._modal(
+            [("output_mismatch", "AssertionError")] * 6
+            + [("load_error", "OSError"), ("import_or_config", "AttributeError")]
+        )
+        out = itf.select_dispatch_targets(t, 3, shuffle=False)
+        cats = [itf.dispatch_category(x) for x in out]
+        self.assertEqual(len(out), 3)
+        self.assertEqual(
+            sorted(cats), ["import_or_config", "load_error", "output_mismatch"]
+        )
+        self.assertEqual([x["id"] for x in out], sorted(x["id"] for x in out))
+
+    def test_mix_falls_back_to_priority_within_a_single_category(self):
+        t = self._modal([("output_mismatch", "AssertionError")] * 5)
+        out = itf.select_dispatch_targets(t, 3, shuffle=False)
+        self.assertEqual([x["id"] for x in out], [0, 1, 2])
+
+    def test_mix_can_be_disabled(self):
+        t = self._modal(
+            [("output_mismatch", "AssertionError")] * 3 + [("load_error", "OSError")]
+        )
+        out = itf.select_dispatch_targets(t, 3, shuffle=False, mix_categories=False)
+        self.assertEqual([x["id"] for x in out], [0, 1, 2])  # top-N, all mismatch
+
+    def test_assertion_wearing_a_crash_label_counts_as_a_mismatch(self):
+        # `other`/`cuda_runtime` + AssertionError already gets _MISMATCH_GUIDANCE;
+        # counting it as a crash is what made "3 modes" mean 3 expectation updates.
+        self.assertEqual(
+            itf.dispatch_category(_target("other", exc="AssertionError")),
+            "output_mismatch",
+        )
+        self.assertEqual(
+            itf.dispatch_category(_target("cuda_runtime", exc="RuntimeError")),
+            "cuda_runtime",
+        )
+        self.assertEqual(
+            itf.dispatch_category(_target("OOM", kind="cluster")), "cluster"
+        )
+
+    def test_mix_still_varies_which_member_of_a_category_runs(self):
+        import random
+
+        t = self._modal([("output_mismatch", "AssertionError")] * 10)
+        a = [
+            x["id"]
+            for x in itf.select_dispatch_targets(
+                t, 3, shuffle=True, rng=random.Random(1)
+            )
+        ]
+        b = [
+            x["id"]
+            for x in itf.select_dispatch_targets(
+                t, 3, shuffle=True, rng=random.Random(2)
+            )
+        ]
+        self.assertNotEqual(a, b)
+
     def test_shuffle_varies_across_seeds(self):
         import random
 
