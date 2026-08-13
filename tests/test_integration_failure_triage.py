@@ -1456,6 +1456,32 @@ class PartitionTargetsTest(unittest.TestCase):
         carried = itf._carry_forward_rows(body, [])
         self.assertFalse(any("big" in row for row in carried))
 
+    def test_oom_groups_collapse_to_one_line_instead_of_a_table(self):
+        # Nobody patches an OOM, and a week can defer 18 of them; the section
+        # must not spend a table row each (issue #47936).
+        oom = [
+            _target("OOM", exc="OutOfMemoryError", model=f"m{i}", n=i + 1)
+            for i in range(3)
+        ]
+        section = "\n".join(itf._render_deferred_section(oom))
+        self.assertIn("3 models ran out of device memory", section)
+        self.assertIn("6 failures", section)  # 1 + 2 + 3
+        self.assertNotIn("| Model |", section)  # no table at all
+        # Worst-first, with each model's occurrence count kept inline.
+        self.assertIn("`m2` (3), `m1` (2), `m0` (1)", section)
+
+    def test_non_oom_deferred_groups_keep_their_table_row(self):
+        dep = _target("import_or_config", exc="ModuleNotFoundError", model="dep")
+        _, deferred = itf.partition_targets(
+            [_target("OOM", exc="OutOfMemoryError", model="big"), dep]
+        )
+        section = "\n".join(itf._render_deferred_section(deferred))
+        self.assertIn("1 model ran out of device memory", section)
+        self.assertIn("| Model |", section)
+        rows = [ln for ln in section.splitlines() if ln.startswith("| `")]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("`dep`", rows[0])
+
 
 class TraceBudgetByCategoryTest(unittest.TestCase):
     """A crash group is N copies of one traceback (it was keyed by `crash_site`);
