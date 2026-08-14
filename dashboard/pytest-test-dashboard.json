@@ -417,7 +417,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(max by (repository) ((max_over_time(timestamp(pytest_pr_info{pr=\"$pr\"})[7d:]) == on (pr) group_left () max by (pr) (max_over_time(timestamp(pytest_pr_info{pr=\"$pr\"})[7d:]))))",
+        "definition": "query_result(max by (repository) ((max_over_time((timestamp(pytest_pr_info{pr=\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=\"$pr\"}))[7d:]))))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -425,7 +425,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(max by (repository) ((max_over_time(timestamp(pytest_pr_info{pr=\"$pr\"})[7d:]) == on (pr) group_left () max by (pr) (max_over_time(timestamp(pytest_pr_info{pr=\"$pr\"})[7d:]))))",
+          "query": "query_result(max by (repository) ((max_over_time((timestamp(pytest_pr_info{pr=\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=\"$pr\"}))[7d:]))))",
           "refId": "Prometheus-repository-Variable-Query"
         },
         "regex": "/repository=\"([^\"]*)\"/",
