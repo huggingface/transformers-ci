@@ -86,6 +86,7 @@ from .github_api import (
     match_pr,
     update_issue_body,
 )
+from . import pr_evidence
 from .serge_dispatch import (
     SergeDispatchError,
     build_task_payload as _build_serge_payload,
@@ -1983,12 +1984,24 @@ def build_task_payload(
     notify_pr_created: bool = True,
     notify_task_finished: bool = False,
     target: dict | None = None,
+    grafana_url: str | None = None,
 ) -> dict:
     """Build the ``POST /tasks`` body for one failure group, over the shared
     :func:`serge_dispatch.build_task_payload` — this triage's fingerprint maps
     to the ``serge/fix/itf-<fp>`` branch and the instruction is
     :func:`build_instruction` (the shared trunk plus ``target``'s per-category
-    block; the trunk alone when no ``target`` is given)."""
+    block; the trunk alone when no ``target`` is given).
+
+    ``grafana_url`` (default: ``$ITF_GRAFANA_URL``) turns each failing test into a
+    per-test dashboard link in the PR body. Serge holds no Grafana config of its
+    own — the links are built here, where the dashboard UID and its template
+    variables are defined; see :mod:`transformersci.agentic.pr_evidence`. Unset,
+    the field is omitted and the PR body simply has no link section."""
+    if grafana_url is None:
+        grafana_url = (os.environ.get("ITF_GRAFANA_URL") or "").strip()
+    node_ids = [
+        f["test"] for f in (target or {}).get("failures", [])[:_FULL_TRACE_LIMIT]
+    ]
     return _build_serge_payload(
         repo,
         base_ref,
@@ -2001,6 +2014,7 @@ def build_task_payload(
         slack_channel=slack_channel,
         notify_pr_created=notify_pr_created,
         notify_task_finished=notify_task_finished,
+        test_links=pr_evidence.test_links(grafana_url, node_ids),
     )
 
 
