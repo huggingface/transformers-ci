@@ -785,7 +785,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(max by (repository) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+        "definition": "query_result(topk(1, max by (repository) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -794,7 +794,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(max by (repository) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+          "query": "query_result(topk(1, max by (repository) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
           "refId": "Prometheus-pr_repository-Variable-Query"
         },
         "regex": "/repository=\"([^\"]*)\"/",
@@ -813,7 +813,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(max by (author) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+        "definition": "query_result(topk(1, max by (author) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -822,7 +822,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(max by (author) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+          "query": "query_result(topk(1, max by (author) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
           "refId": "Prometheus-pr_author-Variable-Query"
         },
         "regex": "/author=\"([^\"]*)\"/",
@@ -841,7 +841,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(max by (title) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\",title!=\"\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\",title!=\"\"}))[7d:]))))",
+        "definition": "query_result(topk(1, max by (title) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\",title!=\"\"}))[7d:]))))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -850,7 +850,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(max by (title) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\",title!=\"\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\",title!=\"\"}))[7d:]))))",
+          "query": "query_result(topk(1, max by (title) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\",title!=\"\"}))[7d:]))))",
           "refId": "Prometheus-pr_title-Variable-Query"
         },
         "regex": "/title=\"([^\"]*)\"/",
@@ -869,7 +869,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(max by (state) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+        "definition": "query_result(topk(1, max by (state) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -878,7 +878,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(max by (state) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+          "query": "query_result(topk(1, max by (state) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
           "refId": "Prometheus-pr_state-Variable-Query"
         },
         "regex": "/state=\"([^\"]*)\"/",
@@ -897,7 +897,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(max by (html_url) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+        "definition": "query_result(topk(1, max by (html_url) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -906,7 +906,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(max by (html_url) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+          "query": "query_result(topk(1, max by (html_url) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
           "refId": "Prometheus-pr_html_url-Variable-Query"
         },
         "regex": "/html_url=\"([^\"]*)\"/",
@@ -925,7 +925,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(max by (reviewers) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+        "definition": "query_result(topk(1, max by (reviewers) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -934,7 +934,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(max by (reviewers) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+          "query": "query_result(topk(1, max by (reviewers) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
           "refId": "Prometheus-pr_reviewers-Variable-Query"
         },
         "regex": "/reviewers=\"([^\"]*)\"/",
@@ -1183,7 +1183,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(group by (pr) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:])))), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
+          "query": "query_result(label_replace(topk(1, max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
           "refId": "Prometheus-pr_title_section-Variable-Query"
         },
         "regex": "/t=\"([^\"]+)\"/",
@@ -1210,7 +1210,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(group by (pr) ((max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) == on (pr) group_left () max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:])))), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days | **Last event:** `${pr_last_event_hours:raw}h ago`\", \"pr\", \".*\"))",
+          "query": "query_result(label_replace(topk(1, max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days | **Last event:** `${pr_last_event_hours:raw}h ago`\", \"pr\", \".*\"))",
           "refId": "Prometheus-pr_metadata_section-Variable-Query"
         },
         "regex": "/m=\"([^\"]+)\"/",
