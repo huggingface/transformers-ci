@@ -114,7 +114,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "last_over_time(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}[$__range])",
+          "expr": "last_over_time(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\",test_job=\"$test_job\",status_code=\"$status_code\"}[$__range])",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -289,7 +289,6 @@
           "refId": "Prometheus-test_job-Variable-Query"
         },
         "refresh": 2,
-        "skipUrlSync": true,
         "sort": 0,
         "type": "query"
       },
@@ -339,7 +338,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}, status_code)",
+        "definition": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\",test_job=\"$test_job\"}, status_code)",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -347,7 +346,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\"}, status_code)",
+          "query": "label_values(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\",test_job=\"$test_job\"}, status_code)",
           "refId": "Prometheus-status_code-Variable-Query"
         },
         "refresh": 2,
