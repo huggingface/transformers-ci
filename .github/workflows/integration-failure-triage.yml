@@ -74,7 +74,13 @@ jobs:
           python-version: "3.10"
 
       - name: Install triage tooling
-        run: pip install "transformers-ci[agentic] @ git+https://github.com/huggingface/transformers-ci@${TRANSFORMERSCI_REF}"
+        run: |
+          set -euo pipefail
+          if ! echo "$TRANSFORMERSCI_REF" | grep -qE '^[a-zA-Z0-9/_.-]+$'; then
+            echo "::error::Invalid transformersci_ref format" >&2
+            exit 1
+          fi
+          pip install "transformers-ci[agentic] @ git+https://github.com/huggingface/transformers-ci@${TRANSFORMERSCI_REF}"
         env:
           TRANSFORMERSCI_REF: ${{ inputs.transformersci_ref || 'main' }}
 
