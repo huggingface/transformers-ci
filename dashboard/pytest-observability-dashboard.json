@@ -343,7 +343,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (pr, title) ((max_over_time(timestamp(pytest_pr_info{pr=~\"[0-9]+\",title!=\"\"})[$__range:]) == on (pr) group_left () max by (pr) (max_over_time(timestamp(pytest_pr_info{pr=~\"[0-9]+\",title!=\"\"})[$__range:]))))",
+          "expr": "max by (pr, title) ((max_over_time(timestamp(pytest_pr_info{pr=~\"[0-9]+\",title!=\"\"})[7d:]) == on (pr) group_left () max by (pr) (max_over_time(timestamp(pytest_pr_info{pr=~\"[0-9]+\",title!=\"\"})[7d:]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
