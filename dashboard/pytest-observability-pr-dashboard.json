@@ -778,7 +778,7 @@
           "query": "label_values(pytest_run_start_time_seconds{}, pr)",
           "refId": "Prometheus-pr-Variable-Query"
         },
-        "refresh": 1,
+        "refresh": 0,
         "sort": 1,
         "type": "query"
       },
