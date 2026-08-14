@@ -237,6 +237,99 @@ _OOM_PAT = re.compile(
     r"OutOfMemoryError|CUDA out of memory|MallocFailure|HIP out of memory",
     re.IGNORECASE,
 )
+
+# The numbers torch puts in a CUDA OOM message. They decide whether an OOM is a
+# capacity fact or a retained-memory bug — see :func:`oom_shape`.
+_OOM_NUMBERS = re.compile(
+    r"Tried to allocate (?P<want>[\d.]+) (?P<want_unit>GiB|MiB|KiB).*?"
+    r"total capacity of (?P<cap>[\d.]+) GiB.*?"
+    r"allocated memory (?P<held>[\d.]+) (?P<held_unit>GiB|MiB|KiB) is allocated by PyTorch",
+    re.S,
+)
+_UNIT_GIB = {"GiB": 1.0, "MiB": 1 / 1024, "KiB": 1 / (1024 * 1024)}
+
+# A request this small cannot itself be what exhausted the card.
+_OOM_TRIVIAL_WANT_GIB = 1.0
+# Above this share of the card already held by PyTorch, the retained memory —
+# not the failing request — is what made the allocation fail.
+_OOM_HELD_SHARE = 0.70
+# A single request at/above this share of capacity cannot fit however clean the
+# card is, so no amount of freeing helps.
+_OOM_CAPACITY_SHARE = 0.90
+
+OOM_RETENTION = "retention"
+OOM_CAPACITY = "capacity"
+OOM_UNKNOWN = "unknown"
+
+
+def oom_shape(trace: str) -> tuple[str, dict[str, float]]:
+    """Classify a CUDA OOM by the *shape* of the failed allocation.
+
+    ``OOM`` is not one failure mode. Two different things wear the same label:
+
+    ``OOM_RETENTION``
+        The failing request is trivial (tens of MiB) while PyTorch already holds
+        most of the card. The test's own working set is not the problem — the
+        card was already full when it started, because earlier tests in the same
+        pytest process never released their models. That IS fixable by a source
+        patch (a ``tearDown`` that frees), and the fix is in the test file.
+
+    ``OOM_CAPACITY``
+        One allocation alone approaches the whole card. No amount of freeing
+        helps; this needs a bigger runner (or a smaller workload), so it stays
+        deferred to a human.
+
+    ``OOM_UNKNOWN``
+        Anything else, including a message we could not parse. Deliberately
+        conservative: we cannot tell how much of ``held`` belongs to the failing
+        test itself versus its predecessors, so we do not claim it is fixable.
+
+    Returns ``(shape, numbers)``; ``numbers`` is empty when the message did not
+    parse, and otherwise carries ``want``/``capacity``/``held`` in GiB for the
+    evidence rendered into the agent's context.
+    """
+    match = _OOM_NUMBERS.search(trace or "")
+    if not match:
+        return OOM_UNKNOWN, {}
+    want = float(match.group("want")) * _UNIT_GIB[match.group("want_unit")]
+    held = float(match.group("held")) * _UNIT_GIB[match.group("held_unit")]
+    capacity = float(match.group("cap"))
+    numbers = {"want": want, "capacity": capacity, "held": held}
+    if capacity <= 0:
+        return OOM_UNKNOWN, numbers
+    if want >= capacity * _OOM_CAPACITY_SHARE:
+        return OOM_CAPACITY, numbers
+    if want <= _OOM_TRIVIAL_WANT_GIB and held >= capacity * _OOM_HELD_SHARE:
+        return OOM_RETENTION, numbers
+    return OOM_UNKNOWN, numbers
+
+
+# When one node-id OOMs on both the single- and multi-gpu runner, the two
+# messages can disagree (2026-08-14: `test_deepseek_v2_lite` was retention-shaped
+# on multi-gpu and capacity-shaped on single-gpu). Keep the most conservative
+# verdict rather than whichever the dict saw last: labelling a test "fixable"
+# when one runner cannot fit it at all sends the agent after a teardown that
+# will not make it pass.
+_OOM_SHAPE_PRECEDENCE = {OOM_CAPACITY: 0, OOM_UNKNOWN: 1, OOM_RETENTION: 2}
+
+
+def oom_shapes(target: dict) -> dict[str, tuple[str, dict[str, float]]]:
+    """``oom_shape`` per failing test in a group, keyed by node-id.
+
+    A node-id that failed on several runners collapses to one entry holding its
+    most conservative shape (see ``_OOM_SHAPE_PRECEDENCE``)."""
+    out: dict[str, tuple[str, dict[str, float]]] = {}
+    for f in target.get("failures") or []:
+        test = f.get("test", "")
+        found = oom_shape(f.get("latest_trace") or f.get("trace") or "")
+        current = out.get(test)
+        if current is None or (
+            _OOM_SHAPE_PRECEDENCE[found[0]] < _OOM_SHAPE_PRECEDENCE[current[0]]
+        ):
+            out[test] = found
+    return out
+
+
 # Load/download failures. NOTE: deliberately does NOT include a bare
 # ``from_pretrained``: every integration test calls it in its body, so matching
 # it against the whole trace mislabels unrelated crashes as ``load_error``.
@@ -754,6 +847,15 @@ def env_only_reason(target: dict) -> str:
     mode = target.get("failure_mode") or ""
     exc = target.get("terminal_exc") or ""
     if mode == "OOM":
+        # Not every OOM is a capacity fact. When a test dies asking for tens of
+        # MiB on a card PyTorch already fills, the culprit is memory retained by
+        # earlier tests in the same process — a missing tearDown, which is a
+        # source patch in the test file. Only defer when NO test in the group
+        # shows that shape. (2026-08-14: 26 of 54 persistent OOMs were
+        # retention-shaped and had been deferred as "needs capacity" for weeks.)
+        shapes = {shape for shape, _ in oom_shapes(target).values()}
+        if OOM_RETENTION in shapes:
+            return ""
         return "runner ran out of device memory — needs runner capacity, not a patch"
     if mode == "import_or_config" and exc in _DEP_EXC:
         return f"`{exc}` — needs a dependency pin/bump, not a source patch"
@@ -966,6 +1068,12 @@ def _render_serge_target(
     # as forty and each gets room to be complete; an `output_mismatch` group is
     # deliberately NOT split by site, so every traceback carries different
     # expected values the fix needs and they all get rendered.
+    # An OOM group's decisive evidence is the allocation shape, not the traceback
+    # (every traceback in the group is the same torch message). Put it above the
+    # bullets so the agent reads which tests it may fix before the node-ids.
+    if target.get("failure_mode") == "OOM":
+        out.extend(oom_evidence_lines(target))
+
     failures = target["failures"]
     homogeneous = _groups_by_crash_site(target)
     trace_limit = _CRASH_TRACE_LIMIT if homogeneous else 0
@@ -1929,6 +2037,73 @@ _OOM_GUIDANCE = (
     "  - If it is the runner's capacity, produce no patch and say so in `body`."
 )
 
+# Reached when at least one test in the group died asking for a trivial amount on
+# a card PyTorch already filled (see `oom_shape`). That is a retained-memory bug
+# in the test file, and it has one canonical fix in this repo — so the guidance
+# names it instead of steering the agent away from a patch.
+_OOM_RETENTION_GUIDANCE = (
+    "── This group's failure mode: `OOM`, and at least one test is a RETAINED-MEMORY "
+    "bug, not a capacity limit ──\n"
+    "The evidence is in the failure report above: those tests died asking for tens of "
+    "MiB while PyTorch already held most of the card. A request that small is not what "
+    "exhausted the device — the card was already full when the test started, because "
+    "earlier tests in the SAME pytest process never released their models. Every test "
+    "in one class shares one process, so one un-freed model poisons the rest of the "
+    "file. This IS fixable, and the fix is in the test file:\n"
+    "  - Give the failing test's class a `tearDown` that frees the device, using this "
+    "repo's own idiom:\n"
+    "        from transformers.testing_utils import cleanup\n"
+    "        def tearDown(self):\n"
+    "            cleanup(torch_device, gc_collect=True)\n"
+    "    If the class already has one, the retention is INSIDE a single test instead: "
+    "look for a model held in a local that is never dropped before the next "
+    "`from_pretrained`, and `del` it before re-loading.\n"
+    "  - Prefer the class-wide `tearDown` over a per-test cleanup: the goal is that no "
+    "test in the file can leak into the next one.\n"
+    "  - Do NOT lower coverage to fit memory — no shrinking the model, no cutting "
+    "sequence length, no `skip`/`require_*` decorators, no lowered dtype.\n"
+    "  - Only the tests marked `retained memory (fixable)` are your target. Ones "
+    "marked `over capacity` ask for nearly the whole card in a single allocation, so "
+    "freeing cannot help them; ones marked `unclear` request too much for us to say "
+    "the retained memory is what broke them. Leave both alone, and say so in `body` — "
+    "do not try to make them fit. A patch that fixes the fixable tests and admits the "
+    "rest are capacity-bound is the correct outcome here.\n"
+    "  - Verify the reasoning holds: the fix should make the failing test's own "
+    "working set fit on an empty card. If it would not, say so rather than patching."
+)
+
+# Per-test OOM evidence, appended to a retention group's context so the agent can
+# see WHICH tests it may fix and which are genuinely over capacity.
+_OOM_SHAPE_LABEL = {
+    OOM_RETENTION: "retained memory (fixable)",
+    OOM_CAPACITY: "over capacity (do not patch)",
+    OOM_UNKNOWN: "unclear",
+}
+
+
+def oom_evidence_lines(target: dict) -> list[str]:
+    """The OOM shape of each failing test, as report lines. Empty for a group
+    with no parseable OOM message (then the report says nothing rather than
+    guessing)."""
+    shapes = oom_shapes(target)
+    lines: list[str] = []
+    for test, (shape, numbers) in sorted(shapes.items()):
+        if not numbers:
+            continue
+        lines.append(
+            f"- `{test}` — {_OOM_SHAPE_LABEL[shape]}: needed "
+            f"{numbers['want'] * 1024:.0f} MiB, PyTorch already held "
+            f"{numbers['held']:.2f} GiB of {numbers['capacity']:.2f} GiB"
+        )
+    if not lines:
+        return []
+    return [
+        "Device-memory shape per failing test (from the CUDA OOM messages):",
+        *lines,
+        "",
+    ]
+
+
 # Modes whose terminal exception means "the code under test raised", i.e. a crash.
 _CRASH_MODES = frozenset({"cuda_runtime", "other"})
 
@@ -1950,6 +2125,9 @@ def instruction_addendum(target: dict) -> str:
     if mode == "import_or_config":
         return _IMPORT_CFG_GUIDANCE
     if mode == "OOM":
+        shapes = {shape for shape, _ in oom_shapes(target).values()}
+        if OOM_RETENTION in shapes:
+            return _OOM_RETENTION_GUIDANCE
         return _OOM_GUIDANCE
     if mode in _CRASH_MODES:
         # An `AssertionError` reaching us as `other` is still an assertion, so it

@@ -1442,6 +1442,25 @@ class InstructionAddendumTest(unittest.TestCase):
         # A device-keyed entry stays legitimate for small backend divergence.
         self.assertIn("known SMALL divergence between backends", text)
 
+    def test_retention_oom_gets_the_teardown_fix_not_a_shrug(self):
+        text = itf.instruction_addendum(_oom_target(_OOM_RETENTION_TRACE))
+        self.assertIn("RETAINED-MEMORY", text)
+        self.assertIn("cleanup(torch_device, gc_collect=True)", text)
+        self.assertIn("tearDown", text)
+        # The coverage guard must survive the rewrite.
+        self.assertIn("no shrinking the model", text)
+        # …and it must not tell the agent this is probably unfixable.
+        self.assertNotIn("very often NOT fixable", text)
+        # Both non-fixable labels are named, so an ambiguous test is not treated
+        # as a teardown bug just because a sibling in the group was one.
+        self.assertIn("over capacity", text)
+        self.assertIn("unclear", text)
+
+    def test_capacity_oom_keeps_the_conservative_guidance(self):
+        text = itf.instruction_addendum(_oom_target(_OOM_CAPACITY_TRACE))
+        self.assertIn("very often NOT fixable", text)
+        self.assertNotIn("RETAINED-MEMORY", text)
+
     def test_plausibility_gate_is_absent_from_crash_guidance(self):
         text = itf.build_instruction(_target("cuda_runtime", exc="RuntimeError"))
         self.assertNotIn("PLAUSIBLE VARIANT", text)
@@ -1545,9 +1564,162 @@ class PayloadTestLinksTest(unittest.TestCase):
         self.assertIn("https://env.example/d/", str(payload["test_links"]))
 
 
+# Real CUDA OOM messages from the 2026-08-14 daily run (see
+# docs/plans/serge-oom-retention.md). The numbers are what make these two the
+# same label and different bugs.
+_OOM_RETENTION_TRACE = (
+    "(line 134)  torch.OutOfMemoryError: CUDA out of memory. Tried to allocate "
+    "14.00 MiB. GPU 0 has a total capacity of 22.30 GiB of which 4.69 MiB is free. "
+    "Process 860120 has 22.29 GiB memory in use. Of the allocated memory 21.92 GiB "
+    "is allocated by PyTorch, with 22.00 MiB allocated in private pools (e.g., CUDA "
+    "Graphs), and 16.47 MiB is reserved by PyTorch but unallocated."
+)
+_OOM_CAPACITY_TRACE = (
+    "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 21.10 GiB. GPU 0 "
+    "has a total capacity of 22.30 GiB of which 50.00 MiB is free. Process 189021 has "
+    "22.28 GiB memory in use. Of the allocated memory 20.94 GiB is allocated by "
+    "PyTorch, with 22.00 MiB allocated in private pools (e.g., CUDA Graphs)."
+)
+# mamba2's batched test: the request alone fits on an empty card, but we cannot
+# tell how much of `held` is its own model, so it must NOT be called fixable.
+_OOM_AMBIGUOUS_TRACE = (
+    "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 12.00 GiB. GPU 0 "
+    "has a total capacity of 22.30 GiB of which 8.01 GiB is free. Process 440984 has "
+    "14.29 GiB memory in use. Of the allocated memory 13.91 GiB is allocated by "
+    "PyTorch, with 22.00 MiB allocated in private pools (e.g., CUDA Graphs)."
+)
+
+
+def _oom_target(*traces, model="mamba2"):
+    """An OOM group whose failures carry the given CUDA OOM messages."""
+    return {
+        "kind": "model_failures",
+        "label": f"{len(traces)} test(s) for `{model}` failing with `OOM`",
+        "failures": [
+            _failure(
+                model, "single", f"tests/models/{model}/t.py::T::t{i}", t, mode="OOM"
+            )
+            for i, t in enumerate(traces)
+        ],
+        "cluster": None,
+        "model": model,
+        "failure_mode": "OOM",
+        "terminal_exc": "OutOfMemoryError",
+        "crash_site": "",
+    }
+
+
+class OomShapeTest(unittest.TestCase):
+    """`OOM` is two different bugs wearing one label. Telling them apart is what
+    decides whether a group is dispatched or deferred."""
+
+    def test_trivial_request_on_a_full_card_is_retention(self):
+        shape, nums = itf.oom_shape(_OOM_RETENTION_TRACE)
+        self.assertEqual(shape, itf.OOM_RETENTION)
+        self.assertAlmostEqual(nums["want"], 14 / 1024, places=4)
+        self.assertAlmostEqual(nums["held"], 21.92, places=2)
+        self.assertAlmostEqual(nums["capacity"], 22.30, places=2)
+
+    def test_one_allocation_near_the_whole_card_is_capacity(self):
+        shape, nums = itf.oom_shape(_OOM_CAPACITY_TRACE)
+        self.assertEqual(shape, itf.OOM_CAPACITY)
+        self.assertAlmostEqual(nums["want"], 21.10, places=2)
+
+    def test_a_big_request_on_a_half_full_card_stays_unknown(self):
+        # 12 GiB would fit on an empty 22.3 GiB card, but 13.91 GiB is already
+        # held and we cannot attribute it — claiming "fixable" here would send the
+        # agent after a teardown that does not exist.
+        shape, _ = itf.oom_shape(_OOM_AMBIGUOUS_TRACE)
+        self.assertEqual(shape, itf.OOM_UNKNOWN)
+
+    def test_an_unparseable_message_is_unknown_with_no_numbers(self):
+        shape, nums = itf.oom_shape("torch.OutOfMemoryError: CUDA out of memory.")
+        self.assertEqual(shape, itf.OOM_UNKNOWN)
+        self.assertEqual(nums, {})
+        self.assertEqual(itf.oom_shape(""), (itf.OOM_UNKNOWN, {}))
+
+
+class OomEvidenceTest(unittest.TestCase):
+    def test_evidence_labels_each_test_and_keeps_the_numbers(self):
+        target = _oom_target(_OOM_RETENTION_TRACE, _OOM_CAPACITY_TRACE)
+        text = "\n".join(itf.oom_evidence_lines(target))
+        self.assertIn("retained memory (fixable)", text)
+        self.assertIn("over capacity (do not patch)", text)
+        self.assertIn("already held 21.92 GiB of 22.30 GiB", text)
+
+    def test_the_same_test_on_two_runners_keeps_the_conservative_shape(self):
+        # Real case: test_deepseek_v2_lite was retention-shaped on multi-gpu and
+        # capacity-shaped on single-gpu. Calling it fixable would send the agent
+        # after a teardown that cannot make the single-gpu runner fit it.
+        target = {
+            "kind": "model_failures",
+            "label": "1 test for `deepseek_v2` failing with `OOM`",
+            "failure_mode": "OOM",
+            "model": "deepseek_v2",
+            "cluster": None,
+            "terminal_exc": "OutOfMemoryError",
+            "crash_site": "",
+            "failures": [
+                _failure(
+                    "deepseek_v2",
+                    "multi",
+                    "t.py::T::lite",
+                    _OOM_RETENTION_TRACE,
+                    mode="OOM",
+                ),
+                _failure(
+                    "deepseek_v2",
+                    "single",
+                    "t.py::T::lite",
+                    _OOM_CAPACITY_TRACE,
+                    mode="OOM",
+                ),
+            ],
+        }
+        shapes = itf.oom_shapes(target)
+        self.assertEqual(shapes["t.py::T::lite"][0], itf.OOM_CAPACITY)
+        # …and the order the runners appear in must not change the verdict.
+        target["failures"].reverse()
+        self.assertEqual(itf.oom_shapes(target)["t.py::T::lite"][0], itf.OOM_CAPACITY)
+
+    def test_no_parseable_message_renders_nothing(self):
+        self.assertEqual(itf.oom_evidence_lines(_oom_target("OutOfMemoryError")), [])
+
+    def test_evidence_reaches_the_serge_context(self):
+        context = itf.render_serge_context(
+            [_oom_target(_OOM_RETENTION_TRACE)], ["2026-08-14"]
+        )
+        self.assertIn("Device-memory shape per failing test", context)
+        self.assertIn("retained memory (fixable)", context)
+
+
 class PartitionTargetsTest(unittest.TestCase):
     """Groups no minimal patch can fix must not spend a GPU reproduce run, an
     investigation, or a --max-groups slot."""
+
+    def test_retention_shaped_oom_is_dispatched_not_deferred(self):
+        # 26 of the 54 persistent OOMs on 2026-08-14 had this shape and were being
+        # deferred as "needs runner capacity" — they are missing-tearDown bugs.
+        oom = _oom_target(_OOM_RETENTION_TRACE)
+        dispatch, deferred = itf.partition_targets([oom])
+        self.assertEqual(len(dispatch), 1)
+        self.assertEqual(deferred, [])
+
+    def test_capacity_shaped_oom_is_still_deferred(self):
+        oom = _oom_target(_OOM_CAPACITY_TRACE)
+        dispatch, deferred = itf.partition_targets([oom])
+        self.assertEqual(dispatch, [])
+        self.assertIn("device memory", deferred[0]["defer_reason"])
+
+    def test_a_mixed_group_is_dispatched_for_the_fixable_test(self):
+        oom = _oom_target(_OOM_CAPACITY_TRACE, _OOM_RETENTION_TRACE)
+        dispatch, _ = itf.partition_targets([oom])
+        self.assertEqual(len(dispatch), 1)
+
+    def test_ambiguous_oom_stays_deferred(self):
+        dispatch, deferred = itf.partition_targets([_oom_target(_OOM_AMBIGUOUS_TRACE)])
+        self.assertEqual(dispatch, [])
+        self.assertEqual(len(deferred), 1)
 
     def test_oom_is_deferred_with_a_reason(self):
         oom = _target("OOM", exc="OutOfMemoryError", model="big")
