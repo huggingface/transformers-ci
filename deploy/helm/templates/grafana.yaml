@@ -123,6 +123,159 @@ pod-health.yaml: |
                   - evaluator:
                       type: gt
                       params: [0]
+trace-ingest.yaml: |
+  # Provisioned alerting for the trace ingest path (CI -> ALB -> otelcol -> Tempo).
+  #
+  # Two rules, because the two failure modes need different signals and a single
+  # "no spans for N hours" rule cannot serve both:
+  #
+  #   - "auth failing": otelcol's bearer token (Infisical trace-api-key) no longer
+  #     matches the OTEL_TOKEN the self-hosted runners inject, so every push is
+  #     rejected. otelcol reads the token ONCE at pod start, so a rotation stays
+  #     latent until an unrelated deploy rolls the pod — then ingest dies with no
+  #     pod unhealthy and the `tempo` scrape target still `up`. Caught by the
+  #     share of POST /v1/traces returning 401.
+  #
+  #     Why a RATIO and not "401 > 0": the ALB health check hits `/` on :4318
+  #     unauthenticated, so GET 401s tick over constantly (~380/30min/pod) and a
+  #     "> 0" rule would fire forever. Hence http_method="POST" plus a share.
+  #     The ratio is also self-gating: no CI traffic means no series, so quiet
+  #     nights and weekends stay silent instead of paging (noDataState: OK).
+  #
+  #   - "silent": nothing is arriving at all (DNS/ALB broken, runners offline).
+  #     The ratio rule cannot see this — with zero POSTs there is nothing to take
+  #     a ratio of. Needs a plain volume check, but the window must clear the
+  #     natural quiet gaps: measured over 14 days, normal CI idles produce zero
+  #     spans for up to 8.5h (Sun 2026-07-19), plus routine 2-3h gaps. 12h sits
+  #     above that; 1h would false-fire dozens of times a month.
+  #
+  # Backtested against Prometheus history on 2026-07-31 (both rules):
+  #   401-ratio, 2026-07-30 token outage : >0.5 continuously for 183min from
+  #     14:47Z, so for:10m fires at ~14:57Z — 3min after ingest broke and ~16h
+  #     before a human noticed. Peak ratio 1.000.
+  #   401-ratio, healthy 11k-push window : 0.000 (quiet)
+  #   401-ratio, natural CI idle         : no series -> NoData -> OK (quiet)
+  #   401-ratio, 12min planned token swap: only 5min >0.5, so it does NOT page.
+  #     Deliberate — a short planned rotation should not wake anyone.
+  #   silent, 12h into the outage        : 0 spans -> fires
+  #   silent, end of the 8.5h Sunday idle: 28 spans -> does not fire. NOTE the
+  #     margin is thin (28, not thousands); an unusually dead holiday weekend
+  #     could trip this. It is severity:warning for exactly that reason.
+  apiVersion: 1
+  groups:
+    - orgId: 1
+      name: trace-ingest
+      folder: CI Alerts
+      interval: 1m
+      rules:
+        - uid: trace-ingest-auth-failing
+          title: Trace ingest rejecting CI pushes (401)
+          condition: C
+          for: 10m
+          # No POST traffic => no series => NoData. That is a quiet period, not a
+          # fault; the "silent" rule below owns that case. Do NOT set Alerting.
+          noDataState: OK
+          execErrState: Error
+          labels:
+            severity: critical
+            kind: trace-ingest
+          annotations:
+            summary: Most CI trace pushes are being rejected with HTTP 401.
+            description: >
+              Over half of POST /v1/traces requests to the OTel collector are
+              returning 401 — the collector's bearer token and the token the CI
+              runners inject have diverged, so traces are being dropped and the
+              dashboards will go stale. Compare the live token against Infisical:
+              `kubectl -n transformers-ci get secret transformers-ci-secrets
+              -o jsonpath='{.data.trace-api-key}' | base64 -d | shasum -a 256`,
+              and remember otelcol only picks up a new value on restart. The
+              runners' OTEL_TOKEN is injected by the self-hosted runner pods and
+              is NOT a GitHub Actions secret — both sides must change together.
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 900
+                to: 0
+              datasourceUid: prometheus-infra
+              model:
+                refId: A
+                instant: true
+                editorMode: code
+                expr: |-
+                  sum(increase(otelcol_http_server_duration_count{http_status_code="401",http_method="POST"}[15m]))
+                  /
+                  sum(increase(otelcol_http_server_duration_count{http_method="POST"}[15m]))
+            - refId: B
+              datasourceUid: __expr__
+              model:
+                refId: B
+                type: reduce
+                reducer: last
+                expression: A
+            - refId: C
+              datasourceUid: __expr__
+              model:
+                refId: C
+                type: threshold
+                expression: B
+                conditions:
+                  - evaluator:
+                      type: gt
+                      params: [0.5]
+
+        - uid: trace-ingest-silent
+          title: No traces received for 12h
+          condition: C
+          for: 0m
+          # Belt and braces: `or vector(0)` already guarantees a series, but if the
+          # query itself fails to return we still want to hear about it.
+          noDataState: Alerting
+          execErrState: Error
+          labels:
+            severity: warning
+            kind: trace-ingest
+          annotations:
+            summary: The stack has received no spans for 12 hours.
+            description: >
+              otelcol has accepted zero spans in 12h. Either CI genuinely stopped
+              running, or pushes are not reaching the collector at all (DNS, ALB,
+              or the runners being offline) — note that a token mismatch shows up
+              as the 401 rule instead. Verify the ingest path end to end with an
+              authenticated probe against
+              https://transformers-ci-traces.lor-e.huggingface.cool/v1/traces.
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 43200
+                to: 0
+              datasourceUid: prometheus-infra
+              model:
+                refId: A
+                instant: true
+                editorMode: code
+                # `or vector(0)` is load-bearing: otelcol stops exporting this
+                # counter entirely when nothing has arrived (it is absent, not
+                # zero), so without the fallback the rule sits in NoData forever
+                # instead of firing. This is exactly how the 2026-07-30 outage
+                # went unnoticed for 16h.
+                expr: sum(increase(otelcol_receiver_accepted_spans[12h])) or vector(0)
+            - refId: B
+              datasourceUid: __expr__
+              model:
+                refId: B
+                type: reduce
+                reducer: last
+                expression: A
+            - refId: C
+              datasourceUid: __expr__
+              model:
+                refId: C
+                type: threshold
+                expression: B
+                conditions:
+                  - evaluator:
+                      type: lt
+                      params: [1]
 {{- end }}
 apiVersion: v1
 kind: ConfigMap
