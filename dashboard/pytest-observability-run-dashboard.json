@@ -695,7 +695,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, html_url)",
+        "definition": "query_result(max by (html_url) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -703,10 +703,11 @@
         "name": "run_pr_url",
         "options": [],
         "query": {
-          "qryType": 1,
-          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, html_url)",
+          "qryType": 3,
+          "query": "query_result(max by (html_url) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])))",
           "refId": "Prometheus-run_pr_url-Variable-Query"
         },
+        "regex": "/html_url=\"([^\"]*)\"/",
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,

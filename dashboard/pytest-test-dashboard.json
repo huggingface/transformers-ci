@@ -417,17 +417,18 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{pr=\"$pr\"}, repository)",
+        "definition": "query_result(max by (repository) (last_over_time(pytest_pr_info{pr=\"$pr\"}[5m])))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
         "name": "repository",
         "options": [],
         "query": {
-          "qryType": 1,
-          "query": "label_values(pytest_pr_info{pr=\"$pr\"}, repository)",
+          "qryType": 3,
+          "query": "query_result(max by (repository) (last_over_time(pytest_pr_info{pr=\"$pr\"}[5m])))",
           "refId": "Prometheus-repository-Variable-Query"
         },
+        "regex": "/repository=\"([^\"]*)\"/",
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,

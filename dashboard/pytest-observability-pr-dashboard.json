@@ -792,7 +792,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{}, repository)",
+        "definition": "query_result(max by (repository) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -800,10 +800,11 @@
         "name": "pr_repository",
         "options": [],
         "query": {
-          "qryType": 1,
-          "query": "label_values(pytest_pr_info{}, repository)",
+          "qryType": 3,
+          "query": "query_result(max by (repository) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])))",
           "refId": "Prometheus-pr_repository-Variable-Query"
         },
+        "regex": "/repository=\"([^\"]*)\"/",
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
@@ -819,7 +820,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, author)",
+        "definition": "query_result(max by (author) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -827,10 +828,11 @@
         "name": "pr_author",
         "options": [],
         "query": {
-          "qryType": 1,
-          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, author)",
+          "qryType": 3,
+          "query": "query_result(max by (author) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])))",
           "refId": "Prometheus-pr_author-Variable-Query"
         },
+        "regex": "/author=\"([^\"]*)\"/",
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
@@ -846,7 +848,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, title)",
+        "definition": "query_result(max by (title) (last_over_time(pytest_pr_info{pr=~\"$pr\",title!=\"\"}[5m])))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -854,10 +856,11 @@
         "name": "pr_title",
         "options": [],
         "query": {
-          "qryType": 1,
-          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, title)",
+          "qryType": 3,
+          "query": "query_result(max by (title) (last_over_time(pytest_pr_info{pr=~\"$pr\",title!=\"\"}[5m])))",
           "refId": "Prometheus-pr_title-Variable-Query"
         },
+        "regex": "/title=\"([^\"]*)\"/",
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
@@ -873,7 +876,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, state)",
+        "definition": "query_result(max by (state) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -881,10 +884,11 @@
         "name": "pr_state",
         "options": [],
         "query": {
-          "qryType": 1,
-          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, state)",
+          "qryType": 3,
+          "query": "query_result(max by (state) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])))",
           "refId": "Prometheus-pr_state-Variable-Query"
         },
+        "regex": "/state=\"([^\"]*)\"/",
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
@@ -900,7 +904,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, html_url)",
+        "definition": "query_result(max by (html_url) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -908,10 +912,11 @@
         "name": "pr_html_url",
         "options": [],
         "query": {
-          "qryType": 1,
-          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, html_url)",
+          "qryType": 3,
+          "query": "query_result(max by (html_url) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])))",
           "refId": "Prometheus-pr_html_url-Variable-Query"
         },
+        "regex": "/html_url=\"([^\"]*)\"/",
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
@@ -927,7 +932,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_pr_info{pr=~\"$pr\"}, reviewers)",
+        "definition": "query_result(max by (reviewers) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -935,10 +940,11 @@
         "name": "pr_reviewers",
         "options": [],
         "query": {
-          "qryType": 1,
-          "query": "label_values(pytest_pr_info{pr=~\"$pr\"}, reviewers)",
+          "qryType": 3,
+          "query": "query_result(max by (reviewers) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])))",
           "refId": "Prometheus-pr_reviewers-Variable-Query"
         },
+        "regex": "/reviewers=\"([^\"]*)\"/",
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
@@ -1184,7 +1190,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[90d])), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
+          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
           "refId": "Prometheus-pr_title_section-Variable-Query"
         },
         "regex": "/t=\"([^\"]+)\"/",
@@ -1211,7 +1217,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[90d])), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days | **Last event:** `${pr_last_event_hours:raw}h ago`\", \"pr\", \".*\"))",
+          "query": "query_result(label_replace(group by (pr) (last_over_time(pytest_pr_info{pr=~\"$pr\"}[5m])), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days | **Last event:** `${pr_last_event_hours:raw}h ago`\", \"pr\", \".*\"))",
           "refId": "Prometheus-pr_metadata_section-Variable-Query"
         },
         "regex": "/m=\"([^\"]+)\"/",
