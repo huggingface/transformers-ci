@@ -763,24 +763,17 @@
           "text": "",
           "value": ""
         },
-        "datasource": {
-          "type": "prometheus",
-          "uid": "prometheus"
-        },
-        "definition": "label_values(pytest_run_start_time_seconds{}, pr)",
-        "includeAll": false,
         "label": "PR",
-        "multi": false,
         "name": "pr",
-        "options": [],
-        "query": {
-          "qryType": 1,
-          "query": "label_values(pytest_run_start_time_seconds{}, pr)",
-          "refId": "Prometheus-pr-Variable-Query"
-        },
-        "refresh": 0,
-        "sort": 1,
-        "type": "query"
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ],
+        "query": "",
+        "type": "textbox"
       },
       {
         "current": {
