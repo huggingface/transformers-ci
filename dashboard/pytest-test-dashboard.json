@@ -139,7 +139,7 @@
       "type": "text",
       "options": {
         "mode": "html",
-        "content": "<iframe title=\"traceback\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var t=encodeURIComponent('${trace_id}');var n='${test_nodeid}';var u=parent.location.protocol+'//'+parent.location.host+'/failure?trace_id='+t;if(n){u+='&test_nodeid='+encodeURIComponent(n);}location.replace(u);</script>\"></iframe>"
+        "content": "<iframe title=\"traceback\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var t='${trace_id}'||'${latest_trace}';if(!/^[0-9a-f]{8,}$/i.test(t)){t='';}var n='${test_nodeid}';var u=parent.location.protocol+'//'+parent.location.host+'/failure?trace_id='+encodeURIComponent(t);if(n){u+='&test_nodeid='+encodeURIComponent(n);}location.replace(u);</script>\"></iframe>"
       }
     }
   ],
@@ -429,6 +429,33 @@
           "refId": "Prometheus-repository-Variable-Query"
         },
         "regex": "/repository=\"([^\"]*)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(topk(1, max by (trace_id) (max_over_time((timestamp(pytest_test_last_failure_info{test_nodeid=\"$test_nodeid\"}))[7d:]))))",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "name": "latest_trace",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(topk(1, max by (trace_id) (max_over_time((timestamp(pytest_test_last_failure_info{test_nodeid=\"$test_nodeid\"}))[7d:]))))",
+          "refId": "Prometheus-latest_trace-Variable-Query"
+        },
+        "regex": "/trace_id=\"([^\"]*)\"/",
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,

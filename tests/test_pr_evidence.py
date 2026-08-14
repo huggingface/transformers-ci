@@ -41,6 +41,13 @@ class GrafanaTestUrlTest(unittest.TestCase):
         self.assertIn("var-trace_id=abc123", url)
         self.assertIn("var-pr=47281", url)
 
+    def test_url_pins_a_window_wide_enough_to_outlive_the_pr_body(self):
+        # The dashboard defaults to now-24h; the failure metadata behind the
+        # traceback panel is older than that by the time anyone reads the PR.
+        url = pr_evidence.grafana_test_url(GRAFANA, NODE)
+        self.assertIn("from=now-7d", url)
+        self.assertIn("to=now", url)
+
     def test_missing_input_yields_no_url(self):
         self.assertEqual(pr_evidence.grafana_test_url("", NODE), "")
         self.assertEqual(pr_evidence.grafana_test_url(GRAFANA, ""), "")
