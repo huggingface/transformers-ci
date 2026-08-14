@@ -362,7 +362,9 @@ def test_per_test_duration_uses_worker_duration_when_present() -> None:
     assert lines[0].endswith(" 0.030000000")  # worker time, not 11.594
 
 
-def test_per_test_duration_falls_back_to_span_duration_when_worker_duration_absent() -> None:
+def test_per_test_duration_falls_back_to_span_duration_when_worker_duration_absent() -> (
+    None
+):
     """Without pytest.worker_duration_seconds the exporter falls back to
     the Jaeger span duration (existing behaviour for older traces)."""
     process_id = "pytest-process"
@@ -3538,3 +3540,162 @@ def test_last_failure_info_run_id_distinguishes_runs_of_the_same_job() -> None:
     by_run = {("run-1" if 'run_id="run-1"' in ln else "run-2"): ln for ln in lines}
     assert "test_one" in by_run["run-1"]
     assert "test_two" in by_run["run-2"]
+
+
+def _resource_record(nodeid: str, **metrics) -> dict:
+    """One line of the per-test resource JSONL the pytest plugin appends."""
+    record = {
+        "pr": "none",
+        "provider": "github",
+        "run_id": "12345:1",
+        "service_name": "transformers-tests",
+        "test_job": "run_models_gpu",
+        "test_nodeid": nodeid,
+        "test_class": "Mamba2IntegrationTest",
+        "test_function": nodeid.rsplit("::", 1)[-1],
+        "test_module": "tests/models/mamba2/test_modeling_mamba2.py",
+        "cpu_time_seconds": 12.5,
+        "rss_delta_bytes": 1024,
+        "rss_peak_bytes": 4096,
+        "cuda_peak_allocated_bytes": 15 * 1024**3,
+    }
+    record.update(metrics)
+    return record
+
+
+def test_resource_metrics_expose_retained_device_memory() -> None:
+    gib = 1024**3
+    metrics = trace_exporter.extract_average_resource_metrics(
+        [
+            _resource_record("t.py::A::test_leaks", cuda_delta_bytes=14 * gib),
+            _resource_record("t.py::A::test_leaks", cuda_delta_bytes=12 * gib),
+        ]
+    )
+    lines = metric_lines(metrics, "pytest_test_average_cuda_delta_bytes")
+    assert len(lines) == 1
+    # Averaged across the two recorded runs, like every other resource metric.
+    assert float(lines[0].rsplit(" ", 1)[1]) == pytest.approx(13 * gib)
+    assert 'test_function="test_leaks"' in lines[0]
+    assert 'test_job="run_models_gpu"' in lines[0]
+
+
+def test_resource_metrics_expose_the_post_gc_delta_when_probed() -> None:
+    gib = 1024**3
+    metrics = trace_exporter.extract_average_resource_metrics(
+        [
+            _resource_record(
+                "t.py::A::test_pinned",
+                cuda_delta_bytes=14 * gib,
+                cuda_delta_after_gc_bytes=14 * gib,
+            )
+        ]
+    )
+    lines = metric_lines(metrics, "pytest_test_average_cuda_delta_after_gc_bytes")
+    assert len(lines) == 1
+    assert float(lines[0].rsplit(" ", 1)[1]) == pytest.approx(14 * gib)
+
+
+def test_resource_records_without_the_new_fields_are_unchanged() -> None:
+    """Backward compatibility: records written by an older plugin carry neither
+    new field. Every pre-existing series must still be emitted, and the new ones
+    must be absent rather than zero — a zero would read as "this test retains
+    nothing", which we do not know."""
+    metrics = trace_exporter.extract_average_resource_metrics(
+        [_resource_record("t.py::A::test_old")]
+    )
+    for existing in (
+        "pytest_test_resource_run_count",
+        "pytest_test_average_cpu_time_seconds",
+        "pytest_test_average_rss_peak_bytes",
+        "pytest_test_average_rss_delta_bytes",
+        "pytest_test_average_cuda_peak_allocated_bytes",
+    ):
+        assert metric_lines(metrics, existing), f"{existing} disappeared"
+    assert metric_lines(metrics, "pytest_test_average_cuda_delta_bytes") == []
+    assert metric_lines(metrics, "pytest_test_average_cuda_delta_after_gc_bytes") == []
+
+
+def _span_with_retained_memory(nodeid: str, retained: int | None, **kwargs) -> dict:
+    """A test span carrying the plugin's pytest.cuda_delta_bytes attribute."""
+    span = make_test_span(
+        process_id="pytest-process",
+        nodeid=nodeid,
+        start_time=1_000_000,
+        duration=1_000_000,
+        **kwargs,
+    )
+    if retained is not None:
+        span["tags"].append(make_tag("pytest.cuda_delta_bytes", str(retained)))
+    return span
+
+
+def test_retained_memory_reaches_the_row_from_the_span() -> None:
+    gib = 1024**3
+    trace = make_trace(
+        trace_id="t-mem",
+        run_id="run-mem",
+        job="run_models_gpu",
+        spans=[_span_with_retained_memory("t.py::A::test_leaks", 14 * gib)],
+    )
+    _info, rows = trace_exporter.extract_trace_rows(trace)
+    assert rows[0]["cuda_delta_bytes"] == float(14 * gib)
+
+
+def test_a_span_without_the_attribute_omits_the_row_key() -> None:
+    """Absent must stay absent, not become 0.0 — a zero would claim the test
+    retains nothing, which is different from "this job did not measure"."""
+    trace = make_trace(
+        trace_id="t-cpu",
+        run_id="run-cpu",
+        job="tests_torch",
+        spans=[_span_with_retained_memory("t.py::A::test_cpu", None)],
+    )
+    _info, rows = trace_exporter.extract_trace_rows(trace)
+    assert "cuda_delta_bytes" not in rows[0]
+
+
+def test_a_non_numeric_attribute_is_ignored() -> None:
+    span = _span_with_retained_memory("t.py::A::test_junk", None)
+    span["tags"].append(make_tag("pytest.cuda_delta_bytes", "not-a-number"))
+    trace = make_trace(
+        trace_id="t-junk", run_id="run-junk", job="run_models_gpu", spans=[span]
+    )
+    _info, rows = trace_exporter.extract_trace_rows(trace)
+    assert "cuda_delta_bytes" not in rows[0]
+
+
+def test_retained_memory_metric_shares_the_per_test_label_set() -> None:
+    gib = 1024**3
+    metrics = trace_exporter.extract_per_test_duration_metrics(
+        [
+            make_trace(
+                trace_id="t-mem",
+                run_id="run-mem",
+                job="run_models_gpu",
+                spans=[_span_with_retained_memory("t.py::A::test_leaks", 14 * gib)],
+            )
+        ]
+    )
+    lines = metric_lines(metrics, "pytest_test_cuda_delta_bytes")
+    assert len(lines) == 1
+    assert lines[0].endswith(f" {14 * gib}")
+    # The cardinality lesson from pytest_test_duration_seconds must hold here too:
+    # no run_id / trace_id / pr labels, or a busy window mints millions of series.
+    for forbidden in ('run_id="', 'trace_id="', 'pr="'):
+        assert forbidden not in lines[0]
+
+
+def test_no_retained_memory_metric_for_tests_that_did_not_report_it() -> None:
+    metrics = trace_exporter.extract_per_test_duration_metrics(
+        [
+            make_trace(
+                trace_id="t-cpu",
+                run_id="run-cpu",
+                job="tests_torch",
+                spans=[_span_with_retained_memory("t.py::A::test_cpu", None)],
+            )
+        ]
+    )
+    assert metric_lines(metrics, "pytest_test_cuda_delta_bytes") == []
+    # …while the duration metric it shares a key with is unaffected.
+    assert len(metric_lines(metrics, "pytest_test_duration_seconds")) == 1

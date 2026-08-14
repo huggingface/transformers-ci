@@ -266,7 +266,9 @@ def test_runtest_logreport_noop_when_span_not_recording() -> None:
     resource_plugin._worker_durations.clear()
     nodeid = "tests/test_foo.py::test_baz"
 
-    with patch("opentelemetry.trace.get_current_span", return_value=_NonRecordingSpan()):
+    with patch(
+        "opentelemetry.trace.get_current_span", return_value=_NonRecordingSpan()
+    ):
         resource_plugin.pytest_runtest_logreport(_make_report(nodeid, "setup", 0.1))
         resource_plugin.pytest_runtest_logreport(_make_report(nodeid, "call", 0.2))
         resource_plugin.pytest_runtest_logreport(_make_report(nodeid, "teardown", 0.05))
@@ -278,3 +280,214 @@ class _StubProvider:
 
     def __init__(self, recorder) -> None:
         self.add_span_processor = recorder
+
+
+class GcProbeConfig:
+    """Config stub for the gc-probe option (the other stub asserts on its own
+    option name, so this one is separate on purpose)."""
+
+    def __init__(self, value: bool) -> None:
+        self.value = value
+
+    def getoption(self, name: str, default: bool = False) -> bool:
+        assert name == "resource_gc_probe"
+        return self.value
+
+
+def _fake_cuda_sampler(readings: list[int], start: int, gc_probe: bool = False):
+    """A sampler whose CUDA readings are scripted, so the delta arithmetic can be
+    tested without a GPU."""
+    sampler = resource_plugin.ResourceSampler(gc_probe=gc_probe)
+    sampler.cuda_available = True
+    sampler.start_cuda_allocated_bytes = start
+    sampler.peak_cuda_allocated_bytes = start
+    queue = list(readings)
+    sampler._cuda_allocated_bytes = lambda: queue.pop(0)  # type: ignore[method-assign]
+    return sampler
+
+
+def test_cuda_delta_reports_what_the_next_test_inherits() -> None:
+    # A test that ends holding 14 GiB more than it started with is what makes the
+    # following test in the same process OOM asking for tens of MiB.
+    gib = 1024**3
+    sampler = _fake_cuda_sampler([15 * gib], start=1 * gib)
+    metrics = sampler.stop()
+    assert metrics["cuda_delta_bytes"] == 14 * gib
+    assert metrics["cuda_start_allocated_bytes"] == 1 * gib
+    assert metrics["cuda_end_allocated_bytes"] == 15 * gib
+    # Off by default: no gc probe, no extra keys.
+    assert "cuda_delta_after_gc_bytes" not in metrics
+
+
+def test_cuda_delta_is_negative_when_a_test_frees_more_than_it_took() -> None:
+    sampler = _fake_cuda_sampler([0], start=4096)
+    assert sampler.stop()["cuda_delta_bytes"] == -4096
+
+
+def test_gc_probe_separates_uncollected_garbage_from_a_live_reference() -> None:
+    gib = 1024**3
+    # Raw delta is 14 GiB, but a gc.collect() releases it: uncollected garbage,
+    # which a `cleanup(torch_device, gc_collect=True)` in tearDown would fix.
+    collectable = _fake_cuda_sampler([15 * gib, 1 * gib], start=1 * gib, gc_probe=True)
+    metrics = collectable.stop()
+    assert metrics["cuda_delta_bytes"] == 14 * gib
+    assert metrics["cuda_delta_after_gc_bytes"] == 0
+
+    # Still held after collecting: something owns a reference, so no tearDown
+    # cleanup can free it.
+    pinned = _fake_cuda_sampler([15 * gib, 15 * gib], start=1 * gib, gc_probe=True)
+    assert pinned.stop()["cuda_delta_after_gc_bytes"] == 14 * gib
+
+
+def test_gc_probe_is_skipped_without_cuda() -> None:
+    sampler = resource_plugin.ResourceSampler(gc_probe=True)
+    sampler.cuda_available = False
+    metrics = sampler.stop()
+    assert "cuda_delta_after_gc_bytes" not in metrics
+    assert metrics["cuda_delta_bytes"] == 0
+
+
+def test_gc_probe_enabled_from_flag_or_env(monkeypatch) -> None:
+    monkeypatch.delenv("PYTEST_RESOURCE_GC_PROBE", raising=False)
+    assert resource_plugin.gc_probe_enabled(GcProbeConfig(True)) is True
+    assert resource_plugin.gc_probe_enabled(GcProbeConfig(False)) is False
+    monkeypatch.setenv("PYTEST_RESOURCE_GC_PROBE", "1")
+    assert resource_plugin.gc_probe_enabled(GcProbeConfig(False)) is True
+    assert resource_plugin.gc_probe_enabled(None) is True
+    monkeypatch.setenv("PYTEST_RESOURCE_GC_PROBE", "0")
+    assert resource_plugin.gc_probe_enabled(None) is False
+
+
+def _report_with_retained(nodeid: str, retained: int | None) -> "pytest.TestReport":
+    """A real teardown report as it arrives on the controller, carrying the
+    worker's measurement in user_properties (the channel xdist serialises)."""
+    report = _make_report(nodeid, "teardown", 0.05)
+    if retained is not None:
+        report.user_properties.append((resource_plugin.CUDA_DELTA_PROPERTY, retained))
+    return report
+
+
+def test_retained_memory_is_stamped_on_the_span_from_the_report() -> None:
+    """The controller stamps the span, but the measurement happened in the worker:
+    under xdist the controller process holds no CUDA memory of its own, so the
+    number has to arrive on the report."""
+    from unittest.mock import patch
+
+    attributes: dict = {}
+
+    class _StubSpan:
+        def is_recording(self):
+            return True
+
+        def set_attribute(self, key, value):
+            attributes[key] = value
+
+    resource_plugin._worker_durations.clear()
+    gib = 1024**3
+    with patch("opentelemetry.trace.get_current_span", return_value=_StubSpan()):
+        resource_plugin.pytest_runtest_logreport(
+            _report_with_retained("t.py::A::test_leaks", 14 * gib)
+        )
+
+    assert attributes["pytest.cuda_delta_bytes"] == 14 * gib
+
+
+def test_no_retained_attribute_when_the_report_carries_no_measurement() -> None:
+    # CPU jobs and torch-less runs must stamp nothing, so the exporter emits no
+    # series rather than a misleading zero.
+    from unittest.mock import patch
+
+    attributes: dict = {}
+
+    class _StubSpan:
+        def is_recording(self):
+            return True
+
+        def set_attribute(self, key, value):
+            attributes[key] = value
+
+    resource_plugin._worker_durations.clear()
+    with patch("opentelemetry.trace.get_current_span", return_value=_StubSpan()):
+        resource_plugin.pytest_runtest_logreport(
+            _report_with_retained("t.py::A::test_cpu", None)
+        )
+
+    assert "pytest.cuda_delta_bytes" not in attributes
+    # Proves the absence is a decision, not an early bail: the sibling attribute
+    # on the same span was still stamped.
+    assert "pytest.worker_duration_seconds" in attributes
+
+
+class _StubItem:
+    def __init__(self, nodeid: str) -> None:
+        self.nodeid = nodeid
+
+
+class _StubCall:
+    def __init__(self, when: str) -> None:
+        self.when = when
+
+
+class _StubOutcome:
+    def __init__(self, report) -> None:
+        self._report = report
+
+    def get_result(self):
+        return self._report
+
+
+def _drive_makereport(item, call, outcome):
+    """Drive the hookwrapper by hand: run to the yield, then hand it the outcome
+    the way pluggy would."""
+    gen = resource_plugin.pytest_runtest_makereport(item, call)
+    next(gen)
+    try:
+        gen.send(outcome)
+    except StopIteration:
+        pass
+
+
+def test_makereport_attributes_the_delta_from_setup_to_teardown(monkeypatch) -> None:
+    """The worker measures across setup..teardown, so memory a fixture allocated
+    is charged to the test that used it."""
+    gib = 1024**3
+    readings = iter([1 * gib, 15 * gib])
+    monkeypatch.setattr(resource_plugin, "_cuda_allocated_now", lambda: next(readings))
+    resource_plugin._cuda_at_setup.clear()
+
+    item = _StubItem("t.py::A::test_leaks")
+    setup_report = _make_report(item.nodeid, "setup", 0.1)
+    _drive_makereport(item, _StubCall("setup"), _StubOutcome(setup_report))
+    assert setup_report.user_properties == []  # nothing to report yet
+
+    teardown_report = _make_report(item.nodeid, "teardown", 0.05)
+    _drive_makereport(item, _StubCall("teardown"), _StubOutcome(teardown_report))
+    assert teardown_report.user_properties == [
+        (resource_plugin.CUDA_DELTA_PROPERTY, 14 * gib)
+    ]
+    # The per-nodeid entry must not leak across tests.
+    assert item.nodeid not in resource_plugin._cuda_at_setup
+
+
+def test_makereport_reports_nothing_without_cuda(monkeypatch) -> None:
+    monkeypatch.setattr(resource_plugin, "_cuda_allocated_now", lambda: None)
+    resource_plugin._cuda_at_setup.clear()
+
+    item = _StubItem("t.py::A::test_cpu")
+    _drive_makereport(
+        item, _StubCall("setup"), _StubOutcome(_make_report(item.nodeid, "setup", 0.1))
+    )
+    teardown_report = _make_report(item.nodeid, "teardown", 0.05)
+    _drive_makereport(item, _StubCall("teardown"), _StubOutcome(teardown_report))
+    assert teardown_report.user_properties == []
+
+
+def test_makereport_reports_nothing_when_setup_was_never_measured(monkeypatch) -> None:
+    # e.g. the plugin was enabled mid-session, or setup ran on a CPU-only device
+    # that later gained a reading. No baseline means no claim.
+    monkeypatch.setattr(resource_plugin, "_cuda_allocated_now", lambda: 5 * 1024**3)
+    resource_plugin._cuda_at_setup.clear()
+    item = _StubItem("t.py::A::test_orphan")
+    teardown_report = _make_report(item.nodeid, "teardown", 0.05)
+    _drive_makereport(item, _StubCall("teardown"), _StubOutcome(teardown_report))
+    assert teardown_report.user_properties == []

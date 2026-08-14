@@ -90,7 +90,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 7,
+        "h": 4,
         "w": 6,
         "x": 18,
         "y": 0
@@ -141,6 +141,74 @@
         "mode": "html",
         "content": "<iframe title=\"traceback\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var t=encodeURIComponent('${trace_id}');var n='${test_nodeid}';var u=parent.location.protocol+'//'+parent.location.host+'/failure?trace_id='+t;if(n){u+='&test_nodeid='+encodeURIComponent(n);}location.replace(u);</script>\"></iframe>"
       }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Device memory this test still had allocated when it finished, i.e. what the next test in the same pytest process inherits. A multi-GB value here is why later tests in this file can fail asking for a few MiB. Empty for CPU jobs and for runs whose plugin does not report it.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 268435456
+              },
+              {
+                "color": "red",
+                "value": 1073741824
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 18,
+        "y": 4
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "last_over_time(pytest_test_cuda_delta_bytes{test_nodeid=\"$test_nodeid\"}[$__range])",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Memory left for the next test",
+      "type": "stat"
     }
   ],
   "schemaVersion": 41,

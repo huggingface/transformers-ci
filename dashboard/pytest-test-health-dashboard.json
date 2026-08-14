@@ -663,6 +663,140 @@
         }
       ],
       "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Tests that finished still holding device memory, worst first. This is memory handed to the NEXT test in the same pytest process, so a multi-GB entry here is what makes later tests in the same file fail asking for a few MiB. Queried directly rather than via a recording rule: the metric only exists for GPU tests whose run reported it, so the series count is small.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 268435456
+              },
+              {
+                "color": "red",
+                "value": 1073741824
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Retained"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "test_nodeid"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "id": 5,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "refId": "A",
+          "expr": "sort_desc(topk(20, last_over_time(pytest_test_cuda_delta_bytes[8d])))"
+        }
+      ],
+      "title": "Device memory left for the next test (GPU)",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "pr": true,
+              "provider": true,
+              "service_name": true,
+              "status_code": true
+            },
+            "indexByName": {
+              "Value": 0,
+              "test_job": 1,
+              "test_module": 2,
+              "test_class": 3,
+              "test_function": 4
+            },
+            "renameByName": {
+              "Value": "Retained",
+              "test_module": "Module",
+              "test_class": "Class",
+              "test_function": "Function",
+              "test_job": "Job"
+            }
+          }
+        }
+      ],
+      "type": "table"
     }
   ],
   "preload": false,

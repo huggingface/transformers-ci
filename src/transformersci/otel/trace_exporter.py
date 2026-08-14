@@ -1745,33 +1745,42 @@ def extract_trace_rows(
 
         node_parts = split_pytest_nodeid(nodeid)
         exc_type, exc_stacktrace = extract_exception_info(span)
-        rows.append(
-            {
-                "duration_seconds": (
-                    float(span_tags["pytest.worker_duration_seconds"])
-                    if "pytest.worker_duration_seconds" in span_tags
-                    else int(span.get("duration", 0)) / 1_000_000
-                ),
-                "exception_type": exc_type,
-                # The capped stacktrace is consumed here for test_line only; no
-                # metric emits it, so it is deliberately not retained in the row
-                # (it would otherwise bloat the kept rows under high failure
-                # volume — the exporter must stay under ~1G at high volume).
-                "pr": process_pr or "none",
-                "provider": process_provider or "unknown",
-                "run_id": process_run_id or trace_id,
-                "service_name": service_name or "unknown",
-                "status_code": span_tags.get("otel.status_code", "UNSET"),
-                "hardware": process_hardware or hardware_from_job(process_job),
-                "test_class": node_parts["test_class"],
-                "test_function": node_parts["test_function"],
-                "test_line": extract_test_line(exc_stacktrace, nodeid),
-                "test_job": process_job or "unknown",
-                "test_module": node_parts["test_module"],
-                "test_nodeid": nodeid,
-                "trace_id": trace_id,
-            }
-        )
+        # Device memory this test left behind for the next test in its process,
+        # stamped by the pytest plugin (see resource_plugin). Only present on
+        # GPU jobs running a plugin new enough to set it, so the key is added
+        # only when the span carries it and every consumer must use .get() —
+        # an absent value is "unknown", NOT zero.
+        row: dict[str, str | float] = {
+            "duration_seconds": (
+                float(span_tags["pytest.worker_duration_seconds"])
+                if "pytest.worker_duration_seconds" in span_tags
+                else int(span.get("duration", 0)) / 1_000_000
+            ),
+            "exception_type": exc_type,
+            # The capped stacktrace is consumed here for test_line only; no
+            # metric emits it, so it is deliberately not retained in the row
+            # (it would otherwise bloat the kept rows under high failure
+            # volume — the exporter must stay under ~1G at high volume).
+            "pr": process_pr or "none",
+            "provider": process_provider or "unknown",
+            "run_id": process_run_id or trace_id,
+            "service_name": service_name or "unknown",
+            "status_code": span_tags.get("otel.status_code", "UNSET"),
+            "hardware": process_hardware or hardware_from_job(process_job),
+            "test_class": node_parts["test_class"],
+            "test_function": node_parts["test_function"],
+            "test_line": extract_test_line(exc_stacktrace, nodeid),
+            "test_job": process_job or "unknown",
+            "test_module": node_parts["test_module"],
+            "test_nodeid": nodeid,
+            "trace_id": trace_id,
+        }
+        if "pytest.cuda_delta_bytes" in span_tags:
+            try:
+                row["cuda_delta_bytes"] = float(span_tags["pytest.cuda_delta_bytes"])
+            except (TypeError, ValueError):
+                pass
+        rows.append(row)
 
     if not process_repository and process_pr_url:
         process_repository = repository_from_pr_url(process_pr_url)
@@ -2443,10 +2452,15 @@ def extract_per_test_duration_metrics(
     lines = [
         "# HELP pytest_test_duration_seconds Duration of the most recent run of each pytest test span (current state; not keyed by run).",
         "# TYPE pytest_test_duration_seconds gauge",
+        "# HELP pytest_test_cuda_delta_bytes Device memory the most recent run of each test left allocated for the next test in its process. Only emitted for tests whose span carries it (GPU jobs).",
+        "# TYPE pytest_test_cuda_delta_bytes gauge",
     ]
-    # key -> (trace_start_time, duration_seconds). On collision the later run
-    # (higher start time) wins, so the metric reflects the test's latest result.
-    latest: dict[tuple[str, ...], tuple[int, float]] = {}
+    # key -> (trace_start_time, duration_seconds, retained_bytes|None). On
+    # collision the later run (higher start time) wins, so the metric reflects
+    # the test's latest result. Retained memory rides the SAME key on purpose:
+    # per-run labels are what OOM-killed Prometheus (see above), so this metric
+    # must not reintroduce them.
+    latest: dict[tuple[str, ...], tuple[int, float, float | None]] = {}
     for trace_info, rows in extracted:
         trace_start = int(
             trace_info.get("latest_start_time", 0)
@@ -2465,10 +2479,15 @@ def extract_per_test_duration_metrics(
                 str(row["test_nodeid"]),
             )
             duration = float(row["duration_seconds"])
+            retained = row.get("cuda_delta_bytes")
             existing = latest.get(key)
             if existing is None or trace_start >= existing[0]:
-                latest[key] = (trace_start, duration)
-    for key, (_trace_start, duration) in sorted(latest.items()):
+                latest[key] = (
+                    trace_start,
+                    duration,
+                    float(retained) if retained is not None else None,
+                )
+    for key, (_trace_start, duration, retained) in sorted(latest.items()):
         (
             provider,
             service_name,
@@ -2492,6 +2511,10 @@ def extract_per_test_duration_metrics(
         lines.append(
             f"pytest_test_duration_seconds{metric_labels(test_labels)} {duration:.9f}"
         )
+        if retained is not None:
+            lines.append(
+                f"pytest_test_cuda_delta_bytes{metric_labels(test_labels)} {retained:.0f}"
+            )
     return lines
 
 
@@ -3222,6 +3245,10 @@ def extract_average_resource_metrics(
         "# TYPE pytest_test_average_rss_delta_bytes gauge",
         "# HELP pytest_test_average_cuda_peak_allocated_bytes Average peak CUDA allocated bytes across recorded test runs.",
         "# TYPE pytest_test_average_cuda_peak_allocated_bytes gauge",
+        "# HELP pytest_test_average_cuda_delta_bytes Average CUDA allocated bytes a test leaves behind for the next test in its process (retained memory).",
+        "# TYPE pytest_test_average_cuda_delta_bytes gauge",
+        "# HELP pytest_test_average_cuda_delta_after_gc_bytes Average CUDA bytes still allocated after a gc.collect() at test end; non-zero means a live reference, not uncollected garbage. Only present when the gc probe is enabled.",
+        "# TYPE pytest_test_average_cuda_delta_after_gc_bytes gauge",
         "# HELP pytest_test_resource_run_count Number of recorded resource samples for a given test.",
         "# TYPE pytest_test_resource_run_count gauge",
     ]
@@ -3240,6 +3267,8 @@ def extract_average_resource_metrics(
                 "rss_delta_bytes": [],
                 "rss_peak_bytes": [],
                 "cuda_peak_allocated_bytes": [],
+                "cuda_delta_bytes": [],
+                "cuda_delta_after_gc_bytes": [],
                 "test_class": str(record.get("test_class", "")),
                 "test_function": str(record.get("test_function", "")),
                 "test_module": str(record.get("test_module", "")),
@@ -3251,6 +3280,10 @@ def extract_average_resource_metrics(
             "rss_delta_bytes",
             "rss_peak_bytes",
             "cuda_peak_allocated_bytes",
+            # Records written before these fields existed simply have no value
+            # here, so the aggregate stays empty and no series is emitted.
+            "cuda_delta_bytes",
+            "cuda_delta_after_gc_bytes",
         ):
             value = record.get(metric_name)
             metric_values = aggregate[metric_name]
@@ -3282,6 +3315,11 @@ def extract_average_resource_metrics(
             (
                 "cuda_peak_allocated_bytes",
                 "pytest_test_average_cuda_peak_allocated_bytes",
+            ),
+            ("cuda_delta_bytes", "pytest_test_average_cuda_delta_bytes"),
+            (
+                "cuda_delta_after_gc_bytes",
+                "pytest_test_average_cuda_delta_after_gc_bytes",
             ),
         ):
             metric_values = aggregate[metric_name]
