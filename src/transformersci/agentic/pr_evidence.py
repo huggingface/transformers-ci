@@ -31,15 +31,23 @@ from __future__ import annotations
 from urllib.parse import urlencode
 
 # Per-test view of the transformers-ci Grafana stack. `test_nodeid` is a textbox
-# variable, so the node-id alone drives the summary + duration history; the
-# traceback panel additionally wants a `trace_id`, which the callers that have
-# one should pass.
+# variable, so the node-id alone drives the summary, the duration history *and*
+# the traceback panel (which falls back to the newest `trace_id` recorded for the
+# node-id when the link carries none). Callers that already know the trace should
+# still pass it — it pins the panel to that exact run.
 TEST_DASHBOARD = "/d/pytest-test/test"
 
 # The daily integration failures dispatched to Serge all come from this job on
 # main; pinning both keeps the dashboard's own variables consistent.
 DAILY_JOB = "run_models_gpu"
 DAILY_PR = "main"
+
+# The dashboard defaults to `now-24h`, but its failure metadata (exception type,
+# traceback) is scraped per run: a PR body outlives that window and the link would
+# then open on an empty panel. The triage only dispatches tests failing on most of
+# the last 7 days, so a 7d window is the one that matches the data behind it.
+WINDOW_FROM = "now-7d"
+WINDOW_TO = "now"
 
 _LABEL = "Test dashboard"
 
@@ -57,8 +65,12 @@ def grafana_test_url(
 
     ``""`` when either the base URL or the node-id is missing, so an unconfigured
     Grafana simply produces no links rather than a broken one. ``trace_id`` /
-    ``run_id`` are optional: pass them when the caller knows them (they populate
-    the traceback and run panels), omit them for a history-only view.
+    ``run_id`` are optional: pass them when the caller knows them (they pin the
+    traceback and run panels to that run), omit them to let the dashboard resolve
+    the newest failure for the node-id itself.
+
+    The time range is pinned to :data:`WINDOW_FROM` so the link still resolves
+    days after the PR body was written.
     """
     if not base_url or not node_id:
         return ""
@@ -71,6 +83,8 @@ def grafana_test_url(
         params["var-trace_id"] = trace_id
     if run_id:
         params["var-run_id"] = run_id
+    params["from"] = WINDOW_FROM
+    params["to"] = WINDOW_TO
     return f"{base_url.rstrip('/')}{TEST_DASHBOARD}?{urlencode(params)}"
 
 
