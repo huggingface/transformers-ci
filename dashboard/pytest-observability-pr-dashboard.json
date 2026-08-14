@@ -778,7 +778,7 @@
           "query": "label_values(pytest_run_start_time_seconds{}, pr)",
           "refId": "Prometheus-pr-Variable-Query"
         },
-        "refresh": 2,
+        "refresh": 1,
         "sort": 1,
         "type": "query"
       },
@@ -805,7 +805,7 @@
           "refId": "Prometheus-pr_repository-Variable-Query"
         },
         "regex": "/repository=\"([^\"]*)\"/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -833,7 +833,7 @@
           "refId": "Prometheus-pr_author-Variable-Query"
         },
         "regex": "/author=\"([^\"]*)\"/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -861,7 +861,7 @@
           "refId": "Prometheus-pr_title-Variable-Query"
         },
         "regex": "/title=\"([^\"]*)\"/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -889,7 +889,7 @@
           "refId": "Prometheus-pr_state-Variable-Query"
         },
         "regex": "/state=\"([^\"]*)\"/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -917,7 +917,7 @@
           "refId": "Prometheus-pr_html_url-Variable-Query"
         },
         "regex": "/html_url=\"([^\"]*)\"/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -945,7 +945,7 @@
           "refId": "Prometheus-pr_reviewers-Variable-Query"
         },
         "regex": "/reviewers=\"([^\"]*)\"/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -973,7 +973,7 @@
           "refId": "Prometheus-pr_age_days-Variable-Query"
         },
         "regex": "/} (\\d+)/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -1001,7 +1001,7 @@
           "refId": "Prometheus-pr_last_event_hours-Variable-Query"
         },
         "regex": "/} (\\d+)/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -1029,7 +1029,7 @@
           "refId": "Prometheus-pr_total_runs-Variable-Query"
         },
         "regex": "/} (\\d+)/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -1057,7 +1057,7 @@
           "refId": "Prometheus-latest_run_id-Variable-Query"
         },
         "regex": "/.*run_id=\"([^\"]+)\".*/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -1085,7 +1085,7 @@
           "refId": "Prometheus-latest_commit-Variable-Query"
         },
         "regex": "/commit_message=\"([^\"]*)\"/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -1113,7 +1113,7 @@
           "refId": "Prometheus-latest_commit_url-Variable-Query"
         },
         "regex": "/html_url=\"([^\"]*)\"/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -1140,7 +1140,7 @@
           "refId": "Prometheus-branch_label-Variable-Query"
         },
         "regex": "/v=\"([^\"]+)\"/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -1167,7 +1167,7 @@
           "refId": "Prometheus-branch_url-Variable-Query"
         },
         "regex": "/u=\"([^\"]+)\"/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -1194,7 +1194,7 @@
           "refId": "Prometheus-pr_title_section-Variable-Query"
         },
         "regex": "/t=\"([^\"]+)\"/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -1221,7 +1221,7 @@
           "refId": "Prometheus-pr_metadata_section-Variable-Query"
         },
         "regex": "/m=\"([^\"]+)\"/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
@@ -1248,7 +1248,7 @@
           "refId": "Prometheus-pr_state_badge-Variable-Query"
         },
         "regex": "/b=\"([^\"]+)\"/",
-        "refresh": 2,
+        "refresh": 1,
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
