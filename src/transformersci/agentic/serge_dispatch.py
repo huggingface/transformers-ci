@@ -49,6 +49,7 @@ def build_task_payload(
     slack_channel: str | None = None,
     notify_pr_created: bool = True,
     notify_task_finished: bool = False,
+    test_links: dict[str, list[dict[str, str]]] | None = None,
 ) -> dict:
     """Assemble the ``POST /tasks`` body.
 
@@ -56,7 +57,12 @@ def build_task_payload(
     otherwise it opens a new PR on a branch under ``branch_prefix``. The caller
     supplies both ``instruction`` (the trusted task directive) and ``context``
     (the untrusted failure report), keeping this function free of any
-    per-source wording."""
+    per-source wording.
+
+    ``test_links`` (node-id → ``[{label, url}]``, built by
+    :mod:`transformersci.agentic.pr_evidence`) is where each failing test can be
+    watched. Serge renders the entries for the group its patch fixes and knows
+    nothing about what they point at; an older Serge ignores the field."""
     if existing_pr is not None:
         output: dict = {"mode": "existing_pr", "pr_number": existing_pr}
     else:
@@ -74,6 +80,10 @@ def build_task_payload(
     # Serge the tracking issue so it comments the outcome there directly.
     if tracking_issue is not None:
         payload["tracking_issue"] = tracking_issue
+    # Omitted rather than sent empty: no links is the same as no field, and an
+    # absent key keeps the payload readable in the action log.
+    if test_links:
+        payload["test_links"] = test_links
     notifications: dict[str, str | bool] = {
         "pr_created": notify_pr_created,
         "task_finished": notify_task_finished,

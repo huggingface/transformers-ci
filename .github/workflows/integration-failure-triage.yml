@@ -120,6 +120,10 @@ jobs:
           # Was 3 while the reproduce-first loop was being validated in prod; the
           # script default is 20. See docs/plans/serge-reproduce-first.md.
           ITF_MAX_GROUPS: ${{ vars.ITF_MAX_GROUPS || '5' }}
+          # Base URL of the CI observability Grafana. Each Serge task PR body gets
+          # a per-test dashboard link built here (Serge holds no Grafana config —
+          # see src/transformersci/agentic/pr_evidence.py). Unset = no links.
+          ITF_GRAFANA_URL: ${{ vars.ITF_GRAFANA_URL || 'https://transformers-ci.lor-e.huggingface.cool' }}
           SERGE_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
           GITHUB_TOKEN: ${{ github.token }}
           # Hand the tracking issue to a human and (by default) auto-close the

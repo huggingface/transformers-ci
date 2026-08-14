@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import unittest
 from unittest.mock import patch
 
@@ -1492,6 +1493,56 @@ class InstructionAddendumTest(unittest.TestCase):
             "huggingface/transformers", "main", "ctx", "title", fingerprint="f" * 64
         )
         self.assertEqual(bare["instruction"], itf._INSTRUCTION)
+
+
+class PayloadTestLinksTest(unittest.TestCase):
+    """Serge holds no Grafana config: the per-test dashboard links in its PR body
+    are built HERE, where the dashboard UID and its variables are defined."""
+
+    def test_payload_links_every_failing_test_in_the_group(self):
+        target = _target("output_mismatch", n=2, model="gemma3")
+        payload = itf.build_task_payload(
+            "huggingface/transformers",
+            "main",
+            "ctx",
+            "title",
+            fingerprint="f" * 64,
+            target=target,
+            grafana_url="https://grafana.example/",
+        )
+        links = payload["test_links"]
+        self.assertEqual(sorted(links), sorted(f["test"] for f in target["failures"]))
+        url = links["tests/models/gemma3/t.py::T::t0"][0]["url"]
+        self.assertTrue(url.startswith("https://grafana.example/d/pytest-test/test?"))
+        self.assertIn("var-test_nodeid=tests%2Fmodels%2Fgemma3", url)
+        self.assertIn("var-test_job=run_models_gpu", url)
+        self.assertIn("var-pr=main", url)
+
+    def test_no_grafana_url_omits_the_field(self):
+        # An unconfigured deployment dispatches exactly as before: no field, and
+        # Serge renders no link section.
+        payload = itf.build_task_payload(
+            "huggingface/transformers",
+            "main",
+            "ctx",
+            "title",
+            fingerprint="f" * 64,
+            target=_target("output_mismatch"),
+            grafana_url="",
+        )
+        self.assertNotIn("test_links", payload)
+
+    def test_grafana_url_falls_back_to_the_environment(self):
+        with patch.dict(os.environ, {"ITF_GRAFANA_URL": "https://env.example"}):
+            payload = itf.build_task_payload(
+                "huggingface/transformers",
+                "main",
+                "ctx",
+                "title",
+                fingerprint="f" * 64,
+                target=_target("output_mismatch"),
+            )
+        self.assertIn("https://env.example/d/", str(payload["test_links"]))
 
 
 class PartitionTargetsTest(unittest.TestCase):
