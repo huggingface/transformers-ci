@@ -45,6 +45,38 @@ def gh_headers(github_token: str | None) -> dict[str, str]:
     return headers
 
 
+def compare_commits(
+    repo: str, base: str, head: str, github_token: str | None = None
+) -> dict | None:
+    """``GET /repos/{repo}/compare/{base}...{head}``, or ``None`` when the range
+    cannot be resolved.
+
+    Used to size and enumerate the commits between two daily-CI runs. A daily
+    run's commit is **not guaranteed to still exist** — a force-push or a
+    never-landed merge-queue commit leaves a sha that GitHub answers with 422
+    ``No commit found`` (observed for ``918dbf1``, the 2026-08-13 run). That is a
+    normal outcome here, not an error: the caller widens the bracket to a
+    neighbouring day or drops it."""
+    if "/" not in repo:
+        return None
+    owner, name = repo.split("/", 1)
+    url = f"{_API}/repos/{owner}/{name}/compare/{urllib.parse.quote(base)}...{urllib.parse.quote(head)}"
+    req = urllib.request.Request(url, headers=gh_headers(github_token))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code not in (404, 422):
+            print(
+                f"      warning: could not compare {base}...{head}: {e.code}",
+                flush=True,
+            )
+        return None
+    except (urllib.error.URLError, ValueError) as e:
+        print(f"      warning: could not compare {base}...{head}: {e}", flush=True)
+        return None
+
+
 def list_open_pulls(repo: str, github_token: str | None) -> list[dict]:
     """All open PRs for ``repo`` (paginated). Returns ``[]`` on error so the
     caller treats 'could not check' the same as 'no existing PR'."""

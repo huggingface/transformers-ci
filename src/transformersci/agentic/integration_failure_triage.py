@@ -81,6 +81,7 @@ from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError
 
 from .github_api import (
+    compare_commits,
     gh_headers as _gh_headers,
     list_open_pulls,
     match_pr,
@@ -147,6 +148,148 @@ def fetch_last_n(
     api = HfApi(token=os.environ.get("HF_TOKEN"))
     dates = list_recent_dates(api, n)
     return {d: fetch_day(d, cache_dir=cache_dir) for d in dates}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# History — the dataset reaches back years, and it is the only source that can
+# say when a test last *passed*. Three files matter, in rising cost:
+#
+#   new_failures_with_bad_commit_grouped_by_authors.json   ~4 KB   upstream's own
+#       `git bisect` verdict, written the day a failure FIRST appears.
+#   model_results.json                                     ~1.5 MB failures only.
+#   collated_reports_<gpu>-gpu_<sha>.json                  ~25 MB  every test with
+#       an explicit passed | failed | skipped, plus the commit that was tested.
+#
+# The last one is what makes a "good commit" provable: absence from the failure
+# list conflates *passed*, *skipped* and *never ran*. See
+# docs/plans/serge-bisect-culprit-2026-08-16.md in transformers-ci-playbooks.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_COLLATED_RE = re.compile(
+    rf"^(?P<date>\d{{4}}-\d{{2}}-\d{{2}})/{JOB_DIR}/"
+    r"collated_reports_(?P<gpu>[a-z]+)-gpu_(?P<sha>[0-9a-f]{7,40})\.json$"
+)
+
+
+def dataset_index(api: HfApi) -> tuple[list[str], dict[str, dict[str, str]]]:
+    """One repo listing → ``(dates newest-first, {date: {gpu: commit_sha}})``.
+
+    The sha of the tree a given day's CI ran is embedded in the collated
+    report's *filename*, so the whole day→commit map costs a single listing and
+    no downloads."""
+    files = api.list_repo_files(repo_id=CI_DATASET, repo_type="dataset")
+    dates: set[str] = set()
+    shas: dict[str, dict[str, str]] = defaultdict(dict)
+    for f in files:
+        head = f.split("/", 1)[0]
+        try:
+            datetime.date.fromisoformat(head)
+        except ValueError:
+            continue
+        dates.add(head)
+        m = _COLLATED_RE.match(f)
+        if m:
+            shas[m.group("date")][m.group("gpu")] = m.group("sha")
+    return sorted(dates, reverse=True), dict(shas)
+
+
+def fetch_attribution_history(
+    dates: Iterable[str], cache_dir: str | None = None
+) -> dict[str, dict]:
+    """``{date: new_failures}`` for each date, skipping days with no file.
+
+    Deliberately fetches ONLY the attribution file: it is ~4 KB, so walking a
+    month of them is cheaper than one day's ``model_results.json``."""
+    out: dict[str, dict] = {}
+    for date in dates:
+        try:
+            path = hf_hub_download(
+                repo_id=CI_DATASET,
+                repo_type="dataset",
+                filename=f"{date}/{JOB_DIR}/{NEW_FAILURES}",
+                cache_dir=cache_dir,
+            )
+            with open(path) as f:
+                out[date] = json.load(f)
+        except (EntryNotFoundError, OSError, ValueError):
+            continue
+    return out
+
+
+def model_job_produced_results(entry: dict | None) -> bool:
+    """Did this model's job actually run and report on that day?
+
+    A crashed job still gets an entry, but with ``error: true`` and nothing in
+    it — and its tests silently vanish from the failure list. Read as "not
+    failing", that invents a green day: on 2026-08-13 ``models_gpt_oss`` is
+    ``{"success": 0, "skipped": 0, "errors": 0, "error": true, "time_spent": []}``
+    while the same 74 tests are red the day before and the day after."""
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("error"):
+        return False
+    return bool(entry.get("success") or 0)
+
+
+def models_with_results(model_results: dict | None) -> set[str]:
+    """The models whose job produced usable results in one day's report."""
+    return {
+        model_name_from_key(k)
+        for k, e in (model_results or {}).items()
+        if model_job_produced_results(e)
+    }
+
+
+# One parsed collated report is ~130k rows; keep it per (date, gpu) so a whole
+# group of failures sharing a candidate day costs a single download.
+_COLLATED_CACHE: dict[tuple[str, str], dict[str, str] | None] = {}
+
+STATUS_UNAVAILABLE = "unavailable"
+STATUS_ABSENT = "absent"
+
+
+def collated_statuses(
+    date: str, gpu: str, sha: str, cache_dir: str | None = None
+) -> dict[str, str] | None:
+    """``{node-id: status}`` for one day+machine, or ``None`` if unavailable."""
+    key = (date, gpu)
+    if key in _COLLATED_CACHE:
+        return _COLLATED_CACHE[key]
+    out: dict[str, str] | None = None
+    try:
+        path = hf_hub_download(
+            repo_id=CI_DATASET,
+            repo_type="dataset",
+            filename=f"{date}/{JOB_DIR}/collated_reports_{gpu}-gpu_{sha}.json",
+            cache_dir=cache_dir,
+        )
+        with open(path) as f:
+            report = json.load(f)
+        out = {}
+        for group in report.get("results") or []:
+            for row in group.get("results") or []:
+                test = row.get("test")
+                if test:
+                    out[test] = row.get("status") or STATUS_ABSENT
+    except (EntryNotFoundError, OSError, ValueError):
+        out = None
+    _COLLATED_CACHE[key] = out
+    return out
+
+
+def collated_test_status(
+    date: str, gpu: str, sha: str, nodeid: str, cache_dir: str | None = None
+) -> str:
+    """``passed`` / ``failed`` / ``skipped`` / ``absent`` / ``unavailable``.
+
+    ``absent`` is a real answer and NOT a pass: a partially-reported job (or a
+    test that did not exist yet at that commit) leaves the node-id out of the
+    report entirely. 15 of 81 bracket candidates measured on 2026-08-16 were
+    absent rather than green."""
+    statuses = collated_statuses(date, gpu, sha, cache_dir=cache_dir)
+    if statuses is None:
+        return STATUS_UNAVAILABLE
+    return statuses.get(nodeid, STATUS_ABSENT)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -585,8 +728,82 @@ def _index_attribution(new_failures: dict) -> dict[tuple[str, str, str], dict]:
     return out
 
 
-def cluster_failures(filtered: list[dict], new_failures_latest: dict | None) -> dict:
+def _is_pinned(rec: dict) -> bool:
+    return bool(rec.get("status") == _GOOD_STATUS and rec.get("bad_commit"))
+
+
+def index_attribution_history(
+    by_date: dict[str, dict],
+) -> dict[tuple[str, str, str], dict]:
+    """Flatten *many* days of attribution into one `{(model, gpu, test) -> record}`,
+    stamping each with the `attributed_on` day it came from.
+
+    Reading only the newest day (what `cluster_failures` did before this existed)
+    finds nothing for the failures we actually dispatch: a group is kept only
+    once it has been red on >= `--min-days` of the window, while this file is
+    written the day a failure FIRST appears. Measured 2026-08-16: **0 of the 847
+    persistent failures** appear in the latest day's file, while a 30-day walk
+    finds 9 pinned culprits (5-19 days old) and 358 upstream `flaky:` verdicts.
+
+    A pinned record always beats an unpinned one — upstream stops re-bisecting a
+    failure once it has converged, so the pin is usually the oldest record and a
+    newer `flaky:` line must not bury it. Between two records of the same rank,
+    the newer wins."""
+    out: dict[tuple[str, str, str], dict] = {}
+    for date in sorted(by_date):  # ascending: newer records overwrite older
+        for key, rec in _index_attribution(by_date[date] or {}).items():
+            stamped = {**rec, "attributed_on": date}
+            prev = out.get(key)
+            if prev is None or _is_pinned(stamped) or not _is_pinned(prev):
+                out[key] = stamped
+    return out
+
+
+def pins_by_test(
+    attr: dict[tuple[str, str, str], dict],
+) -> dict[tuple[str, str], tuple[str, dict]]:
+    """`{(model, test) -> (gpu, pinned record)}` for every converged bisect."""
+    return {
+        (model, test): (gpu, rec)
+        for (model, gpu, test), rec in attr.items()
+        if _is_pinned(rec)
+    }
+
+
+def lookup_attribution(
+    attr: dict[tuple[str, str, str], dict],
+    key: tuple[str, str, str],
+    pins: dict[tuple[str, str], tuple[str, dict]] | None = None,
+) -> dict | None:
+    """The attribution for one failure, falling back to the SAME test's pin on
+    the other machine type.
+
+    Upstream bisects a newly-failing test on one machine type only, but the daily
+    CI runs most of them on both — so the multi-gpu half of a regression arrives
+    unattributed even though its culprit is already known. On 2026-08-16 that was
+    10 more persistent failures on top of the 9 pinned directly, i.e. the pinned
+    set more than doubles. The record is stamped with `attributed_gpu` so the
+    prompt can say where the pin actually came from."""
+    exact = attr.get(key)
+    if exact is not None and _is_pinned(exact):
+        return exact
+    model, gpu, test = key
+    found = (pins if pins is not None else pins_by_test(attr)).get((model, test))
+    if found is not None and found[0] != gpu:
+        return {**found[1], "attributed_gpu": found[0]}
+    return exact
+
+
+def cluster_failures(
+    filtered: list[dict],
+    new_failures_latest: dict | None,
+    attribution: dict[tuple[str, str, str], dict] | None = None,
+) -> dict:
     """Produce the triage report data structure.
+
+    `attribution` is the multi-day index from `index_attribution_history`; when
+    omitted this falls back to indexing `new_failures_latest` alone (the
+    single-day behaviour, kept so callers and tests can still pass one day).
 
     Returns a dict with keys:
       `clusters`  {bad_commit: {meta..., failures: [...]}}, sorted by size desc
@@ -594,15 +811,20 @@ def cluster_failures(filtered: list[dict], new_failures_latest: dict | None) -> 
       `unpinned`  [failure, ...] (no trustworthy CI attribution found)
       `totals`    {total, clusters, in_clusters, flaky, unpinned}
     """
-    attr = _index_attribution(new_failures_latest or {})
+    attr = (
+        attribution
+        if attribution is not None
+        else _index_attribution(new_failures_latest or {})
+    )
 
     clusters: dict[str, dict] = {}
     flaky: list[dict] = []
     unpinned: list[dict] = []
 
+    pins = pins_by_test(attr)
     for f in filtered:
         key = (f["model"], f["gpu"], f["test"])
-        rec = attr.get(key)
+        rec = lookup_attribution(attr, key, pins)
         trace = f.get("latest_trace") or f.get("trace") or ""
         exc_type, _ = terminal_exception(trace)
         f = {
@@ -615,15 +837,18 @@ def cluster_failures(filtered: list[dict], new_failures_latest: dict | None) -> 
             unpinned.append(f)
             continue
         status = rec.get("status") or ""
+        stamp = {"attributed_on": rec.get("attributed_on")}
         if status.startswith("flaky"):
-            flaky.append({**f, "status": status, "author": rec.get("author")})
+            flaky.append({**f, **stamp, "status": status, "author": rec.get("author")})
             continue
         if status != _GOOD_STATUS:
-            unpinned.append({**f, "status": status, "author": rec.get("author")})
+            unpinned.append(
+                {**f, **stamp, "status": status, "author": rec.get("author")}
+            )
             continue
         bc = rec.get("bad_commit")
         if not bc:
-            unpinned.append({**f, "author": rec.get("author")})
+            unpinned.append({**f, **stamp, "author": rec.get("author")})
             continue
         c = clusters.setdefault(
             bc,
@@ -634,6 +859,8 @@ def cluster_failures(filtered: list[dict], new_failures_latest: dict | None) -> 
                 "merged_by": rec.get("merged_by"),
                 "parent": rec.get("parent"),
                 "job_link": rec.get("job_link"),
+                "attributed_on": rec.get("attributed_on"),
+                "attributed_gpu": rec.get("attributed_gpu"),
                 "failure_excerpt": (rec.get("failure_at_bad_commit") or "").strip(),
                 "failures": [],
             },
@@ -659,6 +886,231 @@ def cluster_failures(filtered: list[dict], new_failures_latest: dict | None) -> 
             "unpinned": len(unpinned),
         },
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bracket — "it passed at X and failed at Y", from the dataset's own history.
+#
+# For the 90% of failures that have been red for as long as the dataset window
+# goes, there is no green day and nothing to say. For the rest this is the whole
+# answer a human would want, and it costs no GPU: the commits between the two
+# ends are the suspects, and when many unrelated models share one bracket the
+# culprit is infrastructure rather than any model's code.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# A bracket wider than this is not worth reporting: old trees stop installing in
+# today's prebaked image and Hub checkpoints drift, so "it passed two months ago"
+# says nothing actionable. Every bracket measured on 2026-08-16 was inside 30d.
+BRACKET_MAX_AGE_DAYS = 30
+
+# Distinct models sharing one bracket before we call it infrastructure. The
+# 2026-08-03 -> 08-04 bracket held 43 failures across 16 unrelated models, and
+# the culprit was a torch/CUDA image bump (transformers#47738).
+_INFRA_MODEL_THRESHOLD = 5
+
+
+def failure_keys_by_day(
+    per_day: dict[str, list[dict]],
+) -> dict[str, set[tuple[str, str, str]]]:
+    """`{date: {(model, gpu, test), ...}}` from `per_day_integration_failures`."""
+    return {
+        date: {(r["model"], r["gpu"], r["test"]) for r in recs}
+        for date, recs in per_day.items()
+    }
+
+
+def build_history(daily: dict[str, dict[str, dict | None]]) -> dict:
+    """Everything the bracket walk needs from the fetched days, computed once."""
+    per_day = per_day_integration_failures(daily)
+    return {
+        "dates": sorted(daily),
+        "failures": failure_keys_by_day(per_day),
+        "ran": {
+            date: models_with_results((payload or {}).get("model_results"))
+            for date, payload in daily.items()
+        },
+    }
+
+
+def find_flip(key: tuple[str, str, str], history: dict) -> tuple[str, str] | None:
+    """`(last_good_day, first_bad_day)` for one failure, or None.
+
+    Walks back from the newest day, ignoring days the model's job produced no
+    results (see `model_job_produced_results` — a crashed job is not a green
+    day), and stops at the first day with data where the test is not red. That
+    day is the good end ONLY if the collated report later confirms it as
+    `passed`; this function just finds the candidate."""
+    model = key[0]
+    dates = history["dates"]
+    failures = history["failures"]
+    ran = history["ran"]
+    first_bad: str | None = None
+    for date in reversed(dates):
+        if model not in ran.get(date, set()):
+            continue  # no usable data that day — neither red nor green
+        if key in failures.get(date, set()):
+            first_bad = date
+        else:
+            break
+    if first_bad is None:
+        return None
+    earlier = [d for d in dates if d < first_bad and model in ran.get(d, set())]
+    if not earlier:
+        return None  # red for the whole window — no good commit to bracket with
+    return earlier[-1], first_bad
+
+
+def _days_between(day: str, today: datetime.date) -> int:
+    try:
+        return (today - datetime.date.fromisoformat(day)).days
+    except ValueError:
+        return 10**6
+
+
+def compute_bracket(
+    failure: dict,
+    history: dict,
+    shas: dict[str, dict[str, str]],
+    *,
+    repo: str,
+    github_token: str | None = None,
+    cache_dir: str | None = None,
+    max_age_days: int = BRACKET_MAX_AGE_DAYS,
+    today: datetime.date | None = None,
+) -> dict | None:
+    """The provable `{good_sha -> bad_sha}` window for one failure, or None.
+
+    Returns None — meaning "say nothing" — whenever any of the four guards fails,
+    because a wrong bracket is worse than no bracket:
+
+    1. no flip inside the window (the common case, ~84% of persistent failures);
+    2. the good day is older than `max_age_days`;
+    3. the collated report does not show the node-id as `passed` that day
+       (`skipped` and `absent` are not passes);
+    4. either day's commit does not resolve, or the two ends are 0 commits apart
+       (same tree, different verdict — that is a flake, not a regression).
+    """
+    key = (failure["model"], failure["gpu"], failure["test"])
+    flip = find_flip(key, history)
+    if flip is None:
+        return None
+    good_day, bad_day = flip
+    today = today or datetime.date.today()
+    if _days_between(good_day, today) > max_age_days:
+        return None
+
+    gpu = failure["gpu"]
+    good_sha = (shas.get(good_day) or {}).get(gpu)
+    bad_sha = (shas.get(bad_day) or {}).get(gpu)
+    if not good_sha or not bad_sha:
+        return None
+
+    status = collated_test_status(
+        good_day, gpu, good_sha, failure["test"], cache_dir=cache_dir
+    )
+    if status != "passed":
+        return None
+
+    cmp = compare_commits(repo, good_sha, bad_sha, github_token)
+    if not cmp:
+        return None
+    commits = cmp.get("total_commits") or 0
+    if commits <= 0:
+        return None
+    return {
+        "good_day": good_day,
+        "good_sha": good_sha,
+        "bad_day": bad_day,
+        "bad_sha": bad_sha,
+        "commits": commits,
+        "compare": f"{_GH}/compare/{good_sha}...{bad_sha}",
+        "subjects": [
+            (c.get("commit") or {}).get("message", "").split("\n")[0][:100]
+            for c in (cmp.get("commits") or [])
+        ],
+        "evidence": (
+            f"collated_reports: `passed` on {good_day} ({good_sha}), "
+            f"`failed` on {bad_day} ({bad_sha})"
+        ),
+    }
+
+
+def target_is_flaky(target: dict) -> bool:
+    """Did upstream CI see any member of this group both pass and fail at one
+    commit? Such a failure has no first-bad commit, so it is never bracketed."""
+    return any(
+        str(f.get("status") or "").startswith("flaky")
+        for f in target.get("failures") or []
+    )
+
+
+def attach_brackets(
+    targets: list[dict],
+    history: dict,
+    shas: dict[str, dict[str, str]],
+    *,
+    repo: str,
+    github_token: str | None = None,
+    cache_dir: str | None = None,
+    max_age_days: int = BRACKET_MAX_AGE_DAYS,
+    today: datetime.date | None = None,
+    max_members: int = 8,
+) -> None:
+    """Set `target["bracket"]` in place for every group that has a provable one.
+
+    A group only gets a bracket when EVERY member checked agrees on the same
+    pair of days: a group whose tests broke at different times is not one
+    regression, and picking one member's window would misdirect the fix. Only
+    the first `max_members` are checked — beyond that the download cost grows
+    without changing the answer.
+
+    Two kinds of group are skipped outright: flaky ones (`target_is_flaky` — a
+    test that flips at one commit has no first-bad commit), and ones that
+    already carry an upstream-pinned `bad_commit`. A pin names the culprit
+    exactly; re-deriving a 20-commit window around it adds noise to the prompt
+    and costs a ~25 MB download to say less."""
+    for t in targets:
+        t["bracket"] = None
+        if target_is_flaky(t):
+            continue
+        if (t.get("cluster") or {}).get("bad_commit"):
+            continue
+        brackets = []
+        for f in (t.get("failures") or [])[:max_members]:
+            b = compute_bracket(
+                f,
+                history,
+                shas,
+                repo=repo,
+                github_token=github_token,
+                cache_dir=cache_dir,
+                max_age_days=max_age_days,
+                today=today,
+            )
+            if b is None:
+                brackets = []
+                break
+            brackets.append(b)
+        if not brackets:
+            continue
+        spans = {(b["good_day"], b["bad_day"]) for b in brackets}
+        if len(spans) == 1:
+            t["bracket"] = brackets[0]
+
+    # Cross-group: one window shared by many unrelated models is infrastructure
+    # (a base-image or dependency bump), not N model bugs.
+    by_span: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for t in targets:
+        b = t.get("bracket")
+        if b:
+            by_span[(b["good_day"], b["bad_day"])].update(
+                f["model"] for f in t.get("failures") or []
+            )
+    for t in targets:
+        b = t.get("bracket")
+        if b:
+            models = by_span[(b["good_day"], b["bad_day"])]
+            b["shared_models"] = sorted(models)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -793,6 +1245,13 @@ def select_dispatch_targets(
     nothing left simply drop out of the rotation, so a single-category pool
     behaves exactly as before.
 
+    Within a category, a group upstream CI already called **flaky** goes last:
+    it is not excluded (a test that fails half the time is still a real bug, and
+    the verdict can be weeks old), but it should not take a slot from a group
+    that has never been seen passing at its own commit. Without this the draw is
+    uniform, so on a pool where ~40% carry a `flaky:` verdict roughly that share
+    of the cap goes to groups serge's own 5x reproduce is most likely to bail on.
+
     The selection is returned in the original priority order for a stable
     within-run dispatch sequence. ``max_groups <= 0`` means no cap."""
     if max_groups <= 0 or len(targets) <= max_groups:
@@ -811,6 +1270,9 @@ def select_dispatch_targets(
         # Which member of a category gets its slot still varies run to run.
         for members in buckets.values():
             rng.shuffle(members)
+    # Stable, so it only breaks ties left by priority order / the shuffle above.
+    for members in buckets.values():
+        members.sort(key=lambda i: target_is_flaky(targets[i]))
     # Best-priority category first, so the rotation opens on the strongest group.
     cats = sorted(buckets, key=lambda c: min(buckets[c]))
     chosen: list[int] = []
@@ -1034,6 +1496,85 @@ def render_report(
     return "\n".join(out)
 
 
+def _flaky_lines(target: dict) -> list[str]:
+    """Warn when upstream CI saw a member of this group pass AND fail at one
+    commit. That is the case where a green run proves nothing, so it has to
+    reach the agent — otherwise a patch that changes nothing relevant gets
+    "confirmed" by a lucky pass."""
+    flaky = [
+        f
+        for f in target.get("failures") or []
+        if str(f.get("status") or "").startswith("flaky")
+    ]
+    if not flaky:
+        return []
+    commits = sorted(
+        {
+            part.rsplit(":", 1)[-1].strip()
+            for part in (str(f.get("status") or "") for f in flaky)
+            if ":" in part
+        }
+    )
+    lines = [
+        f"**Known flaky upstream:** the daily CI ran {len(flaky)} of these tests "
+        "twice at the same commit and got BOTH a pass and a failure.",
+    ]
+    if commits and commits[0]:
+        lines.append(f"- observed at commit: {commits[0]}")
+    lines += [
+        "- a green run therefore does not prove a fix here; look for a real "
+        "cause (ordering, device memory left by an earlier test, a seed, a "
+        "race) rather than adjusting an expected value until it passes.",
+        "- if you cannot find one, say so and change nothing.",
+        "",
+    ]
+    return lines
+
+
+def _bracket_lines(target: dict) -> list[str]:
+    """The "it passed here, it failed there" block, plus a machine-readable copy
+    so a consumer (serge) can act on it without parsing prose."""
+    b = target.get("bracket")
+    if not b:
+        return []
+    shared = b.get("shared_models") or []
+    lines = [
+        "When it broke (from the daily CI's own history):",
+        f"- last seen PASSING on {b['good_day']} at `{b['good_sha']}`",
+        f"- first seen FAILING on {b['bad_day']} at `{b['bad_sha']}`",
+        f"- {b['commits']} commit(s) in between: {b['compare']}",
+        f"- evidence: {b['evidence']}",
+    ]
+    if len(shared) >= _INFRA_MODEL_THRESHOLD:
+        lines += [
+            "",
+            f"**This same window broke {len(shared)} unrelated models** "
+            f"({', '.join(shared[:12])}{'…' if len(shared) > 12 else ''}). A "
+            "single commit breaking that many independent models is almost "
+            "always infrastructure — a base-image, CUDA/torch or dependency "
+            "bump — not a bug in any one model. Check the commit list for such "
+            "a change FIRST; if that is what it is, do not patch the model: "
+            "report it and stop.",
+        ]
+    if b.get("subjects"):
+        lines += ["", "Candidate commits (oldest first):"]
+        lines += [f"  {s}" for s in b["subjects"][:20]]
+    lines += [
+        "",
+        "```serge-bisect",
+        json.dumps(
+            {
+                k: b[k]
+                for k in ("good_day", "good_sha", "bad_day", "bad_sha", "commits")
+            },
+            sort_keys=True,
+        ),
+        "```",
+        "",
+    ]
+    return lines
+
+
 def _render_serge_target(
     target: dict, window_len: int, trace_chars: int = _DEFAULT_TRACE_CHARS
 ) -> list[str]:
@@ -1053,6 +1594,19 @@ def _render_serge_target(
             out.append(
                 f"- author: {c['author']}  (merged by {c.get('merged_by') or '?'})"
             )
+        if c.get("parent"):
+            out.append(f"- last known-good commit: {c['parent']} (its parent)")
+        if c.get("attributed_gpu"):
+            out.append(
+                f"- the bisect ran on the {c['attributed_gpu']}-gpu run of these "
+                "same tests; this group is the other machine type, so confirm the "
+                "same commit explains it here"
+            )
+        if c.get("attributed_on"):
+            out.append(
+                f"- recorded by the daily CI on {c['attributed_on']}; confirm it "
+                "still describes the current failure before relying on it"
+            )
         out.append("")
         modes = Counter(f.get("failure_mode", "other") for f in c["failures"])
         out.append(
@@ -1060,6 +1614,9 @@ def _render_serge_target(
             + ", ".join(f"{m} ({n})" for m, n in modes.most_common())
         )
         out.append("")
+
+    out.extend(_flaky_lines(target))
+    out.extend(_bracket_lines(target))
 
     # Divide the trace budget across the failures that get a full traceback, so
     # the whole section fits Serge's context limit while still carrying real
@@ -2494,6 +3051,31 @@ def main(argv: list[str] | None = None) -> int:
         help="keep failures seen on >= this many days",
     )
     p.add_argument(
+        "--attr-window",
+        type=int,
+        default=int(os.environ.get("ITF_ATTR_WINDOW", "30")),
+        help="how many days of CI bisect attribution to search (4 KB/day). A "
+        "persistent failure was attributed the day it FIRST appeared, which is "
+        "outside --window, so 0 means no attribution is ever found",
+    )
+    p.add_argument(
+        "--no-brackets",
+        dest="brackets",
+        action="store_false",
+        default=os.environ.get("ITF_BRACKETS", "1") not in ("", "0", "false"),
+        help="skip the 'it passed at X, failed at Y' history lookup (which "
+        "downloads one ~25 MB collated report per candidate day)",
+    )
+    p.add_argument(
+        "--bracket-max-age-days",
+        type=int,
+        default=int(
+            os.environ.get("ITF_BRACKET_MAX_AGE_DAYS", str(BRACKET_MAX_AGE_DAYS))
+        ),
+        help="ignore a green day older than this — old trees no longer install "
+        "in the current CI image, so the window is not actionable",
+    )
+    p.add_argument(
         "--cache-dir",
         default=os.environ.get("ITF_CACHE_DIR"),
         help="hf_hub_download cache dir",
@@ -2659,7 +3241,34 @@ def main(argv: list[str] | None = None) -> int:
         "[3/4] Cluster with CI bisect attribution + order failure groups…", flush=True
     )
     nf_latest = daily[max(daily)].get("new_failures")
-    report = cluster_failures(kept, nf_latest)
+    # The attribution for a failure we dispatch was written the day it FIRST
+    # appeared — days or weeks before this run's --window. Search back for it.
+    attribution: dict[tuple[str, str, str], dict] | None = None
+    all_dates: list[str] = []
+    day_shas: dict[str, dict[str, str]] = {}
+    if args.attr_window > 0 or args.brackets:
+        try:
+            api = HfApi(token=os.environ.get("HF_TOKEN"))
+            all_dates, day_shas = dataset_index(api)
+        except Exception as exc:  # noqa: BLE001 — history is best-effort
+            print(f"      warning: could not index the CI dataset: {exc}", flush=True)
+    if args.attr_window > 0 and all_dates:
+        history_days = fetch_attribution_history(
+            all_dates[: args.attr_window], cache_dir=args.cache_dir
+        )
+        attribution = index_attribution_history(history_days)
+        pinned = sum(1 for r in attribution.values() if _is_pinned(r))
+        flaky_n = sum(
+            1
+            for r in attribution.values()
+            if str(r.get("status") or "").startswith("flaky")
+        )
+        print(
+            f"      attribution over {len(history_days)} day(s): {pinned} pinned "
+            f"bad commit(s), {flaky_n} flagged flaky upstream",
+            flush=True,
+        )
+    report = cluster_failures(kept, nf_latest, attribution=attribution)
     targets = pick_targets(report)
     # Hold back groups no minimal patch can fix (runner OOM, missing dependency)
     # BEFORE the --max-groups cap, so they don't spend a dispatch slot on a run
@@ -2700,6 +3309,46 @@ def main(argv: list[str] | None = None) -> int:
             + ", ".join(f"{c} ({n})" for c, n in picked.most_common()),
             flush=True,
         )
+
+    # Only for the groups actually being dispatched: each candidate good day
+    # costs one ~25 MB collated report, and it is the only file that can tell
+    # `passed` from `skipped` / never-ran.
+    if args.brackets and targets and day_shas:
+        # The flip can be older than --window, so the walk needs its own (longer)
+        # span of model_results.json — ~1.5 MB/day, cached across runs.
+        span = max(args.window, args.bracket_max_age_days + 1)
+        try:
+            hist_daily = {
+                d: fetch_day(d, cache_dir=args.cache_dir) for d in all_dates[:span]
+            }
+        except Exception as exc:  # noqa: BLE001 — history is best-effort
+            print(
+                f"      warning: could not read {span}d of history: {exc}", flush=True
+            )
+            hist_daily = daily
+        history = build_history(hist_daily)
+        attach_brackets(
+            targets,
+            history,
+            day_shas,
+            repo=args.repo,
+            github_token=os.environ.get("GITHUB_TOKEN"),
+            cache_dir=args.cache_dir,
+            max_age_days=args.bracket_max_age_days,
+        )
+        bracketed = [t for t in targets if t.get("bracket")]
+        print(
+            f"      history: {len(bracketed)}/{len(targets)} group(s) have a "
+            "provable last-good commit",
+            flush=True,
+        )
+        for t in bracketed:
+            b = t["bracket"]
+            print(
+                f"        {t['label']}: {b['good_sha']} ({b['good_day']}) → "
+                f"{b['bad_sha']} ({b['bad_day']}), {b['commits']} commit(s)",
+                flush=True,
+            )
 
     report_md = render_report(report, targets, window, deferred=deferred)
     if args.report_out:
