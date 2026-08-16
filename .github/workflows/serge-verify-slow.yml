@@ -69,6 +69,11 @@ on:
         required: false
         type: boolean
         default: false
+      memory_probe:
+        description: "Diagnostic: record per-test device memory, including how much survives a gc.collect(), and upload it as an artifact. Off by default — the collect frees memory, so it can stop a memory-related failure from reproducing."
+        required: false
+        type: boolean
+        default: false
       transformersci_ref:
         description: "Ref of huggingface/transformers-ci to install the verdict tool from"
         required: false
@@ -117,6 +122,15 @@ jobs:
         env:
           TRANSFORMERSCI_REF: ${{ inputs.transformersci_ref || 'main' }}
 
+      # The plugin ships in the same package as the verdict tool but under a
+      # different extra, and it auto-activates via its pytest11 entry point. Only
+      # installed when probing so a normal verify run is untouched.
+      - name: Install the resource plugin (transformers-ci[otel])
+        if: ${{ inputs.memory_probe }}
+        run: python3 -m pip install "transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@${TRANSFORMERSCI_REF}"
+        env:
+          TRANSFORMERSCI_REF: ${{ inputs.transformersci_ref || 'main' }}
+
       - name: Prepare reports dir
         working-directory: /transformers
         run: mkdir -p reports && rm -f reports/*.xml
@@ -162,6 +176,8 @@ jobs:
         working-directory: /transformers
         env:
           nodeids: ${{ inputs.test_nodeids }}
+          PYTEST_RESOURCE_METRICS_FILE: ${{ inputs.memory_probe && '/transformers/reports/resource-metrics.jsonl' || '' }}
+          PYTEST_RESOURCE_GC_PROBE: ${{ inputs.memory_probe && '1' || '' }}
         run: |
           # -vv: disables pytest's assertion-diff truncation ("Diff is N characters
           # long"). --showlocals + the serge_showlocals plugin: dump the failing
@@ -200,6 +216,8 @@ jobs:
         working-directory: /transformers
         env:
           nodeids: ${{ inputs.test_nodeids }}
+          PYTEST_RESOURCE_METRICS_FILE: ${{ inputs.memory_probe && '/transformers/reports/resource-metrics.jsonl' || '' }}
+          PYTEST_RESOURCE_GC_PROBE: ${{ inputs.memory_probe && '1' || '' }}
         run: |
           # -vv + --showlocals + serge_showlocals: full diffs and actual-output
           # locals (see the baseline step) for the retry-round feedback serge seeds
@@ -265,6 +283,17 @@ jobs:
           cat reports/verify-result.json
           verdict=$(python3 -c "import json;print(json.load(open('reports/verify-result.json'))['verdict'])")
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+
+      # The JSONL is the readout: this workflow has no OTel endpoint, so the
+      # artifact is the transport. One row per test with cuda_delta_bytes and,
+      # because the probe is on, cuda_delta_after_gc_bytes.
+      - name: Upload memory probe
+        if: ${{ always() && inputs.memory_probe }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: serge-memory-probe-${{ inputs.machine_type }}
+          path: /transformers/reports/resource-metrics.jsonl
+          if-no-files-found: warn
 
       - name: Upload verify result
         if: ${{ always() }}
