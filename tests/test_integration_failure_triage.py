@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
 import os
 import unittest
 from unittest.mock import patch
@@ -1824,6 +1825,411 @@ class TraceBudgetByCategoryTest(unittest.TestCase):
             itf._SERGE_TRACE_BUDGET // itf._CRASH_TRACE_LIMIT,
             itf._SERGE_TRACE_BUDGET // itf._FULL_TRACE_LIMIT,
         )
+
+
+def _attr_day(test, *, status, bad_commit=None, model="foo", gpu="single-gpu"):
+    """One day's `new_failures_with_bad_commit_grouped_by_authors.json`."""
+    return {
+        "someone": {
+            model: {gpu: [{"test": test, "status": status, "bad_commit": bad_commit}]}
+        }
+    }
+
+
+class AttributionHistoryTests(unittest.TestCase):
+    TEST = "tests/models/foo/test_modeling_foo.py::FooIntegrationTest::test_x"
+    KEY = ("foo", "single", TEST)
+
+    def test_walks_back_past_the_window_and_stamps_the_day(self):
+        idx = itf.index_attribution_history(
+            {
+                "2026-08-01": _attr_day(
+                    self.TEST, status=itf._GOOD_STATUS, bad_commit="deadbeef"
+                ),
+                "2026-08-10": {},
+            }
+        )
+        self.assertEqual(idx[self.KEY]["bad_commit"], "deadbeef")
+        self.assertEqual(idx[self.KEY]["attributed_on"], "2026-08-01")
+
+    def test_a_later_flaky_record_does_not_bury_an_earlier_pin(self):
+        # Upstream stops re-bisecting once it converges, so the pin is usually
+        # the OLDER record; newest-wins would throw the culprit away.
+        idx = itf.index_attribution_history(
+            {
+                "2026-08-01": _attr_day(
+                    self.TEST, status=itf._GOOD_STATUS, bad_commit="deadbeef"
+                ),
+                "2026-08-09": _attr_day(self.TEST, status="flaky: passed and failed"),
+            }
+        )
+        self.assertEqual(idx[self.KEY]["bad_commit"], "deadbeef")
+
+    def test_newest_wins_between_two_unpinned_records(self):
+        idx = itf.index_attribution_history(
+            {
+                "2026-08-01": _attr_day(self.TEST, status="flaky: old"),
+                "2026-08-09": _attr_day(self.TEST, status="flaky: new"),
+            }
+        )
+        self.assertEqual(idx[self.KEY]["status"], "flaky: new")
+
+    def test_cluster_failures_uses_the_history_index(self):
+        failure = {
+            "model": "foo",
+            "gpu": "single",
+            "test": self.TEST,
+            "trace": "boom",
+            "latest_trace": "boom",
+        }
+        idx = itf.index_attribution_history(
+            {
+                "2026-08-01": _attr_day(
+                    self.TEST, status=itf._GOOD_STATUS, bad_commit="deadbeef"
+                )
+            }
+        )
+        # The latest day is empty — exactly the production case — so without the
+        # history index this failure is unattributed.
+        plain = itf.cluster_failures([failure], {})
+        self.assertEqual(plain["totals"]["clusters"], 0)
+        withhist = itf.cluster_failures([failure], {}, attribution=idx)
+        self.assertEqual(withhist["totals"]["clusters"], 1)
+        self.assertIn("deadbeef", withhist["clusters"])
+
+
+class CrossGpuAttributionTests(unittest.TestCase):
+    TEST = "tests/models/t5/test_modeling_t5.py::T5ModelIntegrationTests::test_x"
+
+    def setUp(self):
+        self.attr = {
+            ("t5", "single", self.TEST): {
+                "status": itf._GOOD_STATUS,
+                "bad_commit": "9f66415a",
+            }
+        }
+
+    def test_the_other_machine_type_inherits_the_pin(self):
+        # Upstream bisects one machine type; the daily CI runs both, so the
+        # multi-gpu half of the same regression arrives unattributed.
+        rec = itf.lookup_attribution(self.attr, ("t5", "multi", self.TEST))
+        self.assertEqual(rec["bad_commit"], "9f66415a")
+        self.assertEqual(rec["attributed_gpu"], "single")
+
+    def test_the_pinned_machine_type_is_not_stamped(self):
+        rec = itf.lookup_attribution(self.attr, ("t5", "single", self.TEST))
+        self.assertNotIn("attributed_gpu", rec)
+
+    def test_a_different_test_does_not_inherit(self):
+        self.assertIsNone(
+            itf.lookup_attribution(self.attr, ("t5", "multi", "other.py::T::t"))
+        )
+
+    def test_an_unpinned_exact_record_still_loses_to_a_pin_elsewhere(self):
+        self.attr[("t5", "multi", self.TEST)] = {"status": "flaky: x"}
+        rec = itf.lookup_attribution(self.attr, ("t5", "multi", self.TEST))
+        self.assertEqual(rec["bad_commit"], "9f66415a")
+
+    def test_renders_where_the_pin_came_from(self):
+        failure = {
+            "model": "t5",
+            "gpu": "multi",
+            "test": self.TEST,
+            "failure_mode": "other",
+            "days_seen": 7,
+            "latest_trace": "boom",
+        }
+        target = {
+            "kind": "cluster",
+            "label": "c",
+            "failures": [failure],
+            "cluster": {
+                "bad_commit": "9f66415a",
+                "failures": [failure],
+                "attributed_gpu": "single",
+                "attributed_on": "2026-08-05",
+            },
+        }
+        text = "\n".join(itf._render_serge_target(target, 7))
+        self.assertIn("bisect ran on the single-gpu run", text)
+        self.assertIn("2026-08-05", text)
+
+
+class JobProducedResultsTests(unittest.TestCase):
+    def test_a_crashed_job_is_not_a_green_day(self):
+        # 2026-08-13 models_gpt_oss: reported nothing, so its 74 red tests
+        # simply vanished from the failure list.
+        crashed = {
+            "success": 0,
+            "skipped": 0,
+            "errors": 0,
+            "error": True,
+            "time_spent": [],
+        }
+        self.assertFalse(itf.model_job_produced_results(crashed))
+
+    def test_a_real_run_counts(self):
+        self.assertTrue(
+            itf.model_job_produced_results({"success": 141, "error": False})
+        )
+
+    def test_a_job_with_no_successes_does_not_count(self):
+        self.assertFalse(itf.model_job_produced_results({"success": 0, "error": False}))
+        self.assertFalse(itf.model_job_produced_results(None))
+
+
+def _history(days):
+    """days: {date: (models_with_results, {failing keys})}"""
+    return {
+        "dates": sorted(days),
+        "ran": {d: set(v[0]) for d, v in days.items()},
+        "failures": {d: set(v[1]) for d, v in days.items()},
+    }
+
+
+class FindFlipTests(unittest.TestCase):
+    KEY = ("foo", "single", "tests/models/foo/test_modeling_foo.py::F::test_x")
+
+    def test_finds_the_day_it_went_red(self):
+        h = _history(
+            {
+                "2026-08-01": ({"foo"}, set()),
+                "2026-08-02": ({"foo"}, {self.KEY}),
+                "2026-08-03": ({"foo"}, {self.KEY}),
+            }
+        )
+        self.assertEqual(itf.find_flip(self.KEY, h), ("2026-08-01", "2026-08-02"))
+
+    def test_a_day_without_results_is_skipped_not_treated_as_green(self):
+        h = _history(
+            {
+                "2026-08-01": ({"foo"}, {self.KEY}),
+                "2026-08-02": (set(), set()),  # job crashed
+                "2026-08-03": ({"foo"}, {self.KEY}),
+            }
+        )
+        self.assertIsNone(itf.find_flip(self.KEY, h))
+
+    def test_red_for_the_whole_window_has_no_bracket(self):
+        h = _history(
+            {
+                "2026-08-01": ({"foo"}, {self.KEY}),
+                "2026-08-02": ({"foo"}, {self.KEY}),
+            }
+        )
+        self.assertIsNone(itf.find_flip(self.KEY, h))
+
+    def test_green_on_the_newest_day_has_no_bracket(self):
+        h = _history(
+            {
+                "2026-08-01": ({"foo"}, {self.KEY}),
+                "2026-08-02": ({"foo"}, set()),
+            }
+        )
+        self.assertIsNone(itf.find_flip(self.KEY, h))
+
+
+class ComputeBracketTests(unittest.TestCase):
+    NODEID = "tests/models/foo/test_modeling_foo.py::F::test_x"
+    FAILURE = {"model": "foo", "gpu": "single", "test": NODEID}
+    TODAY = datetime.date(2026, 8, 3)
+
+    def setUp(self):
+        self.history = _history(
+            {
+                "2026-08-01": ({"foo"}, set()),
+                "2026-08-02": ({"foo"}, {("foo", "single", self.NODEID)}),
+            }
+        )
+        self.shas = {
+            "2026-08-01": {"single": "good123"},
+            "2026-08-02": {"single": "bad456"},
+        }
+
+    def _run(self, status="passed", compare={"total_commits": 3}, **kw):
+        with (
+            patch.object(itf, "collated_test_status", return_value=status),
+            patch.object(itf, "compare_commits", return_value=compare),
+        ):
+            return itf.compute_bracket(
+                self.FAILURE,
+                self.history,
+                self.shas,
+                repo="huggingface/transformers",
+                today=self.TODAY,
+                **kw,
+            )
+
+    def test_a_confirmed_pass_produces_a_bracket(self):
+        b = self._run()
+        self.assertEqual(b["good_sha"], "good123")
+        self.assertEqual(b["bad_sha"], "bad456")
+        self.assertEqual(b["commits"], 3)
+
+    def test_skipped_is_not_a_pass(self):
+        self.assertIsNone(self._run(status="skipped"))
+
+    def test_absent_from_the_report_is_not_a_pass(self):
+        self.assertIsNone(self._run(status=itf.STATUS_ABSENT))
+
+    def test_an_unresolvable_sha_drops_the_bracket(self):
+        # A daily-CI commit can be force-pushed away (918dbf1 → HTTP 422).
+        self.assertIsNone(self._run(compare=None))
+
+    def test_zero_commits_between_is_a_flake_not_a_regression(self):
+        self.assertIsNone(self._run(compare={"total_commits": 0}))
+
+    def test_a_green_day_older_than_the_cap_is_ignored(self):
+        self.assertIsNone(self._run(max_age_days=0))
+
+    def test_a_missing_day_sha_drops_the_bracket(self):
+        self.shas = {"2026-08-01": {"single": "good123"}}
+        self.assertIsNone(self._run())
+
+
+class BracketRenderingTests(unittest.TestCase):
+    def _target(self, **bracket):
+        base = {
+            "good_day": "2026-08-03",
+            "good_sha": "b3a3603",
+            "bad_day": "2026-08-04",
+            "bad_sha": "ff2421c",
+            "commits": 14,
+            "compare": "https://example/compare",
+            "evidence": "collated_reports: `passed` …",
+            "subjects": ["Update daily CI Docker image to torch 2.13 (#47738)"],
+        }
+        base.update(bracket)
+        return {
+            "kind": "model_failures",
+            "label": "foo",
+            "failures": [],
+            "cluster": None,
+            "bracket": base,
+        }
+
+    def test_emits_a_machine_readable_block(self):
+        text = "\n".join(itf._bracket_lines(self._target()))
+        self.assertIn("```serge-bisect", text)
+        self.assertIn('"good_sha": "b3a3603"', text)
+        self.assertIn("b3a3603", text)
+        self.assertIn("torch 2.13", text)
+
+    def test_many_unrelated_models_reads_as_infrastructure(self):
+        models = [f"m{i}" for i in range(itf._INFRA_MODEL_THRESHOLD)]
+        text = "\n".join(itf._bracket_lines(self._target(shared_models=models)))
+        self.assertIn("infrastructure", text)
+
+    def test_one_model_does_not(self):
+        text = "\n".join(itf._bracket_lines(self._target(shared_models=["foo"])))
+        self.assertNotIn("infrastructure", text)
+
+    def test_no_bracket_renders_nothing(self):
+        self.assertEqual(itf._bracket_lines({"bracket": None}), [])
+
+
+class FlakyHandlingTests(unittest.TestCase):
+    def _group(self, flaky, label="g"):
+        status = "flaky: test both passed and failed …: 0cdd8a19" if flaky else ""
+        return {
+            "kind": "model_failures",
+            "label": label,
+            "model": "foo",
+            "failure_mode": "output_mismatch",
+            "terminal_exc": "AssertionError",
+            "cluster": None,
+            "failures": [
+                {
+                    "model": "foo",
+                    "gpu": "single",
+                    "test": "tests/models/foo/test_modeling_foo.py::F::test_x",
+                    "status": status,
+                }
+            ],
+        }
+
+    def test_flaky_is_warned_about_in_the_task_context(self):
+        text = "\n".join(itf._flaky_lines(self._group(True)))
+        self.assertIn("Known flaky upstream", text)
+        self.assertIn("0cdd8a19", text)
+        self.assertIn("does not prove a fix", text)
+
+    def test_non_flaky_group_says_nothing(self):
+        self.assertEqual(itf._flaky_lines(self._group(False)), [])
+
+    def test_flaky_groups_lose_the_tie_for_a_dispatch_slot(self):
+        targets = [self._group(True, "flaky-a"), self._group(False, "solid-b")]
+        picked = itf.select_dispatch_targets(
+            targets, 1, shuffle=False, mix_categories=True
+        )
+        self.assertEqual([t["label"] for t in picked], ["solid-b"])
+
+    def test_flaky_groups_are_not_excluded_when_there_is_room(self):
+        targets = [self._group(True, "flaky-a"), self._group(False, "solid-b")]
+        picked = itf.select_dispatch_targets(
+            targets, 2, shuffle=False, mix_categories=True
+        )
+        self.assertEqual(len(picked), 2)
+
+    def test_a_flaky_group_is_never_bracketed(self):
+        targets = [self._group(True)]
+        with patch.object(itf, "compute_bracket") as cb:
+            itf.attach_brackets(targets, _history({}), {}, repo="x/y")
+        cb.assert_not_called()
+        self.assertIsNone(targets[0]["bracket"])
+
+
+class AttachBracketsTests(unittest.TestCase):
+    def _group(self, tests):
+        return {
+            "kind": "model_failures",
+            "label": "g",
+            "cluster": None,
+            "failures": [
+                {"model": "foo", "gpu": "single", "test": t, "status": ""}
+                for t in tests
+            ],
+        }
+
+    def test_members_must_agree_on_one_window(self):
+        targets = [self._group(["a", "b"])]
+        brackets = [
+            {"good_day": "2026-08-01", "bad_day": "2026-08-02"},
+            {"good_day": "2026-07-20", "bad_day": "2026-07-21"},
+        ]
+        with patch.object(itf, "compute_bracket", side_effect=brackets):
+            itf.attach_brackets(targets, _history({}), {}, repo="x/y")
+        self.assertIsNone(targets[0]["bracket"])
+
+    def test_one_member_without_a_bracket_drops_the_group(self):
+        targets = [self._group(["a", "b"])]
+        with patch.object(
+            itf,
+            "compute_bracket",
+            side_effect=[{"good_day": "d1", "bad_day": "d2"}, None],
+        ):
+            itf.attach_brackets(targets, _history({}), {}, repo="x/y")
+        self.assertIsNone(targets[0]["bracket"])
+
+    def test_an_already_pinned_group_is_not_bracketed(self):
+        # The pin names the culprit exactly; a 20-commit window around it is
+        # noise, and deriving it costs a ~25 MB download.
+        target = self._group(["a"])
+        target["cluster"] = {"bad_commit": "deadbeef"}
+        with patch.object(itf, "compute_bracket") as cb:
+            itf.attach_brackets([target], _history({}), {}, repo="x/y")
+        cb.assert_not_called()
+        self.assertIsNone(target["bracket"])
+
+    def test_shared_windows_collect_every_model(self):
+        a, b = self._group(["a"]), self._group(["b"])
+        b["failures"][0]["model"] = "bar"
+        window = {"good_day": "d1", "bad_day": "d2"}
+        with patch.object(
+            itf, "compute_bracket", side_effect=[dict(window), dict(window)]
+        ):
+            itf.attach_brackets([a, b], _history({}), {}, repo="x/y")
+        self.assertEqual(a["bracket"]["shared_models"], ["bar", "foo"])
 
 
 if __name__ == "__main__":
