@@ -419,8 +419,12 @@ def test_no_retained_attribute_when_the_report_carries_no_measurement() -> None:
 
 
 class _StubItem:
-    def __init__(self, nodeid: str) -> None:
+    """A real pytest.Item carries `.config`; the makereport hook reads it to
+    decide whether the gc probe runs."""
+
+    def __init__(self, nodeid: str, gc_probe: bool = False) -> None:
         self.nodeid = nodeid
+        self.config = GcProbeConfig(gc_probe)
 
 
 class _StubCall:
@@ -491,3 +495,69 @@ def test_makereport_reports_nothing_when_setup_was_never_measured(monkeypatch) -
     teardown_report = _make_report(item.nodeid, "teardown", 0.05)
     _drive_makereport(item, _StubCall("teardown"), _StubOutcome(teardown_report))
     assert teardown_report.user_properties == []
+
+
+def test_gc_probe_adds_the_after_gc_property_to_the_report(monkeypatch) -> None:
+    """With the probe on, the worker reports BOTH numbers: what the next test
+    inherits, and how much of it survives a collection."""
+    gib = 1024**3
+    readings = iter([1 * gib, 15 * gib, 1 * gib])  # setup, teardown, after gc
+    monkeypatch.setattr(resource_plugin, "_cuda_allocated_now", lambda: next(readings))
+    monkeypatch.setattr(resource_plugin, "gc_probe_enabled", lambda _cfg: True)
+    resource_plugin._cuda_at_setup.clear()
+
+    item = _StubItem("t.py::A::test_collectable")
+    _drive_makereport(
+        item, _StubCall("setup"), _StubOutcome(_make_report(item.nodeid, "setup", 0.1))
+    )
+    report = _make_report(item.nodeid, "teardown", 0.05)
+    _drive_makereport(item, _StubCall("teardown"), _StubOutcome(report))
+
+    props = dict(report.user_properties)
+    # Raw delta is unaffected by the probe: it is recorded before the collect.
+    assert props[resource_plugin.CUDA_DELTA_PROPERTY] == 14 * gib
+    # …and the collection released all of it → a tearDown would fix this test.
+    assert props[resource_plugin.CUDA_DELTA_AFTER_GC_PROPERTY] == 0
+
+
+def test_gc_probe_reports_memory_that_survives_collection(monkeypatch) -> None:
+    gib = 1024**3
+    readings = iter([1 * gib, 15 * gib, 15 * gib])
+    monkeypatch.setattr(resource_plugin, "_cuda_allocated_now", lambda: next(readings))
+    monkeypatch.setattr(resource_plugin, "gc_probe_enabled", lambda _cfg: True)
+    resource_plugin._cuda_at_setup.clear()
+
+    item = _StubItem("t.py::A::test_pinned")
+    _drive_makereport(
+        item, _StubCall("setup"), _StubOutcome(_make_report(item.nodeid, "setup", 0.1))
+    )
+    report = _make_report(item.nodeid, "teardown", 0.05)
+    _drive_makereport(item, _StubCall("teardown"), _StubOutcome(report))
+    # Nothing was freed: a live reference, so no tearDown cleanup can help.
+    assert (
+        dict(report.user_properties)[resource_plugin.CUDA_DELTA_AFTER_GC_PROPERTY]
+        == 14 * gib
+    )
+
+
+def test_after_gc_property_is_stamped_on_the_span() -> None:
+    from unittest.mock import patch
+
+    attributes: dict = {}
+
+    class _StubSpan:
+        def is_recording(self):
+            return True
+
+        def set_attribute(self, key, value):
+            attributes[key] = value
+
+    resource_plugin._worker_durations.clear()
+    report = _make_report("t.py::A::test_pinned", "teardown", 0.05)
+    report.user_properties.append((resource_plugin.CUDA_DELTA_PROPERTY, 14 * 1024**3))
+    report.user_properties.append(
+        (resource_plugin.CUDA_DELTA_AFTER_GC_PROPERTY, 14 * 1024**3)
+    )
+    with patch("opentelemetry.trace.get_current_span", return_value=_StubSpan()):
+        resource_plugin.pytest_runtest_logreport(report)
+    assert attributes["pytest.cuda_delta_after_gc_bytes"] == 14 * 1024**3

@@ -426,6 +426,12 @@ _cuda_at_setup: dict[str, int] = {}
 # The user_property carrying retained device memory from worker to controller.
 CUDA_DELTA_PROPERTY = "cuda_delta_bytes"
 
+# Same channel, for the post-gc.collect() reading when the probe is on. It has to
+# ride the span like the raw delta does: the resource JSONL it also lands in has
+# no transport out of a GitHub runner, so a probe run that only wrote there would
+# produce a number nobody can read.
+CUDA_DELTA_AFTER_GC_PROPERTY = "cuda_delta_after_gc_bytes"
+
 
 def _cuda_allocated_now() -> int | None:
     """CUDA bytes currently allocated, or ``None`` when there is no CUDA to read
@@ -473,6 +479,16 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> Any:
     except Exception:  # pragma: no cover - a failed report is not ours to fix
         return
     report.user_properties.append((CUDA_DELTA_PROPERTY, end - start))
+    if not gc_probe_enabled(item.config):
+        return
+    # Opt-in second reading: how much of that delta survives a collection. It is
+    # what separates "a tearDown would fix this" from "something holds a live
+    # reference and no tearDown can". Taken after the raw number is already
+    # recorded, so enabling the probe cannot change what `cuda_delta_bytes` says.
+    gc.collect()
+    after_gc = _cuda_allocated_now()
+    if after_gc is not None:
+        report.user_properties.append((CUDA_DELTA_AFTER_GC_PROPERTY, after_gc - start))
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
@@ -516,9 +532,15 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     # pytest_runtest_makereport). Absent for CPU jobs and for any run without
     # torch/CUDA, in which case no attribute is set at all — the exporter then
     # emits no series rather than a misleading zero.
-    retained = dict(report.user_properties).get(CUDA_DELTA_PROPERTY)
+    properties = dict(report.user_properties)
+    retained = properties.get(CUDA_DELTA_PROPERTY)
     if isinstance(retained, int):
         span.set_attribute("pytest.cuda_delta_bytes", retained)
+    # Only present when the gc probe ran. Its whole point is to be readable
+    # somewhere, so it rides the span rather than only the untransported JSONL.
+    after_gc = properties.get(CUDA_DELTA_AFTER_GC_PROPERTY)
+    if isinstance(after_gc, int):
+        span.set_attribute("pytest.cuda_delta_after_gc_bytes", after_gc)
 
 
 @pytest.hookimpl(hookwrapper=True)
