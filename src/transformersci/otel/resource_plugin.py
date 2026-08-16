@@ -35,6 +35,7 @@ execution time so dashboards are not misled by xdist queue-wait overhead).
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import sys
@@ -72,6 +73,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store",
         default=None,
         help="Write per-test CPU, RSS, and optional CUDA metrics to the given JSONL file.",
+    )
+    group.addoption(
+        "--resource-gc-probe",
+        action="store_true",
+        default=False,
+        help=(
+            "Also record CUDA memory after a gc.collect() at the end of each test, "
+            "which distinguishes uncollected garbage from a live reference. Off by "
+            "default: collecting mid-run perturbs what is being measured."
+        ),
     )
 
 
@@ -120,10 +131,20 @@ def split_pytest_nodeid(nodeid: str) -> dict[str, str]:
 
 
 class ResourceSampler:
-    def __init__(self) -> None:
+    """Per-test CPU/RSS/CUDA sampling.
+
+    ``gc_probe`` adds one extra measurement: after the raw end-of-test reading,
+    run ``gc.collect()`` and read CUDA memory again. That second number is what
+    separates the two reasons a test leaves device memory behind — see
+    ``cuda_delta_after_gc_bytes`` in :meth:`stop`. It is opt-in because
+    collecting mid-run perturbs the very behaviour we are measuring.
+    """
+
+    def __init__(self, gc_probe: bool = False) -> None:
         if psutil is None:  # pragma: no cover
             raise RuntimeError("psutil is required for pytest resource monitoring")
 
+        self.gc_probe = gc_probe
         self.process = psutil.Process(os.getpid())
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
@@ -174,14 +195,39 @@ class ResourceSampler:
             self.peak_cuda_allocated_bytes, end_cuda_allocated_bytes
         )
 
-        return {
+        metrics: dict[str, float | int] = {
             "cpu_time_seconds": max(0.0, end_cpu_time - self.start_cpu_time),
             "rss_delta_bytes": end_rss_bytes - self.start_rss_bytes,
             "rss_end_bytes": end_rss_bytes,
             "rss_peak_bytes": self.peak_rss_bytes,
             "cuda_end_allocated_bytes": end_cuda_allocated_bytes,
             "cuda_peak_allocated_bytes": self.peak_cuda_allocated_bytes,
+            # Device memory this test hands to the NEXT test in the same process.
+            # The absolute end/peak numbers cannot say who is responsible — every
+            # test after a leaky one looks huge. The delta attributes it. This is
+            # the signal behind the daily OOM groups: a test that retains a
+            # multi-GB model leaves the rest of its file to fail on a full card,
+            # asking for tens of MiB.
+            "cuda_start_allocated_bytes": self.start_cuda_allocated_bytes,
+            "cuda_delta_bytes": end_cuda_allocated_bytes
+            - self.start_cuda_allocated_bytes,
         }
+        if self.gc_probe and self.cuda_available:
+            # Why a test retained memory, not just that it did:
+            #   delta > 0 and after_gc ~ 0  → unreferenced garbage CPython had not
+            #       collected yet. A `cleanup(torch_device, gc_collect=True)` in
+            #       tearDown fixes it.
+            #   delta > 0 and after_gc > 0  → something still HOLDS a reference
+            #       (a class attribute, or a failed test's traceback pinning the
+            #       frame that owns the model). No tearDown cleanup can free that,
+            #       so the fix has to drop the reference itself.
+            gc.collect()
+            after_gc = self._cuda_allocated_bytes()
+            metrics["cuda_end_after_gc_bytes"] = after_gc
+            metrics["cuda_delta_after_gc_bytes"] = (
+                after_gc - self.start_cuda_allocated_bytes
+            )
+        return metrics
 
 
 def metrics_file_path(config: pytest.Config | None = None) -> Path | None:
@@ -196,6 +242,19 @@ def metrics_file_path(config: pytest.Config | None = None) -> Path | None:
     if not raw_path:
         return None
     return Path(raw_path)
+
+
+def gc_probe_enabled(config: pytest.Config | None = None) -> bool:
+    """Whether to take the post-``gc.collect()`` CUDA reading. Env var mirrors the
+    flag so a CI job can turn it on without changing its pytest invocation."""
+    if config is not None and config.getoption("resource_gc_probe", default=False):
+        return True
+    return (os.getenv("PYTEST_RESOURCE_GC_PROBE") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def write_resource_record(item: pytest.Item, metrics: dict[str, float | int]) -> None:
@@ -359,6 +418,62 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 # teardown phase report arrives and the span attribute has been stamped.
 _worker_durations: dict[str, float] = {}
 
+# CUDA bytes allocated when each test's setup began, keyed by nodeid. Lives in
+# the WORKER process (see pytest_runtest_makereport) because that is where the
+# allocations are: under xdist the controller holds no CUDA memory at all.
+_cuda_at_setup: dict[str, int] = {}
+
+# The user_property carrying retained device memory from worker to controller.
+CUDA_DELTA_PROPERTY = "cuda_delta_bytes"
+
+
+def _cuda_allocated_now() -> int | None:
+    """CUDA bytes currently allocated, or ``None`` when there is no CUDA to read
+    (no torch, CPU-only job, or a torch that raises on a driverless box)."""
+    if torch is None:
+        return None
+    try:
+        if not torch.cuda.is_available():
+            return None
+        return int(torch.cuda.memory_allocated())
+    except Exception:  # pragma: no cover - defensive: never break a test run
+        return None
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> Any:
+    """Attach retained device memory to the test's report, worker-side.
+
+    This is the transport, and it has to be this hook. The span is stamped on the
+    *controller* (``pytest_runtest_logreport``), but under pytest-xdist the
+    controller process never allocates CUDA memory — the worker does. So the
+    worker measures here and hands the number over on ``report.user_properties``,
+    which xdist serialises into the controller's copy of the report. It is the
+    same worker→controller hop ``report.duration`` already rides.
+
+    Measured from the start of *setup* to the end of *teardown*, so a fixture that
+    allocates is attributed to the test that used it. No ``gc.collect()`` — the
+    number we want is what the next test actually inherits, not what it would
+    inherit if something collected first.
+    """
+    outcome = yield
+    if call.when == "setup":
+        allocated = _cuda_allocated_now()
+        if allocated is not None:
+            _cuda_at_setup[item.nodeid] = allocated
+        return
+    if call.when != "teardown":
+        return
+    start = _cuda_at_setup.pop(item.nodeid, None)
+    end = _cuda_allocated_now()
+    if start is None or end is None:
+        return
+    try:
+        report = outcome.get_result()
+    except Exception:  # pragma: no cover - a failed report is not ours to fix
+        return
+    report.user_properties.append((CUDA_DELTA_PROPERTY, end - start))
+
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     """Stamp the open test span with the real worker-measured execution time.
@@ -396,6 +511,15 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
 
     span.set_attribute("pytest.worker_duration_seconds", total)
 
+    # Device memory this test leaves behind for the next test in its process,
+    # measured in the worker and carried here on the report (see
+    # pytest_runtest_makereport). Absent for CPU jobs and for any run without
+    # torch/CUDA, in which case no attribute is set at all — the exporter then
+    # emits no series rather than a misleading zero.
+    retained = dict(report.user_properties).get(CUDA_DELTA_PROPERTY)
+    if isinstance(retained, int):
+        span.set_attribute("pytest.cuda_delta_bytes", retained)
+
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> Any:
@@ -403,7 +527,7 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
         yield
         return
 
-    sampler = ResourceSampler()
+    sampler = ResourceSampler(gc_probe=gc_probe_enabled(item.config))
     sampler.start()
     outcome = yield
     metrics = sampler.stop()
