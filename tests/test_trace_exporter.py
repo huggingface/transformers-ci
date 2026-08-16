@@ -3699,3 +3699,40 @@ def test_no_retained_memory_metric_for_tests_that_did_not_report_it() -> None:
     assert metric_lines(metrics, "pytest_test_cuda_delta_bytes") == []
     # …while the duration metric it shares a key with is unaffected.
     assert len(metric_lines(metrics, "pytest_test_duration_seconds")) == 1
+
+
+def test_after_gc_delta_rides_the_span_and_gets_its_own_metric() -> None:
+    """The gc probe's answer has to be readable somewhere. It only lands in the
+    resource JSONL otherwise, which CI never writes and nothing transports."""
+    gib = 1024**3
+    span = _span_with_retained_memory("t.py::A::test_pinned", 14 * gib)
+    span["tags"].append(make_tag("pytest.cuda_delta_after_gc_bytes", str(14 * gib)))
+    trace = make_trace(
+        trace_id="t-pin", run_id="run-pin", job="run_models_gpu", spans=[span]
+    )
+    _info, rows = trace_exporter.extract_trace_rows(trace)
+    assert rows[0]["cuda_delta_after_gc_bytes"] == float(14 * gib)
+
+    lines = metric_lines(
+        trace_exporter.extract_per_test_duration_metrics([trace]),
+        "pytest_test_cuda_delta_after_gc_bytes",
+    )
+    assert len(lines) == 1
+    assert lines[0].endswith(f" {14 * gib}")
+
+
+def test_raw_delta_without_the_probe_emits_no_after_gc_series() -> None:
+    # The probe is opt-in, so most runs carry only the raw delta. An absent
+    # after-gc value must not become 0 — that would read as "a tearDown fixes
+    # this", the opposite of what we know.
+    trace = make_trace(
+        trace_id="t-raw",
+        run_id="run-raw",
+        job="run_models_gpu",
+        spans=[_span_with_retained_memory("t.py::A::test_raw", 3 * 1024**3)],
+    )
+    _info, rows = trace_exporter.extract_trace_rows(trace)
+    assert "cuda_delta_after_gc_bytes" not in rows[0]
+    metrics = trace_exporter.extract_per_test_duration_metrics([trace])
+    assert metric_lines(metrics, "pytest_test_cuda_delta_after_gc_bytes") == []
+    assert len(metric_lines(metrics, "pytest_test_cuda_delta_bytes")) == 1

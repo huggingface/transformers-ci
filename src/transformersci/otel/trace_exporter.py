@@ -1775,11 +1775,15 @@ def extract_trace_rows(
             "test_nodeid": nodeid,
             "trace_id": trace_id,
         }
-        if "pytest.cuda_delta_bytes" in span_tags:
-            try:
-                row["cuda_delta_bytes"] = float(span_tags["pytest.cuda_delta_bytes"])
-            except (TypeError, ValueError):
-                pass
+        for tag, field in (
+            ("pytest.cuda_delta_bytes", "cuda_delta_bytes"),
+            ("pytest.cuda_delta_after_gc_bytes", "cuda_delta_after_gc_bytes"),
+        ):
+            if tag in span_tags:
+                try:
+                    row[field] = float(span_tags[tag])
+                except (TypeError, ValueError):
+                    pass
         rows.append(row)
 
     if not process_repository and process_pr_url:
@@ -2454,13 +2458,15 @@ def extract_per_test_duration_metrics(
         "# TYPE pytest_test_duration_seconds gauge",
         "# HELP pytest_test_cuda_delta_bytes Device memory the most recent run of each test left allocated for the next test in its process. Only emitted for tests whose span carries it (GPU jobs).",
         "# TYPE pytest_test_cuda_delta_bytes gauge",
+        "# HELP pytest_test_cuda_delta_after_gc_bytes Of that retained memory, how much survives a gc.collect(). Near zero means uncollected garbage a tearDown would free; a large value means a live reference no tearDown can free. Only emitted when the pytest gc probe is enabled.",
+        "# TYPE pytest_test_cuda_delta_after_gc_bytes gauge",
     ]
-    # key -> (trace_start_time, duration_seconds, retained_bytes|None). On
+    # key -> (trace_start_time, duration_seconds, retained|None, after_gc|None). On
     # collision the later run (higher start time) wins, so the metric reflects
     # the test's latest result. Retained memory rides the SAME key on purpose:
     # per-run labels are what OOM-killed Prometheus (see above), so this metric
     # must not reintroduce them.
-    latest: dict[tuple[str, ...], tuple[int, float, float | None]] = {}
+    latest: dict[tuple[str, ...], tuple[int, float, float | None, float | None]] = {}
     for trace_info, rows in extracted:
         trace_start = int(
             trace_info.get("latest_start_time", 0)
@@ -2480,14 +2486,16 @@ def extract_per_test_duration_metrics(
             )
             duration = float(row["duration_seconds"])
             retained = row.get("cuda_delta_bytes")
+            after_gc = row.get("cuda_delta_after_gc_bytes")
             existing = latest.get(key)
             if existing is None or trace_start >= existing[0]:
                 latest[key] = (
                     trace_start,
                     duration,
                     float(retained) if retained is not None else None,
+                    float(after_gc) if after_gc is not None else None,
                 )
-    for key, (_trace_start, duration, retained) in sorted(latest.items()):
+    for key, (_trace_start, duration, retained, after_gc) in sorted(latest.items()):
         (
             provider,
             service_name,
@@ -2514,6 +2522,10 @@ def extract_per_test_duration_metrics(
         if retained is not None:
             lines.append(
                 f"pytest_test_cuda_delta_bytes{metric_labels(test_labels)} {retained:.0f}"
+            )
+        if after_gc is not None:
+            lines.append(
+                f"pytest_test_cuda_delta_after_gc_bytes{metric_labels(test_labels)} {after_gc:.0f}"
             )
     return lines
 
