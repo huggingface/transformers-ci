@@ -561,3 +561,15 @@ def test_after_gc_property_is_stamped_on_the_span() -> None:
     with patch("opentelemetry.trace.get_current_span", return_value=_StubSpan()):
         resource_plugin.pytest_runtest_logreport(report)
     assert attributes["pytest.cuda_delta_after_gc_bytes"] == 14 * 1024**3
+
+
+def test_empty_env_values_mean_off(monkeypatch) -> None:
+    """serge-verify-slow passes these as empty strings when its memory_probe
+    input is false (`${{ inputs.memory_probe && '1' || '' }}`), so empty MUST
+    read as disabled — otherwise a normal verify run would start sampling and
+    collecting."""
+    monkeypatch.setenv("PYTEST_RESOURCE_GC_PROBE", "")
+    monkeypatch.setenv("PYTEST_RESOURCE_METRICS_FILE", "")
+    monkeypatch.delenv("TRANSFORMERS_TEST_RESOURCE_METRICS_FILE", raising=False)
+    assert resource_plugin.gc_probe_enabled(None) is False
+    assert resource_plugin.metrics_file_path(None) is None
