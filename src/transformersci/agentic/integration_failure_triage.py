@@ -1945,6 +1945,39 @@ def _render_deferred_section(deferred: list[dict] | None) -> list[str]:
     return lines
 
 
+_LABEL_MODEL_LIMIT = 3
+
+
+def group_label(target: dict) -> str:
+    """Human-readable name for one failure group, for the issue tables.
+
+    A `model_failures` group is just its model. A bad-commit cluster used to
+    render as ``cluster `254e4b6e7cd9` `` (and as ``—`` in the outcome recap),
+    which tells a reader nothing about what is actually broken — a commit sha is
+    only meaningful once you have already looked it up. Name the affected
+    model(s) and say what regressed them instead:
+
+        `florence2` (regressed by PR #46556)
+        `glm`, `phi3`, `t5` +4 more (regressed by commit 254e4b6e)
+    """
+    if target.get("model"):
+        return f"`{target['model']}`"
+    models = sorted(
+        {f["model"] for f in target.get("failures") or [] if f.get("model")}
+    )
+    shown = ", ".join(f"`{m}`" for m in models[:_LABEL_MODEL_LIMIT])
+    if len(models) > _LABEL_MODEL_LIMIT:
+        shown += f" +{len(models) - _LABEL_MODEL_LIMIT} more"
+    cluster = target.get("cluster") or {}
+    if not shown:
+        shown = "unknown model"
+    if cluster.get("pr_number"):
+        return f"{shown} (regressed by PR #{cluster['pr_number']})"
+    if cluster.get("bad_commit"):
+        return f"{shown} (regressed by commit {cluster['bad_commit'][:8]})"
+    return shown
+
+
 def _render_outcome_recap(
     targets: list[dict],
     existing_prs: dict[str, int | None],
@@ -1963,7 +1996,7 @@ def _render_outcome_recap(
         distilled = details.get(fp)
         if not distilled:
             continue
-        model_cell = f"`{target['model']}`" if target.get("model") else "—"
+        model_cell = group_label(target)
         spend = f"{_fmt_tokens(distilled.get('prompt_tokens'))} / {_fmt_tokens(distilled.get('completion_tokens'))}"
         cells = [
             model_cell,
@@ -2062,12 +2095,7 @@ def render_tracking_issue_body(
     ]
     for target in targets:
         fp = target_fingerprint(target)
-        if target.get("model"):
-            model_cell = f"`{target['model']}`"
-        elif target.get("cluster"):
-            model_cell = f"cluster `{target['cluster']['bad_commit'][:12]}`"
-        else:
-            model_cell = "—"
+        model_cell = group_label(target)
         summary = signature_summary(target["failures"])
         mode = target.get("failure_mode") or "mixed"
         error_cell = f"{mode} — {summary}" if summary else mode

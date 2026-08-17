@@ -1898,6 +1898,57 @@ class AttributionHistoryTests(unittest.TestCase):
         self.assertIn("deadbeef", withhist["clusters"])
 
 
+class GroupLabelTests(unittest.TestCase):
+    """The issue tables used to show a bare `cluster <sha>` (and `—` in the
+    recap), which says nothing about what is broken."""
+
+    def _cluster(self, models, **cluster):
+        failures = [
+            {"model": m, "gpu": "single", "test": f"tests/models/{m}/t.py::T::t"}
+            for m in models
+        ]
+        return {
+            "kind": "cluster",
+            "label": "N integration tests regressed by commit deadbeefcafe",
+            "model": None,
+            "failures": failures,
+            "cluster": {"bad_commit": "deadbeefcafe1234", **cluster},
+        }
+
+    def test_a_model_group_is_just_its_model(self):
+        self.assertEqual(
+            itf.group_label({"model": "whisper", "failures": []}), "`whisper`"
+        )
+
+    def test_a_cluster_names_the_model_and_the_pr(self):
+        label = itf.group_label(self._cluster(["florence2"], pr_number=46556))
+        self.assertEqual(label, "`florence2` (regressed by PR #46556)")
+
+    def test_a_cluster_without_a_pr_falls_back_to_the_commit(self):
+        self.assertEqual(
+            itf.group_label(self._cluster(["florence2"])),
+            "`florence2` (regressed by commit deadbeef)",
+        )
+
+    def test_many_models_are_capped(self):
+        label = itf.group_label(self._cluster(["a", "b", "c", "d", "e"], pr_number=1))
+        self.assertEqual(label, "`a`, `b`, `c` +2 more (regressed by PR #1)")
+
+    def test_no_sha_is_never_shown_alone(self):
+        for target in (
+            self._cluster(["florence2"], pr_number=46556),
+            self._cluster(["florence2"]),
+        ):
+            self.assertNotIn("cluster ", itf.group_label(target))
+            self.assertIn("florence2", itf.group_label(target))
+
+    def test_a_group_with_no_model_at_all_still_renders(self):
+        self.assertEqual(
+            itf.group_label({"kind": "cluster", "failures": [], "cluster": {}}),
+            "unknown model",
+        )
+
+
 class CrossGpuAttributionTests(unittest.TestCase):
     TEST = "tests/models/t5/test_modeling_t5.py::T5ModelIntegrationTests::test_x"
 
