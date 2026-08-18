@@ -1872,6 +1872,61 @@ def _plural(n: int, noun: str) -> str:
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
 
 
+_EVIDENCE_LINK_CAP = 3
+
+
+def _test_label(node_id: str) -> str:
+    """Shortest name that still identifies a test in a table cell: the node-id's
+    last segment (``…::TestClass::test_x`` -> ``test_x``). Full node-ids are far
+    too long to sit inline, and the model/class is already in the row."""
+    return node_id.rsplit("::", 1)[-1] or node_id
+
+
+def _evidence_cell(target: dict, grafana_url: str) -> str:
+    """Dashboard deep-links to the failing tests of one group, for a table cell.
+
+    Groups that end without a PR — an environment classification, a deferred OOM,
+    a failed task — are exactly the ones a human has to pick up, and the issue
+    used to name the tests without linking them, leaving the reader to search the
+    dashboard by hand. Each link resolves its own newest failure for that node-id
+    (no trace-id needed), so it still works days later.
+
+    ``—`` when Grafana is unconfigured or no node-id yields a URL, which keeps
+    the column harmless in environments that have no dashboard."""
+    if not grafana_url:
+        return "—"
+    links: list[str] = []
+    seen: set[str] = set()
+    for failure in target.get("failures") or []:
+        node_id = (failure.get("test") or "").strip()
+        if not node_id or node_id in seen:
+            continue
+        seen.add(node_id)
+        url = pr_evidence.grafana_test_url(grafana_url, node_id)
+        if url:
+            links.append(f"[{_test_label(node_id)}]({url})")
+    if not links:
+        return "—"
+    shown = links[:_EVIDENCE_LINK_CAP]
+    hidden = len(links) - len(shown)
+    if hidden > 0:
+        shown.append(f"+{hidden} more")
+    return " · ".join(shown)
+
+
+def _first_test_url(target: dict, grafana_url: str) -> str:
+    """Dashboard URL for the group's first failing test, or ``""``."""
+    if not grafana_url:
+        return ""
+    for failure in target.get("failures") or []:
+        url = pr_evidence.grafana_test_url(
+            grafana_url, (failure.get("test") or "").strip()
+        )
+        if url:
+            return url
+    return ""
+
+
 def _split_oom(deferred: list[dict]) -> tuple[list[dict], list[dict]]:
     """Split deferred groups into ``(oom, other)``, OOM ranked worst-first.
 
@@ -1888,10 +1943,18 @@ def _split_oom(deferred: list[dict]) -> tuple[list[dict], list[dict]]:
     return sorted(oom, key=lambda t: (-len(t["failures"]), t["model"])), other
 
 
-def _oom_sentence(oom: list[dict]) -> str:
-    """One line for the whole OOM bucket: ``N models OOMed … `model` (hits)``."""
+def _oom_sentence(oom: list[dict], grafana_url: str = "") -> str:
+    """One line for the whole OOM bucket: ``N models OOMed … `model` (hits)``.
+
+    Each model name links to one of its failing tests when Grafana is
+    configured — this bucket is collapsed precisely because nobody acts on it,
+    so the one thing it owes a reader is a way in."""
     total = sum(len(t["failures"]) for t in oom)
-    names = [f"`{t['model']}` ({len(t['failures'])})" for t in oom[:_OOM_MODEL_CAP]]
+    names = []
+    for t in oom[:_OOM_MODEL_CAP]:
+        url = _first_test_url(t, grafana_url)
+        name = f"[`{t['model']}`]({url})" if url else f"`{t['model']}`"
+        names.append(f"{name} ({len(t['failures'])})")
     hidden = len(oom) - len(names)
     if hidden > 0:
         names.append(f"… and {hidden} more")
@@ -1902,7 +1965,9 @@ def _oom_sentence(oom: list[dict]) -> str:
     )
 
 
-def _render_deferred_section(deferred: list[dict] | None) -> list[str]:
+def _render_deferred_section(
+    deferred: list[dict] | None, grafana_url: str = ""
+) -> list[str]:
     """Groups held back from dispatch because no minimal source patch can fix
     them (see :func:`env_only_reason`) — surfaced for a human rather than silently
     dropped. Empty when there are none. OOM groups collapse to one line (see
@@ -1923,12 +1988,12 @@ def _render_deferred_section(deferred: list[dict] | None) -> list[str]:
         "them. They need a human (runner capacity, a dependency pin).",
     ]
     if oom:
-        lines += ["", _oom_sentence(oom)]
+        lines += ["", _oom_sentence(oom, grafana_url)]
     if other:
         lines += [
             "",
-            "| Model | Error | Occurrences | Why not dispatched |",
-            "| --- | --- | --- | --- |",
+            "| Model | Error | Occurrences | Why not dispatched | Failing tests |",
+            "| --- | --- | --- | --- | --- |",
         ]
         for target in other:
             model_cell = f"`{target['model']}`" if target.get("model") else "—"
@@ -1940,6 +2005,7 @@ def _render_deferred_section(deferred: list[dict] | None) -> list[str]:
                 error_cell,
                 str(len(target["failures"])),
                 target.get("defer_reason") or "not fixable by a patch",
+                _evidence_cell(target, grafana_url),
             ]
             lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
     return lines
@@ -1982,6 +2048,7 @@ def _render_outcome_recap(
     targets: list[dict],
     existing_prs: dict[str, int | None],
     details: dict[str, dict] | None,
+    grafana_url: str = "",
 ) -> list[str]:
     """Recap lines for groups that produced NO PR (no_fix/error): the reason and
     the token spend, which are otherwise only visible in the Serge dashboard.
@@ -2003,6 +2070,7 @@ def _render_outcome_recap(
             distilled.get("reason") or "—",
             f"`{distilled['model']}`" if distilled.get("model") else "—",
             spend,
+            _evidence_cell(target, grafana_url),
         ]
         rows.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
         normalizer_blocks += _render_normalizer_block(
@@ -2015,10 +2083,12 @@ def _render_outcome_recap(
         "## Outcome recap",
         "",
         "Why each group that opened no PR ended without one, and what it cost — "
-        "surfaced here from the Serge dashboard.",
+        "surfaced here from the Serge dashboard. **Failing tests** links straight "
+        "to each test's dashboard view, since these are the groups a human has to "
+        "pick up.",
         "",
-        "| Group | Reason | LLM | Tokens (in / out) |",
-        "| --- | --- | --- | --- |",
+        "| Group | Reason | LLM | Tokens (in / out) | Failing tests |",
+        "| --- | --- | --- | --- | --- |",
         *rows,
         *normalizer_blocks,
     ]
@@ -2064,15 +2134,24 @@ def render_tracking_issue_body(
     details: dict[str, dict] | None = None,
     carry_rows: list[str] | None = None,
     deferred: list[dict] | None = None,
+    grafana_url: str | None = None,
 ) -> str:
     """Markdown body for the per-run tracking issue. When a group already has an
     open Serge PR (a follow-up), its number is written inline as ``#<pr>`` — that
     both renders as a link here and registers a cross-reference on the PR, so the
     issue links the PRs directly rather than relying on the PR body. Groups whose
     PR Serge opens asynchronously show their branch until a later run resolves
-    the number (a follow-up next time)."""
+    the number (a follow-up next time).
+
+    ``grafana_url`` (default: ``$ITF_GRAFANA_URL``, same source as the dispatch
+    payload's ``test_links``) adds a per-test dashboard link to the groups that
+    ended WITHOUT a PR — the outcome recap and the deferred section. Those are
+    the rows whose next step is a human opening the failure, and they used to
+    name the tests without linking them. Unset, the columns render ``—``."""
     existing_prs = existing_prs or {}
     statuses = statuses or {}
+    if grafana_url is None:
+        grafana_url = (os.environ.get("ITF_GRAFANA_URL") or "").strip()
     win = f"{window[0]} → {window[-1]}" if window else "?"
     lines = [
         tracking_issue_marker(run_key),
@@ -2115,8 +2194,8 @@ def render_tracking_issue_body(
     # a re-run's shuffled groups don't drop them (and their PR links) from the table.
     for row in carry_rows or []:
         lines.append(row)
-    lines += _render_deferred_section(deferred)
-    lines += _render_outcome_recap(targets, existing_prs, details)
+    lines += _render_deferred_section(deferred, grafana_url)
+    lines += _render_outcome_recap(targets, existing_prs, details, grafana_url)
     lines += [
         "",
         f"_Generated {datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()}._",
