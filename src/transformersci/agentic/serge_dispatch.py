@@ -50,6 +50,7 @@ def build_task_payload(
     notify_pr_created: bool = True,
     notify_task_finished: bool = False,
     test_links: dict[str, list[dict[str, str]]] | None = None,
+    reviewers: list[str] | None = None,
 ) -> dict:
     """Assemble the ``POST /tasks`` body.
 
@@ -62,7 +63,12 @@ def build_task_payload(
     ``test_links`` (node-id → ``[{label, url}]``, built by
     :mod:`transformersci.agentic.pr_evidence`) is where each failing test can be
     watched. Serge renders the entries for the group its patch fixes and knows
-    nothing about what they point at; an older Serge ignores the field."""
+    nothing about what they point at; an older Serge ignores the field.
+
+    ``reviewers`` (GitHub logins) are requested on the PR Serge opens. The
+    dispatcher decides who is relevant — it is the side that knows *why* these
+    tests fail — and Serge only forwards the request, dropping anything
+    malformed. An older Serge ignores the field."""
     if existing_pr is not None:
         output: dict = {"mode": "existing_pr", "pr_number": existing_pr}
     else:
@@ -84,6 +90,8 @@ def build_task_payload(
     # absent key keeps the payload readable in the action log.
     if test_links:
         payload["test_links"] = test_links
+    if reviewers:
+        payload["reviewers"] = list(reviewers)
     notifications: dict[str, str | bool] = {
         "pr_created": notify_pr_created,
         "task_finished": notify_task_finished,

@@ -1565,6 +1565,64 @@ class PayloadTestLinksTest(unittest.TestCase):
         self.assertIn("https://env.example/d/", str(payload["test_links"]))
 
 
+class RegressionReviewerTest(unittest.TestCase):
+    """When CI's bisect pinned the regression to a commit, its author is the one
+    person who knows what that change meant to do — so the fix PR asks them for
+    the review instead of waiting to be noticed."""
+
+    def _clustered(self, author, pr_number=46556):
+        target = _target("output_mismatch", model="florence2")
+        target["cluster"] = {
+            "bad_commit": "254e4b6e7cd9",
+            "pr_number": pr_number,
+            "author": author,
+            "merged_by": "someone-else",
+        }
+        return target
+
+    def test_payload_requests_the_blamed_commits_author(self):
+        payload = itf.build_task_payload(
+            "huggingface/transformers",
+            "main",
+            "ctx",
+            "title",
+            fingerprint="f" * 64,
+            target=self._clustered("ArthurZucker"),
+            grafana_url="",
+        )
+        self.assertEqual(payload["reviewers"], ["ArthurZucker"])
+
+    def test_unattributed_groups_request_nobody(self):
+        # A `model_failures` group has no cluster, and an unconverged bisect
+        # leaves the author null — the PR then keeps whatever the repo's own
+        # reviewer routing decides.
+        for target in (
+            _target("output_mismatch"),
+            self._clustered(None),
+            self._clustered(""),
+        ):
+            payload = itf.build_task_payload(
+                "huggingface/transformers",
+                "main",
+                "ctx",
+                "title",
+                fingerprint="f" * 64,
+                target=target,
+                grafana_url="",
+            )
+            self.assertNotIn("reviewers", payload)
+
+    def test_bot_authors_are_dropped(self):
+        # A bot cannot review, and GitHub 422s the whole request when one login
+        # is invalid — which would take any real reviewer down with it.
+        self.assertEqual(
+            itf.regression_reviewers(self._clustered("dependabot[bot]")), []
+        )
+
+    def test_no_target_is_safe(self):
+        self.assertEqual(itf.regression_reviewers(None), [])
+
+
 # Real CUDA OOM messages from the 2026-08-14 daily run (see
 # docs/plans/serge-oom-retention.md). The numbers are what make these two the
 # same label and different bugs.
