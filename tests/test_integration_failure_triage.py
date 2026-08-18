@@ -1792,6 +1792,102 @@ class PartitionTargetsTest(unittest.TestCase):
         self.assertIn("`dep`", rows[0])
 
 
+class UnresolvedGroupEvidenceLinksTest(unittest.TestCase):
+    """The groups that end WITHOUT a PR are the ones a human picks up, so the
+    issue must link their failing tests rather than only naming them
+    (transformers#48050: `gpt_oss` and `phimoe` were classified as environment
+    issues with no way to reach the failure)."""
+
+    GRAFANA = "https://grafana.example/d/abc/tests"
+
+    def test_outcome_recap_links_each_failing_test(self):
+        target = _target("import_or_config", model="gpt_oss", n=2)
+        fp = itf.target_fingerprint(target)
+        body = itf.render_tracking_issue_body(
+            [target],
+            ["2026-08-18"],
+            "2026-08-18",
+            existing_prs={},
+            statuses={fp: "no_fix"},
+            details={
+                fp: {
+                    "reason": "[reproduced] ENVIRONMENT issue: `kernels` not installed",
+                    "prompt_tokens": 1,
+                    "completion_tokens": 2,
+                }
+            },
+            grafana_url=self.GRAFANA,
+        )
+        recap = body.split("## Outcome recap", 1)[1]
+        # One link per failing test, labelled by the node-id's last segment.
+        self.assertIn("[t0](https://grafana.example/", recap)
+        self.assertIn("[t1](https://grafana.example/", recap)
+        # The node-id itself is what the link resolves — not a bare dashboard URL.
+        self.assertIn("gpt_oss", recap)
+
+    def test_deferred_rows_and_oom_models_link_too(self):
+        dep = _target("import_or_config", exc="ModuleNotFoundError", model="dep")
+        oom = _target("OOM", exc="OutOfMemoryError", model="big")
+        _, deferred = itf.partition_targets([oom, dep])
+        section = "\n".join(itf._render_deferred_section(deferred, self.GRAFANA))
+        # The collapsed OOM sentence links the model name…
+        self.assertIn("[`big`](https://grafana.example/", section)
+        # …and the table row links the test.
+        self.assertIn("[t0](https://grafana.example/", section)
+        self.assertIn("| Failing tests |", section)
+
+    def test_links_are_capped_with_a_remainder(self):
+        target = _target("output_mismatch", model="m", n=5)
+        cell = itf._evidence_cell(target, self.GRAFANA)
+        self.assertEqual(cell.count("https://grafana.example/"), 3)
+        self.assertTrue(cell.endswith("+2 more"))
+
+    def test_unconfigured_grafana_renders_no_links(self):
+        target = _target("output_mismatch", model="m", n=2)
+        self.assertEqual(itf._evidence_cell(target, ""), "—")
+        # …and the OOM sentence keeps its plain model names rather than an
+        # empty link, so an unconfigured deployment reads exactly as before.
+        oom = [_target("OOM", exc="OutOfMemoryError", model="big")]
+        self.assertIn("`big` (1)", itf._oom_sentence(oom))
+        self.assertNotIn("](", itf._oom_sentence(oom))
+
+    def test_evidence_columns_do_not_confuse_carry_forward(self):
+        # _carry_forward_rows keys off a `| PR |` header; the recap/deferred
+        # tables gaining a column must not start matching it.
+        target = _target("import_or_config", model="gpt_oss")
+        oom = _target("OOM", exc="OutOfMemoryError", model="big")
+        dispatch, deferred = itf.partition_targets([oom, target])
+        fp = itf.target_fingerprint(dispatch[0])
+        body = itf.render_tracking_issue_body(
+            dispatch,
+            ["2026-08-18"],
+            "2026-08-18",
+            existing_prs={},
+            statuses={fp: "no_fix"},
+            details={fp: {"reason": "env", "prompt_tokens": 1, "completion_tokens": 2}},
+            deferred=deferred,
+            grafana_url=self.GRAFANA,
+        )
+        carried = itf._carry_forward_rows(body, [])
+        self.assertFalse(any("grafana.example" in row for row in carried))
+
+    def test_grafana_url_defaults_to_the_environment(self):
+        target = _target("output_mismatch", model="m")
+        fp = itf.target_fingerprint(target)
+        with patch.dict(os.environ, {"ITF_GRAFANA_URL": self.GRAFANA}):
+            body = itf.render_tracking_issue_body(
+                [target],
+                ["2026-08-18"],
+                "2026-08-18",
+                existing_prs={},
+                statuses={fp: "no_fix"},
+                details={
+                    fp: {"reason": "r", "prompt_tokens": 1, "completion_tokens": 2}
+                },
+            )
+        self.assertIn("grafana.example", body)
+
+
 class TraceBudgetByCategoryTest(unittest.TestCase):
     """A crash group is N copies of one traceback (it was keyed by `crash_site`);
     a mismatch group's members each carry different expected values."""
