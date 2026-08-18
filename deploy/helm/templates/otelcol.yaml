@@ -35,6 +35,32 @@ processors:
     send_batch_size: 8192
     send_batch_max_size: 16384
     timeout: 5s
+{{- if .Values.otelcol.repositoryFilter.internalOwners }}
+  # Repository privacy boundary. Every clone of huggingface/transformers inherits
+  # the CI workflow AND the OTLP bearer token, so a PRIVATE clone inside our own
+  # org exports its runs here by default and they surface on the PUBLIC dashboard
+  # — repository name, PR titles, commit SHAs, test names and stack traces. The
+  # token cannot tell the repos apart, so the boundary is enforced on the resource
+  # attribute the runner sets from GITHUB_REPOSITORY.
+  #
+  # Targeted deny, not a blanket allow: drop a repository owned by an internal
+  # owner UNLESS it is one of the known-public ones. Contributors work on forks,
+  # and a fork of a public repo is itself always public on GitHub, so anything
+  # outside our own org is kept. Only we can hold a private clone.
+  #
+  # A resource with no vcs.repository.name at all makes IsMatch error, which
+  # error_mode: ignore treats as "condition did not match" — so unattributed
+  # spans are KEPT. That is deliberate: a trace we cannot attribute is not one we
+  # can attribute to our own org, and local/dev runs legitimately lack the tag.
+  #
+  # filterprocessor DROPS a span when a condition is true, so this reads as
+  # "internally owned and not known-public".
+  filter/repository_privacy:
+    error_mode: ignore
+    traces:
+      span:
+        - 'IsMatch(resource.attributes["vcs.repository.name"], "^({{ join "|" .Values.otelcol.repositoryFilter.internalOwners }})/"){{ range .Values.otelcol.repositoryFilter.publicRepositories }} and resource.attributes["vcs.repository.name"] != "{{ . }}"{{ end }}'
+{{- end }}
 
 exporters:
   otlp/tempo:
@@ -77,8 +103,10 @@ service:
     traces:
       receivers: [otlp]
       # memory_limiter must be first so it sheds load before the batcher buffers
-      # it; batch last so whole batches are shipped to Tempo.
-      processors: [memory_limiter, batch]
+      # it; batch last so whole batches are shipped to Tempo. The allow-list sits
+      # between them: after the limiter (so shedding still happens first) and
+      # before the batcher (so rejected spans never occupy queue or disk).
+      processors: [memory_limiter, {{ if .Values.otelcol.repositoryFilter.internalOwners }}filter/repository_privacy, {{ end }}batch]
       exporters: [otlp/tempo]
 {{- end }}
 

@@ -97,6 +97,20 @@ JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 # cap; set to 0 to disable.
 DEFAULT_MEM_SOFT_MB = 560
 DEFAULT_SERVICE_NAME = "pytest-observability-demo"
+# Repository privacy boundary, mirroring the collector's filter/repository_privacy.
+# Comma-separated; emptying the owners disables the filter.
+#
+# Every clone of huggingface/transformers inherits the CI workflow and the OTLP
+# bearer token, so a private clone inside our own org exports its runs into the
+# same Tempo. The dashboard those runs land on is served anonymously, so this
+# exporter must not render them. Repositories
+# outside our org are kept: contributors work on forks, and a fork of a public
+# repo is itself always public on GitHub.
+#
+# Enforced here as well as at the collector because traces stored BEFORE the
+# collector filter existed stay in Tempo for the full block-retention window.
+DEFAULT_INTERNAL_OWNERS = "huggingface"
+DEFAULT_PUBLIC_REPOSITORIES = "huggingface/transformers"
 DEFAULT_CACHE_SECONDS = 10.0
 DEFAULT_REFRESH_COOLDOWN_SECONDS = 60.0
 DEFAULT_REFRESH_SLOW_SECONDS = 30.0
@@ -578,6 +592,62 @@ def _http_get_json(url: str, timeout: float | None = None) -> object:
         return json.load(response)
 
 
+def _env_list(name: str, default: str) -> tuple[str, ...]:
+    raw = os.getenv(name, default)
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def internal_owners() -> tuple[str, ...]:
+    """Owners whose repositories are internal unless known to be public."""
+    return _env_list("PYTEST_TRACE_EXPORTER_INTERNAL_OWNERS", DEFAULT_INTERNAL_OWNERS)
+
+
+def public_repositories() -> tuple[str, ...]:
+    """Repositories under an internal owner that are nonetheless public."""
+    return _env_list(
+        "PYTEST_TRACE_EXPORTER_PUBLIC_REPOSITORIES", DEFAULT_PUBLIC_REPOSITORIES
+    )
+
+
+def repository_allowed(repository: str) -> bool:
+    """Whether a trace from ``repository`` may be surfaced on the dashboard.
+
+    Targeted deny: a repository owned by an internal owner is refused unless it
+    is one of the known-public ones; everything else is allowed. Forks live
+    under someone else's owner and a fork of a public repo is itself public, so
+    they pass. An unattributed trace passes too — one we cannot attribute is not
+    one we can attribute to our own org, and local runs legitimately lack the
+    tag.
+    """
+    owners = internal_owners()
+    if not owners or not repository:
+        return True
+    owner = repository.split("/", 1)[0]
+    if owner not in owners:
+        return True
+    return repository in public_repositories()
+
+
+def trace_repository(trace: dict) -> str:
+    """Repository a Jaeger-shaped trace belongs to, or "" if unattributed.
+
+    Reads the resource tag the runner sets from ``GITHUB_REPOSITORY``. Every
+    process in a trace carries the same repository, so the first one found wins.
+    """
+    processes = trace.get("processes")
+    if not isinstance(processes, dict):
+        return ""
+    for process in processes.values():
+        if not isinstance(process, dict):
+            continue
+        for tag in process.get("tags") or []:
+            if isinstance(tag, dict) and tag.get("key") == "vcs.repository.name":
+                value = str(tag.get("value") or "")
+                if value:
+                    return value
+    return ""
+
+
 def search_trace_ids(
     base_url: str,
     service_name: str,
@@ -946,6 +1016,15 @@ def _fetch_trace_with_settled(
         return None, False
 
     trace = tempo_trace_to_jaeger(trace_id, payload)
+    # Enforce the repository boundary on the fetch-by-id path: /failure, /run
+    # and /badge take a trace or run id straight from the query string, and
+    # those endpoints are served on the public domain with no authentication in
+    # front of them. Refusing the trace here means an id guessed or copied out
+    # of a private run renders nothing, exactly as if it did not exist. This is
+    # also the choke point for every search-driven caller, since they all reach
+    # a trace's contents through get_trace.
+    if not repository_allowed(trace_repository(trace)):
+        return None, False
     settled = _trace_is_settled(
         trace_id, trace, now, settle_seconds, _trace_reverify_seconds()
     )
@@ -1199,6 +1278,22 @@ def _fetch_and_shape(
 
 
 def _iter_window_shaped(
+    base_url: str | None = None,
+) -> Iterator[tuple[dict[str, str | int], list[dict[str, str | float]], bool]]:
+    """Yield the window's shaped traces, minus any private internal clone.
+
+    Enforced on the way out rather than in the search selector because the
+    shaped cache outlives any one render: a trace shaped before the filter was
+    configured is served straight from cache without going near Tempo. Checking
+    here means no render can emit an internal repository, whatever the cache
+    happens to hold.
+    """
+    for trace_info, rows, is_new in _iter_window_shaped_all(base_url):
+        if repository_allowed(str(trace_info.get("repository", ""))):
+            yield trace_info, rows, is_new
+
+
+def _iter_window_shaped_all(
     base_url: str | None = None,
 ) -> Iterator[tuple[dict[str, str | int], list[dict[str, str | float]], bool]]:
     """Yield ``(trace_info, rows, is_new)`` for the COMPLETE enumerated window.

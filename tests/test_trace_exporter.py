@@ -1516,8 +1516,13 @@ def make_otlp_trace(
     status_code: str = "STATUS_CODE_UNSET",
     exception_type: str | None = None,
     service_name: str = "pytest-observability-demo",
+    repository: str | None = "huggingface/transformers",
 ) -> dict:
-    """Build a Tempo /api/traces/<id> payload (OTLP JSON) for one test span."""
+    """Build a Tempo /api/traces/<id> payload (OTLP JSON) for one test span.
+
+    ``repository=None`` omits ``vcs.repository.name`` entirely, for the
+    unattributed-trace case the allow-list has to reject.
+    """
     events = []
     if exception_type is not None:
         events.append(
@@ -1543,8 +1548,12 @@ def make_otlp_trace(
                             "vcs.change.url",
                             "https://github.com/huggingface/transformers/pull/4321",
                         ),
-                        otlp_attr("vcs.repository.name", "huggingface/transformers"),
                     ]
+                    + (
+                        [otlp_attr("vcs.repository.name", repository)]
+                        if repository is not None
+                        else []
+                    )
                 },
                 "scopeSpans": [
                     {
@@ -3736,3 +3745,171 @@ def test_raw_delta_without_the_probe_emits_no_after_gc_series() -> None:
     metrics = trace_exporter.extract_per_test_duration_metrics([trace])
     assert metric_lines(metrics, "pytest_test_cuda_delta_after_gc_bytes") == []
     assert len(metric_lines(metrics, "pytest_test_cuda_delta_bytes")) == 1
+
+
+# ---------------------------------------------------------------------------
+# Repository privacy boundary.
+#
+# A private clone inside our OWN org inherits the CI workflow and the OTLP
+# token, so it exports into the same Tempo as the public repo. The dashboard in front of it is anonymous, so they must not
+# be surfaced. Contributors work on FORKS, and a fork of a public repo is itself
+# always public on GitHub — so anything outside our org must keep working. The
+# collector drops internal clones at ingest; these cover the read side, which is
+# what keeps traces stored BEFORE the filter existed out of the render for the
+# remainder of Tempo's 90d block retention.
+# ---------------------------------------------------------------------------
+
+PRIVATE_REPO = "huggingface/internal-clone-example"
+
+
+@pytest.fixture
+def repository_filter(monkeypatch):
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_INTERNAL_OWNERS", "huggingface")
+    monkeypatch.setenv(
+        "PYTEST_TRACE_EXPORTER_PUBLIC_REPOSITORIES", "huggingface/transformers"
+    )
+    return monkeypatch
+
+
+def test_defaults_deny_internal_clones_only(monkeypatch) -> None:
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_INTERNAL_OWNERS", raising=False)
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PUBLIC_REPOSITORIES", raising=False)
+    assert trace_exporter.internal_owners() == ("huggingface",)
+    assert trace_exporter.public_repositories() == ("huggingface/transformers",)
+
+
+def test_env_lists_are_parsed_and_trimmed(monkeypatch) -> None:
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_INTERNAL_OWNERS", " one , two ,, ")
+    assert trace_exporter.internal_owners() == ("one", "two")
+
+
+def test_the_public_repo_is_allowed(repository_filter) -> None:
+    assert trace_exporter.repository_allowed("huggingface/transformers") is True
+
+
+def test_an_internal_clone_is_refused(repository_filter) -> None:
+    assert trace_exporter.repository_allowed(PRIVATE_REPO) is False
+    assert (
+        trace_exporter.repository_allowed("huggingface/transformers-internal") is False
+    )
+
+
+def test_forks_keep_working(repository_filter) -> None:
+    """The reason this is a targeted deny and not an allow-list: contributors
+    push to their own forks, and a fork of a public repo is itself public."""
+    assert trace_exporter.repository_allowed("contributor/transformers") is True
+    # A renamed fork must work too — the rule keys on the owner, not the name.
+    assert trace_exporter.repository_allowed("contributor/transformers-fork") is True
+    # Another org's repo is not ours to hide.
+    assert trace_exporter.repository_allowed("pytorch/transformers") is True
+
+
+def test_an_unattributed_trace_is_allowed(repository_filter) -> None:
+    """A trace we cannot attribute is not one we can attribute to our own org,
+    and local/dev runs legitimately carry no repository tag."""
+    assert trace_exporter.repository_allowed("") is True
+
+
+def test_emptying_the_owners_disables_the_filter(monkeypatch) -> None:
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_INTERNAL_OWNERS", "")
+    assert trace_exporter.repository_allowed(PRIVATE_REPO) is True
+
+
+def test_trace_repository_reads_the_resource_tag() -> None:
+    trace = make_trace(
+        trace_id="t1",
+        run_id="1:1",
+        job="tests_torch",
+        spans=[],
+        repository=PRIVATE_REPO,
+    )
+    assert trace_exporter.trace_repository(trace) == PRIVATE_REPO
+    assert trace_exporter.trace_repository({"processes": {}}) == ""
+    assert trace_exporter.trace_repository({}) == ""
+
+
+def _fetch_one(trace_id: str, payload: dict):
+    with patch(
+        "transformersci.otel.trace_exporter.urlopen",
+        side_effect=lambda url, timeout=None: _UrlResponse(json.dumps(payload)),
+    ):
+        return trace_exporter.get_trace(trace_id, "http://tempo:3200")
+
+
+def _otlp(nodeid: str, repository):
+    return make_otlp_trace(
+        nodeid=nodeid,
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        repository=repository,
+    )
+
+
+def test_fetch_by_id_refuses_an_internal_clone(repository_filter) -> None:
+    """/failure, /run and /badge take a trace id straight off the query string
+    and are served on the public domain with no auth in front. An id belonging
+    to a private run must render nothing, exactly as if it did not exist."""
+    trace_exporter._trace_cache.clear()
+    payload = _otlp("tests/test_secret_model.py::test_one", PRIVATE_REPO)
+    assert _fetch_one("private-trace", payload) is None
+    # Nor may it be memoized — a later render must not serve it from cache.
+    assert "private-trace" not in trace_exporter._trace_cache
+
+
+def test_fetch_by_id_serves_the_public_repo_and_forks(repository_filter) -> None:
+    trace_exporter._trace_cache.clear()
+    for trace_id, repository in (
+        ("public-trace", "huggingface/transformers"),
+        ("fork-trace", "contributor/transformers"),
+        ("unattributed-trace", None),
+    ):
+        trace = _fetch_one(trace_id, _otlp("tests/test_torch.py::test_one", repository))
+        assert trace is not None, f"{repository} should have been served"
+
+
+def test_window_render_drops_a_cached_internal_shape(repository_filter) -> None:
+    """The shaped cache outlives any one render, so the boundary is re-checked on
+    the way out — a shape cached before the filter existed still never reaches
+    the render. The fork shape must survive the same pass."""
+
+    def _span(nodeid: str) -> dict:
+        return make_test_span(
+            process_id="pytest-process",
+            nodeid=nodeid,
+            start_time=1_000_000,
+            duration=2_000_000,
+        )
+
+    traces = [
+        make_trace(
+            trace_id="public",
+            run_id="1:1",
+            job="tests_torch",
+            spans=[_span("tests/test_torch.py::test_one")],
+        ),
+        make_trace(
+            trace_id="fork",
+            run_id="2:1",
+            job="tests_torch",
+            spans=[_span("tests/test_torch.py::test_two")],
+            repository="contributor/transformers",
+        ),
+        make_trace(
+            trace_id="private",
+            run_id="3:1",
+            job="tests_torch",
+            spans=[_span("tests/test_secret_model.py::test_one")],
+            repository=PRIVATE_REPO,
+        ),
+    ]
+
+    def _fake_all(base_url=None):
+        for trace in traces:
+            info, rows = trace_exporter.extract_trace_rows(trace)
+            yield info, rows, True
+
+    repository_filter.setattr(trace_exporter, "_iter_window_shaped_all", _fake_all)
+    surfaced = [
+        info["repository"] for info, _, _ in trace_exporter._iter_window_shaped()
+    ]
+    assert surfaced == ["huggingface/transformers", "contributor/transformers"]

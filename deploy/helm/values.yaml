@@ -63,6 +63,30 @@ otelcol:
     limits:
       memory: 2Gi
 
+  # Which repositories may publish traces into this stack.
+  #
+  # This is a privacy boundary, not a tuning knob. The dashboard is served
+  # anonymously, and the OTLP bearer token is shared by every repo that inherited
+  # the transformers CI workflow — so a PRIVATE clone inside our own org publishes
+  # to the open internet by default. That is the leak this closes.
+  #
+  # The rule is a targeted deny, not a blanket allow: a repository owned by one
+  # of `internalOwners` is dropped unless `publicRepositories` names it, and
+  # everything else is kept. Contributors work on FORKS of transformers, and a
+  # fork of a public repo is itself always public on GitHub — so third-party
+  # forks are safe by construction and must keep working. Only our own org can
+  # hold a private clone, which is exactly what this drops.
+  #
+  # Emptying internalOwners disables the filter (accepts everything).
+  repositoryFilter:
+    # Owners whose repositories are internal unless proven otherwise.
+    internalOwners:
+      - huggingface
+    # ...the exceptions: repositories under those owners that ARE public.
+    # Adding an entry here publishes that repository's CI to the open internet.
+    publicRepositories:
+      - huggingface/transformers
+
   receivers:
     otlp:
       grpc:
@@ -213,6 +237,13 @@ traceExporter:
 # Prometheus
 #------------------------------------------------------------------------------
 prometheus:
+  # Enable the admin TSDB API (/api/v1/admin/tsdb/delete_series and
+  # clean_tombstones). Keep false; flip to true only for the duration of a
+  # deliberate purge — e.g. removing runs that a private repository published
+  # before the ingest filter existed — and flip it back afterwards. Series
+  # deletion is not recoverable.
+  enableAdminApi: false
+
   image:
     repository: prom/prometheus
     tag: "v3.0.1"

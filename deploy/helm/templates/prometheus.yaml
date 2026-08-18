@@ -276,6 +276,16 @@ spec:
             - --storage.tsdb.path=/prometheus
             - --storage.tsdb.retention.time={{ .Values.prometheus.retention }}
             - --web.enable-lifecycle
+            {{- if .Values.prometheus.enableAdminApi }}
+            # Admin TSDB API (delete_series / clean_tombstones). OFF by default and
+            # meant to be switched on only for the length of a deliberate purge,
+            # then switched back off — it is the one API that can destroy history.
+            # Grafana refuses to proxy non-allow-listed POSTs to a Prometheus
+            # datasource, so this is not reachable from the anonymous dashboard,
+            # and the Service is ClusterIP with no ingress. The reason to keep it
+            # off is the accident, not the attacker.
+            - --web.enable-admin-api
+            {{- end }}
             - --web.console.libraries=/usr/share/prometheus/console_libraries
             - --web.console.templates=/usr/share/prometheus/consoles
           ports:

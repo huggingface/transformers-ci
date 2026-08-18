@@ -110,6 +110,15 @@ spec:
               value: "{{ .Values.traceExporter.config.port }}"
             - name: PYTEST_TRACE_EXPORTER_SERVICE_NAME
               value: {{ .Values.traceExporter.config.serviceName }}
+            # Read-side half of the repository privacy boundary the collector
+            # enforces at ingest (otelcol.repositoryFilter). Needed as well as
+            # the collector filter, not instead of it: traces stored BEFORE the
+            # filter existed are still in Tempo for the whole 90d block
+            # retention, and this is what keeps them out of the render.
+            - name: PYTEST_TRACE_EXPORTER_INTERNAL_OWNERS
+              value: "{{ join "," .Values.otelcol.repositoryFilter.internalOwners }}"
+            - name: PYTEST_TRACE_EXPORTER_PUBLIC_REPOSITORIES
+              value: "{{ join "," .Values.otelcol.repositoryFilter.publicRepositories }}"
             {{- if .Values.traceExporter.runStore.enabled }}
             # Per-run test rows persisted here so the /run drill-down serves them
             # directly over the retention window instead of re-searching Tempo.
