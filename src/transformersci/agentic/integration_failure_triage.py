@@ -2813,6 +2813,27 @@ def build_instruction(target: dict | None = None) -> str:
     return f"{_INSTRUCTION}\n\n{addendum}" if addendum else _INSTRUCTION
 
 
+def regression_reviewers(target: dict | None) -> list[str]:
+    """GitHub logins to request a review from, for one failure group.
+
+    When CI's bisect pinned the regression to a commit, that commit's author is
+    the one person who knows what the change was meant to do — so a fix PR
+    touching it should land in their queue instead of waiting to be noticed.
+    Groups with no attribution (``model_failures``, an unconverged bisect) yield
+    ``[]`` and the PR keeps whatever the repo's own reviewer routing decides.
+
+    The dataset groups records by author login (``ArthurZucker``; ``"null"`` for
+    unattributed, already mapped to ``None`` upstream), so no API lookup is
+    needed. Bot authors are dropped: a bot cannot review, and GitHub 422s a
+    request containing one — for the whole call, taking any valid login with it.
+    """
+    cluster = (target or {}).get("cluster") or {}
+    author = (cluster.get("author") or "").strip()
+    if not author or "[bot]" in author:
+        return []
+    return [author]
+
+
 def build_task_payload(
     repo: str,
     base_ref: str,
@@ -2833,6 +2854,9 @@ def build_task_payload(
     to the ``serge/fix/itf-<fp>`` branch and the instruction is
     :func:`build_instruction` (the shared trunk plus ``target``'s per-category
     block; the trunk alone when no ``target`` is given).
+
+    When CI's bisect pinned the regression to a commit, its author is requested
+    as a reviewer on the PR Serge opens — see :func:`regression_reviewers`.
 
     ``grafana_url`` (default: ``$ITF_GRAFANA_URL``) turns each failing test into a
     per-test dashboard link in the PR body. Serge holds no Grafana config of its
@@ -2857,6 +2881,7 @@ def build_task_payload(
         notify_pr_created=notify_pr_created,
         notify_task_finished=notify_task_finished,
         test_links=pr_evidence.test_links(grafana_url, node_ids),
+        reviewers=regression_reviewers(target),
     )
 
 
