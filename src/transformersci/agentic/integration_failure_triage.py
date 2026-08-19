@@ -2049,10 +2049,17 @@ def _render_outcome_recap(
     existing_prs: dict[str, int | None],
     details: dict[str, dict] | None,
     grafana_url: str = "",
+    carry_recap_rows: list[str] | None = None,
 ) -> list[str]:
     """Recap lines for groups that produced NO PR (no_fix/error): the reason and
     the token spend, which are otherwise only visible in the Serge dashboard.
-    Empty when there is nothing to report."""
+    Empty when there is nothing to report.
+
+    ``carry_recap_rows`` are recap rows from an earlier same-day run whose groups
+    this run did not re-dispatch. The table above carries those groups' ``🚫``/
+    ``⚠️`` cells forward already; without their recap rows the marker survives
+    but its reason does not, which is exactly how a reader ends up at a bare
+    ``⚠️ task failed`` with nowhere to go."""
     details = details or {}
     rows: list[str] = []
     normalizer_blocks: list[str] = []
@@ -2076,6 +2083,7 @@ def _render_outcome_recap(
         normalizer_blocks += _render_normalizer_block(
             model_cell, distilled.get("normalizer_error")
         )
+    rows += list(carry_recap_rows or [])
     if not rows:
         return []
     return [
@@ -2135,6 +2143,7 @@ def render_tracking_issue_body(
     carry_rows: list[str] | None = None,
     deferred: list[dict] | None = None,
     grafana_url: str | None = None,
+    carry_recap_rows: list[str] | None = None,
 ) -> str:
     """Markdown body for the per-run tracking issue. When a group already has an
     open Serge PR (a follow-up), its number is written inline as ``#<pr>`` — that
@@ -2195,7 +2204,9 @@ def render_tracking_issue_body(
     for row in carry_rows or []:
         lines.append(row)
     lines += _render_deferred_section(deferred, grafana_url)
-    lines += _render_outcome_recap(targets, existing_prs, details, grafana_url)
+    lines += _render_outcome_recap(
+        targets, existing_prs, details, grafana_url, carry_recap_rows
+    )
     lines += [
         "",
         f"_Generated {datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()}._",
@@ -2237,6 +2248,46 @@ def _find_open_tracking_issue(
         page += 1
 
 
+def _row_group_model(cell: str) -> str:
+    """The model name a rendered table cell is about. ``group_label`` writes it
+    backticked and may append an attribution (``\u0060kimi_k25\u0060 (regressed by PR
+    #47573)``), so take the backticked head and fall back to the bare cell."""
+    match = re.match(r"\s*`([^`]+)`", cell)
+    return (match.group(1) if match else cell.strip("`")).strip()
+
+
+def _carry_forward_recap_rows(existing_body: str, targets: list[dict]) -> list[str]:
+    """Outcome-recap rows from the issue's prior state, for groups NOT in this
+    run's targets.
+
+    ``_carry_forward_rows`` keeps those groups' ``🚫``/``⚠️`` cells in the table
+    above, but the recap is re-rendered from THIS run's poll details only — so a
+    carried group kept its marker and lost the reason behind it. That is how the
+    2026-08-18 `deepseek_vl` group came to read as a bare ``⚠️ task failed`` with
+    no row explaining that its dispatch died on an expired OIDC bearer."""
+    if not existing_body:
+        return []
+    current = {(t.get("model") or "").strip() for t in targets}
+    rows: list[str] = []
+    in_table = False
+    for line in existing_body.splitlines():
+        s = line.strip()
+        if s.startswith("| Group ") and "| Reason |" in s:
+            in_table = True
+            continue
+        if in_table and s.startswith("| ---"):
+            continue
+        if in_table:
+            if not s.startswith("|"):
+                break  # table ended
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if len(cells) < 5:
+                continue
+            if _row_group_model(cells[0]) not in current:
+                rows.append(line.rstrip())
+    return rows
+
+
 def _carry_forward_rows(existing_body: str, targets: list[dict]) -> list[str]:
     """Table rows from the issue's prior state that already have an open PR
     (``#<n>``) or a terminal marker (``🚫``/``⚠️``), for groups NOT in this run's
@@ -2261,7 +2312,7 @@ def _carry_forward_rows(existing_body: str, targets: list[dict]) -> list[str]:
             cells = [c.strip() for c in s.strip("|").split("|")]
             if len(cells) < 4:
                 continue
-            model = cells[0].strip("`").strip()
+            model = _row_group_model(cells[0])
             pr_cell = cells[-1]
             resolved = pr_cell.startswith("#") or "🚫" in pr_cell or "⚠️" in pr_cell
             if resolved and model not in current:
@@ -2480,6 +2531,8 @@ def reconcile_tracking_issue(
     poll_seconds: int = 20,
     carry_rows: list[str] | None = None,
     deferred: list[dict] | None = None,
+    dispatch_errors: dict[str, str] | None = None,
+    carry_recap_rows: list[str] | None = None,
 ) -> dict[str, int | None]:
     """Poll open PRs after dispatch and refresh the tracking-issue table in
     place, so outcomes Serge produces during THIS run show immediately instead
@@ -2493,7 +2546,14 @@ def reconcile_tracking_issue(
     forever. The issue body is PATCHed whenever the resolved set changes; we stop
     once every group is resolved (PR linked or a terminal Serge status) or
     ``timeout_seconds`` elapses (``0`` disables). Returns the final
-    fingerprint→PR map."""
+    fingerprint→PR map.
+
+    ``dispatch_errors`` (fingerprint → why its ``POST /tasks`` never landed) is
+    seeded as a terminal ``error`` before the first poll. Those groups have no
+    job to ask about, so they would otherwise sit ``(pending)`` for the whole
+    reconcile window and then read as "Serge is still working" — when in fact
+    Serge never received them. Seeding also puts the dispatcher's own error in
+    the recap, the only place a reader learns the difference."""
     if issue_number is None or not github_token or timeout_seconds <= 0 or not targets:
         return {}
     fingerprints = [target_fingerprint(t) for t in targets]
@@ -2504,6 +2564,9 @@ def reconcile_tracking_issue(
     existing_prs: dict[str, int | None] = {}
     statuses: dict[str, str] = {}
     details: dict[str, dict] = {}
+    for fp, reason in (dispatch_errors or {}).items():
+        statuses[fp] = "error"
+        details[fp] = {"reason": reason, "normalizer_error": None, "model": None}
     print(
         f"      reconciling tracking issue #{issue_number} for up to "
         f"{timeout_seconds}s as Serge runs…",
@@ -2547,6 +2610,7 @@ def reconcile_tracking_issue(
                 details,
                 carry_rows,
                 deferred=deferred,
+                carry_recap_rows=carry_recap_rows,
             )
             update_issue_body(repo, issue_number, body, github_token)
             print(
@@ -2917,7 +2981,7 @@ def dispatch_targets(
     retry_attempts: int = 0,
     retry_base_seconds: float = 120.0,
     poll_seconds: float = 20.0,
-) -> tuple[int, int, dict[str, str]]:
+) -> tuple[int, int, dict[str, str], dict[str, str]]:
     """Dispatch one Serge task per failure group — one PR per group — so a
     single run iterates over every group instead of fixing only the first.
 
@@ -2927,8 +2991,11 @@ def dispatch_targets(
     group that already has a Serge PR gets a follow-up rather than a duplicate);
     if omitted it is computed here. When ``issue_number`` is set, each task is
     told to back-reference that tracking issue. Returns
-    ``(accepted, failed, job_ids)`` where ``job_ids`` maps fingerprint → the
-    Serge job id (for polling each group's terminal status in reconcile)."""
+    ``(accepted, failed, job_ids, dispatch_errors)`` where ``job_ids`` maps
+    fingerprint → the Serge job id (for polling each group's terminal status in
+    reconcile) and ``dispatch_errors`` maps fingerprint → why its ``POST /tasks``
+    never landed. A group in ``dispatch_errors`` has no job to poll, so without
+    it the tracking issue would sit ``(pending)`` on a group Serge never saw."""
     if existing_prs is None:
         existing_prs = resolve_existing_prs(
             targets, list_open_pulls(repo, github_token)
@@ -2955,6 +3022,7 @@ def dispatch_targets(
 
     accepted = failed = 0
     job_ids: dict[str, str] = {}
+    dispatch_errors: dict[str, str] = {}
     total = len(targets)
     for idx, target in enumerate(targets, start=1):
         fingerprint = target_fingerprint(target)
@@ -2985,6 +3053,7 @@ def dispatch_targets(
         except SergeDispatchError as e:
             print(f"        ✗ {e}", flush=True)
             failed += 1
+            dispatch_errors[fingerprint] = dispatch_failure_reason(e)
             continue
         accepted += 1
         job_id = resp.get("id")
@@ -2993,7 +3062,27 @@ def dispatch_targets(
         job_url = resp.get("url")
         suffix = f" → {serge_url.rstrip('/')}{job_url}" if job_url else ""
         print(f"        ✅ accepted {resp.get('id', '?')}{suffix}", flush=True)
-    return accepted, failed, job_ids
+    return accepted, failed, job_ids, dispatch_errors
+
+
+def dispatch_failure_reason(err: Exception) -> str:
+    """One table-sized line for a ``POST /tasks`` that never landed.
+
+    ``SergeDispatchError`` carries the status line and Serge's JSON body on
+    separate lines; the body is where the diagnosis lives (``{"detail":
+    "oidc_verification_failed: ..."}``), so lift it next to the status rather
+    than truncating to the first line and losing it."""
+    text = str(err).strip()
+    head, _, rest = text.partition("\n")
+    detail = ""
+    try:
+        body = json.loads(rest)
+        if isinstance(body, dict):
+            detail = str(body.get("detail") or "")
+    except (ValueError, TypeError):
+        detail = rest.strip()
+    detail = " ".join(detail.split())[:200]
+    return f"{head} — {detail}" if detail else head
 
 
 _SERGE_TERMINAL_STATUSES = {"done", "published", "no_fix", "error", "discarded"}
@@ -3029,7 +3118,7 @@ def _dispatch_targets_bounded(
     retry_attempts: int,
     retry_base_seconds: float,
     poll_seconds: float,
-) -> tuple[int, int, dict[str, str]]:
+) -> tuple[int, int, dict[str, str], dict[str, str]]:
     """Dispatch Serge tasks with bounded active jobs and 429 retry/backoff.
 
     The historical path fired every group immediately. That is fine for small
@@ -3044,6 +3133,7 @@ def _dispatch_targets_bounded(
     active: dict[str, dict] = {}
     accepted = failed = 0
     job_ids: dict[str, str] = {}
+    dispatch_errors: dict[str, str] = {}
     total = len(targets)
     final: set[str] = set()
 
@@ -3100,12 +3190,16 @@ def _dispatch_targets_bounded(
                     pending.insert(0, (idx, target, attempt + 1))
                 else:
                     failed += 1
+                    dispatch_errors[fingerprint] = dispatch_failure_reason(e)
                     final.add(fingerprint)
                 continue
             job_id = resp.get("id")
             if not job_id:
                 print("        ✗ Serge accepted task without a job id", flush=True)
                 failed += 1
+                dispatch_errors[fingerprint] = (
+                    "Serge accepted the task without a job id, so it cannot be polled"
+                )
                 final.add(fingerprint)
                 continue
             job_id = str(job_id)
@@ -3169,7 +3263,7 @@ def _dispatch_targets_bounded(
     incomplete = max(0, total - len(final))
     if incomplete:
         failed += incomplete
-    return accepted, failed, job_ids
+    return accepted, failed, job_ids, dispatch_errors
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3523,6 +3617,7 @@ def main(argv: list[str] | None = None) -> int:
     # Carry forward PR'd / resolved rows from an earlier same-day run so this run's
     # (shuffled) groups don't drop them from the table. Best-effort, read-only.
     carry_rows: list[str] = []
+    carry_recap_rows: list[str] = []
     try:
         found = (
             _find_open_tracking_issue(args.repo, run_key, gh_token)
@@ -3531,6 +3626,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if found is not None:
             carry_rows = _carry_forward_rows(found[1], targets)
+            carry_recap_rows = _carry_forward_recap_rows(found[1], targets)
     except (urllib.error.HTTPError, urllib.error.URLError):
         pass
     issue_body = render_tracking_issue_body(
@@ -3540,6 +3636,7 @@ def main(argv: list[str] | None = None) -> int:
         existing_prs,
         carry_rows=carry_rows,
         deferred=deferred,
+        carry_recap_rows=carry_recap_rows,
     )
 
     if args.dry_run:
@@ -3621,7 +3718,7 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
 
-    accepted, failed, job_ids = dispatch_targets(
+    accepted, failed, job_ids, dispatch_errors = dispatch_targets(
         targets,
         repo=args.repo,
         base_ref=args.base_ref,
@@ -3647,8 +3744,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     # Refresh the tracking-issue table in place as Serge runs, so it doesn't sit
     # all-"(pending)": PRs link when opened, and Serge's status (polled with the
-    # OIDC token) marks no_fix/error groups that open no PR.
-    if accepted:
+    # OIDC token) marks no_fix/error groups that open no PR. A run where every
+    # dispatch failed still has something to say — that nothing was dispatched
+    # and why — so reconcile on dispatch_errors too, not only on `accepted`.
+    if accepted or dispatch_errors:
         reconcile_tracking_issue(
             targets,
             repo=args.repo,
@@ -3662,6 +3761,8 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=args.reconcile_timeout,
             carry_rows=carry_rows,
             deferred=deferred,
+            dispatch_errors=dispatch_errors,
+            carry_recap_rows=carry_recap_rows,
         )
     # Surface a hard failure only when we had work but landed nothing.
     return 1 if accepted == 0 else 0
