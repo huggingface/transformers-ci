@@ -147,7 +147,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Device memory this test still had allocated when it finished, i.e. what the next test in the same pytest process inherits. A multi-GB value here is why later tests in this file can fail asking for a few MiB. Empty for CPU jobs and for runs whose plugin does not report it.",
+      "description": "Three readings of CUDA allocated bytes around this test, from the pytest resource plugin.\n\n**inherited** \u2014 already allocated when the test started, i.e. what earlier tests in its process left it. This is what an OOM turns on: a test asking for a few MiB on a card someone else filled.\n\n**left for next** \u2014 still allocated when it finished, i.e. what the next test inherits. Absolute, so never negative.\n\n**net change** \u2014 left minus inherited: this test's own contribution. It is legitimately NEGATIVE when the test released memory an earlier test had left (gpt_oss::test_model_outputs_02 read -17.50 GiB while allocating nothing itself \u2014 it fails on an ImportError and merely straddled the release of another test's 18.49 GiB). A negative here is not this test's virtue: whichever test is running when a predecessor's memory is finally freed gets credited.\n\nEmpty for CPU jobs and for runs whose plugin does not report it. inherited / left need a run from 2026-08-19 onward (older traces carry only the net change).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -194,20 +194,36 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value"
+        "textMode": "value_and_name"
       },
       "pluginVersion": "12.0.0",
       "targets": [
         {
           "editorMode": "code",
-          "expr": "last_over_time(pytest_test_cuda_delta_bytes{test_nodeid=\"$test_nodeid\"}[$__range])",
+          "expr": "last_over_time(pytest_test_cuda_inherited_bytes{test_nodeid=\"$test_nodeid\"}[$__range])",
           "instant": true,
-          "legendFormat": "__auto",
+          "legendFormat": "inherited",
           "range": false,
           "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "last_over_time(pytest_test_cuda_retained_bytes{test_nodeid=\"$test_nodeid\"}[$__range])",
+          "instant": true,
+          "legendFormat": "left for next",
+          "range": false,
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "last_over_time(pytest_test_cuda_delta_bytes{test_nodeid=\"$test_nodeid\"}[$__range])",
+          "instant": true,
+          "legendFormat": "net change",
+          "range": false,
+          "refId": "C"
         }
       ],
-      "title": "Memory left for the next test",
+      "title": "Device memory: inherited \u2192 left",
       "type": "stat"
     }
   ],

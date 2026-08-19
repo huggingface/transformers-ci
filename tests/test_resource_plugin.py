@@ -392,6 +392,66 @@ def test_retained_memory_is_stamped_on_the_span_from_the_report() -> None:
     assert attributes["pytest.cuda_delta_bytes"] == 14 * gib
 
 
+def test_absolute_readings_ride_the_span_beside_the_delta() -> None:
+    """The delta alone is ambiguous: -17.5 GiB is equally "inherited 17.5, ended
+    at 0" and "inherited 20, ended at 2.5". Both sides of the subtraction are
+    stamped so the reader can tell those apart — and so "what did this test
+    inherit" becomes answerable at all."""
+    from unittest.mock import patch
+
+    attributes: dict = {}
+
+    class _StubSpan:
+        def is_recording(self):
+            return True
+
+        def set_attribute(self, key, value):
+            attributes[key] = value
+
+    resource_plugin._worker_durations.clear()
+    gib = 1024**3
+    report = _make_report("t.py::A::test_victim", "teardown", 0.05)
+    # The prod shape (gpt_oss::test_model_outputs_02): started on a card an
+    # earlier test had filled, allocated nothing itself, ended with it released.
+    report.user_properties.append((resource_plugin.CUDA_DELTA_PROPERTY, -17 * gib))
+    report.user_properties.append((resource_plugin.CUDA_INHERITED_PROPERTY, 17 * gib))
+    report.user_properties.append((resource_plugin.CUDA_RETAINED_PROPERTY, 0))
+    with patch("opentelemetry.trace.get_current_span", return_value=_StubSpan()):
+        resource_plugin.pytest_runtest_logreport(report)
+
+    assert attributes["pytest.cuda_delta_bytes"] == -17 * gib
+    assert attributes["pytest.cuda_inherited_bytes"] == 17 * gib
+    # The absolute residual is what "left for the next test" means, and unlike
+    # the delta it cannot go negative.
+    assert attributes["pytest.cuda_retained_bytes"] == 0
+
+
+def test_old_reports_without_the_absolute_readings_still_stamp_the_delta() -> None:
+    # Backward compatibility in the other direction: a worker running an older
+    # plugin sends only the delta, and that must keep working unchanged.
+    from unittest.mock import patch
+
+    attributes: dict = {}
+
+    class _StubSpan:
+        def is_recording(self):
+            return True
+
+        def set_attribute(self, key, value):
+            attributes[key] = value
+
+    resource_plugin._worker_durations.clear()
+    gib = 1024**3
+    with patch("opentelemetry.trace.get_current_span", return_value=_StubSpan()):
+        resource_plugin.pytest_runtest_logreport(
+            _report_with_retained("t.py::A::test_leaks", 3 * gib)
+        )
+
+    assert attributes["pytest.cuda_delta_bytes"] == 3 * gib
+    assert "pytest.cuda_inherited_bytes" not in attributes
+    assert "pytest.cuda_retained_bytes" not in attributes
+
+
 def test_no_retained_attribute_when_the_report_carries_no_measurement() -> None:
     # CPU jobs and torch-less runs must stamp nothing, so the exporter emits no
     # series rather than a misleading zero.
@@ -467,10 +527,37 @@ def test_makereport_attributes_the_delta_from_setup_to_teardown(monkeypatch) -> 
     teardown_report = _make_report(item.nodeid, "teardown", 0.05)
     _drive_makereport(item, _StubCall("teardown"), _StubOutcome(teardown_report))
     assert teardown_report.user_properties == [
-        (resource_plugin.CUDA_DELTA_PROPERTY, 14 * gib)
+        (resource_plugin.CUDA_DELTA_PROPERTY, 14 * gib),
+        # Both sides of that subtraction ride along, so the delta can be read.
+        (resource_plugin.CUDA_INHERITED_PROPERTY, 1 * gib),
+        (resource_plugin.CUDA_RETAINED_PROPERTY, 15 * gib),
     ]
     # The per-nodeid entry must not leak across tests.
     assert item.nodeid not in resource_plugin._cuda_at_setup
+
+
+def test_makereport_records_a_release_as_a_negative_delta(monkeypatch) -> None:
+    """The prod shape that made the delta unreadable (gpt_oss's
+    `test_model_outputs_02`, -17.50 GiB): a test that allocates nothing itself,
+    starting on a card an earlier test filled and ending with it released. The
+    delta is negative; the absolute pair says plainly what happened."""
+    gib = 1024**3
+    readings = iter([17 * gib, 0])
+    monkeypatch.setattr(resource_plugin, "_cuda_allocated_now", lambda: next(readings))
+    resource_plugin._cuda_at_setup.clear()
+
+    item = _StubItem("t.py::A::test_victim")
+    _drive_makereport(
+        item, _StubCall("setup"), _StubOutcome(_make_report(item.nodeid, "setup", 0.1))
+    )
+    teardown_report = _make_report(item.nodeid, "teardown", 0.05)
+    _drive_makereport(item, _StubCall("teardown"), _StubOutcome(teardown_report))
+
+    props = dict(teardown_report.user_properties)
+    assert props[resource_plugin.CUDA_DELTA_PROPERTY] == -17 * gib
+    assert props[resource_plugin.CUDA_INHERITED_PROPERTY] == 17 * gib
+    # Never negative: this is what the next test actually inherits.
+    assert props[resource_plugin.CUDA_RETAINED_PROPERTY] == 0
 
 
 def test_makereport_reports_nothing_without_cuda(monkeypatch) -> None:
