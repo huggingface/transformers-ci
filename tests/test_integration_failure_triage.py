@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import datetime
+import itertools
 import os
 import unittest
 from unittest.mock import patch
@@ -481,7 +482,7 @@ class DispatchTargetsTest(unittest.TestCase):
             patch.object(itf, "list_open_pulls", return_value=[]),
             patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
         ):
-            accepted, failed, _job_ids = itf.dispatch_targets(
+            accepted, failed, _job_ids, _errors = itf.dispatch_targets(
                 self._targets(),
                 repo="o/r",
                 base_ref="main",
@@ -580,7 +581,7 @@ class DispatchTargetsTest(unittest.TestCase):
             patch.object(itf, "list_open_pulls", return_value=[]),
             patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
         ):
-            accepted, failed, _job_ids = itf.dispatch_targets(
+            accepted, failed, _job_ids, _errors = itf.dispatch_targets(
                 self._targets(),
                 repo="o/r",
                 base_ref="main",
@@ -638,7 +639,7 @@ class DispatchTargetsTest(unittest.TestCase):
             patch.object(itf, "mint_serge_oidc_token", return_value=None),
             patch.object(itf.time, "sleep", lambda _s: None),
         ):
-            accepted, failed, _job_ids = itf.dispatch_targets(
+            accepted, failed, _job_ids, _errors = itf.dispatch_targets(
                 targets,
                 repo="o/r",
                 base_ref="main",
@@ -681,7 +682,7 @@ class DispatchTargetsTest(unittest.TestCase):
             patch.object(itf.random, "uniform", return_value=0),
             patch.object(itf.time, "sleep", lambda _s: None),
         ):
-            accepted, failed, job_ids = itf.dispatch_targets(
+            accepted, failed, job_ids, _errors = itf.dispatch_targets(
                 target,
                 repo="o/r",
                 base_ref="main",
@@ -699,6 +700,233 @@ class DispatchTargetsTest(unittest.TestCase):
         self.assertEqual((accepted, failed), (1, 0))
         self.assertEqual(jobs, ["job1", "job2"])
         self.assertEqual(job_ids[itf.target_fingerprint(target[0])], "job2")
+
+    def test_bounded_dispatch_mints_a_fresh_bearer_for_the_retry_post(self):
+        """A GitHub Actions OIDC token lives minutes; the 429 backoff sleeps for
+        minutes before the retry POST. Dispatching with the bearer this loop
+        started with is what lost the 2026-08-18 `deepseek_vl` group to
+        ``401 ... Signature has expired``, so every POST re-mints."""
+        target = self._targets()[:1]
+        bearers = []
+        minted = itertools.count(1)
+
+        def fake_dispatch(serge_url, token, payload, timeout=240):
+            bearers.append(token)
+            job_id = f"job{len(bearers)}"
+            return {"id": job_id, "url": f"/tasks/o/r/{job_id}"}
+
+        def fake_poll(serge_url, token, repo, job_id):
+            if job_id == "job1":
+                return {
+                    "status": "error",
+                    "error": "LLM endpoint returned 429 Too Many Requests: rate limit exceeded",
+                }
+            return {"status": "published", "error": None}
+
+        with (
+            patch.object(itf, "list_open_pulls", return_value=[]),
+            patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
+            patch.object(itf, "poll_serge_task", side_effect=fake_poll),
+            patch.object(
+                itf,
+                "mint_serge_oidc_token",
+                side_effect=lambda: f"fresh{next(minted)}",
+            ),
+            patch.object(itf.random, "uniform", return_value=0),
+            patch.object(itf.time, "sleep", lambda _s: None),
+        ):
+            accepted, failed, _job_ids, _errors = itf.dispatch_targets(
+                target,
+                repo="o/r",
+                base_ref="main",
+                serge_url="http://s",
+                token="stale",
+                window=["2026-06-19"],
+                timeout=10,
+                github_token=None,
+                serge_concurrency=1,
+                retry_attempts=1,
+                retry_base_seconds=1,
+                poll_seconds=0,
+            )
+
+        self.assertEqual((accepted, failed), (1, 0))
+        self.assertEqual(len(bearers), 2)
+        self.assertNotIn("stale", bearers)
+
+    def test_a_failed_post_is_reported_against_its_fingerprint(self):
+        """`failed` counts; it does not say *which* group or *why*. Reconcile
+        needs both to mark the group terminal instead of leaving it pending."""
+        target = self._targets()[:1]
+        err = sd.SergeDispatchError(
+            "Serge POST /tasks failed: 401 Unauthorized\n"
+            '{"detail": "oidc_verification_failed: invalid OIDC token: '
+            'Signature has expired"}',
+            status=401,
+        )
+        for concurrency, attempts in ((0, 0), (1, 1)):
+            with self.subTest(bounded=bool(concurrency or attempts)):
+                with (
+                    patch.object(itf, "list_open_pulls", return_value=[]),
+                    patch.object(itf, "dispatch_to_serge", side_effect=err),
+                    patch.object(itf, "mint_serge_oidc_token", return_value=None),
+                    patch.object(itf.time, "sleep", lambda _s: None),
+                ):
+                    accepted, failed, job_ids, errors = itf.dispatch_targets(
+                        target,
+                        repo="o/r",
+                        base_ref="main",
+                        serge_url="http://s",
+                        token="tok",
+                        window=["2026-06-19"],
+                        timeout=10,
+                        github_token=None,
+                        serge_concurrency=concurrency,
+                        retry_attempts=attempts,
+                        retry_base_seconds=1,
+                        poll_seconds=0,
+                    )
+
+                fp = itf.target_fingerprint(target[0])
+                self.assertEqual((accepted, failed), (0, 1))
+                self.assertEqual(job_ids, {})
+                self.assertIn("Signature has expired", errors[fp])
+
+    def test_bounded_dispatch_keeps_its_bearer_outside_actions(self):
+        """Outside Actions there is no token service to ask, so
+        ``mint_serge_oidc_token`` returns ``None`` and the initial bearer must
+        survive rather than being replaced by nothing."""
+        target = self._targets()[:1]
+        bearers = []
+
+        def fake_dispatch(serge_url, token, payload, timeout=240):
+            bearers.append(token)
+            return {"id": "job1", "url": "/tasks/o/r/job1"}
+
+        with (
+            patch.object(itf, "list_open_pulls", return_value=[]),
+            patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
+            patch.object(itf, "poll_serge_task", return_value={"status": "published"}),
+            patch.object(itf, "mint_serge_oidc_token", return_value=None),
+            patch.object(itf.time, "sleep", lambda _s: None),
+        ):
+            itf.dispatch_targets(
+                target,
+                repo="o/r",
+                base_ref="main",
+                serge_url="http://s",
+                token="tok",
+                window=["2026-06-19"],
+                timeout=10,
+                github_token=None,
+                serge_concurrency=1,
+                retry_attempts=0,
+                poll_seconds=0,
+            )
+
+        self.assertEqual(bearers, ["tok"])
+
+
+class DispatchFailureReasonTest(unittest.TestCase):
+    def test_lifts_the_detail_out_of_serges_json_body(self):
+        err = sd.SergeDispatchError(
+            "Serge POST /tasks failed: 401 Unauthorized\n"
+            '{"detail": "oidc_verification_failed: invalid OIDC token: '
+            'Signature has expired", "serge": {"version": "0.1.0"}}',
+            status=401,
+        )
+        reason = itf.dispatch_failure_reason(err)
+        self.assertIn("401 Unauthorized", reason)
+        self.assertIn("Signature has expired", reason)
+        self.assertNotIn("\n", reason)
+
+    def test_keeps_a_non_json_body_as_text(self):
+        err = sd.SergeDispatchError("Serge POST /tasks failed: 502\n<html>bad</html>")
+        self.assertEqual(
+            itf.dispatch_failure_reason(err),
+            "Serge POST /tasks failed: 502 — <html>bad</html>",
+        )
+
+    def test_a_single_line_error_needs_no_detail(self):
+        err = sd.SergeDispatchError(
+            "could not reach Serge at http://s/tasks: timed out"
+        )
+        self.assertEqual(
+            itf.dispatch_failure_reason(err),
+            "could not reach Serge at http://s/tasks: timed out",
+        )
+
+
+class DispatchTokenReplayTest(unittest.TestCase):
+    """``dispatch_to_serge`` re-mints and replays once on a 401 — the safety net
+    under the per-POST re-mint, and the only protection the other callers
+    (``dashboard_failure_triage``) get."""
+
+    def _expired(self):
+        return sd.SergeDispatchError(
+            "Serge POST /tasks failed: 401 Unauthorized\n"
+            '{"detail": "oidc_verification_failed: invalid OIDC token: '
+            'Signature has expired"}',
+            status=401,
+        )
+
+    def test_replays_once_with_a_freshly_minted_bearer(self):
+        seen = []
+
+        def fake_post(serge_url, token, payload, timeout):
+            seen.append(token)
+            if token == "stale":
+                raise self._expired()
+            return {"id": "job1"}
+
+        with (
+            patch.object(sd, "_post_task", side_effect=fake_post),
+            patch.object(sd, "mint_serge_oidc_token", return_value="fresh"),
+        ):
+            resp = sd.dispatch_to_serge("http://s", "stale", {})
+
+        self.assertEqual(resp, {"id": "job1"})
+        self.assertEqual(seen, ["stale", "fresh"])
+
+    def test_a_401_that_re_mints_to_the_same_token_is_not_replayed(self):
+        """A 401 holding a *valid* bearer is a real authorization failure (wrong
+        audience, untrusted repo). Replaying it would only double the load."""
+        seen = []
+
+        def fake_post(serge_url, token, payload, timeout):
+            seen.append(token)
+            raise self._expired()
+
+        with (
+            patch.object(sd, "_post_task", side_effect=fake_post),
+            patch.object(sd, "mint_serge_oidc_token", return_value="tok"),
+        ):
+            with self.assertRaises(sd.SergeDispatchError):
+                sd.dispatch_to_serge("http://s", "tok", {})
+
+        self.assertEqual(seen, ["tok"])
+
+    def test_a_non_401_failure_is_not_replayed(self):
+        seen = []
+
+        def fake_post(serge_url, token, payload, timeout):
+            seen.append(token)
+            raise sd.SergeDispatchError("Serge POST /tasks failed: 422", status=422)
+
+        with (
+            patch.object(sd, "_post_task", side_effect=fake_post),
+            patch.object(sd, "mint_serge_oidc_token", return_value="fresh"),
+        ):
+            with self.assertRaises(sd.SergeDispatchError):
+                sd.dispatch_to_serge("http://s", "tok", {})
+
+        self.assertEqual(seen, ["tok"])
+
+    def test_an_unreachable_serge_carries_no_status(self):
+        """``URLError`` means Serge never answered, so there is no status to
+        confuse with a 401."""
+        err = sd.SergeDispatchError("could not reach Serge at http://s/tasks: nope")
+        self.assertIsNone(err.status)
 
 
 class TrackingIssueTest(unittest.TestCase):
@@ -891,7 +1119,7 @@ class TrackingIssueTest(unittest.TestCase):
             patch.object(itf, "list_open_pulls", return_value=[]),
             patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
         ):
-            accepted, failed, job_ids = itf.dispatch_targets(
+            accepted, failed, job_ids, _errors = itf.dispatch_targets(
                 [t],
                 repo="o/r",
                 base_ref="main",
@@ -903,6 +1131,81 @@ class TrackingIssueTest(unittest.TestCase):
             )
         self.assertEqual(accepted, 1)
         self.assertEqual(job_ids[itf.target_fingerprint(t)], "job-123")
+
+    def test_dispatch_failure_lands_in_the_table_and_the_recap(self):
+        """A group whose POST never landed has no job to poll. Left alone it sits
+        `(pending)` for the whole reconcile window and then reads as "Serge is
+        still working" — when Serge never received it. Seeded as terminal, the
+        dispatcher's own error becomes the group's reason."""
+        targets = [self._target("g1", "deepseek_vl")]
+        fp = itf.target_fingerprint(targets[0])
+        patched = []
+
+        with (
+            patch.object(itf, "list_open_pulls", return_value=[]),
+            patch.object(
+                itf,
+                "update_issue_body",
+                side_effect=lambda r, n, body, t: patched.append(body) or True,
+            ),
+            patch.object(itf.time, "sleep", lambda _s: None),
+        ):
+            itf.reconcile_tracking_issue(
+                targets,
+                repo="o/r",
+                window=["2026-08-18"],
+                run_key="2026-08-18",
+                issue_number=48050,
+                github_token="tok",
+                timeout_seconds=300,
+                poll_seconds=1,
+                dispatch_errors={
+                    fp: "Serge POST /tasks failed: 401 Unauthorized — "
+                    "oidc_verification_failed: invalid OIDC token: Signature has expired"
+                },
+            )
+
+        self.assertEqual(len(patched), 1)
+        body = patched[-1]
+        row = next(line for line in body.splitlines() if "| `deepseek_vl` |" in line)
+        self.assertIn("⚠️ task failed", row)
+        self.assertNotIn("(pending)", row)
+        self.assertIn("## Outcome recap", body)
+        self.assertIn("Signature has expired", body)
+
+    def test_recap_rows_carry_forward_with_their_marker(self):
+        """The table carries a resolved group's 🚫/⚠️ cell into a later run; the
+        recap is re-rendered from this run's polls only. Without carrying the
+        recap row too, the marker survives and the reason behind it does not."""
+        prior = "\n".join(
+            [
+                "| Group | Reason | LLM | Tokens (in / out) | Failing tests |",
+                "| --- | --- | --- | --- | --- |",
+                "| `deepseek_vl` | dispatch failed: 401 expired bearer | `k2` | 1 / 2 | [t](u) |",
+                "| `kimi_k25` (regressed by PR #47573) | [not_fixed] still red | `k2` | 3 / 4 | [t](u) |",
+                "",
+            ]
+        )
+        targets = [self._target("g1", "kimi_k25")]
+        rows = itf._carry_forward_recap_rows(prior, targets)
+
+        # deepseek_vl is not in this run, so its reason has to survive; kimi_k25
+        # is, and will be re-rendered from this run's own poll details.
+        self.assertEqual(len(rows), 1)
+        self.assertIn("deepseek_vl", rows[0])
+
+    def test_carried_recap_rows_render_without_a_current_recap(self):
+        targets = [self._target("g1", "alpha")]
+        carried = "| `deepseek_vl` | dispatch failed: 401 | `k2` | 1 / 2 | — |"
+        body = itf.render_tracking_issue_body(
+            targets,
+            ["2026-08-18"],
+            "2026-08-18",
+            existing_prs={},
+            carry_recap_rows=[carried],
+        )
+        self.assertIn("## Outcome recap", body)
+        self.assertIn(carried, body)
 
     def test_render_shows_serge_statuses(self):
         targets = [self._target("g1", "a"), self._target("g2", "b")]

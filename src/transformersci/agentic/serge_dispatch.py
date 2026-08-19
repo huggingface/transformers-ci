@@ -33,7 +33,15 @@ import urllib.request
 
 class SergeDispatchError(Exception):
     """A single ``POST /tasks`` failed. Raised (not ``SystemExit``) so a
-    fan-out loop can record the failure and continue to the next task."""
+    fan-out loop can record the failure and continue to the next task.
+
+    ``status`` carries the HTTP status when Serge answered (``None`` when the
+    host was unreachable), so a caller can tell an expired bearer apart from a
+    rejected payload."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 def build_task_payload(
@@ -103,10 +111,8 @@ def build_task_payload(
     return payload
 
 
-def dispatch_to_serge(
-    serge_url: str, token: str, payload: dict, timeout: int = 240
-) -> dict:
-    """POST the task to Serge. Returns the parsed 202 response body."""
+def _post_task(serge_url: str, token: str, payload: dict, timeout: int) -> dict:
+    """One ``POST /tasks`` attempt. Returns the parsed 202 response body."""
     url = serge_url.rstrip("/") + "/tasks"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -125,10 +131,37 @@ def dispatch_to_serge(
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
         raise SergeDispatchError(
-            f"Serge POST /tasks failed: {e.code} {e.reason}\n{detail}"
+            f"Serge POST /tasks failed: {e.code} {e.reason}\n{detail}", status=e.code
         )
     except urllib.error.URLError as e:
         raise SergeDispatchError(f"could not reach Serge at {url}: {e.reason}")
+
+
+def dispatch_to_serge(
+    serge_url: str, token: str, payload: dict, timeout: int = 240
+) -> dict:
+    """POST the task to Serge. Returns the parsed 202 response body.
+
+    A GitHub Actions OIDC token is valid for **minutes**, while a dispatch loop
+    that throttles and retries provider 429s runs for the better part of an
+    hour — it sleeps through the backoff holding a bearer minted before it. The
+    2026-08-18 nightly lost the `deepseek_vl` group exactly there: its retried
+    POST came back ``401 oidc_verification_failed: invalid OIDC token:
+    Signature has expired``, six minutes after the bearer was minted.
+
+    So let the request that *discovers* the expiry fix it: on a 401, re-mint and
+    replay once. Only once, only on 401, and only when the fresh token differs,
+    so a genuinely unauthorized dispatch (wrong audience, untrusted repo) still
+    surfaces as a 401 instead of doubling every call."""
+    try:
+        return _post_task(serge_url, token, payload, timeout)
+    except SergeDispatchError as e:
+        if e.status != 401:
+            raise
+        fresh = mint_serge_oidc_token()
+        if not fresh or fresh == token:
+            raise
+        return _post_task(serge_url, fresh, payload, timeout)
 
 
 def poll_serge_status(
