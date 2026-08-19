@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import datetime
+import itertools
 import os
 import unittest
 from unittest.mock import patch
@@ -699,6 +700,165 @@ class DispatchTargetsTest(unittest.TestCase):
         self.assertEqual((accepted, failed), (1, 0))
         self.assertEqual(jobs, ["job1", "job2"])
         self.assertEqual(job_ids[itf.target_fingerprint(target[0])], "job2")
+
+    def test_bounded_dispatch_mints_a_fresh_bearer_for_the_retry_post(self):
+        """A GitHub Actions OIDC token lives minutes; the 429 backoff sleeps for
+        minutes before the retry POST. Dispatching with the bearer this loop
+        started with is what lost the 2026-08-18 `deepseek_vl` group to
+        ``401 ... Signature has expired``, so every POST re-mints."""
+        target = self._targets()[:1]
+        bearers = []
+        minted = itertools.count(1)
+
+        def fake_dispatch(serge_url, token, payload, timeout=240):
+            bearers.append(token)
+            job_id = f"job{len(bearers)}"
+            return {"id": job_id, "url": f"/tasks/o/r/{job_id}"}
+
+        def fake_poll(serge_url, token, repo, job_id):
+            if job_id == "job1":
+                return {
+                    "status": "error",
+                    "error": "LLM endpoint returned 429 Too Many Requests: rate limit exceeded",
+                }
+            return {"status": "published", "error": None}
+
+        with (
+            patch.object(itf, "list_open_pulls", return_value=[]),
+            patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
+            patch.object(itf, "poll_serge_task", side_effect=fake_poll),
+            patch.object(
+                itf,
+                "mint_serge_oidc_token",
+                side_effect=lambda: f"fresh{next(minted)}",
+            ),
+            patch.object(itf.random, "uniform", return_value=0),
+            patch.object(itf.time, "sleep", lambda _s: None),
+        ):
+            accepted, failed, _job_ids = itf.dispatch_targets(
+                target,
+                repo="o/r",
+                base_ref="main",
+                serge_url="http://s",
+                token="stale",
+                window=["2026-06-19"],
+                timeout=10,
+                github_token=None,
+                serge_concurrency=1,
+                retry_attempts=1,
+                retry_base_seconds=1,
+                poll_seconds=0,
+            )
+
+        self.assertEqual((accepted, failed), (1, 0))
+        self.assertEqual(len(bearers), 2)
+        self.assertNotIn("stale", bearers)
+
+    def test_bounded_dispatch_keeps_its_bearer_outside_actions(self):
+        """Outside Actions there is no token service to ask, so
+        ``mint_serge_oidc_token`` returns ``None`` and the initial bearer must
+        survive rather than being replaced by nothing."""
+        target = self._targets()[:1]
+        bearers = []
+
+        def fake_dispatch(serge_url, token, payload, timeout=240):
+            bearers.append(token)
+            return {"id": "job1", "url": "/tasks/o/r/job1"}
+
+        with (
+            patch.object(itf, "list_open_pulls", return_value=[]),
+            patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
+            patch.object(itf, "poll_serge_task", return_value={"status": "published"}),
+            patch.object(itf, "mint_serge_oidc_token", return_value=None),
+            patch.object(itf.time, "sleep", lambda _s: None),
+        ):
+            itf.dispatch_targets(
+                target,
+                repo="o/r",
+                base_ref="main",
+                serge_url="http://s",
+                token="tok",
+                window=["2026-06-19"],
+                timeout=10,
+                github_token=None,
+                serge_concurrency=1,
+                retry_attempts=0,
+                poll_seconds=0,
+            )
+
+        self.assertEqual(bearers, ["tok"])
+
+
+class DispatchTokenReplayTest(unittest.TestCase):
+    """``dispatch_to_serge`` re-mints and replays once on a 401 — the safety net
+    under the per-POST re-mint, and the only protection the other callers
+    (``dashboard_failure_triage``) get."""
+
+    def _expired(self):
+        return sd.SergeDispatchError(
+            "Serge POST /tasks failed: 401 Unauthorized\n"
+            '{"detail": "oidc_verification_failed: invalid OIDC token: '
+            'Signature has expired"}',
+            status=401,
+        )
+
+    def test_replays_once_with_a_freshly_minted_bearer(self):
+        seen = []
+
+        def fake_post(serge_url, token, payload, timeout):
+            seen.append(token)
+            if token == "stale":
+                raise self._expired()
+            return {"id": "job1"}
+
+        with (
+            patch.object(sd, "_post_task", side_effect=fake_post),
+            patch.object(sd, "mint_serge_oidc_token", return_value="fresh"),
+        ):
+            resp = sd.dispatch_to_serge("http://s", "stale", {})
+
+        self.assertEqual(resp, {"id": "job1"})
+        self.assertEqual(seen, ["stale", "fresh"])
+
+    def test_a_401_that_re_mints_to_the_same_token_is_not_replayed(self):
+        """A 401 holding a *valid* bearer is a real authorization failure (wrong
+        audience, untrusted repo). Replaying it would only double the load."""
+        seen = []
+
+        def fake_post(serge_url, token, payload, timeout):
+            seen.append(token)
+            raise self._expired()
+
+        with (
+            patch.object(sd, "_post_task", side_effect=fake_post),
+            patch.object(sd, "mint_serge_oidc_token", return_value="tok"),
+        ):
+            with self.assertRaises(sd.SergeDispatchError):
+                sd.dispatch_to_serge("http://s", "tok", {})
+
+        self.assertEqual(seen, ["tok"])
+
+    def test_a_non_401_failure_is_not_replayed(self):
+        seen = []
+
+        def fake_post(serge_url, token, payload, timeout):
+            seen.append(token)
+            raise sd.SergeDispatchError("Serge POST /tasks failed: 422", status=422)
+
+        with (
+            patch.object(sd, "_post_task", side_effect=fake_post),
+            patch.object(sd, "mint_serge_oidc_token", return_value="fresh"),
+        ):
+            with self.assertRaises(sd.SergeDispatchError):
+                sd.dispatch_to_serge("http://s", "tok", {})
+
+        self.assertEqual(seen, ["tok"])
+
+    def test_an_unreachable_serge_carries_no_status(self):
+        """``URLError`` means Serge never answered, so there is no status to
+        confuse with a 401."""
+        err = sd.SergeDispatchError("could not reach Serge at http://s/tasks: nope")
+        self.assertIsNone(err.status)
 
 
 class TrackingIssueTest(unittest.TestCase):

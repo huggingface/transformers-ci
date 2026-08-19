@@ -3080,6 +3080,12 @@ def _dispatch_targets_bounded(
                 notify_task_finished=notify_task_finished,
                 target=target,
             )
+            # Re-mint per dispatch, not once per poll cycle: this loop sleeps
+            # through the 429 backoff (minutes) between deciding to retry a
+            # group and POSTing it, and a GitHub Actions OIDC bearer does not
+            # live that long. The 2026-08-18 nightly lost `deepseek_vl` to a
+            # `401 ... Signature has expired` on exactly that retry POST.
+            token = mint_serge_oidc_token() or token
             try:
                 resp = dispatch_to_serge(serge_url, token, payload, timeout=timeout)
             except SergeDispatchError as e:
@@ -3138,6 +3144,11 @@ def _dispatch_targets_bounded(
                     flush=True,
                 )
                 time.sleep(sleep_for)
+                # The remaining jobs are polled right after this sleep, and
+                # `poll_serge_task` reports a 401 as "no detail yet" — an
+                # expired bearer would read as "still running" until the next
+                # cycle re-mints. Refresh here instead.
+                token = mint_serge_oidc_token() or token
                 pending.append((item["idx"], item["target"], next_attempt))
             else:
                 accepted += 1
