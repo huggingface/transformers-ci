@@ -432,6 +432,20 @@ CUDA_DELTA_PROPERTY = "cuda_delta_bytes"
 # produce a number nobody can read.
 CUDA_DELTA_AFTER_GC_PROPERTY = "cuda_delta_after_gc_bytes"
 
+# The two ABSOLUTE readings the delta is computed from. The delta alone cannot
+# be read: it is a net change over the test's window, so a negative one is
+# ambiguous — `-17.5 GiB` is equally "inherited 17.5, ended at 0" and "inherited
+# 20, ended at 2.5". Prod is full of them (6767 series on 2026-08-18; gpt_oss's
+# `test_model_outputs_02` reads -17.50 GiB while allocating nothing itself — it
+# fails on an ImportError and merely happens to straddle the release of an
+# earlier test's 18.49 GiB).
+#
+# `inherited` is also the only thing that answers "what did this test start
+# with", which is the question an OOM actually turns on: a test asking for a few
+# MiB on a card someone else filled.
+CUDA_INHERITED_PROPERTY = "cuda_inherited_bytes"
+CUDA_RETAINED_PROPERTY = "cuda_retained_bytes"
+
 
 def _cuda_allocated_now() -> int | None:
     """CUDA bytes currently allocated, or ``None`` when there is no CUDA to read
@@ -479,6 +493,11 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> Any:
     except Exception:  # pragma: no cover - a failed report is not ours to fix
         return
     report.user_properties.append((CUDA_DELTA_PROPERTY, end - start))
+    # Both sides of that subtraction, so the delta stops being ambiguous: `end`
+    # is what the next test really inherits (never negative), `start` is what
+    # this one was handed.
+    report.user_properties.append((CUDA_INHERITED_PROPERTY, start))
+    report.user_properties.append((CUDA_RETAINED_PROPERTY, end))
     if not gc_probe_enabled(item.config):
         return
     # Opt-in second reading: how much of that delta survives a collection. It is
@@ -536,6 +555,15 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     retained = properties.get(CUDA_DELTA_PROPERTY)
     if isinstance(retained, int):
         span.set_attribute("pytest.cuda_delta_bytes", retained)
+    # Additive: an older exporter ignores these, and a run without them keeps
+    # emitting exactly the series it did before.
+    for prop, attribute in (
+        (CUDA_INHERITED_PROPERTY, "pytest.cuda_inherited_bytes"),
+        (CUDA_RETAINED_PROPERTY, "pytest.cuda_retained_bytes"),
+    ):
+        value = properties.get(prop)
+        if isinstance(value, int):
+            span.set_attribute(attribute, value)
     # Only present when the gc probe ran. Its whole point is to be readable
     # somewhere, so it rides the span rather than only the untransported JSONL.
     after_gc = properties.get(CUDA_DELTA_AFTER_GC_PROPERTY)

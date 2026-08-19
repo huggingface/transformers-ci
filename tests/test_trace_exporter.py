@@ -3694,6 +3694,56 @@ def test_retained_memory_metric_shares_the_per_test_label_set() -> None:
         assert forbidden not in lines[0]
 
 
+def test_absolute_memory_readings_become_their_own_metrics() -> None:
+    """The delta is a net change and can be negative; these two are absolute.
+    `retained` is what the next test really inherits — the number the dashboard
+    panel claims to show — and `inherited` is what this test started with, which
+    is what an OOM actually turns on."""
+    gib = 1024**3
+    span = _span_with_retained_memory("t.py::A::test_victim", -17 * gib)
+    span["tags"].append(make_tag("pytest.cuda_inherited_bytes", 17 * gib))
+    span["tags"].append(make_tag("pytest.cuda_retained_bytes", 0))
+    metrics = trace_exporter.extract_per_test_duration_metrics(
+        [
+            make_trace(
+                trace_id="t-abs",
+                run_id="run-abs",
+                job="run_models_gpu",
+                spans=[span],
+            )
+        ]
+    )
+    inherited = metric_lines(metrics, "pytest_test_cuda_inherited_bytes")
+    retained = metric_lines(metrics, "pytest_test_cuda_retained_bytes")
+    assert len(inherited) == 1 and inherited[0].endswith(f" {17 * gib}")
+    assert len(retained) == 1 and retained[0].endswith(" 0")
+    # The delta keeps its own meaning and its sign.
+    delta = metric_lines(metrics, "pytest_test_cuda_delta_bytes")
+    assert delta[0].endswith(f" {-17 * gib}")
+    # Same label discipline as the rest of the per-test family.
+    for forbidden in ('run_id="', 'trace_id="', 'pr="'):
+        assert forbidden not in inherited[0] and forbidden not in retained[0]
+
+
+def test_spans_from_an_older_plugin_emit_only_the_delta() -> None:
+    # Backward compatibility: every trace already in Tempo predates these two
+    # attributes, and must keep producing exactly the series it produced before.
+    gib = 1024**3
+    metrics = trace_exporter.extract_per_test_duration_metrics(
+        [
+            make_trace(
+                trace_id="t-old",
+                run_id="run-old",
+                job="run_models_gpu",
+                spans=[_span_with_retained_memory("t.py::A::test_leaks", 14 * gib)],
+            )
+        ]
+    )
+    assert len(metric_lines(metrics, "pytest_test_cuda_delta_bytes")) == 1
+    assert metric_lines(metrics, "pytest_test_cuda_inherited_bytes") == []
+    assert metric_lines(metrics, "pytest_test_cuda_retained_bytes") == []
+
+
 def test_no_retained_memory_metric_for_tests_that_did_not_report_it() -> None:
     metrics = trace_exporter.extract_per_test_duration_metrics(
         [

@@ -1873,6 +1873,11 @@ def extract_trace_rows(
         for tag, field in (
             ("pytest.cuda_delta_bytes", "cuda_delta_bytes"),
             ("pytest.cuda_delta_after_gc_bytes", "cuda_delta_after_gc_bytes"),
+            # Absolute readings, present only on spans from a plugin new enough
+            # to send them. Absent -> the field is simply missing from the row
+            # and no series is emitted, exactly as before they existed.
+            ("pytest.cuda_inherited_bytes", "cuda_inherited_bytes"),
+            ("pytest.cuda_retained_bytes", "cuda_retained_bytes"),
         ):
             if tag in span_tags:
                 try:
@@ -2555,6 +2560,10 @@ def extract_per_test_duration_metrics(
         "# TYPE pytest_test_cuda_delta_bytes gauge",
         "# HELP pytest_test_cuda_delta_after_gc_bytes Of that retained memory, how much survives a gc.collect(). Near zero means uncollected garbage a tearDown would free; a large value means a live reference no tearDown can free. Only emitted when the pytest gc probe is enabled.",
         "# TYPE pytest_test_cuda_delta_after_gc_bytes gauge",
+        "# HELP pytest_test_cuda_inherited_bytes Device memory already allocated when the test started, i.e. what earlier tests in its process left it. This is what an OOM turns on: a test asking for a few MiB on a card someone else filled.",
+        "# TYPE pytest_test_cuda_inherited_bytes gauge",
+        "# HELP pytest_test_cuda_retained_bytes Device memory still allocated when the test finished, i.e. what the next test in its process inherits. Absolute, so unlike the delta it is never negative.",
+        "# TYPE pytest_test_cuda_retained_bytes gauge",
     ]
     # key -> (trace_start_time, duration_seconds, retained|None, after_gc|None). On
     # collision the later run (higher start time) wins, so the metric reflects
@@ -2582,6 +2591,8 @@ def extract_per_test_duration_metrics(
             duration = float(row["duration_seconds"])
             retained = row.get("cuda_delta_bytes")
             after_gc = row.get("cuda_delta_after_gc_bytes")
+            inherited_abs = row.get("cuda_inherited_bytes")
+            retained_abs = row.get("cuda_retained_bytes")
             existing = latest.get(key)
             if existing is None or trace_start >= existing[0]:
                 latest[key] = (
@@ -2589,8 +2600,17 @@ def extract_per_test_duration_metrics(
                     duration,
                     float(retained) if retained is not None else None,
                     float(after_gc) if after_gc is not None else None,
+                    float(inherited_abs) if inherited_abs is not None else None,
+                    float(retained_abs) if retained_abs is not None else None,
                 )
-    for key, (_trace_start, duration, retained, after_gc) in sorted(latest.items()):
+    for key, (
+        _trace_start,
+        duration,
+        retained,
+        after_gc,
+        inherited_abs,
+        retained_abs,
+    ) in sorted(latest.items()):
         (
             provider,
             service_name,
@@ -2621,6 +2641,14 @@ def extract_per_test_duration_metrics(
         if after_gc is not None:
             lines.append(
                 f"pytest_test_cuda_delta_after_gc_bytes{metric_labels(test_labels)} {after_gc:.0f}"
+            )
+        if inherited_abs is not None:
+            lines.append(
+                f"pytest_test_cuda_inherited_bytes{metric_labels(test_labels)} {inherited_abs:.0f}"
+            )
+        if retained_abs is not None:
+            lines.append(
+                f"pytest_test_cuda_retained_bytes{metric_labels(test_labels)} {retained_abs:.0f}"
             )
     return lines
 
