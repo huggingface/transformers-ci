@@ -294,6 +294,42 @@ class GcProbeConfig:
         return self.value
 
 
+class _FakeCuda:
+    def __init__(self, allocated_by_device: list[int]) -> None:
+        self.allocated_by_device = allocated_by_device
+        self.read_devices: list[int] = []
+
+    def is_available(self) -> bool:
+        return True
+
+    def device_count(self) -> int:
+        return len(self.allocated_by_device)
+
+    def memory_allocated(self, device: int | None = None) -> int:
+        assert device is not None
+        self.read_devices.append(device)
+        return self.allocated_by_device[device]
+
+
+class _FakeTorch:
+    def __init__(self, allocated_by_device: list[int]) -> None:
+        self.cuda = _FakeCuda(allocated_by_device)
+
+
+class _FakePsutil:
+    class _Process:
+        def __init__(self, _pid: int) -> None:
+            pass
+
+        def cpu_times(self):
+            return type("CpuTimes", (), {"user": 1.0, "system": 2.0})()
+
+        def memory_info(self):
+            return type("MemoryInfo", (), {"rss": 4096})()
+
+    Process = _Process
+
+
 def _fake_cuda_sampler(readings: list[int], start: int, gc_probe: bool = False):
     """A sampler whose CUDA readings are scripted, so the delta arithmetic can be
     tested without a GPU."""
@@ -304,6 +340,27 @@ def _fake_cuda_sampler(readings: list[int], start: int, gc_probe: bool = False):
     queue = list(readings)
     sampler._cuda_allocated_bytes = lambda: queue.pop(0)  # type: ignore[method-assign]
     return sampler
+
+
+def test_cuda_allocated_now_sums_all_visible_devices(monkeypatch) -> None:
+    fake_torch = _FakeTorch([3, 5, 7])
+    monkeypatch.setattr(resource_plugin, "torch", fake_torch)
+
+    assert resource_plugin._cuda_allocated_now() == 15
+    assert fake_torch.cuda.read_devices == [0, 1, 2]
+
+
+def test_resource_sampler_sums_cuda_allocated_across_visible_devices(
+    monkeypatch,
+) -> None:
+    fake_torch = _FakeTorch([11, 13])
+    monkeypatch.setattr(resource_plugin, "torch", fake_torch)
+    monkeypatch.setattr(resource_plugin, "psutil", _FakePsutil)
+
+    sampler = resource_plugin.ResourceSampler()
+
+    assert sampler.start_cuda_allocated_bytes == 24
+    assert fake_torch.cuda.read_devices == [0, 1]
 
 
 def test_cuda_delta_reports_what_the_next_test_inherits() -> None:

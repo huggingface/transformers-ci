@@ -166,7 +166,10 @@ class ResourceSampler:
         if not self.cuda_available:
             return 0
         try:
-            return int(torch.cuda.memory_allocated())  # type: ignore[union-attr]
+            return sum(
+                int(torch.cuda.memory_allocated(device))  # type: ignore[union-attr]
+                for device in range(torch.cuda.device_count())  # type: ignore[union-attr]
+            )
         except Exception:  # pragma: no cover
             return 0
 
@@ -455,7 +458,10 @@ def _cuda_allocated_now() -> int | None:
     try:
         if not torch.cuda.is_available():
             return None
-        return int(torch.cuda.memory_allocated())
+        return sum(
+            int(torch.cuda.memory_allocated(device))
+            for device in range(torch.cuda.device_count())
+        )
     except Exception:  # pragma: no cover - defensive: never break a test run
         return None
 
