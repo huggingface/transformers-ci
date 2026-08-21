@@ -21,6 +21,7 @@ Installing the package exposes:
 
 - `configure-ci-otel`
 - `pytest-trace-exporter`
+- `assign-reviewers`
 
 Example:
 
@@ -144,6 +145,49 @@ configure-ci-otel --force-export-traces --job local_test -- \
 ```
 
 This writes per-test CPU, RSS, and CUDA metrics to a local JSONL file without requiring an OTLP endpoint.
+
+## Reviewer assignment
+
+`.github/workflows/assign-reviewers.yml` is a reusable workflow that requests up to two reviewers
+on a pull request, ranked by how many lines the PR changes in the files they own. Call it from the
+repository being reviewed:
+
+```yaml
+on:
+  pull_request_target:
+    branches: [main]
+    types: [ready_for_review]
+
+jobs:
+  assign_reviewers:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: huggingface/transformers-ci/.github/workflows/assign-reviewers.yml@main
+```
+
+Only the resolution logic lives here (`transformersci.reviewers`). The ownership data stays in the
+repository being reviewed, at `.github/scripts/codeowners_for_review_action` — who owns what is
+that repo's decision. Point `codeowners_file` elsewhere if it lives somewhere else. A file
+resolves to its owners in this order, most specific first:
+
+1. `# Reviewers: @login` in the leading comment block of a model's `modular_*.py`/`modeling_*.py`
+2. a path rule in the codeowners file
+3. the model's modality — its section in `docs/source/en/_toctree.yml`, matched by an
+   `@@modality/<slug> @login` rule
+4. the `*` catch-all
+
+Each reviewer is requested in a separate call, and anyone who is not a collaborator is skipped
+with a `::warning::` so the next-ranked owner takes the slot — one stale codeowners entry costs
+one reviewer, not all of them.
+
+Call it from `pull_request_target`: requesting a review needs a write token, which a fork's
+`pull_request` run does not get. The checkout is the PR's base and nothing from the head is
+executed; the head is only read file-by-file through the API, as text, to see models and
+`# Reviewers:` tags the PR adds, and every login is gated on the collaborator check. The
+codeowners file is never read from the head, and `pr-ci-security-gate.yml` can block untrusted
+PRs from touching it at all — list it in that workflow's `protected_paths` input, which is opt-in
+and leaves the gate unchanged for callers that do not set it.
 
 ## Dashboard
 

@@ -37,11 +37,19 @@ publish = [
   "huggingface_hub[cli,hf_xet]",
   "pyarrow",
 ]
+reviewers = [
+  # `assign` talks to the PR through PyGithub; `resolver` parses the doc toctree with PyYAML.
+  # Consumers that only import `resolver` to check their own tree offline need PyYAML alone.
+  "PyGithub",
+  "PyYAML",
+]
 test = [
   "emoji",
   "huggingface_hub>=0.25",
   "psutil",
+  "PyGithub",
   "pytest>=8.0",
+  "PyYAML",
 ]
 dev = [
   "emoji",
@@ -49,8 +57,10 @@ dev = [
   "opentelemetry-exporter-otlp",
   "opentelemetry-sdk",
   "psutil",
+  "PyGithub",
   "pytest>=8.0",
   "pytest-opentelemetry==1.1.0",  # keep in sync with the [otel] extra above
+  "PyYAML",
 ]
 
 [project.scripts]
@@ -61,6 +71,7 @@ pytest-trace-exporter = "transformersci.otel.trace_exporter:main"
 integration-failure-triage = "transformersci.agentic.integration_failure_triage:main"
 dashboard-failure-triage = "transformersci.agentic.dashboard_failure_triage:main"
 serge-verify-verdict = "transformersci.agentic.serge_verify_verdict:main"
+assign-reviewers = "transformersci.reviewers.assign:main"
 
 [project.entry-points.pytest11]
 transformersci_otel = "transformersci.otel.resource_plugin"
