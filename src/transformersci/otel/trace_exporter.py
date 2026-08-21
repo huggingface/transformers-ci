@@ -4135,7 +4135,7 @@ def _pr_run_summary_from_prometheus(
 
     lines: list[str] = []
     job_values: dict[
-        tuple[tuple[str, str, str, str], str], dict[str, float | bool]
+        tuple[tuple[str, str, str, str], str, str], dict[str, float | bool]
     ] = {}
     for item in result:
         if not isinstance(item, dict):
@@ -4172,7 +4172,16 @@ def _pr_run_summary_from_prometheus(
             labels.get("pr", ""),
             labels.get("run_id", ""),
         )
-        job_key = (run_key, test_job)
+        # `hardware` is half of a job's identity: one run_models_gpu run executes
+        # the same test_job on single- *and* multi-GPU, and those are separate
+        # executions with their own totals (which is why the exporter emits the
+        # job rollups keyed by (test_job, hardware), and why the PR dashboard's
+        # Past Runs panel counts and sums the per-hardware series). Keying on
+        # test_job alone collapsed the pair into one entry, so the max() below
+        # reported the worse hardware's failure count against a single
+        # hardware's test count -- 7 failed / 52 tests / 1 job for a run that
+        # really did 8 failed / 104 tests / 2 jobs.
+        job_key = (run_key, test_job, labels.get("hardware", ""))
         aggregate = job_values.setdefault(
             job_key, {"member": False, "total_tests": 0.0, "failed_tests": 0.0}
         )
@@ -4198,7 +4207,7 @@ def _pr_run_summary_from_prometheus(
     )
     matching_jobs = [
         aggregate
-        for (run_key, _), aggregate in job_values.items()
+        for (run_key, _test_job, _hardware), aggregate in job_values.items()
         if run_key == summary_key
     ]
     if matching_jobs:
