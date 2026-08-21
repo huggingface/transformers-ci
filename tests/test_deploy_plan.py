@@ -532,3 +532,251 @@ class TestManifestParsing:
             "secret-envfrom",
             "secret-key",
         }
+
+
+# --------------------------------------------------------------------------
+# what a change removes
+#
+# "change ConfigMap/grafana-dashboards" is equally true of adding a panel and of
+# deleting a dashboard somebody applied by hand. Both of those have shipped.
+# --------------------------------------------------------------------------
+
+
+def test_doc_lines_expands_configmap_payloads() -> None:
+    """A 40 KB dashboard is one `data` string; diffed as one line it says nothing
+    about what moved inside it."""
+    doc = {
+        "kind": "ConfigMap",
+        "metadata": {"name": "grafana-dashboards"},
+        "data": {"a.json": "one\ntwo\nthree"},
+    }
+    lines = deploy.doc_lines(doc)
+    assert "data/a.json:" in lines
+    assert "  one" in lines and "  two" in lines and "  three" in lines
+
+
+def test_doc_lines_never_expands_secret_values() -> None:
+    """A diff must not be able to print a credential."""
+    doc = {
+        "kind": "Secret",
+        "metadata": {"name": "transformers-ci-secrets"},
+        "data": {"gh-token": "c3VwZXItc2VjcmV0"},
+        "stringData": {"plain": "hunter2"},
+    }
+    lines = deploy.doc_lines(doc)
+    blob = "\n".join(lines)
+    assert "c3VwZXItc2VjcmV0" not in blob
+    assert "hunter2" not in blob
+    # ... but a rotation is still visible as a length change.
+    assert "data/gh-token: <16 bytes>" in lines
+    assert "stringData/plain: <7 bytes>" in lines
+
+
+def test_doc_diff_counts_lines_inside_a_configmap_payload() -> None:
+    live = configmap("grafana-dashboards", "keep\ndrop-me\nkeep2")
+    new = configmap("grafana-dashboards", "keep\nadded\nadded2\nkeep2")
+    added, removed, hunks = deploy.doc_diff(live, new)
+    assert (added, removed) == (2, 1)
+    assert any(line.startswith("-  drop-me") for line in hunks)
+
+
+def test_dropped_config_keys_flags_a_key_only_present_live() -> None:
+    """The shape of an accidental revert: the cluster has a key the chart does
+    not produce, so this deploy deletes it."""
+    live = {
+        "kind": "ConfigMap",
+        "metadata": {"name": "grafana-alerting"},
+        "data": {"kept.yaml": "a", "hand-applied.yaml": "x\ny\nz"},
+    }
+    new = {
+        "kind": "ConfigMap",
+        "metadata": {"name": "grafana-alerting"},
+        "data": {"kept.yaml": "a"},
+    }
+    assert deploy.dropped_config_keys(live, new) == [("data/hand-applied.yaml", 3)]
+    # An added key is not a deletion.
+    assert deploy.dropped_config_keys(new, live) == []
+
+
+def test_plan_records_diffs_and_dropped_keys() -> None:
+    live = {
+        "kind": "ConfigMap",
+        "metadata": {"name": "cfg"},
+        "data": {"a": "1", "gone": "x"},
+    }
+    new = {"kind": "ConfigMap", "metadata": {"name": "cfg"}, "data": {"a": "2"}}
+    plan = plan_for([live], [new])
+    key = ("ConfigMap", "cfg")
+    assert key in plan.diffs
+    assert plan.dropped[key] == [("data/gone", 1)]
+
+
+# --------------------------------------------------------------------------
+# which code the cloned workloads will run
+#
+# The source lives in an emptyDir an init container fills at pod start, so the
+# values file decides which commit prod runs -- and a stale pin rolls the code
+# backwards while `helm upgrade` reports success.
+# --------------------------------------------------------------------------
+
+
+def cloning_workload(name: str, revision: str, mount: str = "/app/src") -> dict:
+    return {
+        "kind": "Deployment",
+        "metadata": {"name": name},
+        "spec": {
+            "replicas": 1,
+            "template": {
+                "metadata": {
+                    "annotations": {deploy.SOURCE_REVISION_ANNOTATION: revision}
+                },
+                "spec": {
+                    "initContainers": [
+                        {
+                            "name": deploy.CLONE_INIT_CONTAINER,
+                            "volumeMounts": [{"name": "src", "mountPath": "/app/src"}],
+                        }
+                    ],
+                    "containers": [
+                        {
+                            "name": name,
+                            "image": "python:3.12-slim",
+                            "volumeMounts": [{"name": "src", "mountPath": mount}],
+                        }
+                    ],
+                },
+            },
+        },
+    }
+
+
+def test_source_revision_and_clone_mount_path_come_from_the_manifest() -> None:
+    doc = cloning_workload("trace-exporter", "abc123", mount="/app/src")
+    assert deploy.source_revision(doc) == "abc123"
+    # Derived, not hardcoded, so moving the checkout does not silently disable
+    # the post-deploy check.
+    assert deploy.clone_mount_path(doc) == "/app/src"
+    assert deploy.source_revision(configmap("cfg")) == ""
+
+
+def fake_git(monkeypatch, *, ancestors: set, known: set | None = None, count="4"):
+    """Stand in for the local clone: `ancestors` holds (old, new) pairs where old
+    is an ancestor of new."""
+
+    def _exists(revision):
+        return known is None or revision in known
+
+    class Result:
+        def __init__(self, code):
+            self.returncode = code
+
+    def _run(args, **kwargs):
+        if "--is-ancestor" in args:
+            first, second = args[-2], args[-1]
+            return Result(0 if (first, second) in ancestors else 1)
+        return Result(0)
+
+    monkeypatch.setattr(deploy, "git_commit_exists", _exists)
+    monkeypatch.setattr(deploy, "run", _run)
+    monkeypatch.setattr(deploy, "try_output_line", lambda args: count)
+    monkeypatch.setattr(deploy.shutil, "which", lambda name: "/usr/bin/git")
+    monkeypatch.setattr(deploy.Path, "exists", lambda self: True)
+
+
+def test_source_revision_move_classifies_forward(monkeypatch) -> None:
+    fake_git(monkeypatch, ancestors={("old", "new")})
+    verdict, detail = deploy.source_revision_move("old", "new")
+    assert verdict == "forward"
+    assert detail == "4 commits forward"
+
+
+def test_source_revision_move_classifies_backward(monkeypatch) -> None:
+    """Today's failure: the values file was pinned behind the live release, so
+    deploying it would have rolled the exporter's code back."""
+    fake_git(monkeypatch, ancestors={("new", "old")})
+    verdict, detail = deploy.source_revision_move("old", "new")
+    assert verdict == "backward"
+    assert "drops 4 commits" in detail
+
+
+def test_source_revision_move_classifies_diverged(monkeypatch) -> None:
+    fake_git(monkeypatch, ancestors=set())
+    verdict, _detail = deploy.source_revision_move("old", "new")
+    assert verdict == "diverged"
+
+
+def test_source_revision_move_is_unknown_when_the_clone_cannot_answer(
+    monkeypatch,
+) -> None:
+    fake_git(monkeypatch, ancestors={("old", "new")}, known={"old"})
+    verdict, detail = deploy.source_revision_move("old", "new")
+    assert verdict == "unknown"
+    assert "new" in detail
+
+
+def test_plan_records_a_source_revision_move(monkeypatch) -> None:
+    fake_git(monkeypatch, ancestors={("old", "new")})
+    plan = plan_for(
+        [cloning_workload("trace-exporter", "old")],
+        [cloning_workload("trace-exporter", "new")],
+    )
+    assert plan.source_moves[("Deployment", "trace-exporter")][:3] == (
+        "old",
+        "new",
+        "forward",
+    )
+
+
+def test_only_a_forward_move_clears_the_deploy(monkeypatch) -> None:
+    """An unverifiable revision must not be read as approval -- the point of the
+    gate is that the values file may disagree with what prod is running."""
+    key = ("Deployment", "trace-exporter")
+    for verdict, blocks in (
+        ("forward", False),
+        ("unpinned", False),
+        ("backward", True),
+        ("diverged", True),
+        ("unknown", True),
+    ):
+        plan = deploy.Plan()
+        plan.source_moves = {key: ("old", "new", verdict, "detail")}
+        blockers = deploy.source_move_blockers(plan)
+        assert bool(blockers) is blocks, verdict
+        if blocks:
+            assert verdict in blockers[0]
+
+
+# --------------------------------------------------------------------------
+# post-deploy: is the pod actually running the pinned commit?
+# --------------------------------------------------------------------------
+
+
+def source_check(monkeypatch, head, revision="a" * 40):
+    doc = cloning_workload("trace-exporter", revision)
+    plan = deploy.Plan()
+    key = ("Deployment", "trace-exporter")
+    plan.workloads = [key]
+    plan.new_by_key = {key: doc}
+    monkeypatch.setattr(deploy, "try_output_line", lambda args: head)
+    args = type("Args", (), {"namespace": "transformers-ci"})()
+    return deploy.verify_source_revisions(plan, plan.new_by_key, args)
+
+
+def test_source_verification_passes_when_the_pod_is_on_the_pin(monkeypatch) -> None:
+    assert source_check(monkeypatch, "a" * 40) is True
+
+
+def test_source_verification_fails_when_the_pod_is_on_another_commit(
+    monkeypatch,
+) -> None:
+    """A completed rollout proves the pod template applied, not that the code
+    half of the deploy did anything."""
+    assert source_check(monkeypatch, "b" * 40) is False
+
+
+def test_source_verification_is_not_a_failure_when_it_cannot_read_head(
+    monkeypatch,
+) -> None:
+    """No python in the image, or a moved checkout: report it, do not claim the
+    revision was confirmed and do not fail the deploy over it."""
+    assert source_check(monkeypatch, None) is True
