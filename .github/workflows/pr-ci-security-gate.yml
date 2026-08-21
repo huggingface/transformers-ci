@@ -2,6 +2,15 @@ name: PR CI Security Gate
 
 on:
   workflow_call:
+    inputs:
+      protected_paths:
+        description: >-
+          Newline-separated paths an untrusted PR may not add, change, rename or delete — the
+          files that decide how CI treats a PR, so a PR cannot edit the rules being applied to
+          it. A value ending in `/` protects the whole directory. Opt-in: left unset, this
+          workflow behaves exactly as it did before the input existed.
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -19,6 +28,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          PROTECTED_PATHS: ${{ inputs.protected_paths }}
         run: |
           # Pre-check: changed_files on the PR object may reflect the true count before the
           # REST file-listing endpoint's 3000-file cap kicks in (not officially documented)
@@ -35,6 +45,50 @@ jobs:
           echo "Changed files:"
           cat /tmp/changed_files.txt
           grep '\.py$' /tmp/changed_files.txt > /tmp/py_files.txt || true
+
+          # The list the protected-path check below reads. With nothing protected there is nothing
+          # to widen it for, so it stays changed_files.txt and this workflow does what it always
+          # did. With paths protected it has to be wider than changed_files.txt, which holds the
+          # files that still exist at the head (what the Bandit steps need, since they fetch each
+          # file's contents): a file the PR deletes is not in it at all, and a renamed file appears
+          # only under its new name — yet deleting a protected file, or moving it out from under
+          # its rule, reaches it as much as editing it does.
+          if [ -n "${PROTECTED_PATHS//[[:space:]]/}" ]; then
+            jq -r '.[] | .filename, (.previous_filename // empty)' /tmp/pr_files.json |
+              sort -u > /tmp/touched_paths.txt
+            echo "Paths touched (including deletions and the old name of a rename):"
+            cat /tmp/touched_paths.txt
+          else
+            cp /tmp/changed_files.txt /tmp/touched_paths.txt
+          fi
+
+      - name: Block changes to protected paths
+        env:
+          PROTECTED_PATHS: ${{ inputs.protected_paths }}
+        run: |
+          # A caller that protects nothing gets an empty list here and this loop does nothing, so
+          # the gate is unchanged for it.
+          #
+          # For a caller that does protect paths — such as a reviewer codeowners file — the point
+          # is that the rules CI applies to a PR are not the PR's to edit. It is a second lock on
+          # a door that is usually already locked (`assign-reviewers`, for one, reads the
+          # codeowners file from the base and never from the head), and the one that keeps holding
+          # if a protected file ever moves somewhere the directory allowlist below would let
+          # through.
+          failed=0
+          while IFS= read -r protected; do
+            [ -n "$protected" ] || continue
+            while IFS= read -r file; do
+              [ -n "$file" ] || continue
+              case "$protected" in
+                */) [ "${file##"$protected"}" != "$file" ] || continue ;;
+                *)  [ "$file" = "$protected" ] || continue ;;
+              esac
+              echo "::error::PR modifies $file, a path this repository protects from untrusted PRs. A maintainer must make this change in a separate PR."
+              failed=1
+            done < /tmp/touched_paths.txt
+          done <<< "$PROTECTED_PATHS"
+          [ "$failed" -eq 0 ] || exit 1
 
       - name: Enforce allowlist — only src/tests/docs/utils, only .py/.txt/.md
         run: |
@@ -220,6 +274,7 @@ jobs:
           - The PR touches 50 or more files — only PRs with fewer than 50 changed files are automatically approved
           - A changed file is outside the allowed directories (\`src/\`, \`tests/\`, \`docs/\`, \`utils/\`), has a disallowed extension (only \`.py\`, \`.txt\`, \`.md\` permitted outside \`tests/\` and \`docs/\`), or is not \`.md\`/\`.yml\` inside \`docs/\`
           - A new high-severity security issue was detected in the changed Python files (Bandit check)
+          - The PR touches a path this repository protects from untrusted PRs, such as the file that decides who reviews it — a maintainer must make that change in a separate PR
 
           See the [workflow run]($RUN_URL) for the exact violations.
 
