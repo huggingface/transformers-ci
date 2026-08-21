@@ -3403,6 +3403,238 @@ def test_pr_badge_prefers_prometheus_job_rollups_for_latest_run(monkeypatch) -> 
     assert "2 jobs" in svg
 
 
+def test_pr_badge_counts_each_hardware_of_a_job_separately(monkeypatch) -> None:
+    """A run-slow run executes one test_job on single- *and* multi-GPU. Those are
+    two job executions with their own totals, so the badge must sum them rather
+    than collapse them by test_job.
+
+    Regression fixture is real prod data for transformers PR #48171, run-slow run
+    32483586670:1: single-gpu 1/52, multi-gpu 7/52. Collapsing by test_job alone
+    reported "7 failed / 52 tests / 1 jobs" -- the worse hardware's failures
+    against one hardware's test count.
+    """
+    trace_exporter._pr_summary_cache.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
+    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
+
+    def _query(url):
+        labels = {
+            "ci_event": "pr-comment",
+            "pr": "48171",
+            "provider": "github_actions",
+            "run_id": "32483586670:1",
+            "service_name": "pytest-observability",
+        }
+        job = {**labels, "test_job": "run_models_gpu"}
+        single = {**job, "hardware": "single-gpu"}
+        multi = {**job, "hardware": "multi-gpu"}
+        rows = [
+            ("pytest_run_start_time_seconds", labels, "1787316605.869470"),
+            ("pytest_run_end_time_seconds", labels, "1787317971.806538"),
+            # The run-level rollups only sum the traces still inside the render
+            # window, so they can decay below the job-level truth; the badge
+            # prefers the job rollups precisely because of that.
+            ("pytest_run_total_tests", labels, "52"),
+            ("pytest_run_failed_tests", labels, "1"),
+            ("pytest_run_duration_seconds", labels, "1358.992739"),
+            ("pytest_run_job_count", labels, "1"),
+            ("pytest_run_job_member_info", single, "1"),
+            ("pytest_run_job_total_tests", single, "52"),
+            ("pytest_run_job_failed_tests", single, "1"),
+            ("pytest_run_job_member_info", multi, "1"),
+            ("pytest_run_job_total_tests", multi, "52"),
+            ("pytest_run_job_failed_tests", multi, "7"),
+        ]
+        return {
+            "status": "success",
+            "data": {
+                "result": [
+                    {"metric": {"__name__": name, **metric_labels}, "value": [0, value]}
+                    for name, metric_labels, value in rows
+                ]
+            },
+        }
+
+    def _must_not_search(*args, **kwargs):
+        raise AssertionError("Tempo search must not run when Prometheus has rollups")
+
+    monkeypatch.setattr(trace_exporter, "_http_get_json", _query)
+    monkeypatch.setattr(trace_exporter, "search_trace_ids", _must_not_search)
+
+    summary = trace_exporter._pr_run_summary_from_prometheus(
+        "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+    )
+    assert summary is not None
+    assert summary["failed_tests"] == 8
+    assert summary["total_tests"] == 104
+    assert summary["job_count"] == 2
+
+    svg = trace_exporter.render_pr_badge_svg(
+        "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+    ).decode()
+    assert "8 failed" in svg
+    assert "104 tests" in svg
+    assert "2 jobs" in svg
+
+
+# --- the two CI streams a PR accumulates -------------------------------------
+# A PR gets regular PR CI (CPU, one run per push) and, if a maintainer asks for
+# it, run-slow GPU runs from a `run-slow: <models>` comment. They are separate
+# streams with separate verdicts, and a badge that mixes them contradicts the
+# by-PR dashboard, which filters on the same ci_event label.
+
+
+def _pr_ci_run_lines(pr: str = "48171") -> list[str]:
+    """Payload lines for PR 48171's last CPU PR-CI run: 3,692 tests, 8 jobs, green."""
+    labels = (
+        f'{{ci_event="none",pr="{pr}",provider="github_actions",'
+        f'run_id="32483327955:1",service_name="pytest-observability"}}'
+    )
+    return [
+        f"pytest_run_start_time_seconds{labels} 1787316317.329458",
+        f"pytest_run_end_time_seconds{labels} 1787316484.000000",
+        f"pytest_run_total_tests{labels} 3692",
+        f"pytest_run_failed_tests{labels} 0",
+        f"pytest_run_duration_seconds{labels} 449.000000",
+        f"pytest_run_job_count{labels} 8",
+    ]
+
+
+def _run_slow_run_lines(pr: str = "48171") -> list[str]:
+    """Payload lines for the run-slow GPU run that *followed* it by 288s: two
+    hardware jobs, 104 tests, 8 failures. The later start time is the whole
+    problem -- an unfiltered "latest run" picks this one and reports it against a
+    dashboard that was showing the CPU run."""
+    labels = (
+        f'{{ci_event="pr-comment",pr="{pr}",provider="github_actions",'
+        f'run_id="32483586670:1",service_name="pytest-observability"}}'
+    )
+    return [
+        f"pytest_run_start_time_seconds{labels} 1787316605.869470",
+        f"pytest_run_end_time_seconds{labels} 1787317971.806538",
+        f"pytest_run_total_tests{labels} 104",
+        f"pytest_run_failed_tests{labels} 8",
+        f"pytest_run_duration_seconds{labels} 1718.515044",
+        f"pytest_run_job_count{labels} 2",
+    ]
+
+
+def test_pr_badge_reports_each_ci_stream_separately(monkeypatch) -> None:
+    """One PR, one payload, two badges: each reads only its own stream."""
+    trace_exporter._pr_summary_cache.clear()
+    payload = "\n".join(_pr_ci_run_lines() + _run_slow_run_lines())
+    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: payload)
+
+    cpu = trace_exporter.render_pr_badge_svg(
+        "48171", trace_exporter.BADGE_EVENT_PR_CI
+    ).decode()
+    assert "CPU CI" in cpu
+    assert "0 failed / 3,692 tests / 8 jobs" in cpu
+
+    gpu = trace_exporter.render_pr_badge_svg(
+        "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+    ).decode()
+    assert "GPU run-slow" in gpu
+    assert "8 failed / 104 tests / 2 jobs" in gpu
+
+    # A legacy /badge/pr?pr=N URL still sitting in an old PR body must resolve to
+    # PR CI -- the stream the dashboard it links to shows -- not to whichever run
+    # happened last.
+    assert trace_exporter.render_pr_badge_svg("48171").decode() == cpu
+
+    summary = json.loads(
+        trace_exporter.render_pr_summary_json(
+            "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+        ).decode()
+    )
+    assert summary["event"] == "run-slow"
+    assert summary["available"] is True
+    assert summary["latest_run"]["run_id"] == "32483586670:1"
+
+
+def test_pr_badge_run_slow_reads_not_run_when_the_pr_has_none(monkeypatch) -> None:
+    """The GPU badge is emitted for every PR, so the common case -- nobody ran
+    run-slow -- has to render as a statement about the PR ("not run") rather than
+    as the pipeline shrugging ("no data")."""
+    trace_exporter._pr_summary_cache.clear()
+    # No Prometheus and no traces: the run-slow stream is genuinely empty.
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "")
+    monkeypatch.setattr(
+        trace_exporter, "render_metrics", lambda: "\n".join(_pr_ci_run_lines())
+    )
+    monkeypatch.setattr(trace_exporter, "search_trace_ids", lambda *a, **k: [])
+
+    gpu = trace_exporter.render_pr_badge_svg(
+        "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+    ).decode()
+    assert "GPU run-slow" in gpu
+    assert "not run" in gpu
+    assert "no data" not in gpu
+    assert f'fill="#{trace_exporter.BADGE_CLOSED_COLOR}"' in gpu
+
+    # ... while the same PR's CPU badge is unaffected.
+    cpu = trace_exporter.render_pr_badge_svg(
+        "48171", trace_exporter.BADGE_EVENT_PR_CI
+    ).decode()
+    assert "0 failed / 3,692 tests / 8 jobs" in cpu
+
+    summary = json.loads(
+        trace_exporter.render_pr_summary_json(
+            "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+        ).decode()
+    )
+    assert summary["event"] == "run-slow"
+    assert summary["available"] is False
+    assert summary["latest_run"] is None
+
+
+def test_pr_badge_scopes_the_prometheus_query_to_its_stream(monkeypatch) -> None:
+    """Push the stream filter into PromQL. The roll-up filters client-side too,
+    so a missing matcher would still give the right answer -- while making the
+    badge pull every one of a PR's runs out of Prometheus to throw most away."""
+    captured: list[str] = []
+
+    def _query(url):
+        captured.append(url)
+        return {"status": "success", "data": {"result": []}}
+
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
+    monkeypatch.setattr(trace_exporter, "_http_get_json", _query)
+
+    trace_exporter._pr_run_summary_from_prometheus(
+        "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+    )
+    trace_exporter._pr_run_summary_from_prometheus(
+        "48171", trace_exporter.BADGE_EVENT_PR_CI
+    )
+
+    assert len(captured) == 2
+    assert urllib.parse.quote_plus('ci_event="pr-comment"') in captured[0]
+    assert urllib.parse.quote_plus('ci_event!="pr-comment"') in captured[1]
+
+
+def test_normalize_badge_event_defaults_to_pr_ci_and_rejects_unknown() -> None:
+    assert trace_exporter.normalize_badge_event("") == trace_exporter.BADGE_EVENT_PR_CI
+    assert (
+        trace_exporter.normalize_badge_event("  ") == trace_exporter.BADGE_EVENT_PR_CI
+    )
+    for raw in ("pr-ci", "PR-CI", "pr_ci", "cpu", " CPU "):
+        assert (
+            trace_exporter.normalize_badge_event(raw)
+            == trace_exporter.BADGE_EVENT_PR_CI
+        )
+    for raw in ("run-slow", "Run-Slow", "run_slow", "gpu"):
+        assert (
+            trace_exporter.normalize_badge_event(raw)
+            == trace_exporter.BADGE_EVENT_RUN_SLOW
+        )
+    # A daily run is not a PR's run, and the raw label value is not the public
+    # spelling; both are rejected so the handler answers 400 instead of quietly
+    # serving the PR CI stream under a wrong name.
+    assert trace_exporter.normalize_badge_event("daily") is None
+    assert trace_exporter.normalize_badge_event("pr-comment") is None
+
+
 # --- pytest_test_last_failure_info: run_id -----------------------------------
 # A trace is NOT a run: one run_models_gpu run emits ~19 per-model traces. Without
 # run_id on this pointer metric, "has this test failed in the last N runs of its
