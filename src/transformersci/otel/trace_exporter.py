@@ -180,6 +180,33 @@ DEFAULT_BADGE_PROMETHEUS_LOOKBACK = "90d"
 # merging (abandoned) gets a muted grey so it reads as inert, not active-green.
 BADGE_MERGED_COLOR = "1f6feb"
 BADGE_CLOSED_COLOR = "9f9f9f"
+
+# A PR accumulates two independent CI streams and conflating them is how a badge
+# ends up contradicting the dashboard it links to: regular PR CI (CPU, one run
+# per push) and the GPU runs a maintainer asks for with a `run-slow: <models>`
+# PR comment. The exporter labels the latter ci_event="pr-comment"; everything
+# else -- including runs predating the attribute, which carry no ci_event at all
+# -- is PR CI. Each badge answers for exactly one stream, so the PR body can
+# carry both side by side and each one agrees with the by-PR dashboard, which
+# selects on the same label.
+RUN_SLOW_CI_EVENT = "pr-comment"
+BADGE_EVENT_PR_CI = "pr-ci"
+BADGE_EVENT_RUN_SLOW = "run-slow"
+DEFAULT_BADGE_EVENT = BADGE_EVENT_PR_CI
+BADGE_EVENT_LABELS = {
+    BADGE_EVENT_PR_CI: "CPU CI",
+    BADGE_EVENT_RUN_SLOW: "GPU run-slow",
+}
+# Accepted ?event= spellings. Kept deliberately small: the injector writes the
+# canonical names, the aliases only spare a human hand-editing a URL.
+BADGE_EVENT_ALIASES = {
+    "pr-ci": BADGE_EVENT_PR_CI,
+    "pr_ci": BADGE_EVENT_PR_CI,
+    "cpu": BADGE_EVENT_PR_CI,
+    "run-slow": BADGE_EVENT_RUN_SLOW,
+    "run_slow": BADGE_EVENT_RUN_SLOW,
+    "gpu": BADGE_EVENT_RUN_SLOW,
+}
 DEFAULT_PROMETHEUS_URL = ""
 DEFAULT_PUBLIC_RESPONSE_CACHE_SECONDS = 30.0
 
@@ -3902,7 +3929,7 @@ def _iter_metric_samples(
 
 
 def _latest_pr_run_summary_from_metrics(
-    pr: str, text: str
+    pr: str, text: str, event: str = DEFAULT_BADGE_EVENT
 ) -> dict[str, str | float | int | None] | None:
     runs: dict[tuple[str, str, str, str], dict[str, str | float | int | None]] = {}
     metric_to_field = {
@@ -3925,6 +3952,8 @@ def _latest_pr_run_summary_from_metrics(
             continue
         labels = _parse_metric_labels(match.group(2) or "")
         if labels.get("pr") != pr:
+            continue
+        if not _badge_event_matches(event, labels.get("ci_event", "none")):
             continue
         try:
             value = float(match.group(3))
@@ -3961,10 +3990,10 @@ def _latest_pr_run_summary_from_metrics(
 
 
 def _latest_pr_run_summary(
-    pr: str, source: str | None = None
+    pr: str, source: str | None = None, event: str = DEFAULT_BADGE_EVENT
 ) -> dict[str, str | float | int | None] | None:
     return _latest_pr_run_summary_from_metrics(
-        pr, source if source is not None else render_metrics()
+        pr, source if source is not None else render_metrics(), event
     )
 
 
@@ -3995,6 +4024,28 @@ def _badge_fill(color: str) -> str:
     if re.fullmatch(r"[0-9a-fA-F]{3}|[0-9a-fA-F]{6}", color):
         return f"#{color}"
     return color
+
+
+def normalize_badge_event(raw: str) -> str | None:
+    """Map a ``?event=`` value onto a stream name, or ``None`` if unrecognized.
+
+    An *absent* value selects PR CI rather than "whichever stream ran last".
+    That is what the by-PR dashboard shows, so a legacy ``/badge/pr?pr=N`` URL
+    still sitting in an old PR body agrees with the dashboard it links to
+    instead of flipping to a run-slow run the dashboard would then explain with
+    a different set of numbers.
+    """
+    value = raw.strip().lower()
+    if not value:
+        return DEFAULT_BADGE_EVENT
+    return BADGE_EVENT_ALIASES.get(value)
+
+
+def _badge_event_matches(event: str, ci_event: str) -> bool:
+    """Does a run's ``ci_event`` label belong to ``event``'s stream?"""
+    if event == BADGE_EVENT_RUN_SLOW:
+        return ci_event == RUN_SLOW_CI_EVENT
+    return ci_event != RUN_SLOW_CI_EVENT
 
 
 def _pr_state_for_badge(pr: str) -> str | None:
@@ -4055,10 +4106,13 @@ def _badge_prometheus_lookback() -> str:
 
 
 _pr_summary_cache_lock = threading.Lock()
-# pr -> (expiry_monotonic, summary-or-None). None (a genuinely-unknown PR) is
-# cached too, so a miss doesn't re-search Tempo on every single badge hit.
+# (pr, event) -> (expiry_monotonic, summary-or-None). None (a genuinely-unknown
+# PR, or a PR nobody has run run-slow on) is cached too, so a miss doesn't
+# re-search Tempo on every single badge hit. The event is part of the key: the
+# two streams have independent answers, and "no run-slow run" is the common case
+# we most want to serve from cache.
 _pr_summary_cache: dict[
-    str, tuple[float, dict[str, str | float | int | None] | None]
+    tuple[str, str], tuple[float, dict[str, str | float | int | None] | None]
 ] = {}
 _public_response_cache_lock = threading.Lock()
 _public_response_cache: "OrderedDict[str, tuple[float, bytes]]" = OrderedDict()
@@ -4091,7 +4145,7 @@ def _public_response_cache_put(key: str, payload: bytes) -> None:
 
 
 def _pr_run_summary_from_prometheus(
-    pr: str,
+    pr: str, event: str = DEFAULT_BADGE_EVENT
 ) -> dict[str, str | float | int | None] | None:
     """Read a PR's latest run from Prometheus rollups.
 
@@ -4115,9 +4169,17 @@ def _pr_run_summary_from_prometheus(
         "pytest_run_job_total_tests|"
         "pytest_run_job_failed_tests"
     )
+    # `ci_event!="pr-comment"` also matches series carrying no ci_event label at
+    # all, which is what we want: runs from before the attribute existed are PR
+    # CI. This mirrors the by-PR dashboard's own selector.
+    ci_event_matcher = (
+        f'ci_event="{RUN_SLOW_CI_EVENT}"'
+        if event == BADGE_EVENT_RUN_SLOW
+        else f'ci_event!="{RUN_SLOW_CI_EVENT}"'
+    )
     query = (
-        f'last_over_time({{__name__=~"{metric_pattern}",pr="{pr}"}}'
-        f"[{_badge_prometheus_lookback()}])"
+        f'last_over_time({{__name__=~"{metric_pattern}",{ci_event_matcher},'
+        f'pr="{pr}"}}[{_badge_prometheus_lookback()}])'
     )
     url = f"{base_url}/api/v1/query?{urlencode({'query': query})}"
     try:
@@ -4195,7 +4257,11 @@ def _pr_run_summary_from_prometheus(
             aggregate["failed_tests"] = max(
                 float(aggregate["failed_tests"]), metric_value
             )
-    summary = _latest_pr_run_summary(pr, source="\n".join(lines)) if lines else None
+    summary = (
+        _latest_pr_run_summary(pr, source="\n".join(lines), event=event)
+        if lines
+        else None
+    )
     if summary is None:
         return None
 
@@ -4285,51 +4351,68 @@ def _pr_extracted_rows(
     return extracted
 
 
-def _pr_run_summary_cached(pr: str) -> dict[str, str | float | int | None] | None:
-    """Latest-run summary for a PR: payload, Prometheus, then memoized Tempo.
+def _pr_run_summary_cached(
+    pr: str, event: str = DEFAULT_BADGE_EVENT
+) -> dict[str, str | float | int | None] | None:
+    """Latest-run summary for one of a PR's CI streams: payload, Prometheus,
+    then memoized Tempo.
 
     The live payload is the cheap path — a PR that ran inside the render window
     is already there. Otherwise query persisted Prometheus rollups, falling back
     to a per-PR Tempo search when needed. Misses are memoized for
     :func:`_badge_cache_seconds`.
     """
-    summary = _latest_pr_run_summary(pr)
+    summary = _latest_pr_run_summary(pr, event=event)
     if summary is not None:
         return summary
 
+    cache_key = (pr, event)
     now = time.monotonic()
     with _pr_summary_cache_lock:
-        hit = _pr_summary_cache.get(pr)
+        hit = _pr_summary_cache.get(cache_key)
         if hit is not None and hit[0] > now:
             return hit[1]
 
-    summary = _pr_run_summary_from_prometheus(pr)
+    summary = _pr_run_summary_from_prometheus(pr, event)
     if summary is not None:
         with _pr_summary_cache_lock:
-            _pr_summary_cache[pr] = (
+            _pr_summary_cache[cache_key] = (
                 time.monotonic() + _badge_cache_seconds(),
                 summary,
             )
         return summary
 
+    # The Tempo search is not stream-scoped: TraceQL would have to test an
+    # attribute that legitimately does not exist on PR CI traces, so we fetch the
+    # PR's traces once and let the roll-up filter by ci_event, exactly as the
+    # payload and Prometheus paths do.
     extracted = _pr_extracted_rows(pr)
     summary = (
         _latest_pr_run_summary(
             pr,
             source="\n".join(extract_run_rollup_metrics(_extracted=extracted)),
+            event=event,
         )
         if extracted
         else None
     )
     with _pr_summary_cache_lock:
-        _pr_summary_cache[pr] = (time.monotonic() + _badge_cache_seconds(), summary)
+        _pr_summary_cache[cache_key] = (
+            time.monotonic() + _badge_cache_seconds(),
+            summary,
+        )
     return summary
 
 
-def render_pr_badge_svg(pr: str) -> bytes:
-    summary = _pr_run_summary_cached(pr)
+def render_pr_badge_svg(pr: str, event: str = DEFAULT_BADGE_EVENT) -> bytes:
+    summary = _pr_run_summary_cached(pr, event)
     if summary is None:
-        message = "no data"
+        # Every PR gets PR CI, so a missing PR-CI summary means the pipeline has
+        # not ingested it (yet) — "no data", a statement about us. A run-slow run
+        # only exists once a maintainer asks for one, so its absence is a fact
+        # about the PR: "not run" makes the badge a usable answer to "has anyone
+        # run the GPU tests on this?" instead of implying a broken exporter.
+        message = "not run" if event == BADGE_EVENT_RUN_SLOW else "no data"
         color = "9f9f9f"
     else:
         failed = int(float(summary.get("failed_tests") or 0))
@@ -4350,7 +4433,9 @@ def render_pr_badge_svg(pr: str) -> bytes:
                 color = BADGE_CLOSED_COLOR
                 message = f"closed / {total} tests / {jobs} jobs"
 
-    label = f"PR {pr} CI"
+    # The badge lives inside the PR body, where the number is already obvious;
+    # spending the label on which stream this is lets both badges sit on one line.
+    label = BADGE_EVENT_LABELS.get(event, BADGE_EVENT_LABELS[DEFAULT_BADGE_EVENT])
     label_width = max(70, 7 * len(label) + 10)
     message_width = max(120, 7 * len(message) + 10)
     width = label_width + message_width
@@ -4378,9 +4463,14 @@ def render_pr_badge_svg(pr: str) -> bytes:
     return svg.encode("utf-8")
 
 
-def render_pr_summary_json(pr: str) -> bytes:
-    summary = _pr_run_summary_cached(pr)
-    payload = {"pr": pr, "available": summary is not None, "latest_run": summary}
+def render_pr_summary_json(pr: str, event: str = DEFAULT_BADGE_EVENT) -> bytes:
+    summary = _pr_run_summary_cached(pr, event)
+    payload = {
+        "pr": pr,
+        "event": event,
+        "available": summary is not None,
+        "latest_run": summary,
+    }
     return json.dumps(payload, sort_keys=True).encode("utf-8") + b"\n"
 
 
@@ -5085,14 +5175,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
 
     def _serve_pr_badge(self, params: dict[str, list[str]]) -> None:
         pr = (params.get("pr") or [""])[0].strip()
-        if not pr.isdigit():
+        event = normalize_badge_event((params.get("event") or [""])[0])
+        if not pr.isdigit() or event is None:
             self._send(400, SVG_CONTENT_TYPE, render_pr_badge_svg("unknown"))
             return
-        cache_key = f"badge:{pr}"
+        cache_key = f"badge:{event}:{pr}"
         payload = _public_response_cache_get(cache_key)
         if payload is None:
             self._request_cache = "miss"
-            payload = render_pr_badge_svg(pr)
+            payload = render_pr_badge_svg(pr, event)
             _public_response_cache_put(cache_key, payload)
         else:
             self._request_cache = "hit"
@@ -5108,11 +5199,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if not pr.isdigit():
             self._send(400, JSON_CONTENT_TYPE, b'{"error":"missing numeric pr"}\n')
             return
-        cache_key = f"summary:{pr}"
+        event = normalize_badge_event((params.get("event") or [""])[0])
+        if event is None:
+            self._send(400, JSON_CONTENT_TYPE, b'{"error":"unknown event"}\n')
+            return
+        cache_key = f"summary:{event}:{pr}"
         payload = _public_response_cache_get(cache_key)
         if payload is None:
             self._request_cache = "miss"
-            payload = render_pr_summary_json(pr)
+            payload = render_pr_summary_json(pr, event)
             _public_response_cache_put(cache_key, payload)
         else:
             self._request_cache = "hit"
