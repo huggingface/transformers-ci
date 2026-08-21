@@ -21,11 +21,29 @@ Note on secrets: credentials are delivered by a secret-sync CR, so a rotated
 comparing when the live Secret was last written against when each consuming pod
 started -- see `find_stale_secret_consumers`. Only Secret *metadata* is read;
 values are never fetched. See deploy/README.md.
+
+Two further things a bare resource-level diff does not tell you, both of which
+have shipped silently before:
+
+* **What a change removes.** "change ConfigMap/grafana-dashboards" is equally
+  true of adding a panel and of deleting a dashboard somebody applied by hand.
+  The plan therefore reports added/removed line counts per resource, and calls
+  out any config key that is live but absent from the render as a deletion --
+  the shape of an accidental revert. `--diff` prints the actual hunks.
+
+* **Which code the cloned workloads will run.** `traceExporter.sourceRevision`
+  and friends are checked out by an init container at pod start, so the values
+  file decides which commit prod runs, and a stale pin silently rolls the code
+  *backwards* while `helm upgrade` reports success. The plan resolves each
+  revision against the local clone and refuses a non-fast-forward move unless
+  `--allow-source-rollback` says otherwise; `verify` then reads the revision
+  back out of the running pod rather than trusting the annotation.
 """
 
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import shutil
 import subprocess
@@ -84,6 +102,16 @@ RESTART_ORDER = (
     "prometheus",
     "grafana",
 )
+
+# Pod-template annotation carrying the git revision an init container clones at
+# pod start. The chart stamps it from `<workload>.sourceRevision` so that changing
+# the pinned commit changes the pod template, which is what makes Helm roll the
+# pod -- without it a new revision would sit in the values file with nothing to
+# apply it.
+SOURCE_REVISION_ANNOTATION = "rollout/source-revision"
+# Init container that performs that clone. Named so the mount path can be derived
+# from the manifest instead of hardcoded here.
+CLONE_INIT_CONTAINER = "clone-src"
 
 BAD_WAITING_REASONS = (
     "CrashLoopBackOff",
@@ -478,6 +506,163 @@ def config_refs(template: dict) -> tuple[set, set]:
 # --------------------------------------------------------------------------
 
 
+def doc_lines(doc: dict) -> list[str]:
+    """A doc as comparable lines, with config payloads expanded.
+
+    A ConfigMap holding a 40 KB dashboard JSON is a single `data` string, so a
+    naive serialization diffs it as one changed line and reports nothing about
+    what moved inside it. Expanding each `data` entry into its own lines makes
+    the counts mean what a reader expects. Secret *values* are never expanded --
+    only their key names -- so a diff can never print a credential.
+    """
+    if doc.get("kind") == "Secret":
+        skeleton = {k: v for k, v in doc.items() if k not in ("data", "stringData")}
+        lines = json.dumps(skeleton, indent=2, sort_keys=True).splitlines()
+        for field in ("data", "stringData"):
+            for key, value in sorted((doc.get(field) or {}).items()):
+                # A length, not the value: enough to see a rotation happened.
+                lines.append(f"{field}/{key}: <{len(str(value))} bytes>")
+        return lines
+
+    payload = doc.get("data") if doc.get("kind") == "ConfigMap" else None
+    if not isinstance(payload, dict):
+        return json.dumps(doc, indent=2, sort_keys=True).splitlines()
+
+    skeleton = {k: v for k, v in doc.items() if k != "data"}
+    lines = json.dumps(skeleton, indent=2, sort_keys=True).splitlines()
+    for key, value in sorted(payload.items()):
+        lines.append(f"data/{key}:")
+        lines.extend(f"  {line}" for line in str(value).splitlines())
+    return lines
+
+
+def doc_diff(live_doc: dict, new_doc: dict) -> tuple[int, int, list[str]]:
+    """(added, removed, unified diff) between two versions of one resource."""
+    before = doc_lines(live_doc)
+    after = doc_lines(new_doc)
+    hunks = list(difflib.unified_diff(before, after, lineterm="", n=1))
+    added = sum(1 for line in hunks if line.startswith("+") and line[:3] != "+++")
+    removed = sum(1 for line in hunks if line.startswith("-") and line[:3] != "---")
+    return added, removed, hunks
+
+
+def dropped_config_keys(live_doc: dict, new_doc: dict) -> list[tuple[str, int]]:
+    """Config keys present live but absent from the render, with their size.
+
+    This is the shape of an accidental revert: something was applied to the
+    cluster that the chart does not produce, and this deploy would delete it. It
+    reads as an ordinary "change" in a resource-level diff.
+    """
+    dropped = []
+    for field in ("data", "binaryData", "stringData"):
+        live_keys = live_doc.get(field) or {}
+        new_keys = new_doc.get(field) or {}
+        if not isinstance(live_keys, dict) or not isinstance(new_keys, dict):
+            continue
+        for key in sorted(set(live_keys) - set(new_keys)):
+            size = len(str(live_keys[key]).splitlines())
+            dropped.append((f"{field}/{key}", size))
+    return dropped
+
+
+def source_revision(doc: dict) -> str:
+    """The git revision this workload's init container will check out, if any."""
+    template = pod_template(doc)
+    if template is None:
+        return ""
+    annotations = (template.get("metadata") or {}).get("annotations") or {}
+    return str(annotations.get(SOURCE_REVISION_ANNOTATION) or "").strip()
+
+
+def clone_mount_path(doc: dict) -> str | None:
+    """Where the cloning init container's volume is mounted in the app container.
+
+    Derived from the manifest rather than hardcoded, so moving the checkout in the
+    chart does not silently disable the post-deploy revision check.
+    """
+    template = pod_template(doc)
+    if template is None:
+        return None
+    spec = template.get("spec") or {}
+    init_containers = spec.get("initContainers") or []
+    cloners = [c for c in init_containers if c.get("name") == CLONE_INIT_CONTAINER]
+    volume_names = {
+        mount.get("name")
+        for container in (cloners or init_containers)
+        for mount in (container.get("volumeMounts") or [])
+    }
+    for container in spec.get("containers") or []:
+        for mount in container.get("volumeMounts") or []:
+            if mount.get("name") in volume_names:
+                return mount.get("mountPath")
+    return None
+
+
+def try_output_line(args: list[str]) -> str | None:
+    """`try_output` for a command whose output is a single token.
+
+    It deliberately does not strip -- `helm get manifest` needs the raw bytes --
+    so callers that interpolate the result into a message must, or the trailing
+    newline lands mid-sentence.
+    """
+    raw = try_output(args)
+    return None if raw is None else raw.strip()
+
+
+def git_commit_exists(revision: str) -> bool:
+    result = run(
+        ["git", "-C", str(ROOT_DIR), "cat-file", "-e", f"{revision}^{{commit}}"],
+        check=False,
+        quiet=True,
+    )
+    return result.returncode == 0
+
+
+def source_revision_move(old: str, new: str) -> tuple[str, str]:
+    """Classify a change of pinned revision as (verdict, detail).
+
+    Verdicts: ``forward`` (new descends from old -- an ordinary upgrade),
+    ``backward`` (old descends from new -- this ships older code than prod is
+    running), ``diverged`` (neither, e.g. a rebased or abandoned branch), and
+    ``unknown`` when the local clone cannot answer, which must not be treated as
+    approval.
+    """
+    if shutil.which("git") is None:
+        return "unknown", "git not available"
+    if not (ROOT_DIR / ".git").exists():
+        return "unknown", f"{ROOT_DIR} is not a git clone"
+    missing = [rev for rev in (old, new) if not git_commit_exists(rev)]
+    if missing:
+        return "unknown", (
+            "not in the local clone: " + ", ".join(missing) + " (try: git fetch origin)"
+        )
+    if (
+        run(
+            ["git", "-C", str(ROOT_DIR), "merge-base", "--is-ancestor", old, new],
+            check=False,
+            quiet=True,
+        ).returncode
+        == 0
+    ):
+        count = try_output_line(
+            ["git", "-C", str(ROOT_DIR), "rev-list", "--count", f"{old}..{new}"]
+        )
+        return "forward", f"{count or '?'} commits forward"
+    if (
+        run(
+            ["git", "-C", str(ROOT_DIR), "merge-base", "--is-ancestor", new, old],
+            check=False,
+            quiet=True,
+        ).returncode
+        == 0
+    ):
+        count = try_output_line(
+            ["git", "-C", str(ROOT_DIR), "rev-list", "--count", f"{new}..{old}"]
+        )
+        return "backward", f"drops {count or '?'} commits that are live"
+    return "diverged", "neither revision contains the other"
+
+
 class Plan:
     def __init__(self) -> None:
         self.created: list = []
@@ -494,6 +679,14 @@ class Plan:
         self.workloads: list = []
         self.replicas: dict = {}
         self.first_install = False
+        # key -> (added, removed, unified diff lines)
+        self.diffs: dict = {}
+        # key -> [(config key, line count)] present live, absent from the render
+        self.dropped: dict = {}
+        # key -> (old revision, new revision, verdict, detail)
+        self.source_moves: dict = {}
+        # the rendered docs, so verification can re-read what was asked for
+        self.new_by_key: dict = {}
 
 
 def build_plan(
@@ -504,10 +697,34 @@ def build_plan(
 
     live = {doc_key(d): d for d in live_docs}
     new = {doc_key(d): d for d in new_docs}
+    plan.new_by_key = new
 
     plan.created = sorted(k for k in new if k not in live)
     plan.removed = sorted(k for k in live if k not in new)
     plan.changed = sorted(k for k in new if k in live and new[k] != live[k])
+
+    for key in plan.changed:
+        plan.diffs[key] = doc_diff(live[key], new[key])
+        dropped = dropped_config_keys(live[key], new[key])
+        if dropped:
+            plan.dropped[key] = dropped
+
+    # Pinned-revision moves, for both changed and unchanged workloads: an
+    # unchanged pin is silent, but a changed one has to be shown to be judged.
+    for key in plan.changed:
+        if key[0] not in WORKLOAD_KINDS:
+            continue
+        old_rev = source_revision(live[key])
+        new_rev = source_revision(new[key])
+        if not (old_rev or new_rev) or old_rev == new_rev:
+            continue
+        if old_rev and new_rev:
+            verdict, detail = source_revision_move(old_rev, new_rev)
+        else:
+            # One side unpinned: the clone follows the default branch there, so
+            # there is no commit pair to compare.
+            verdict, detail = "unpinned", "one side tracks the default branch"
+        plan.source_moves[key] = (old_rev, new_rev, verdict, detail)
 
     for key in sorted(new):
         if key[0] in WORKLOAD_KINDS:
@@ -568,7 +785,33 @@ def build_plan(
     return plan
 
 
-def print_plan(plan: Plan, revision: str | None) -> None:
+SOURCE_VERDICT_NOTE = {
+    "forward": "",
+    "backward": "  !! BACKWARDS -- ships older code than prod is running",
+    "diverged": "  !! DIVERGED -- neither revision contains the other",
+    "unknown": "  !! UNVERIFIED",
+    "unpinned": "",
+}
+
+
+def source_move_blockers(plan: Plan) -> list[str]:
+    """Pinned-revision moves that should stop a deploy until acknowledged."""
+    blockers = []
+    for key, (old_rev, new_rev, verdict, detail) in sorted(plan.source_moves.items()):
+        if verdict in ("forward", "unpinned"):
+            continue
+        blockers.append(
+            f"{describe(key)}: {short_rev(old_rev)} -> {short_rev(new_rev)} "
+            f"({verdict}: {detail})"
+        )
+    return blockers
+
+
+def short_rev(revision: str) -> str:
+    return revision[:9] if len(revision) > 12 else revision or "(unpinned)"
+
+
+def print_plan(plan: Plan, revision: str | None, show_diff: bool = False) -> None:
     where = f"live revision {revision}" if revision else "no existing release"
     note(f"\n=== change plan ({where}) ===")
     if plan.first_install:
@@ -582,7 +825,41 @@ def print_plan(plan: Plan, revision: str | None) -> None:
             ("delete", plan.removed),
         ):
             for key in keys:
-                note(f"  {label:<7} {describe(key)}")
+                counts = ""
+                if key in plan.diffs:
+                    added, removed, _ = plan.diffs[key]
+                    counts = f"  +{added} -{removed} lines"
+                note(f"  {label:<7} {describe(key)}{counts}")
+
+    if plan.dropped:
+        # Loud, because a resource-level diff renders this as an ordinary
+        # "change" and it is how hand-applied config gets silently reverted.
+        note(
+            "\n  !! this deploy DELETES config that is live but absent from the render:"
+        )
+        for key in sorted(plan.dropped):
+            for config_key, size in plan.dropped[key]:
+                note(f"       {describe(key)}  {config_key}  ({size} lines)")
+        note("     nothing in the chart produces these -- check they are not")
+        note("     someone's live change before applying.")
+
+    if plan.source_moves:
+        note("\n=== cloned source revisions (checked out at pod start) ===")
+        for key in sorted(plan.source_moves):
+            old_rev, new_rev, verdict, detail = plan.source_moves[key]
+            note(
+                f"  {describe(key)}  {short_rev(old_rev)} -> {short_rev(new_rev)}"
+                f"  ({detail}){SOURCE_VERDICT_NOTE.get(verdict, '')}"
+            )
+
+    if show_diff:
+        for key in sorted(plan.diffs):
+            _added, _removed, hunks = plan.diffs[key]
+            if not hunks:
+                continue
+            note(f"\n--- diff {describe(key)} ---")
+            for line in hunks:
+                note(f"  {line}")
 
     note("\n=== pod convergence plan ===")
 
@@ -785,6 +1062,62 @@ def reload_workload(target: tuple, args: argparse.Namespace) -> bool:
     return True
 
 
+def verify_source_revisions(
+    plan: Plan, new_by_key: dict, args: argparse.Namespace
+) -> bool:
+    """Confirm each cloning workload is actually running its pinned revision.
+
+    A rollout completing proves the pod template applied, not that the code half
+    of the deploy did anything: the source lives in an emptyDir populated by an
+    init container, so a pin that did not change leaves the old commit in place
+    while `helm upgrade` reports success. Read the checked-out revision back out
+    of the pod instead of trusting the annotation.
+    """
+    ok = True
+    for key in dependency_order({k: None for k in plan.workloads}):
+        doc = new_by_key.get(key)
+        if doc is None or key[0] not in ("Deployment", "StatefulSet"):
+            continue
+        pinned = source_revision(doc)
+        mount = clone_mount_path(doc)
+        if not pinned or not mount:
+            continue
+        container = ((pod_template(doc) or {}).get("spec") or {}).get("containers")
+        container_name = (container or [{}])[0].get("name") or key[1]
+        head = try_output_line(
+            [
+                "kubectl",
+                "exec",
+                f"{key[0].lower()}/{key[1]}",
+                "-n",
+                args.namespace,
+                "-c",
+                container_name,
+                "--",
+                "python",
+                "-c",
+                f"print(open({mount!r} + '/.git/HEAD').read().strip())",
+            ]
+        )
+        if head is None:
+            # Not a failure: the image may have no python, or the path may have
+            # moved. Say so rather than implying the revision was confirmed.
+            note(f"  {describe(key)}: could not read {mount}/.git/HEAD (unverified)")
+            continue
+        if head.startswith("ref: "):
+            note(f"  {describe(key)}: on branch {head[5:]} (pin: {short_rev(pinned)})")
+            continue
+        if head.startswith(pinned) or pinned.startswith(head):
+            note(f"  {describe(key)}: running {short_rev(head)} as pinned")
+        else:
+            note(
+                f"  {describe(key)}: running {short_rev(head)} but pinned to "
+                f"{short_rev(pinned)} -- the code half of this deploy did NOT land"
+            )
+            ok = False
+    return ok
+
+
 def verify(plan: Plan, args: argparse.Namespace, baseline: dict) -> bool:
     """Wait for every workload to roll out, then check the pods are healthy."""
     note("\n=== verify ===")
@@ -855,6 +1188,9 @@ def verify(plan: Plan, args: argparse.Namespace, baseline: dict) -> bool:
             ok = False
         else:
             note(f"  {name}: ready ({restarts} lifetime restarts)")
+
+    if not args.no_source_check:
+        ok = verify_source_revisions(plan, plan.new_by_key, args) and ok
 
     note("  OK: all workloads rolled out and pods are ready" if ok else "  FAILED")
     return ok
@@ -931,6 +1267,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-verify",
         action="store_true",
         help="Skip the post-deploy rollout and pod health checks",
+    )
+    parser.add_argument(
+        "--diff",
+        action="store_true",
+        help="Print the actual manifest diff for each changed resource",
+    )
+    parser.add_argument(
+        "--allow-source-rollback",
+        action="store_true",
+        help=(
+            "Apply even when a pinned sourceRevision moves backwards or to a "
+            "diverged commit (default: refuse, since it ships older code than "
+            "prod is running)"
+        ),
+    )
+    parser.add_argument(
+        "--no-source-check",
+        action="store_true",
+        help=(
+            "Skip reading each cloning workload's checked-out revision back out "
+            "of its pod after the deploy"
+        ),
     )
     parser.add_argument(
         "--no-secret-check",
@@ -1039,11 +1397,23 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             print(rendered)
         plan, revision = load_plan(args, new_docs)
-        print_plan(plan, revision)
+        print_plan(plan, revision, show_diff=args.diff)
         return 0
 
     plan, revision = load_plan(args, new_docs)
-    print_plan(plan, revision)
+    print_plan(plan, revision, show_diff=args.diff)
+
+    # A pinned revision moving anywhere other than forward is refused rather than
+    # warned about: it means the values file disagrees with what prod is running,
+    # and applying it rolls the code back while every other signal says success.
+    blockers = source_move_blockers(plan)
+    if blockers and not args.allow_source_rollback:
+        for blocker in blockers:
+            note(f"\nrefusing to apply: {blocker}")
+        raise SystemExit(
+            "pinned source revision does not move forward -- reconcile the values "
+            "file with the live release, or pass --allow-source-rollback"
+        )
 
     namespace_exists = (
         run(

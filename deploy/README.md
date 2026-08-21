@@ -223,8 +223,26 @@ Preview the decision without touching the cluster:
 deploy/scripts/deploy.py --plan -f deploy/helm/env/private.yaml
 ```
 
-Relevant flags: `--plan`, `--skip-restart <name>`, `--no-restart`,
-`--restart-all`, `--no-verify`, `--timeout`.
+Relevant flags: `--plan`, `--diff`, `--skip-restart <name>`, `--no-restart`,
+`--restart-all`, `--no-verify`, `--no-source-check`, `--allow-source-rollback`,
+`--timeout`.
+
+**The plan also reports what a change removes.** `change ConfigMap/X` is equally
+true of adding a key and of deleting one, so the plan prints per-resource line
+counts and flags any config key that is live but absent from the render — the
+shape of an accidental revert of something applied by hand. `--diff` prints the
+hunks. Secret values are never expanded into a diff: key names and byte counts
+only, so a rotation is visible without printing the credential.
+
+**Cloned source revisions are checked for direction.** `traceExporter.sourceRevision`
+and `ciDataPublisher.sourceRevision` are checked out by an init container at pod
+start, so the values file — not `main` — decides which commit prod runs, and a
+values file that has fallen behind the live release rolls the code *backwards*
+while `helm upgrade` reports success. The plan resolves both revisions against the
+local clone, prints the move, and refuses anything that is not a fast-forward
+(including a revision it cannot resolve, which is not the same as approval) unless
+`--allow-source-rollback` says so. After the deploy, `verify` reads the revision
+back out of the running pod and fails on a mismatch.
 
 **Rotated secrets are detected separately.** Credentials delivered by a
 secret-sync CRD never appear in a manifest diff — the chart renders identically
