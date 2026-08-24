@@ -51,7 +51,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Rolling 24-hour count of distinct failed GPU test spans on main, grouped by run_id, test_nodeid, and test_job. The dashboard range is fixed to the last 4 weeks so the trend shows whether the main GPU failure volume is improving over time.",
+      "description": "Rolling 24-hour GPU failure count on main divided by the number of distinct main commit SHAs seen in the same 24-hour window. This normalizes busy days against quiet days so the trend tracks main stability rather than CI volume.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -131,15 +131,15 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(count by (run_id, test_nodeid, test_job) (max_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[1d])))",
+          "expr": "sum(count by (run_id, test_nodeid, test_job) (max_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[1d]))) / clamp_min(count(count by (commit_sha) (max_over_time(pytest_run_info{pr=\"main\", commit_sha!=\"\", commit_sha!=\"main\"}[1d]))), 1)",
           "format": "time_series",
           "instant": false,
-          "legendFormat": "GPU failures",
+          "legendFormat": "GPU failures per commit",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "GPU failure rate over time",
+      "title": "GPU failures per commit over time",
       "type": "timeseries"
     },
     {
