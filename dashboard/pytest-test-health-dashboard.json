@@ -51,7 +51,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Rolling 24-hour GPU failure count on main divided by the number of distinct main commit SHAs seen in the same 24-hour window. This normalizes busy days against quiet days so the trend tracks main stability rather than CI volume.",
+      "description": "Rolling 24-hour failed-test count on main divided by the number of distinct main commit SHAs seen in the same 24-hour window, split by GPU hardware. This normalizes busy days against quiet days so the trend tracks main stability rather than CI volume.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -131,15 +131,15 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum(count by (run_id, test_nodeid, test_job) (max_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[1d]))) / clamp_min(count(count by (commit_sha) (max_over_time(pytest_run_info{pr=\"main\", commit_sha!=\"\", commit_sha!=\"main\"}[1d]))), 1)",
+          "expr": "sum by (hardware) (max by (run_id, test_job, hardware) (max_over_time(pytest_run_job_failed_tests{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\", hardware=~\"gpu|single-gpu|multi-gpu\"}[1d]))) / ignoring(hardware) group_left() clamp_min(count(count by (commit_sha) (max_over_time(pytest_run_info{pr=\"main\", commit_sha!=\"\", commit_sha!=\"main\"}[1d]))), 1)",
           "format": "time_series",
           "instant": false,
-          "legendFormat": "GPU failures per commit",
+          "legendFormat": "{{hardware}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "GPU failures per commit over time",
+      "title": "GPU failed tests per commit over time",
       "type": "timeseries"
     },
     {
