@@ -54,7 +54,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Rolling 7-day count of failed tests from scheduled daily runs on main, split by hardware. Counts are summed from distinct run/job rollups so single-GPU and multi-GPU cron failures can be compared over the last week.",
+      "description": "Daily average failed-test count per scheduled run on main, split by hardware. Each run is first reduced to one failed-test count per hardware, then runs in the day are averaged so busier days do not dominate the trend.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -134,7 +134,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (hardware) (max by (run_id, test_job, hardware) (max_over_time(pytest_run_job_failed_tests{ci_event=\"daily\", pr=\"main\", hardware=~\"gpu|single-gpu|multi-gpu\"}[7d])))",
+          "expr": "avg by (hardware) (sum by (run_id, hardware) (max by (run_id, test_job, hardware) (max_over_time(pytest_run_job_failed_tests{ci_event=\"daily\", pr=\"main\", hardware=~\"gpu|single-gpu|multi-gpu\"}[1d]))))",
           "format": "time_series",
           "instant": false,
           "legendFormat": "{{hardware}}",
@@ -142,7 +142,7 @@
           "refId": "A"
         }
       ],
-      "title": "Daily run failures over 7 days",
+      "title": "Daily run failures per run",
       "type": "timeseries"
     },
     {
