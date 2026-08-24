@@ -158,6 +158,14 @@ jobs:
         run: |
           python3 -m pip install --no-cache-dir git+https://github.com/huggingface/accelerate@main#egg=accelerate
 
+      - name: Install torch 2.14 RC
+        working-directory: /transformers
+        run: |
+          python3 -m pip uninstall -y torch torchvision torchaudio torchcodec
+          python3 -m pip install --no-cache-dir "torchcodec" --index-url https://download.pytorch.org/whl/test/cpu
+          python3 -m pip install --no-cache-dir "torchaudio" --index-url https://download.pytorch.org/whl/cu130
+          python3 -m pip install --no-cache-dir "torch" "torchvision" --index-url https://download.pytorch.org/whl/test/cu130
+
       - name: NVIDIA-SMI
         run: |
           nvidia-smi
