@@ -54,6 +54,102 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Rolling 7-day count of failed tests from scheduled daily runs on main, split by hardware. Counts are summed from distinct run/job rollups so single-GPU and multi-GPU cron failures can be compared over the last week.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (hardware) (max by (run_id, test_job, hardware) (max_over_time(pytest_run_job_failed_tests{ci_event=\"daily\", pr=\"main\", hardware=~\"gpu|single-gpu|multi-gpu\"}[7d])))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{hardware}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Daily run failures over 7 days",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "description": "Per-job breakdown of the most recent run for this PR. Each row is one job; columns count tests by pass/fail status.",
       "fieldConfig": {
         "defaults": {
@@ -251,7 +347,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 8
       },
       "id": 13,
       "links": [
@@ -587,7 +683,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 12
+        "y": 20
       },
       "id": 5,
       "options": {
