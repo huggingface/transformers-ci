@@ -51,6 +51,102 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Rolling 24-hour count of distinct failed GPU test spans on main, grouped by run_id, test_nodeid, and test_job. The dashboard range is fixed to the last 4 weeks so the trend shows whether the main GPU failure volume is improving over time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(count by (run_id, test_nodeid, test_job) (max_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[1d])))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "GPU failures",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "GPU failure rate over time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -161,7 +257,7 @@
         "h": 13,
         "w": 12,
         "x": 0,
-        "y": 0
+        "y": 8
       },
       "id": 1,
       "options": {
@@ -346,7 +442,7 @@
         "h": 13,
         "w": 12,
         "x": 12,
-        "y": 0
+        "y": 8
       },
       "id": 3,
       "options": {
@@ -479,7 +575,7 @@
         "h": 14,
         "w": 12,
         "x": 0,
-        "y": 13
+        "y": 21
       },
       "id": 2,
       "options": {
@@ -603,7 +699,7 @@
         "h": 14,
         "w": 12,
         "x": 12,
-        "y": 13
+        "y": 21
       },
       "id": 4,
       "options": {
@@ -737,7 +833,7 @@
         "h": 14,
         "w": 24,
         "x": 0,
-        "y": 27
+        "y": 35
       },
       "id": 5,
       "options": {
@@ -811,7 +907,7 @@
     "list": []
   },
   "time": {
-    "from": "now-90d",
+    "from": "now-4w",
     "to": "now"
   },
   "timepicker": {
