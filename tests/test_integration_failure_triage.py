@@ -1952,6 +1952,38 @@ _OOM_AMBIGUOUS_TRACE = (
 )
 
 
+# muse_glimmer, 2026-08-24: a 30B checkpoint pinned to one 24 GiB A10 by
+# `device_map=torch_device`. The numbers alone are retention-shaped -- a 254 MiB
+# request on a card PyTorch already fills -- but the frame is `from_pretrained`
+# still materializing weights, so there is nothing retained to free.
+_OOM_LOAD_TRACE = (
+    "src/transformers/core_model_loading.py:1219: in _materialize_copy\n"
+    "    tensor = tensor.to(device=device, dtype=dtype)\n"
+    "E   torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 254.00 MiB. "
+    "GPU 0 has a total capacity of 22.30 GiB of which 18.00 MiB is free. Process "
+    "12345 has 22.28 GiB memory in use. Of the allocated memory 21.86 GiB is "
+    "allocated by PyTorch, with 22.00 MiB allocated in private pools (e.g., CUDA "
+    "Graphs)."
+)
+
+
+def _oom_cluster(*traces, model="muse_glimmer"):
+    """A bad-commit cluster whose member failures carry the given traces."""
+    return {
+        "kind": "cluster",
+        "label": f"{len(traces)} integration tests regressed by commit fe95f5423d65",
+        "failures": [
+            _failure(
+                model, "single", f"tests/models/{model}/t.py::T::t{i}", t, mode="OOM"
+            )
+            for i, t in enumerate(traces)
+        ],
+        "cluster": {"author": "someone", "pr_number": 47867},
+        "model": None,
+        "failure_mode": None,
+    }
+
+
 def _oom_target(*traces, model="mamba2"):
     """An OOM group whose failures carry the given CUDA OOM messages."""
     return {
@@ -2742,3 +2774,81 @@ class AttachBracketsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OomLoadShapeTest(unittest.TestCase):
+    """A checkpoint too big for the card fills it one tensor at a time, so the
+    failing request is small and the card is full -- byte-for-byte a retention
+    bug. Only the frame separates them, and getting it wrong sends the agent
+    after a `tearDown` that cannot free anything."""
+
+    def test_an_oom_inside_the_loading_path_is_load_shaped_not_retention(self):
+        shape, nums = itf.oom_shape(_OOM_LOAD_TRACE)
+        self.assertEqual(shape, itf.OOM_LOAD)
+        # The arithmetic on its own says retention: a trivial request on a card
+        # PyTorch already holds 98% of. This is exactly the trap.
+        self.assertLess(nums["want"], itf._OOM_TRIVIAL_WANT_GIB)
+        self.assertGreater(nums["held"], nums["capacity"] * itf._OOM_HELD_SHARE)
+
+    def test_the_same_numbers_off_the_loading_path_stay_retention(self):
+        self.assertEqual(itf.oom_shape(_OOM_RETENTION_TRACE)[0], itf.OOM_RETENTION)
+
+    def test_one_allocation_over_the_whole_card_is_still_capacity(self):
+        # Capacity wins even on the loading path: no device map makes a single
+        # allocation larger than the card fit.
+        trace = (
+            "core_model_loading.py:1219: in _materialize_copy\n" + _OOM_CAPACITY_TRACE
+        )
+        self.assertEqual(itf.oom_shape(trace)[0], itf.OOM_CAPACITY)
+
+    def test_an_unparseable_load_oom_is_still_recognised(self):
+        trace = "core_model_loading.py: torch.OutOfMemoryError: CUDA out of memory."
+        self.assertEqual(itf.oom_shape(trace), (itf.OOM_LOAD, {}))
+
+
+class OomLoadGuidanceTest(unittest.TestCase):
+    def test_a_load_oom_is_pointed_at_the_device_map_not_a_teardown(self):
+        text = itf.instruction_addendum(_oom_target(_OOM_LOAD_TRACE))
+        self.assertIn('device_map="auto"', text)
+        # The lazy idiom the maintainers asked for, not an eager loading setUpClass.
+        self.assertIn("def get_model(cls):", text)
+        self.assertIn("cls.model = None", text)
+        # The retention block's fix must not be what this group is told to do.
+        self.assertNotIn("def tearDown(self)", text)
+
+    def test_a_load_oom_permits_trimming_tokens_but_not_the_assertion(self):
+        text = itf.instruction_addendum(_oom_target(_OOM_LOAD_TRACE))
+        self.assertIn("max_new_tokens", text)
+        self.assertIn("assertion must still hold unchanged", text)
+
+    def test_a_load_oom_dispatches_instead_of_waiting_for_a_bigger_runner(self):
+        self.assertEqual(itf.env_only_reason(_oom_target(_OOM_LOAD_TRACE)), "")
+
+    def test_a_pure_capacity_group_is_still_deferred(self):
+        self.assertIn(
+            "runner capacity", itf.env_only_reason(_oom_target(_OOM_CAPACITY_TRACE))
+        )
+
+    def test_a_retention_group_keeps_its_teardown_guidance(self):
+        text = itf.instruction_addendum(_oom_target(_OOM_RETENTION_TRACE))
+        self.assertIn("def tearDown(self)", text)
+
+
+class OomClusterGuidanceTest(unittest.TestCase):
+    """The muse_glimmer regression: a bad-commit cluster that was uniformly OOM
+    got the trunk alone, so the agent never saw any memory guidance."""
+
+    def test_an_all_oom_cluster_now_gets_the_memory_guidance(self):
+        text = itf.instruction_addendum(_oom_cluster(_OOM_LOAD_TRACE, _OOM_LOAD_TRACE))
+        self.assertIn('device_map="auto"', text)
+
+    def test_a_mixed_mode_cluster_still_gets_the_trunk_alone(self):
+        cluster = _oom_cluster(_OOM_LOAD_TRACE)
+        cluster["failures"].append(
+            _failure("muse_glimmer", "single", "t.py::T::x", "E   AssertionError: nope")
+        )
+        self.assertEqual(itf.instruction_addendum(cluster), "")
+
+    def test_an_empty_cluster_does_not_claim_to_be_oom(self):
+        cluster = _oom_cluster()
+        self.assertEqual(itf.instruction_addendum(cluster), "")

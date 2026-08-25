@@ -402,7 +402,21 @@ _OOM_CAPACITY_SHARE = 0.90
 
 OOM_RETENTION = "retention"
 OOM_CAPACITY = "capacity"
+OOM_LOAD = "load"
 OOM_UNKNOWN = "unknown"
+
+# Frames that mean the OOM happened while `from_pretrained` was still
+# materializing checkpoint weights, rather than during forward/generate. A
+# checkpoint too big for the card fills it one tensor at a time, so the failing
+# request is small and `held` is nearly the whole card -- byte-for-byte the
+# shape of a retention bug, but with nothing to free. The frame is what tells
+# them apart; see :func:`oom_shape`.
+_OOM_LOAD_FRAME = re.compile(
+    r"core_model_loading\.py|_materialize_copy|spawn_materialize|"
+    r"convert_and_load_state_dict_in_model|load_state_dict|"
+    r"modeling_utils\.py.*from_pretrained|from_pretrained.*modeling_utils\.py",
+    re.IGNORECASE,
+)
 
 
 def oom_shape(trace: str) -> tuple[str, dict[str, float]]:
@@ -431,17 +445,23 @@ def oom_shape(trace: str) -> tuple[str, dict[str, float]]:
     parse, and otherwise carries ``want``/``capacity``/``held`` in GiB for the
     evidence rendered into the agent's context.
     """
+    # Checked before the numbers: a load-time OOM wears retention's shape but
+    # has no retained memory to release, so the frame has to win over the
+    # arithmetic or the agent is sent after a `tearDown` that cannot help.
+    on_load_path = bool(_OOM_LOAD_FRAME.search(trace or ""))
     match = _OOM_NUMBERS.search(trace or "")
     if not match:
-        return OOM_UNKNOWN, {}
+        return (OOM_LOAD if on_load_path else OOM_UNKNOWN), {}
     want = float(match.group("want")) * _UNIT_GIB[match.group("want_unit")]
     held = float(match.group("held")) * _UNIT_GIB[match.group("held_unit")]
     capacity = float(match.group("cap"))
     numbers = {"want": want, "capacity": capacity, "held": held}
     if capacity <= 0:
-        return OOM_UNKNOWN, numbers
+        return (OOM_LOAD if on_load_path else OOM_UNKNOWN), numbers
     if want >= capacity * _OOM_CAPACITY_SHARE:
         return OOM_CAPACITY, numbers
+    if on_load_path:
+        return OOM_LOAD, numbers
     if want <= _OOM_TRIVIAL_WANT_GIB and held >= capacity * _OOM_HELD_SHARE:
         return OOM_RETENTION, numbers
     return OOM_UNKNOWN, numbers
@@ -453,7 +473,7 @@ def oom_shape(trace: str) -> tuple[str, dict[str, float]]:
 # verdict rather than whichever the dict saw last: labelling a test "fixable"
 # when one runner cannot fit it at all sends the agent after a teardown that
 # will not make it pass.
-_OOM_SHAPE_PRECEDENCE = {OOM_CAPACITY: 0, OOM_UNKNOWN: 1, OOM_RETENTION: 2}
+_OOM_SHAPE_PRECEDENCE = {OOM_CAPACITY: 0, OOM_UNKNOWN: 1, OOM_LOAD: 2, OOM_RETENTION: 3}
 
 
 def oom_shapes(target: dict) -> dict[str, tuple[str, dict[str, float]]]:
@@ -1316,7 +1336,10 @@ def env_only_reason(target: dict) -> str:
         # shows that shape. (2026-08-14: 26 of 54 persistent OOMs were
         # retention-shaped and had been deferred as "needs capacity" for weeks.)
         shapes = {shape for shape, _ in oom_shapes(target).values()}
-        if OOM_RETENTION in shapes:
+        # A load-time OOM is a device-map/load-pattern bug in the test, which is
+        # a source patch like retention is -- so it dispatches rather than
+        # waiting on a bigger runner.
+        if OOM_RETENTION in shapes or OOM_LOAD in shapes:
             return ""
         return "runner ran out of device memory — needs runner capacity, not a patch"
     if mode == "import_or_config" and exc in _DEP_EXC:
@@ -2800,11 +2823,73 @@ _OOM_RETENTION_GUIDANCE = (
     "working set fit on an empty card. If it would not, say so rather than patching."
 )
 
+# Reached when the OOM fired while `from_pretrained` was still materializing
+# weights (see `oom_shape`). The checkpoint does not fit on one device, so the
+# levers are the device map and the load pattern -- never a teardown, and never
+# a weaker assertion. Written from the muse_glimmer fix of 2026-08-25: a 30B
+# checkpoint pinned to one 24 GiB A10 by `device_map=torch_device`, green on
+# both runners after switching to `device_map="auto"`.
+_OOM_LOAD_GUIDANCE = (
+    "\u2500\u2500 This group's failure mode: `OOM`, raised while LOADING the checkpoint "
+    "\u2500\u2500\n"
+    "The traceback dies inside `from_pretrained`/`core_model_loading.py`, not in "
+    "forward or generate. That means the weights themselves do not fit where the test "
+    "asked to put them. The failing allocation looks tiny and the card looks full, but "
+    "this is NOT a retained-memory bug: nothing from an earlier test is being held, so "
+    "a `tearDown` cannot help and must not be your fix.\n"
+    "  - FIRST, size the checkpoint. Do not guess: read the parameter count (or the "
+    "safetensors byte total on the Hub) and multiply by the loaded dtype's width. "
+    "State that number in `body` and compare it to the runner's per-device memory from "
+    "the OOM message. That arithmetic decides everything below.\n"
+    "  - The usual cause is a single-device map on a model too big for one card, i.e. "
+    "`device_map=torch_device` (or `.to(torch_device)`) where the checkpoint needs "
+    '`device_map="auto"`. `auto` spreads it over every visible accelerator and '
+    "offloads the remainder to CPU RAM, planned against the `CI_CPU_MEMORY_LIMIT_GB` "
+    "budget `conftest.py` caps `psutil` to. A model far larger than one card can still "
+    "pass on a single-accelerator runner this way. This is the first thing to try.\n"
+    "  - Load the model ONCE per class, not once per test method: a test that calls "
+    "`from_pretrained` in every method pays for the whole checkpoint each time, and "
+    "the first copy can still be alive when the second is materialized. Use this "
+    "repo's own idiom for it -- a lazy classmethod, NOT an eager `setUpClass` that "
+    "loads (maintainers have asked for this specific shape in review):\n"
+    "        @classmethod\n"
+    "        def setUpClass(cls):\n"
+    "            cls.model = None\n"
+    "\n"
+    "        @classmethod\n"
+    "        def get_model(cls):\n"
+    "            if cls.model is None:\n"
+    "                cls.model = SomeModel.from_pretrained(\n"
+    '                    cls.model_id, dtype=torch.bfloat16, device_map="auto"\n'
+    "                )\n"
+    "            return cls.model\n"
+    "\n"
+    "        @classmethod\n"
+    "        def tearDownClass(cls):\n"
+    '            if hasattr(cls, "model"):\n'
+    "                del cls.model\n"
+    "            cleanup(torch_device, gc_collect=True)\n"
+    "    `tests/models/qwen3_omni_moe/test_modeling_qwen3_omni_moe.py` is the reference.\n"
+    "  - Keep `dtype` at the checkpoint's native precision. Do NOT downcast to fit — "
+    "that changes what the test measures.\n"
+    "  - Trimming `max_new_tokens` IS allowed here, on one condition: the assertion "
+    "must still hold unchanged. These tests compare a fixed expected prefix, so tokens "
+    "generated past that prefix are never examined. Count the tokens the expected "
+    "string actually costs, keep a margin above it, and leave the expected string "
+    "itself alone. On the CPU-offload path every extra token restreams the offloaded "
+    "weights, so this is a real wall-clock saving — but it is a speed fix, not a "
+    "memory fix, and it never justifies weakening what is asserted.\n"
+    "  - Do NOT add `skip`/`require_*` decorators, shrink the model, or change the "
+    "expected values. If after the above the checkpoint still cannot fit in the "
+    "runner's devices plus its CPU budget, produce no patch and say so in `body`."
+)
+
 # Per-test OOM evidence, appended to a retention group's context so the agent can
 # see WHICH tests it may fix and which are genuinely over capacity.
 _OOM_SHAPE_LABEL = {
     OOM_RETENTION: "retained memory (fixable)",
     OOM_CAPACITY: "over capacity (do not patch)",
+    OOM_LOAD: "checkpoint does not fit while loading (fixable)",
     OOM_UNKNOWN: "unclear",
 }
 
@@ -2836,6 +2921,35 @@ def oom_evidence_lines(target: dict) -> list[str]:
 _CRASH_MODES = frozenset({"cuda_runtime", "other"})
 
 
+def _is_all_oom(target: dict) -> bool:
+    """True when every failure in the group is an OOM.
+
+    Used for bad-commit clusters, which carry no ``failure_mode`` of their own:
+    a cluster that is uniformly OOM is a memory problem whatever the bisect
+    pinned, so it should get the memory guidance."""
+    failures = target.get("failures") or []
+    if not failures:
+        return False
+    return all(
+        classify(f.get("latest_trace") or f.get("trace") or "") == "OOM"
+        for f in failures
+    )
+
+
+def _oom_guidance_for(target: dict) -> str:
+    """The right OOM block for this group, by the shapes its tests show.
+
+    Load-time first: it is the one shape that is indistinguishable from
+    retention by the numbers alone, so if any test shows it the group must not
+    be sent after a teardown."""
+    shapes = {shape for shape, _ in oom_shapes(target).values()}
+    if OOM_LOAD in shapes:
+        return _OOM_LOAD_GUIDANCE
+    if OOM_RETENTION in shapes:
+        return _OOM_RETENTION_GUIDANCE
+    return _OOM_GUIDANCE
+
+
 def instruction_addendum(target: dict) -> str:
     """The per-category block appended to ``_INSTRUCTION`` for one failure group.
 
@@ -2843,6 +2957,14 @@ def instruction_addendum(target: dict) -> str:
     much stronger signal (the attributed commit), so the shared trunk is right.
     Returns "" for anything unrecognized — the trunk alone is today's behaviour.
     """
+    # A bad-commit cluster normally gets the trunk alone: it spans several modes
+    # and the attributed commit is the stronger signal. But a cluster whose
+    # failures are ALL OOM has exactly one mode, and withholding the OOM block
+    # there is what left the 2026-08-24 muse_glimmer group with no memory
+    # guidance at all -- 2.1M tokens spent hunting a regression in a commit that
+    # had merely introduced the tests.
+    if target.get("kind") == "cluster":
+        return _oom_guidance_for(target) if _is_all_oom(target) else ""
     if target.get("kind") != "model_failures":
         return ""
     mode = target.get("failure_mode") or ""
@@ -2853,10 +2975,7 @@ def instruction_addendum(target: dict) -> str:
     if mode == "import_or_config":
         return _IMPORT_CFG_GUIDANCE
     if mode == "OOM":
-        shapes = {shape for shape, _ in oom_shapes(target).values()}
-        if OOM_RETENTION in shapes:
-            return _OOM_RETENTION_GUIDANCE
-        return _OOM_GUIDANCE
+        return _oom_guidance_for(target)
     if mode in _CRASH_MODES:
         # An `AssertionError` reaching us as `other` is still an assertion, so it
         # gets the mismatch guidance rather than "this is a library bug".
