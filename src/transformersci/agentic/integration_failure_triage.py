@@ -75,6 +75,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from collections.abc import Iterable
 
 from huggingface_hub import HfApi, hf_hub_download
@@ -84,6 +85,7 @@ from .github_api import (
     compare_commits,
     gh_headers as _gh_headers,
     list_open_pulls,
+    list_recent_pulls,
     match_pr,
     update_issue_body,
 )
@@ -1347,7 +1349,40 @@ def env_only_reason(target: dict) -> str:
     return ""
 
 
-def partition_targets(targets: list[dict]) -> tuple[list[dict], list[dict]]:
+DEFAULT_MAX_REJECTED_ATTEMPTS = 2
+
+
+def rejected_attempts_reason(prior: PriorAttempts | None, max_rejected: int) -> str:
+    """Why this group should not be dispatched again, or ``""``.
+
+    A group whose previous attempts were all closed unmerged is one a human has
+    already looked at and declined, ``max_rejected`` times over. Handing it to the
+    agent again produces another PR for the same person to close: observed as
+    ``edgetam``/``import_or_config`` reaching a fifth attempt and ``generation``/
+    ``output_mismatch`` a third, none merged.
+
+    An open PR or a merged fix means the story is still moving, so neither is
+    blocked here — a merged fix that did not stop the failure is genuinely new
+    information."""
+    if max_rejected <= 0 or prior is None:
+        return ""
+    if prior.open_pr or prior.merged:
+        return ""
+    if len(prior.rejected) < max_rejected:
+        return ""
+    prs = ", ".join(f"#{n}" for n in prior.rejected)
+    return (
+        f"{len(prior.rejected)} previous attempt(s) closed unmerged ({prs}) — "
+        "needs a human decision, not another patch"
+    )
+
+
+def partition_targets(
+    targets: list[dict],
+    priors: dict[str, PriorAttempts] | None = None,
+    *,
+    max_rejected: int = DEFAULT_MAX_REJECTED_ATTEMPTS,
+) -> tuple[list[dict], list[dict]]:
     """Split ordered groups into ``(dispatch, deferred)``.
 
     ``deferred`` groups are reported in the tracking issue for a human instead of
@@ -1355,13 +1390,22 @@ def partition_targets(targets: list[dict]) -> tuple[list[dict], list[dict]]:
     that cap exists to bound agent work, so spending it on a group that cannot
     produce a patch wastes the run. Each deferred target carries its reason in
     ``defer_reason``. Set ``ITF_DEFER_ENV_GROUPS=0`` to dispatch everything (the
-    per-category instruction blocks then tell the agent how to handle them)."""
+    per-category instruction blocks then tell the agent how to handle them).
+
+    ``priors`` (fingerprint → :class:`PriorAttempts`, from
+    :func:`resolve_prior_attempts`) additionally defers a group that has already
+    been attempted and rejected ``max_rejected`` times. Omit it, or pass
+    ``max_rejected=0``, to keep the previous behaviour."""
     if not _env_bool("ITF_DEFER_ENV_GROUPS", True):
         return list(targets), []
     dispatch: list[dict] = []
     deferred: list[dict] = []
     for t in targets:
         reason = env_only_reason(t)
+        if not reason and priors is not None:
+            reason = rejected_attempts_reason(
+                priors.get(target_fingerprint(t)), max_rejected
+            )
         if reason:
             deferred.append({**t, "defer_reason": reason})
         else:
@@ -1727,8 +1771,27 @@ def render_serge_context(
 _STATE_SOURCE = "integration-failure-triage"
 
 
-def target_fingerprint(target: dict) -> str:
-    """Stable ID for one failure group, independent of Serge server state."""
+# Fingerprint schema version. v1 hashed a `short_excerpt` of each failure's
+# traceback into the group identity, which made the identity *unstable*: an OOM
+# excerpt carries the byte counts of that particular run, so the same group
+# fingerprinted differently every night and the "do we already have a PR for
+# this?" lookup never matched. Observed in the wild — six mamba2 OOM attempts
+# (PRs #46950, #46971, #47001, #47058, #47282, #47380) produced six distinct
+# fingerprints, and three `generation` output_mismatch attempts produced three,
+# two of them on the same day. v2 hashes only the group's *identity* (which
+# tests, on which GPU, failing which way); the traceback stays evidence in the
+# report, where it belongs.
+FINGERPRINT_VERSION = 2
+
+
+def target_fingerprint(target: dict, *, version: int = FINGERPRINT_VERSION) -> str:
+    """Stable ID for one failure group, independent of Serge server state.
+
+    The identity is (kind, label, bad_commit, {test, gpu, failure_mode}). It must
+    not include anything that varies run-to-run for an unchanged failure —
+    notably the traceback text, whose numbers move every run. ``version=1``
+    reproduces the pre-2026-08 basis so a run can still recognise PRs opened
+    under the old scheme; see :func:`fingerprint_candidates`."""
     c = target.get("cluster")
     basis: dict[str, object] = {
         "source": _STATE_SOURCE,
@@ -1741,17 +1804,34 @@ def target_fingerprint(target: dict) -> str:
     for f in sorted(
         target.get("failures") or [], key=lambda item: (item["test"], item["gpu"])
     ):
-        failures.append(
-            {
-                "test": f["test"],
-                "gpu": f["gpu"],
-                "mode": f.get("failure_mode") or "other",
-                "excerpt": short_excerpt(f.get("latest_trace") or f.get("trace") or ""),
-            }
-        )
+        entry = {
+            "test": f["test"],
+            "gpu": f["gpu"],
+            "mode": f.get("failure_mode") or "other",
+        }
+        if version == 1:
+            entry["excerpt"] = short_excerpt(
+                f.get("latest_trace") or f.get("trace") or ""
+            )
+        failures.append(entry)
     basis["failures"] = failures
     raw = json.dumps(basis, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+def fingerprint_candidates(target: dict) -> list[str]:
+    """Every fingerprint this group may be recorded under, current scheme first.
+
+    Bumping :data:`FINGERPRINT_VERSION` would otherwise orphan every PR already
+    open under the previous scheme and re-dispatch all of them at once. Matching
+    against both means the transition is invisible; the v1 entry can be dropped
+    once no v1-era Serge PR is still open."""
+    out = [target_fingerprint(target)]
+    for version in range(FINGERPRINT_VERSION - 1, 0, -1):
+        fp = target_fingerprint(target, version=version)
+        if fp not in out:
+            out.append(fp)
+    return out
 
 
 def fingerprint_marker(fingerprint: str) -> str:
@@ -1779,6 +1859,77 @@ def add_state_marker(
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class PriorAttempts:
+    """What has already been tried for one failure group.
+
+    ``open_pr`` reproduces the old single-value ledger (a live PR to follow up
+    on). ``merged`` and ``rejected`` are what the open-PR-only lookup could never
+    see: a fix that landed, and attempts a human closed without merging."""
+
+    open_pr: int | None = None
+    merged: tuple[int, ...] = ()
+    rejected: tuple[int, ...] = ()
+
+    @property
+    def attempts(self) -> int:
+        return (1 if self.open_pr else 0) + len(self.merged) + len(self.rejected)
+
+
+def _pr_matches(pr: dict, markers: list[str], prefixes: list[str]) -> bool:
+    body = pr.get("body") or ""
+    head_ref = (pr.get("head") or {}).get("ref") or ""
+    return any(m in body for m in markers) or any(
+        head_ref.startswith(p) for p in prefixes
+    )
+
+
+def classify_prior_attempts(
+    pulls: list[dict], fingerprints: list[str]
+) -> PriorAttempts:
+    """Bucket every PR in ``pulls`` that tracks any of ``fingerprints``.
+
+    ``pulls`` should come from :func:`list_recent_pulls` (all states). Given only
+    open PRs this degrades to the previous behaviour — an open PR or nothing —
+    which is the safe direction: a missing history means "dispatch", never
+    "skip"."""
+    markers = [fingerprint_marker(fp) for fp in fingerprints]
+    prefixes = [task_branch_prefix(fp) for fp in fingerprints]
+    open_pr: int | None = None
+    merged: list[int] = []
+    rejected: list[int] = []
+    for pr in pulls:
+        if not _pr_matches(pr, markers, prefixes):
+            continue
+        number = int(pr["number"])
+        # Only an EXPLICIT "closed" can produce a rejection. A payload without a
+        # `state` (a caller passing an open-only listing, a trimmed fixture) must
+        # fall through to "open" — the fail-safe direction, because a phantom
+        # rejection is what would wrongly stop a group being dispatched at all.
+        if (pr.get("state") or "") != "closed":
+            # Newest wins; the listing order is not guaranteed to be stable.
+            open_pr = number if open_pr is None else max(open_pr, number)
+        elif pr.get("merged_at"):
+            merged.append(number)
+        else:
+            rejected.append(number)
+    return PriorAttempts(
+        open_pr=open_pr,
+        merged=tuple(sorted(merged)),
+        rejected=tuple(sorted(rejected)),
+    )
+
+
+def resolve_prior_attempts(
+    targets: list[dict], pulls: list[dict]
+) -> dict[str, PriorAttempts]:
+    """Map each target's current fingerprint to its :class:`PriorAttempts`."""
+    return {
+        target_fingerprint(t): classify_prior_attempts(pulls, fingerprint_candidates(t))
+        for t in targets
+    }
+
+
 def match_existing_pr(pulls: list[dict], fingerprint: str) -> int | None:
     """Return the number of an open PR already tracking ``fingerprint`` (by the
     HTML marker in its body or its ``serge/fix/itf-<fp>`` branch), else None."""
@@ -1800,7 +1951,10 @@ def resolve_existing_prs(
     """Map each target's fingerprint to its open Serge PR number (or None),
     matched against an already-fetched ``pulls`` list."""
     return {
-        (fp := target_fingerprint(t)): match_existing_pr(pulls, fp) for t in targets
+        target_fingerprint(t): classify_prior_attempts(
+            pulls, fingerprint_candidates(t)
+        ).open_pr
+        for t in targets
     }
 
 
@@ -3540,6 +3694,25 @@ def main(argv: list[str] | None = None) -> int:
         help="ask Serge to send a Slack notification when each task finishes",
     )
     p.add_argument(
+        "--max-rejected-attempts",
+        type=int,
+        default=int(
+            os.environ.get(
+                "ITF_MAX_REJECTED_ATTEMPTS", str(DEFAULT_MAX_REJECTED_ATTEMPTS)
+            )
+        ),
+        help="stop dispatching a failure group once this many previous Serge PRs "
+        "for it were closed unmerged; the group is reported for a human instead "
+        f"(0 disables; default {DEFAULT_MAX_REJECTED_ATTEMPTS})",
+    )
+    p.add_argument(
+        "--pr-lookback-days",
+        type=int,
+        default=int(os.environ.get("ITF_PR_LOOKBACK_DAYS", "90")),
+        help="how far back to read this repo's PRs when looking for previous "
+        "attempts at a failure group (default 90)",
+    )
+    p.add_argument(
         "--reconcile-timeout",
         type=int,
         default=int(os.environ.get("ITF_RECONCILE_TIMEOUT", "300")),
@@ -3626,10 +3799,22 @@ def main(argv: list[str] | None = None) -> int:
         )
     report = cluster_failures(kept, nf_latest, attribution=attribution)
     targets = pick_targets(report)
+    # Serge PRs are this run's ledger, and it has to cover CLOSED ones: a group
+    # whose previous attempts were all closed unmerged must not be handed to the
+    # agent again (see rejected_attempts_reason). Fetched once here, before the
+    # partition, and reused for the tracking-issue links further down.
+    gh_token = os.environ.get("GITHUB_TOKEN")
+    recent_pulls = list_recent_pulls(
+        args.repo, gh_token, lookback_days=args.pr_lookback_days
+    )
+    priors = resolve_prior_attempts(targets, recent_pulls)
     # Hold back groups no minimal patch can fix (runner OOM, missing dependency)
-    # BEFORE the --max-groups cap, so they don't spend a dispatch slot on a run
-    # that could only end no_fix. They are reported for a human instead.
-    targets, deferred = partition_targets(targets)
+    # or that a human has already rejected repeatedly, BEFORE the --max-groups
+    # cap, so they don't spend a dispatch slot on a run that could only end
+    # no_fix. They are reported for a human instead.
+    targets, deferred = partition_targets(
+        targets, priors, max_rejected=args.max_rejected_attempts
+    )
     for t in deferred:
         print(
             f"      deferred (not agent-fixable): {t['label']} — {t['defer_reason']}",
@@ -3725,11 +3910,13 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
 
-    # Look up open Serge PRs once: feeds both the tracking-issue links and the
-    # follow-up-vs-new-PR decision in dispatch, so a group's existing PR shows
-    # as a real #number in the issue immediately.
-    gh_token = os.environ.get("GITHUB_TOKEN")
-    existing_prs = resolve_existing_prs(targets, list_open_pulls(args.repo, gh_token))
+    # Reuse the single PR fetch from above: feeds both the tracking-issue links
+    # and the follow-up-vs-new-PR decision in dispatch, so a group's existing PR
+    # shows as a real #number in the issue immediately.
+    existing_prs = {
+        fp: prior.open_pr
+        for fp, prior in resolve_prior_attempts(targets, recent_pulls).items()
+    }
 
     run_key = window[-1] if window else "unknown"
     issue_title = f"[serge] integration failure triage - {run_key}"

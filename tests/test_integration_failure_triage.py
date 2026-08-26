@@ -430,6 +430,162 @@ class MatchExistingPrTest(unittest.TestCase):
         self.assertIsNone(itf.match_existing_pr(pulls, "c" * 64))
 
 
+class FingerprintStabilityTest(unittest.TestCase):
+    """v1 hashed the traceback excerpt into the group identity, so an unchanged
+    failure fingerprinted differently every run and the existing-PR lookup never
+    matched. Observed as six mamba2 OOM attempts with six distinct fingerprints."""
+
+    def _target(self, trace):
+        return {
+            "kind": "model_failures",
+            "label": "2 tests for model `mamba2` failing with `OOM`",
+            "cluster": None,
+            "failures": [
+                {
+                    "test": "tests/models/mamba2/test_modeling_mamba2.py::T::test_a",
+                    "gpu": "single-gpu",
+                    "failure_mode": "OOM",
+                    "latest_trace": trace,
+                }
+            ],
+        }
+
+    def test_stable_across_differing_tracebacks(self):
+        a = self._target("CUDA out of memory. Tried to allocate 20.00 MiB")
+        b = self._target("CUDA out of memory. Tried to allocate 44.00 MiB")
+        self.assertEqual(itf.target_fingerprint(a), itf.target_fingerprint(b))
+
+    def test_v1_was_unstable(self):
+        a = self._target("CUDA out of memory. Tried to allocate 20.00 MiB")
+        b = self._target("CUDA out of memory. Tried to allocate 44.00 MiB")
+        self.assertNotEqual(
+            itf.target_fingerprint(a, version=1),
+            itf.target_fingerprint(b, version=1),
+        )
+
+    def test_identity_change_still_changes_the_fingerprint(self):
+        a = self._target("boom")
+        b = self._target("boom")
+        b["failures"][0]["test"] = "tests/models/mamba2/test_modeling_mamba2.py::T::z"
+        self.assertNotEqual(itf.target_fingerprint(a), itf.target_fingerprint(b))
+
+    def test_candidates_include_the_legacy_scheme(self):
+        t = self._target("boom")
+        cands = itf.fingerprint_candidates(t)
+        self.assertEqual(cands[0], itf.target_fingerprint(t))
+        self.assertIn(itf.target_fingerprint(t, version=1), cands)
+
+
+class PriorAttemptsTest(unittest.TestCase):
+    FP = "d" * 64
+
+    def _pr(self, number, state, merged=False, fp=None):
+        return {
+            "number": number,
+            "state": state,
+            "merged_at": "2026-08-01T00:00:00Z" if merged else None,
+            "body": itf.fingerprint_marker(fp or self.FP),
+            "head": {"ref": "x"},
+        }
+
+    def test_buckets_open_merged_and_rejected(self):
+        pulls = [
+            self._pr(1, "closed"),
+            self._pr(2, "closed", merged=True),
+            self._pr(3, "open"),
+            self._pr(4, "closed"),
+            {"number": 9, "state": "closed", "body": "other", "head": {"ref": "y"}},
+        ]
+        prior = itf.classify_prior_attempts(pulls, [self.FP])
+        self.assertEqual(prior.open_pr, 3)
+        self.assertEqual(prior.merged, (2,))
+        self.assertEqual(prior.rejected, (1, 4))
+        self.assertEqual(prior.attempts, 4)
+
+    def test_open_only_listing_degrades_safely(self):
+        """Given only open PRs (the old ledger) nothing is ever deferred."""
+        prior = itf.classify_prior_attempts([self._pr(3, "open")], [self.FP])
+        self.assertEqual(prior.rejected, ())
+        self.assertEqual(itf.rejected_attempts_reason(prior, 2), "")
+
+    def test_a_pr_without_an_explicit_state_counts_as_open(self):
+        """Fail-safe: a phantom rejection would wrongly skip a live group."""
+        prior = itf.classify_prior_attempts(
+            [{"number": 62, "body": itf.fingerprint_marker(self.FP), "head": {}}],
+            [self.FP],
+        )
+        self.assertEqual(prior.open_pr, 62)
+        self.assertEqual(prior.rejected, ())
+
+    def test_matches_a_legacy_fingerprint(self):
+        legacy = "e" * 64
+        prior = itf.classify_prior_attempts(
+            [self._pr(7, "closed", fp=legacy)], [self.FP, legacy]
+        )
+        self.assertEqual(prior.rejected, (7,))
+
+
+class RejectedAttemptsReasonTest(unittest.TestCase):
+    def test_defers_at_the_threshold(self):
+        prior = itf.PriorAttempts(rejected=(11, 12))
+        reason = itf.rejected_attempts_reason(prior, 2)
+        self.assertIn("#11", reason)
+        self.assertIn("#12", reason)
+
+    def test_below_threshold_still_dispatches(self):
+        self.assertEqual(
+            itf.rejected_attempts_reason(itf.PriorAttempts(rejected=(11,)), 2), ""
+        )
+
+    def test_an_open_pr_is_a_follow_up_not_a_block(self):
+        prior = itf.PriorAttempts(open_pr=20, rejected=(11, 12))
+        self.assertEqual(itf.rejected_attempts_reason(prior, 2), "")
+
+    def test_a_merged_fix_that_did_not_hold_is_new_information(self):
+        prior = itf.PriorAttempts(merged=(30,), rejected=(11, 12))
+        self.assertEqual(itf.rejected_attempts_reason(prior, 2), "")
+
+    def test_zero_disables(self):
+        prior = itf.PriorAttempts(rejected=(11, 12, 13))
+        self.assertEqual(itf.rejected_attempts_reason(prior, 0), "")
+
+
+class PartitionTargetsPriorAttemptsTest(unittest.TestCase):
+    def _target(self):
+        return {
+            "kind": "model_failures",
+            "label": "2 tests for model `generation` failing with `output_mismatch`",
+            "model": "generation",
+            "failure_mode": "output_mismatch",
+            "cluster": None,
+            "failures": [
+                {
+                    "test": "tests/generation/test_utils.py::T::test_a",
+                    "gpu": "single-gpu",
+                    "failure_mode": "output_mismatch",
+                    "latest_trace": "AssertionError: Tensor-likes are not close",
+                }
+            ],
+        }
+
+    def test_repeatedly_rejected_group_is_deferred(self):
+        t = self._target()
+        priors = {itf.target_fingerprint(t): itf.PriorAttempts(rejected=(1, 2))}
+        dispatch, deferred = partition = itf.partition_targets(
+            [t], priors, max_rejected=2
+        )
+        self.assertEqual(dispatch, [])
+        self.assertEqual(len(deferred), 1)
+        self.assertIn("closed unmerged", deferred[0]["defer_reason"])
+        del partition
+
+    def test_without_priors_behaviour_is_unchanged(self):
+        t = self._target()
+        dispatch, deferred = itf.partition_targets([t])
+        self.assertEqual(dispatch, [t])
+        self.assertEqual(deferred, [])
+
+
 class DispatchTargetsTest(unittest.TestCase):
     def _targets(self):
         return [

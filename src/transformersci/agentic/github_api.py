@@ -27,6 +27,7 @@ crashes a triage run — the worst case is "acted as if there was no prior work"
 
 from __future__ import annotations
 
+import datetime
 import json
 import urllib.error
 import urllib.parse
@@ -113,6 +114,80 @@ def list_open_pulls(repo: str, github_token: str | None) -> list[dict]:
             return pulls_all
         pulls_all.extend(pulls)
         page += 1
+
+
+def list_recent_pulls(
+    repo: str,
+    github_token: str | None,
+    *,
+    lookback_days: int = 90,
+    max_pages: int = 25,
+) -> list[dict]:
+    """Recent PRs for ``repo`` in **every** state (open, closed, merged).
+
+    ``list_open_pulls`` cannot answer "has this been attempted before?": the
+    moment a PR is closed it vanishes from that listing, so a caller using open
+    PRs as its ledger re-does work it already tried. Widening that call to
+    ``state=all`` is not an option on a busy repository — it would page through
+    every PR ever opened — so this walks newest-updated-first and stops at
+    ``lookback_days``, which bounds the fetch to a window that still covers any
+    attempt recent enough to matter.
+
+    Sorted by ``updated``, so a stale closed PR nobody has touched falls out of
+    the window even if it is newer than the cutoff by creation date. That is the
+    intended trade: this answers "recently attempted", not "ever attempted".
+
+    Best-effort, like ``list_open_pulls``: on any error it returns what it has so
+    a caller treats "could not check" as "nothing found" rather than crashing the
+    run.
+    """
+    if "/" not in repo:
+        return []
+    owner, name = repo.split("/", 1)
+    headers = gh_headers(github_token)
+    cutoff = (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(days=lookback_days)
+    ).isoformat()
+
+    pulls_all: list[dict] = []
+    for page in range(1, max_pages + 1):
+        params = urllib.parse.urlencode(
+            {
+                "state": "all",
+                "per_page": 100,
+                "page": page,
+                "sort": "updated",
+                "direction": "desc",
+            }
+        )
+        url = f"{_API}/repos/{owner}/{name}/pulls?{params}"
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                pulls = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")
+            print(
+                f"      warning: could not query recent PRs for task state: "
+                f"{e.code} {detail}",
+                flush=True,
+            )
+            return pulls_all
+        except urllib.error.URLError as e:
+            print(
+                f"      warning: could not query recent PRs for task state: {e.reason}",
+                flush=True,
+            )
+            return pulls_all
+        if not pulls:
+            return pulls_all
+        pulls_all.extend(pulls)
+        # The listing is newest-updated-first, so once a page ends older than the
+        # cutoff every later page is older still.
+        if (pulls[-1].get("updated_at") or "") < cutoff:
+            return pulls_all
+    return pulls_all
 
 
 def match_pr(
