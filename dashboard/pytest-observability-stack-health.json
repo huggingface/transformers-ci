@@ -292,8 +292,8 @@
    },
    "id": 203,
    "type": "stat",
-   "title": "Spans accepted \u2212 sent (24h)",
-   "description": "Collector receiver_accepted minus exporter_sent over 24h. A large positive delta = spans buffered/lost between collector ingest and Tempo export.",
+   "title": "Spans accepted \u2212 filtered \u2212 sent (24h)",
+   "description": "Spans the collector accepted but neither dropped on purpose nor shipped to Tempo, over 24h: receiver_accepted \u2212 processor_filter_spans_filtered \u2212 exporter_sent. The filter term is the repository-privacy deny rule (internal huggingface/* clones), whose drops are by design \u2014 without it this stat reads red every time a private clone exports. A large positive delta is real buffering/loss: cross-check exporter_send_failed_spans, exporter_queue_size and tempo_discarded_spans_total.",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -338,10 +338,10 @@
    "targets": [
     {
      "editorMode": "code",
-     "expr": "sum(increase(otelcol_receiver_accepted_spans[24h])) - sum(increase(otelcol_exporter_sent_spans[24h]))",
+     "expr": "sum(increase(otelcol_receiver_accepted_spans[24h])) - (sum(increase(otelcol_processor_filter_spans_filtered[24h])) or vector(0)) - sum(increase(otelcol_exporter_sent_spans[24h]))",
      "instant": true,
      "range": false,
-     "legendFormat": "Spans accepted \u2212 sent (24h)",
+     "legendFormat": "Spans accepted \u2212 filtered \u2212 sent (24h)",
      "refId": "A"
     }
    ],
@@ -559,7 +559,7 @@
    "id": 213,
    "type": "timeseries",
    "title": "End-to-end span reconciliation (collector)",
-   "description": "Collector spans accepted/s (in) vs sent/s (out to Tempo). The two lines should overlap; a sustained gap is real-time span loss/backpressure.",
+   "description": "Collector spans accepted/s (in) vs sent/s (out to Tempo), plus the spans the repository-privacy filter drops on purpose. accepted = sent + filtered; a gap beyond filtered/s is real-time span loss/backpressure.",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -604,6 +604,12 @@
      "expr": "sum(rate(otelcol_exporter_sent_spans[5m]))",
      "legendFormat": "sent/s (\u2192Tempo)",
      "refId": "B"
+    },
+    {
+     "editorMode": "code",
+     "expr": "sum(rate(otelcol_processor_filter_spans_filtered[5m]))",
+     "legendFormat": "filtered/s (internal repos)",
+     "refId": "C"
     }
    ],
    "gridPos": {
