@@ -14,10 +14,13 @@
 
 import datetime
 import itertools
+import json
 import os
 import unittest
+import urllib.error
 from unittest.mock import patch
 
+from transformersci.agentic import github_api as gh_api
 from transformersci.agentic import integration_failure_triage as itf
 from transformersci.agentic import serge_dispatch as sd
 
@@ -584,6 +587,345 @@ class PartitionTargetsPriorAttemptsTest(unittest.TestCase):
         dispatch, deferred = itf.partition_targets([t])
         self.assertEqual(dispatch, [t])
         self.assertEqual(deferred, [])
+
+
+class PriorFeedbackTest(unittest.TestCase):
+    """Carrying the *reason* a previous attempt was rejected, not just the count.
+
+    Both fixtures are real: transformers #48223 (a CHANGES_REQUESTED on an
+    expectation rewrite) and #48322 (a working patch at the wrong altitude)."""
+
+    C_48223 = {
+        "pr": 48223,
+        "kind": "inline",
+        "author": "zucchini-nlp",
+        "created_at": "2026-08-26T07:03:47Z",
+        "state": "",
+        "path": "tests/models/recurrent_gemma/test_modeling_recurrent_gemma.py",
+        "line": 282,
+        "body": (
+            "the linked commit deleted a `partial_rotary_factor` so I think this "
+            "is valid, we need to the fix model."
+        ),
+    }
+    V_48223 = {
+        "pr": 48223,
+        "kind": "review",
+        "author": "zucchini-nlp",
+        "created_at": "2026-08-26T07:03:50Z",
+        "state": "CHANGES_REQUESTED",
+        "path": None,
+        "line": None,
+        "body": "",
+    }
+    RUN_SLOW = {
+        "pr": 48223,
+        "kind": "comment",
+        "author": "a-maintainer",
+        "created_at": "2026-08-22T23:00:00Z",
+        "state": "",
+        "path": None,
+        "line": None,
+        "body": "run-slow: recurrent_gemma",
+    }
+
+    def _target(self):
+        return {
+            "kind": "model_failures",
+            "label": "2 integration tests regressed by commit 6034e90c7d1b",
+            "model": "recurrent_gemma",
+            "failure_mode": "output_mismatch",
+            "cluster": None,
+            "failures": [
+                {
+                    "test": (
+                        "tests/models/recurrent_gemma/"
+                        "test_modeling_recurrent_gemma.py::T::test_long_context"
+                    ),
+                    "model": "recurrent_gemma",
+                    "gpu": "single-gpu",
+                    "failure_mode": "output_mismatch",
+                    "trace": "AssertionError: Lists differ",
+                    "latest_trace": "AssertionError: Lists differ",
+                    "days_seen": 3,
+                }
+            ],
+        }
+
+    # ── collection ──────────────────────────────────────────────────────────
+
+    def test_reads_only_the_rejected_attempts(self):
+        asked = []
+
+        def fetch(repo, number, token):
+            asked.append(number)
+            return [{**self.C_48223, "pr": number}]
+
+        prior = itf.PriorAttempts(open_pr=99, merged=(30,), rejected=(11, 12))
+        items = itf.collect_prior_feedback(
+            prior, "huggingface/transformers", None, max_prs=2, fetch=fetch
+        )
+        # Neither the open follow-up nor the merged fix is an objection to avoid.
+        self.assertEqual(sorted(asked), [11, 12])
+        self.assertEqual(len(items), 2)
+
+    def test_caps_the_number_of_prs_read_newest_first(self):
+        asked = []
+
+        def fetch(repo, number, token):
+            asked.append(number)
+            return []
+
+        prior = itf.PriorAttempts(rejected=(11, 12, 13))
+        itf.collect_prior_feedback(
+            prior, "huggingface/transformers", None, max_prs=2, fetch=fetch
+        )
+        self.assertEqual(asked, [13, 12])
+
+    def test_a_group_with_no_rejection_makes_no_api_call(self):
+        def fetch(repo, number, token):  # pragma: no cover - must not run
+            raise AssertionError("fetched feedback for a group with no rejection")
+
+        for prior in (None, itf.PriorAttempts(), itf.PriorAttempts(open_pr=7)):
+            self.assertEqual(
+                itf.collect_prior_feedback(
+                    prior, "huggingface/transformers", None, fetch=fetch
+                ),
+                [],
+            )
+
+    def test_zero_disables(self):
+        def fetch(repo, number, token):  # pragma: no cover - must not run
+            raise AssertionError("fetched feedback with --feedback-prs 0")
+
+        self.assertEqual(
+            itf.collect_prior_feedback(
+                itf.PriorAttempts(rejected=(11,)),
+                "huggingface/transformers",
+                None,
+                max_prs=0,
+                fetch=fetch,
+            ),
+            [],
+        )
+
+    # ── rendering ───────────────────────────────────────────────────────────
+
+    def test_quotes_the_reviewer_and_names_the_pr(self):
+        block = "\n".join(itf.prior_feedback_lines([self.V_48223, self.C_48223]))
+        self.assertIn("/pull/48223", block)
+        self.assertIn("zucchini-nlp", block)
+        self.assertIn("partial_rotary_factor", block)
+        self.assertIn("test_modeling_recurrent_gemma.py`:282", block)
+        self.assertIn("requested changes", block)
+        self.assertIn("untrusted", block)
+        self.assertIn("Do not re-send", block)
+
+    def test_a_bare_run_slow_comment_is_not_feedback(self):
+        self.assertEqual(itf.prior_feedback_lines([self.RUN_SLOW]), [])
+        self.assertTrue(itf.is_boilerplate_feedback("run-slow: recurrent_gemma"))
+        self.assertTrue(itf.is_boilerplate_feedback("  run-slow: a\nrun-slow: b\n"))
+        # A directive with an opinion attached is an opinion.
+        self.assertFalse(itf.is_boilerplate_feedback("run-slow: a, and also fix X"))
+        self.assertTrue(itf.is_boilerplate_feedback("run-slow: gemma, llama"))
+
+    def test_an_empty_changes_requested_still_counts(self):
+        """The verdict and the sentence are separate GitHub objects."""
+        self.assertTrue(itf.carries_reviewer_signal(self.V_48223))
+        self.assertFalse(itf.carries_reviewer_signal(self.RUN_SLOW))
+        block = "\n".join(itf.prior_feedback_lines([self.V_48223]))
+        self.assertIn("requested changes", block)
+
+    def test_a_long_comment_is_truncated_not_dropped(self):
+        long = {**self.C_48223, "body": "x" * 2000}
+        block = "\n".join(itf.prior_feedback_lines([long]))
+        self.assertIn("[…]", block)
+        self.assertLess(len(block), 1200)
+
+    def test_nothing_to_say_renders_nothing(self):
+        self.assertEqual(itf.prior_feedback_lines([]), [])
+
+    # ── attach + context ────────────────────────────────────────────────────
+
+    def test_the_failure_report_carries_the_objection(self):
+        t = self._target()
+        priors = {itf.target_fingerprint(t): itf.PriorAttempts(rejected=(48223,))}
+        out = itf.attach_prior_feedback(
+            [t],
+            priors,
+            "huggingface/transformers",
+            None,
+            fetch=lambda repo, number, token: [self.C_48223, self.V_48223],
+        )
+        self.assertEqual(len(out[0]["prior_feedback"]), 2)
+        context = itf.render_serge_context(out, ["2026-08-24", "2026-08-26"])
+        self.assertIn("partial_rotary_factor", context)
+        # The objection has to arrive before the tracebacks, or it reads as a
+        # footnote to a wall of trace.
+        self.assertLess(
+            context.index("partial_rotary_factor"), context.index("Failing tests")
+        )
+
+    def test_attaching_cannot_change_a_group_identity(self):
+        t = self._target()
+        before = itf.target_fingerprint(t)
+        priors = {before: itf.PriorAttempts(rejected=(48223,))}
+        out = itf.attach_prior_feedback(
+            [t],
+            priors,
+            "huggingface/transformers",
+            None,
+            fetch=lambda repo, number, token: [self.C_48223],
+        )
+        self.assertEqual(itf.target_fingerprint(out[0]), before)
+
+    def test_a_group_with_only_boilerplate_is_left_alone(self):
+        t = self._target()
+        priors = {itf.target_fingerprint(t): itf.PriorAttempts(rejected=(48223,))}
+        out = itf.attach_prior_feedback(
+            [t],
+            priors,
+            "huggingface/transformers",
+            None,
+            fetch=lambda repo, number, token: [self.RUN_SLOW],
+        )
+        self.assertNotIn("prior_feedback", out[0])
+
+    def test_no_priors_is_a_no_op(self):
+        t = self._target()
+        self.assertEqual(
+            itf.attach_prior_feedback([t], None, "huggingface/transformers", None), [t]
+        )
+
+
+class ListPrReviewFeedbackTest(unittest.TestCase):
+    """The three-endpoint merge in ``github_api.list_pr_review_feedback``.
+
+    The objection, the verdict, and the close reason live in three different
+    GitHub collections, and none of them is a superset of the others."""
+
+    INLINE = [
+        {
+            "user": {"login": "sergereview[bot]"},
+            "created_at": "2026-08-25T22:32:00Z",
+            "body": "my own finding",
+            "path": "a.py",
+            "line": 1,
+        },
+        {
+            "user": {"login": "zucchini-nlp"},
+            "created_at": "2026-08-26T07:32:53Z",
+            "body": "why don't we pop in `EdgeTamModel` right in the beginning",
+            "path": "src/transformers/models/edgetam/modeling_edgetam.py",
+            "line": 482,
+        },
+    ]
+    REVIEWS = [
+        {
+            "user": {"login": "zucchini-nlp"},
+            "state": "commented",
+            "submitted_at": "2026-08-26T07:32:53Z",
+            "body": "",
+        },
+        {
+            "user": {"login": "zucchini-nlp"},
+            "state": "CHANGES_REQUESTED",
+            "submitted_at": "2026-08-26T07:32:55Z",
+            "body": "",
+        },
+    ]
+    CONVO = [
+        {
+            "user": {"login": "github-actions[bot]"},
+            "created_at": "2026-08-25T22:33:47Z",
+            "body": "run-slow: edgetam",
+        },
+        {
+            "user": {"login": "HuggingFaceDocBuilderDev"},
+            "created_at": "2026-08-25T22:42:22Z",
+            "body": "The docs for this PR live here",
+        },
+        {
+            "user": {"login": "a-human"},
+            "created_at": "2026-08-26T09:00:00Z",
+            "body": "closing, the fix is wrong",
+        },
+    ]
+
+    def _fake(self):
+        class _Resp:
+            def __init__(self, data):
+                self._d = data
+
+            def read(self):
+                return self._d
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def urlopen(req, timeout=None):
+            url = req.full_url
+            if "/pulls/48322/comments" in url:
+                payload = self.INLINE
+            elif "/pulls/48322/reviews" in url:
+                payload = self.REVIEWS
+            elif "/issues/48322/comments" in url:
+                payload = self.CONVO
+            else:  # pragma: no cover - an unexpected endpoint is a bug
+                raise AssertionError(f"unexpected GET {url}")
+            return _Resp(json.dumps(payload).encode())
+
+        return urlopen
+
+    def _fetch(self, **kw):
+        with patch.object(gh_api.urllib.request, "urlopen", self._fake()):
+            return gh_api.list_pr_review_feedback(
+                "huggingface/transformers", 48322, None, **kw
+            )
+
+    def test_bots_are_dropped_and_humans_kept(self):
+        items = self._fetch()
+        authors = {i["author"] for i in items}
+        self.assertEqual(authors, {"zucchini-nlp", "a-human"})
+
+    def test_newest_first(self):
+        items = self._fetch()
+        stamps = [i["created_at"] for i in items]
+        self.assertEqual(stamps, sorted(stamps, reverse=True))
+
+    def test_an_empty_bodied_review_is_kept_only_when_it_blocks(self):
+        states = [i["state"] for i in self._fetch() if i["kind"] == "review"]
+        self.assertEqual(states, ["CHANGES_REQUESTED"])
+
+    def test_the_inline_comment_keeps_its_location(self):
+        inline = [i for i in self._fetch() if i["kind"] == "inline"]
+        self.assertEqual(len(inline), 1)
+        self.assertEqual(inline[0]["line"], 482)
+        self.assertTrue(inline[0]["path"].endswith("modeling_edgetam.py"))
+
+    def test_capped(self):
+        self.assertEqual(len(self._fetch(max_items=2)), 2)
+
+    def test_an_api_error_degrades_to_fewer_items(self):
+        def boom(req, timeout=None):
+            raise urllib.error.URLError("no network")
+
+        with patch.object(gh_api.urllib.request, "urlopen", boom):
+            self.assertEqual(
+                gh_api.list_pr_review_feedback("huggingface/transformers", 1, None), []
+            )
+
+    def test_a_malformed_repo_makes_no_call(self):
+        def boom(req, timeout=None):  # pragma: no cover - must not run
+            raise AssertionError("called GitHub for a repo with no owner")
+
+        with patch.object(gh_api.urllib.request, "urlopen", boom):
+            self.assertEqual(
+                gh_api.list_pr_review_feedback("transformers", 1, None), []
+            )
 
 
 class DispatchTargetsTest(unittest.TestCase):
