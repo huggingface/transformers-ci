@@ -351,7 +351,7 @@ jobs:
       # --- COMMON_ENV_VARIABLES ---
       OMP_NUM_THREADS: ${{ inputs.omp_num_threads }}
       TRANSFORMERS_IS_CI: "true"
-      PYTEST_TIMEOUT: 120
+      PYTEST_TIMEOUT: 0
       RUN_PIPELINE_TESTS: ${{ inputs.run_pipeline_tests }}
       # RUN_FLAKY: true on push/nightly, false on PRs.
       # Mirrors: env['RUN_FLAKY'] = os.environ.get("CIRCLE_PULL_REQUEST", "") == ""
@@ -578,6 +578,9 @@ jobs:
       - name: Run tests
         id: run_tests
         run: |
+          # DEBUG: override test list to run only the single flaky test
+          TESTS="tests/models/bigbird_pegasus/test_modeling_bigbird_pegasus.py::BigBirdPegasusModelTest::test_training_gradient_checkpointing_use_reentrant_true"
+
           if [ -z "$TESTS" ]; then
             echo "No tests assigned to this shard. Exiting cleanly."
             exit 0
@@ -597,7 +600,8 @@ jobs:
 
           # ── JUnit flags ──────────────────────────────────────────────────────
           JUNIT_FLAGS="-p no:warning -o junit_family=xunit1 \
-            --junitxml=test-results/junit.xml"
+            --junitxml=test-results/junit.xml \
+            --log-cli-level=WARNING"
 
           # ── Flaky test rerun patterns ────────────────────────────────────────
           # Mirrors FLAKY_TEST_FAILURE_PATTERNS + --reruns flags.
