@@ -740,12 +740,21 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr, commit_message, commit_sha, run_html_url) (max without (instance) (last_over_time(pytest_run_info{run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
+          "expr": "max by (run_id, pr, commit_message, commit_sha) (max without (instance) (last_over_time(pytest_run_info{run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
           "refId": "Commit"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (run_id, pr, run_html_url) (max without (instance) (last_over_time(pytest_run_info{run_html_url!=\"\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "RunUrl"
         },
         {
           "editorMode": "code",
@@ -804,7 +813,8 @@
               "pr": true,
               "Value #Commit": true,
               "commit_sha": true,
-              "run_html_url": true
+              "run_html_url": true,
+              "Value #RunUrl": true
             },
             "indexByName": {
               "run_id": 0,
