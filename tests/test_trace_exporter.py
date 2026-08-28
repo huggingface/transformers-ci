@@ -1541,6 +1541,126 @@ def test_extract_run_active_metrics_caps_branch_run_lookups(monkeypatch) -> None
     assert len(metric_lines(lines, "pytest_run_active")) == 2
 
 
+def _settle_trace(*, run_id: str, trace_id: str, job: str) -> dict:
+    return make_trace(
+        trace_id=trace_id,
+        run_id=run_id,
+        job=job,
+        pr="main",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid=f"tests/test_{job}.py::TestX::test_one",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+
+
+def _settle_setup(run_id: str = "33143393869:1"):
+    """One run, one shard trace, quiet for well over the settle window."""
+    traces = [
+        _settle_trace(run_id=run_id, trace_id="trace-shard-1", job="run_models_gpu")
+    ]
+    extracted = trace_exporter._precompute_trace_rows(traces)
+    trace_exporter._run_members.clear()
+    trace_exporter._run_last_growth.clear()
+    trace_exporter.record_run_membership(extracted, 1_000.0)
+    return extracted
+
+
+def test_settled_runs_waits_while_github_says_the_run_is_going() -> None:
+    """Trace quiescence only tracks when a *new* shard joined the run, so a
+    staggered GPU matrix that pauses between shards looks finished while its
+    already-running shards are still emitting tests. GitHub knows better."""
+    extracted = _settle_setup()
+    # Quiescent by the old rule: no new trace for far longer than the window.
+    complete = trace_exporter.settled_runs_complete_extracted(
+        extracted,
+        1_000.0 + 600.0,
+        120.0,
+        _run_active_lookup=lambda repo, run_id: True,
+    )
+    assert complete == [], "a run GitHub reports as in flight must not roll up"
+
+
+def test_settled_runs_rolls_up_once_github_says_the_run_finished() -> None:
+    extracted = _settle_setup()
+    complete = trace_exporter.settled_runs_complete_extracted(
+        extracted,
+        1_000.0 + 600.0,
+        120.0,
+        _run_active_lookup=lambda repo, run_id: False,
+    )
+    assert len(complete) == 1
+
+
+def test_settled_runs_falls_back_to_quiescence_when_github_is_unknown() -> None:
+    """No repository, a run outside the active poller's bounded set, or a cold
+    cache after a restart must degrade to the old heuristic, never to silence."""
+    extracted = _settle_setup()
+    seen: list[tuple[str, str]] = []
+
+    def unknown(repo: str, run_id: str):
+        seen.append((repo, run_id))
+        return None
+
+    complete = trace_exporter.settled_runs_complete_extracted(
+        extracted, 1_000.0 + 600.0, 120.0, _run_active_lookup=unknown
+    )
+    assert len(complete) == 1
+    # The repository is resolved off the trace so the lookup can be keyed on it.
+    assert seen == [("huggingface/transformers", "33143393869:1")]
+
+    # Still ingesting -> still skipped, whatever GitHub thinks.
+    assert (
+        trace_exporter.settled_runs_complete_extracted(
+            extracted, 1_000.0 + 10.0, 120.0, _run_active_lookup=unknown
+        )
+        == []
+    )
+
+
+def test_cached_run_is_active_never_calls_github() -> None:
+    """The roll-up gate reads only what the active-metrics pass already fetched;
+    it must add no API fan-out of its own, and say "unknown" on a cold cache."""
+    trace_exporter._cached_run_activity.clear()
+    assert (
+        trace_exporter.cached_run_is_active("huggingface/transformers", "1:1") is None
+    )
+    assert trace_exporter.cached_run_is_active("", "1:1") is None
+    assert trace_exporter.cached_run_is_active("huggingface/transformers", "") is None
+
+    import time as _time
+
+    trace_exporter._cached_run_activity[("huggingface/transformers", "1")] = (
+        _time.monotonic(),
+        ("in_progress", frozenset()),
+    )
+    assert (
+        trace_exporter.cached_run_is_active("huggingface/transformers", "1:1") is True
+    )
+
+    trace_exporter._cached_run_activity[("huggingface/transformers", "1")] = (
+        _time.monotonic(),
+        ("completed", frozenset()),
+    )
+    assert (
+        trace_exporter.cached_run_is_active("huggingface/transformers", "1:1") is False
+    )
+
+    # An entry older than its TTL is unknown again, not stale-active.
+    trace_exporter._cached_run_activity[("huggingface/transformers", "1")] = (
+        _time.monotonic() - 100_000.0,
+        ("in_progress", frozenset()),
+    )
+    assert (
+        trace_exporter.cached_run_is_active("huggingface/transformers", "1:1") is None
+    )
+    trace_exporter._cached_run_activity.clear()
+
+
 def test_extract_run_info_metrics_skips_github_when_no_commit_sha() -> None:
     def commit_fetcher(repository: str, sha: str) -> str:
         raise AssertionError("should not fetch without a commit sha")

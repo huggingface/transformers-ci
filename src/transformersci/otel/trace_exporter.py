@@ -2356,6 +2356,34 @@ def fetch_github_run_activity(
     return status, frozenset(active_jobs)
 
 
+def cached_run_is_active(repository: str, run_id: str) -> bool | None:
+    """Whether GitHub last said this run was still queued/in progress.
+
+    Reads only what :func:`extract_run_active_metrics` has already fetched this
+    render — it deliberately never calls GitHub itself, so gating a roll-up on
+    run completion adds no API fan-out of its own. Returns None when the answer
+    is simply unknown (no repository, a run outside the active poller's bounded
+    set, an expired entry, a cold cache after a restart); the caller must then
+    fall back to its own heuristic rather than block forever.
+    """
+    if not repository:
+        return None
+    run_db_id, _attempt = split_run_id(run_id)
+    if not run_db_id:
+        return None
+    with _run_activity_cache_lock:
+        cached = _cached_run_activity.get((repository, run_db_id))
+    if cached is None:
+        return None
+    cached_at, value = cached
+    status = value[0]
+    active = status in GITHUB_ACTIVE_STATUSES
+    ttl = active_cache_ttl_seconds() if active else github_cache_ttl_seconds()
+    if ttl <= 0 or (time.monotonic() - cached_at) >= ttl:
+        return None
+    return active
+
+
 def fetch_github_run_activity_cached(
     repository: str, run_db_id: str, run_attempt: str
 ) -> tuple[str, frozenset[str]]:
@@ -3313,21 +3341,35 @@ def settled_runs_complete_extracted(
     window_extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]],
     now: float,
     settle_seconds: float,
+    *,
+    _run_active_lookup: Callable[[str, str], bool | None] | None = None,
 ) -> list[tuple[dict[str, str | int], list[dict[str, str | float]]]]:
     """Return complete per-run extracted rows for runs that are settled.
 
-    For every run with at least one trace in the current window that has not
-    received a new trace for ``settle_seconds``, gather all of its member
-    traces — the in-window ones plus any aged-out ones still cached — so the
-    roll-up reflects the whole run. Aged-out members are resolved from the
-    shaped cache (small per-entry, holds the whole window+) and, failing that,
-    the raw trace cache. Runs still ingesting are skipped this cycle (so only
-    one stable, complete series is ever emitted per run).
+    For every run with at least one trace in the current window that looks
+    finished, gather all of its member traces — the in-window ones plus any
+    aged-out ones still cached — so the roll-up reflects the whole run. Aged-out
+    members are resolved from the shaped cache (small per-entry, holds the whole
+    window+) and, failing that, the raw trace cache. Runs still ingesting are
+    skipped this cycle (so only one stable, complete series is ever emitted per
+    run).
+
+    "Finished" is decided by GitHub where we know the answer, and by trace
+    quiescence otherwise. Quiescence alone is not enough: it only tracks when a
+    *new* job trace joined the run, so a staggered GPU matrix that pauses two
+    minutes between shard arrivals — while the shards already in flight keep
+    filling with test spans — reads as complete. That is how a run froze
+    "112 tests, 112 passed, 0 failed" into Prometheus at minute 16 of a
+    two-hour run whose drill-down table went on to show 41 failures: the gate
+    let the partial through, then skipped the run for the rest of its life
+    because it never stopped ingesting, so nothing ever corrected it.
     """
+    active_lookup = _run_active_lookup or cached_run_is_active
     by_trace_id: dict[
         str, tuple[dict[str, str | int], list[dict[str, str | float]]]
     ] = {}
     active_runs: set[str] = set()
+    repo_by_run: dict[str, str] = {}
     for trace_info, rows in window_extracted:
         trace_id = str(trace_info.get("trace_id", ""))
         run_id = str(trace_info.get("run_id", ""))
@@ -3335,12 +3377,33 @@ def settled_runs_complete_extracted(
             by_trace_id[trace_id] = (trace_info, rows)
         if run_id:
             active_runs.add(run_id)
+            if not repo_by_run.get(run_id):
+                repository = str(trace_info.get("repository", ""))
+                if not repository:
+                    repository = repository_from_pr_url(
+                        str(trace_info.get("pr_url", ""))
+                    )
+                if repository:
+                    repo_by_run[run_id] = repository
+
+    # GitHub is authoritative when it has an answer for us; when it does not
+    # (unknown repo, a run outside the active poller's bounded set, a cold cache
+    # after a restart) we fall through to quiescence rather than withhold the
+    # roll-up forever. Resolved before taking _run_state_lock so the lookup's own
+    # lock is never nested inside it.
+    still_running = {
+        run_id
+        for run_id in active_runs
+        if active_lookup(repo_by_run.get(run_id, ""), run_id) is True
+    }
 
     complete: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] = []
     with _run_state_lock:
         for run_id in active_runs:
             if now - _run_last_growth.get(run_id, now) < settle_seconds:
                 continue  # still ingesting — wait until it looks complete
+            if run_id in still_running:
+                continue  # GitHub says the run is still going — it is not final
             for trace_id in _run_members.get(run_id, set()):
                 entry = by_trace_id.get(trace_id)
                 if entry is not None:
