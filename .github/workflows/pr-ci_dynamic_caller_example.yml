@@ -409,51 +409,45 @@ jobs:
           uv pip install -e ".[quality]" -q
 
   # ===========================================================================
+  # Quality gate — the single place deciding whether a failing quality run stops
+  # the test matrix. It stops it, as before, unless the PR is labelled
+  # `New model`: there, a few structural lint findings would otherwise cost the
+  # author every test result on a large contribution.
+  # ===========================================================================
+  quality_gate:
+    name: "Quality gate"
+    runs-on: ubuntu-22.04
+    needs: [check_code_quality]
+    # Runs even when check_code_quality failed — that is the case it exists to judge.
+    if: always()
+    steps:
+      - name: Decide whether the test matrix may run
+        env:
+          # Through env rather than interpolated into the script, to keep the
+          # expression out of the shell. Same pattern as `ci_passed` below.
+          QUALITY_RESULT: ${{ needs.check_code_quality.result }}
+          NEW_MODEL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'New model') }}
+        run: |
+          echo "check_code_quality: $QUALITY_RESULT"
+          echo "New model label:    $NEW_MODEL"
+          if [ "$QUALITY_RESULT" = "success" ] || [ "$NEW_MODEL" = "true" ]; then
+            echo "Test matrix may run."
+            exit 0
+          fi
+          echo "Quality failed and the PR is not labelled 'New model' — the test matrix will be skipped."
+          exit 1
+
+  # ===========================================================================
   # Stage 2 — Test jobs
   # One `uses:` block per CircleCIJob instance.
   # Each block is a 1:1 mapping of CircleCIJob constructor arguments.
-  #
-  # Why each `if:` starts with `always()`
-  # ------------------------------------
-  # These jobs keep `check_code_quality` in `needs` so it still runs first and is
-  # still required to merge (via `ci_passed`), but a failure there no longer costs
-  # the author their test results when the PR is labelled `New model`. Without
-  # `always()` GitHub skips a job whose `needs` failed, whatever the `if` says, so
-  # the guard has to be written this way rather than by dropping the dependency.
-  #
-  # The motivating case: a new-model PR fails `check_code_quality` on a handful of
-  # structural lint findings -- a `_no_split_modules` entry, three missing
-  # `@auto_docstring` decorators -- and all 14 test jobs are skipped, so a 40-file
-  # model contribution gets zero test signal. CircleCI never behaved this way: it
-  # had no `requires` between the quality and test workflows at all, and the
-  # dependency arrived with the translation to Actions.
-  #
-  # Only collaborators can set the label
-  # ------------------------------------
-  # Applying a label needs triage permission or above on the repository, which
-  # GitHub enforces on the API and the UI; a fork-based contributor cannot label
-  # their own PR. There is deliberately no runtime check of who applied it: on a
-  # fork PR the GITHUB_TOKEN is read-only and cannot read collaborator
-  # permissions, so such a check would fail exactly where the relaxation is most
-  # needed. The label also grants nothing beyond test scheduling -- these jobs
-  # already build and run the PR's code on every push -- so it is not a privilege
-  # boundary.
-  #
-  # Note for reviewers: labels do not retrigger CI. Labelling after a run has
-  # started does not unblock jobs that were already skipped; the label has to be
-  # present when the run starts, or the run has to be re-run.
+  # They depend on `quality_gate`, not on `check_code_quality` directly.
   # ===========================================================================
 
   # Origin: torch_job in .circleci/create_circleci_config.py
   tests_torch:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_tests_torch == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_tests_torch == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_torch"
@@ -466,14 +460,8 @@ jobs:
 
   # Origin: generate_job in .circleci/create_circleci_config.py
   tests_generate:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_tests_generate == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_tests_generate == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_generate"
@@ -486,14 +474,8 @@ jobs:
 
   # Origin: tokenization_job in .circleci/create_circleci_config.py
   tests_tokenization:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_tests_tokenization == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_tests_tokenization == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_tokenization"
@@ -504,14 +486,8 @@ jobs:
 
   # Origin: processor_job in .circleci/create_circleci_config.py
   tests_processors:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_tests_processors == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_tests_processors == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_processors"
@@ -524,14 +500,8 @@ jobs:
   # NOTE: job_name has no "tests_" prefix; report_name must be set explicitly
   #       → "tests_pipelines_torch" (mirrors --make-reports=tests_{self.name}).
   pipelines_torch:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_pipelines_torch == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_pipelines_torch == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "pipelines_torch"
@@ -545,14 +515,8 @@ jobs:
 
   # Origin: custom_tokenizers_job in .circleci/create_circleci_config.py
   tests_custom_tokenizers:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_tests_custom_tokenizers == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_tests_custom_tokenizers == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:               "tests_custom_tokenizers"
@@ -564,14 +528,8 @@ jobs:
   # Origin: examples_torch_job in .circleci/create_circleci_config.py
   # NOTE: job_name has no "tests_" prefix ("examples" in name).
   examples_torch:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_examples_torch == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_examples_torch == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:           "examples_torch"
@@ -584,14 +542,8 @@ jobs:
 
   # Origin: exotic_models_job in .circleci/create_circleci_config.py
   tests_exotic_models:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_tests_exotic_models == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_tests_exotic_models == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:              "tests_exotic_models"
@@ -603,14 +555,8 @@ jobs:
 
   # Origin: repo_utils_job in .circleci/create_circleci_config.py
   tests_repo_utils:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_tests_repo_utils == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_tests_repo_utils == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:           "tests_repo_utils"
@@ -621,14 +567,8 @@ jobs:
 
   # Origin: non_model_job in .circleci/create_circleci_config.py
   tests_non_model:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_tests_non_model == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_tests_non_model == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_non_model"
@@ -641,14 +581,8 @@ jobs:
 
   # Origin: training_ci_job in .circleci/create_circleci_config.py
   tests_training_ci:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_tests_training_ci == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_tests_training_ci == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "tests_training_ci"
@@ -662,14 +596,8 @@ jobs:
 
   # Origin: tensor_parallel_ci_job in .circleci/create_circleci_config.py
   tests_tensor_parallel_ci:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_tests_tensor_parallel_ci == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_tests_tensor_parallel_ci == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "tests_tensor_parallel_ci"
@@ -684,14 +612,8 @@ jobs:
 
   # Origin: fsdp_ci_job in .circleci/create_circleci_config.py
   tests_fsdp_ci:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_tests_fsdp_ci == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_tests_fsdp_ci == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "tests_fsdp_ci"
@@ -705,14 +627,8 @@ jobs:
 
   # New: PEFT integration tests
   tests_peft_integration:
-    needs: [test-preparation, check_code_quality]
-    if: >-
-      always()
-      && needs.test-preparation.result == 'success'
-      && needs.test-preparation.outputs.run_tests_peft_integration == 'true'
-      && (needs.check_code_quality.result == 'success'
-      || (github.event_name == 'pull_request'
-      && contains(github.event.pull_request.labels.*.name, 'New model')))
+    needs: [test-preparation, quality_gate]
+    if: needs.test-preparation.outputs.run_tests_peft_integration == 'true'
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "tests_peft_integration"
@@ -792,7 +708,8 @@ jobs:
   #     (skipped = the test-list was empty for that job, which is expected and OK).
   #
   # Coverage:
-  #   - test-preparation, check_code_quality, check_repository_consistency  (Stage 1)
+  #   - test-preparation, check_code_quality, check_repository_consistency,
+  #     quality_gate                                                        (Stage 1)
   #   - all 14 conditional test jobs                                         (Stage 2)
   #   - collection                                                            (Stage 3)
   # ===========================================================================
@@ -804,6 +721,7 @@ jobs:
       - test-preparation
       - check_code_quality
       - check_repository_consistency
+      - quality_gate
       # Stage 2 — test jobs (may be skipped when test list is empty; that is OK)
       - tests_torch
       - tests_generate
