@@ -1373,6 +1373,174 @@ def test_extract_run_info_metrics_resolves_commit_message_once_per_run() -> None
     )
 
 
+def test_extract_run_info_metrics_links_the_github_actions_run() -> None:
+    """The Past Runs table links the workflow run itself, not just the commit, so
+    the run id's ":attempt" suffix has to be resolved into a real URL here."""
+
+    def commit_fetcher(repository: str, sha: str) -> str:
+        return "Bump version to 5.0"
+
+    trace = make_trace(
+        trace_id="trace-main",
+        run_id="33143393869:1",
+        job="run_models_gpu",
+        pr="main",
+        commit_sha="cafef00d1234",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_main.py::TestMain::test_one",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    metrics = trace_exporter.extract_run_info_metrics(
+        [trace], _commit_fetcher=commit_fetcher
+    )
+    info_lines = metric_lines(metrics, "pytest_run_info")
+    assert len(info_lines) == 1
+    assert (
+        'run_html_url="https://github.com/huggingface/transformers/actions/runs/'
+        '33143393869/attempts/1"' in info_lines[0]
+    )
+    # Additive only: the commit link the column already had is untouched.
+    assert (
+        'html_url="https://github.com/huggingface/transformers/commit/cafef00d1234"'
+        in info_lines[0]
+    )
+
+
+def test_github_run_html_url_degrades_without_repo_or_attempt() -> None:
+    # No repository (e.g. a trace with neither repository nor a parseable pr_url)
+    # must yield an empty label rather than a link to nowhere.
+    assert trace_exporter.github_run_html_url("", "33143393869:1") == ""
+    # A run id that is not "{db_id}:{attempt}" (older traces key on the trace id).
+    assert trace_exporter.github_run_html_url("huggingface/transformers", "") == ""
+    # Bare run id, no attempt recorded -> the run's own page.
+    assert (
+        trace_exporter.github_run_html_url("huggingface/transformers", "33143393869")
+        == "https://github.com/huggingface/transformers/actions/runs/33143393869"
+    )
+
+
+def _active_trace(*, run_id: str, pr: str, job: str, start_us: int) -> dict:
+    return make_trace(
+        trace_id=f"trace-{run_id}-{job}",
+        run_id=run_id,
+        job=job,
+        pr=pr,
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid=f"tests/test_{job}.py::TestX::test_one",
+                start_time=start_us,
+                duration=1_000_000,
+            )
+        ],
+    )
+
+
+def test_extract_run_active_metrics_covers_branch_runs_not_just_prs() -> None:
+    """A daily/scheduled run has pr="main", not a number. It used to be skipped
+    outright, so its dashboards could never say the run was still in flight — the
+    stat panels showed a partial snapshot with nothing marking it as partial."""
+    now = 2_000.0
+    traces = [
+        _active_trace(
+            run_id="33143393869:1",
+            pr="main",
+            job="run_models_gpu",
+            start_us=int(now * 1_000_000),
+        ),
+        _active_trace(
+            run_id="99999:1",
+            pr="4321",
+            job="tests_torch",
+            start_us=int(now * 1_000_000),
+        ),
+    ]
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        return "in_progress", frozenset({"run_models_gpu", "tests_torch"})
+
+    lines = trace_exporter.extract_run_active_metrics(
+        traces, _activity_fetcher=fetcher, _now=now
+    )
+    active = metric_lines(lines, "pytest_run_active")
+    assert len(active) == 2
+    assert any('pr="main"' in ln and 'run_id="33143393869:1"' in ln for ln in active)
+    assert any('pr="4321"' in ln for ln in active)
+    # The per-job spinner has to reach the branch run's job row too.
+    job_active = metric_lines(lines, "pytest_run_job_active")
+    assert any(
+        'run_id="33143393869:1"' in ln and 'test_job="run_models_gpu"' in ln
+        for ln in job_active
+    )
+
+
+def test_extract_run_active_metrics_keeps_concurrent_branch_runs_apart() -> None:
+    """Several scheduled workflows are in flight on main at once. Keying branch
+    runs by pr would collapse them onto one row and leave all but the newest
+    permanently unspun, so they are keyed per run."""
+    now = 2_000.0
+    traces = [
+        _active_trace(
+            run_id=f"{run}:1",
+            pr="main",
+            job="run_models_gpu",
+            start_us=int(now * 1_000_000),
+        )
+        for run in ("111", "222", "333")
+    ]
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        return "queued", frozenset()
+
+    lines = trace_exporter.extract_run_active_metrics(
+        traces, _activity_fetcher=fetcher, _now=now
+    )
+    active = metric_lines(lines, "pytest_run_active")
+    assert len(active) == 3
+    assert {'run_id="111:1"', 'run_id="222:1"', 'run_id="333:1"'} == {
+        next(part for part in ln.split(",") if part.startswith("run_id="))
+        for ln in active
+    }
+
+
+def test_extract_run_active_metrics_caps_branch_run_lookups(monkeypatch) -> None:
+    """ "main" is not one run, so the branch bucket is capped: only the most
+    recently active few are polled, keeping the GitHub fan-out bounded however
+    busy CI gets. PRs are unaffected — each already contributes exactly one run."""
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_ACTIVE_BRANCH_RUNS", "2")
+    now = 10_000.0
+    # Oldest first, so the cap has to sort rather than take insertion order.
+    traces = [
+        _active_trace(
+            run_id=f"{run}:1",
+            pr="main",
+            job="run_models_gpu",
+            start_us=start,
+        )
+        for run, start in (
+            ("oldest", 1_000_000_000),
+            ("newest", 9_000_000_000),
+            ("middle", 5_000_000_000),
+        )
+    ]
+    polled: list[str] = []
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        polled.append(run_db_id)
+        return "in_progress", frozenset()
+
+    lines = trace_exporter.extract_run_active_metrics(
+        traces, _activity_fetcher=fetcher, _now=now
+    )
+    assert sorted(polled) == ["middle", "newest"]
+    assert len(metric_lines(lines, "pytest_run_active")) == 2
+
+
 def test_extract_run_info_metrics_skips_github_when_no_commit_sha() -> None:
     def commit_fetcher(repository: str, sha: str) -> str:
         raise AssertionError("should not fetch without a commit sha")

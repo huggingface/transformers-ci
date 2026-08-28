@@ -127,6 +127,11 @@ DEFAULT_ACTIVE_LOOKBACK_SECONDS = 6 * 3600.0
 # can't make one render fan out unboundedly; exceeding it can only under-report a
 # running job, never invent one.
 DEFAULT_ACTIVE_JOBS_PAGES = 5
+# Cap on how many *branch* runs (pr is not a number, e.g. "main") get a live
+# status lookup per render. A PR has exactly one run worth polling — its latest —
+# but "main" is not one run: several scheduled workflows can be in flight at
+# once, so we poll the most recently active few instead of every one of them.
+DEFAULT_ACTIVE_BRANCH_RUNS = 5
 DEFAULT_MAIN_DURATION_STORE_MAX_FILES = 25
 DEFAULT_MAIN_DURATION_STORE_MAX_SERIES = 500
 DEFAULT_MAIN_DURATION_STORE_MAX_AGE_SECONDS = 8 * 86400.0
@@ -1666,6 +1671,26 @@ def github_commit_html_url(repository: str, sha: str) -> str:
     return f"https://github.com/{repository}/commit/{quote(sha, safe='')}"
 
 
+def github_run_html_url(repository: str, run_id: str) -> str:
+    """Return the GitHub Actions URL for an exporter run_id ("{db_id}:{attempt}").
+
+    The run id every metric is keyed on is not a URL, and a Grafana data link
+    cannot split the ":attempt" suffix off, so the ready-made link has to be a
+    label. Lets the daily overview's Past Runs table point at the workflow run
+    the way ``html_url`` points at the commit. Returns "" when the repository or
+    the run's database id is missing.
+    """
+    if not repository:
+        return ""
+    run_db_id, run_attempt = split_run_id(run_id)
+    if not run_db_id:
+        return ""
+    base = f"https://github.com/{repository}/actions/runs/{quote(run_db_id, safe='')}"
+    if run_attempt:
+        return f"{base}/attempts/{quote(run_attempt, safe='')}"
+    return base
+
+
 def fetch_github_commit_message(repository: str, sha: str) -> str:
     """Return the first line (subject) of a commit's message from GitHub.
 
@@ -2234,6 +2259,16 @@ def active_lookback_seconds() -> float:
         return DEFAULT_ACTIVE_LOOKBACK_SECONDS
 
 
+def active_branch_runs() -> int:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_ACTIVE_BRANCH_RUNS")
+    if raw is None or raw == "":
+        return DEFAULT_ACTIVE_BRANCH_RUNS
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_ACTIVE_BRANCH_RUNS
+
+
 def active_api_timeout_seconds() -> float:
     raw = os.getenv("PYTEST_TRACE_EXPORTER_ACTIVE_API_TIMEOUT_SECONDS")
     if raw is None or raw == "":
@@ -2359,15 +2394,16 @@ def extract_run_active_metrics(
     | None = None,
     _now: float | None = None,
 ) -> list[str]:
-    """Emit ``pytest_run_active`` (one per PR whose latest run is in flight) and
+    """Emit ``pytest_run_active`` (one per in-flight run) and
     ``pytest_run_job_active`` (one per still-running job) from the GitHub Actions
     API, so the dashboards can show an animated spinner that stops when CI ends.
 
     The signal is deliberately *not* trace-derived: a queued or just-started job
-    may have emitted no spans yet. To keep it cheap we resolve only the latest run
-    per PR, skip runs whose newest span is older than the lookback (certainly
-    finished), and cache aggressively — so steady state is a small, bounded number
-    of API calls regardless of window size."""
+    may have emitted no spans yet. To keep it cheap we resolve one run per PR (its
+    latest) plus the most recently active branch runs, skip runs whose newest span
+    is older than the lookback (certainly finished), and cache aggressively — so
+    steady state is a small, bounded number of API calls regardless of window
+    size."""
     extracted = (
         _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
     )
@@ -2375,38 +2411,58 @@ def extract_run_active_metrics(
     now_seconds = _now if _now is not None else time.time()
     lookback_us = active_lookback_seconds() * 1_000_000
 
-    # The panels key on the *latest* run per PR, so resolve that (and its repo)
-    # here and poll only it. We also collect the set of test_jobs each run has
-    # actually produced traces for, so the per-job spinner can be matched back to
-    # a real row instead of minting a phantom row under GitHub's display name.
-    latest_by_pr: dict[str, dict[str, str | int]] = {}
+    # Resolve which runs are worth a live lookup (and their repo) here. We also
+    # collect the set of test_jobs each run has actually produced traces for, so
+    # the per-job spinner can be matched back to a real row instead of minting a
+    # phantom row under GitHub's display name.
+    # A numeric pr collapses onto its latest run; a branch (pr="main", a release
+    # branch name) is keyed per run, because several scheduled workflows can be
+    # in flight at the same time and collapsing them would leave all but the
+    # newest permanently unspun. Branch runs are capped below so the fan-out of
+    # GitHub calls stays bounded no matter how busy CI is.
+    latest_by_key: dict[tuple[str, str], dict[str, str | int]] = {}
     jobs_by_pr_run: dict[tuple[str, str], set[str]] = {}
     for trace_info, _rows in extracted:
         pr = str(trace_info.get("pr", "none"))
         run_id = str(trace_info.get("run_id", ""))
-        if not pr.isdigit() or not run_id:
+        if not run_id:
             continue
+        poll_key = ("pr", pr) if pr.isdigit() else ("run", run_id)
         test_job = str(trace_info.get("test_job", ""))
         if test_job and test_job != "unknown":
             jobs_by_pr_run.setdefault((pr, run_id), set()).add(test_job)
         latest_start = int(trace_info.get("latest_start_time", 0) or 0)
-        current = latest_by_pr.get(pr)
+        current = latest_by_key.get(poll_key)
         if current is not None and latest_start < int(current["latest_start"]):
             continue
         repository = str(trace_info.get("repository", ""))
         if not repository:
             repository = repository_from_pr_url(str(trace_info.get("pr_url", "")))
-        latest_by_pr[pr] = {
+        latest_by_key[poll_key] = {
             "latest_start": latest_start,
+            "pr": pr,
             "run_id": run_id,
             "repository": repository,
             "service_name": str(trace_info.get("service_name", "unknown")),
             "provider": str(trace_info.get("provider", "unknown")),
         }
 
+    # Keep every PR (already one run each) but only the most recently active
+    # branch runs, so a burst of scheduled workflows cannot fan out unboundedly.
+    branch_keys = sorted(
+        (key for key in latest_by_key if key[0] == "run"),
+        key=lambda key: int(latest_by_key[key]["latest_start"]),
+        reverse=True,
+    )
+    polled_keys = {key for key in latest_by_key if key[0] == "pr"}
+    polled_keys.update(branch_keys[: active_branch_runs()])
+
     run_lines: list[str] = []
     job_lines: list[str] = []
-    for pr, info in sorted(latest_by_pr.items()):
+    for key, info in sorted(latest_by_key.items()):
+        if key not in polled_keys:
+            continue
+        pr = str(info["pr"])
         repository = str(info["repository"])
         if not repository:
             continue
@@ -2459,8 +2515,8 @@ def extract_run_active_metrics(
     lines: list[str] = []
     if run_lines:
         lines.append(
-            "# HELP pytest_run_active 1 while the PR's latest CI run is queued or "
-            "in progress (live, from the GitHub Actions API)."
+            "# HELP pytest_run_active 1 while a CI run is queued or in progress "
+            "(live, from the GitHub Actions API)."
         )
         lines.append("# TYPE pytest_run_active gauge")
         lines.extend(run_lines)
@@ -2547,6 +2603,7 @@ def extract_run_info_metrics(
             "html_url": github_commit_html_url(repository, commit_sha),
             "pr": pr,
             "provider": provider,
+            "run_html_url": github_run_html_url(repository, run_id),
             "run_id": run_id,
             "service_name": service_name,
         }

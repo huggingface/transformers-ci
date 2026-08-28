@@ -577,6 +577,11 @@
                     "title": "View this run",
                     "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${__data.fields.run_id}",
                     "targetBlank": false
+                  },
+                  {
+                    "title": "View on GitHub Actions",
+                    "url": "${__data.fields.run_html_url}",
+                    "targetBlank": true
                   }
                 ]
               },
@@ -735,7 +740,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr, commit_message, commit_sha) (max without (instance) (last_over_time(pytest_run_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
+          "expr": "max by (run_id, pr, commit_message, commit_sha, run_html_url) (max without (instance) (last_over_time(pytest_run_info{run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -798,7 +803,8 @@
               "service_name": true,
               "pr": true,
               "Value #Commit": true,
-              "commit_sha": true
+              "commit_sha": true,
+              "run_html_url": true
             },
             "indexByName": {
               "run_id": 0,

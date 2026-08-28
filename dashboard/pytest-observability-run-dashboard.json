@@ -78,8 +78,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 6,
-        "x": 0,
+        "w": 5,
+        "x": 4,
         "y": 5
       },
       "id": 1,
@@ -140,8 +140,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 6,
-        "x": 6,
+        "w": 5,
+        "x": 9,
         "y": 5
       },
       "id": 2,
@@ -210,8 +210,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 6,
-        "x": 12,
+        "w": 5,
+        "x": 14,
         "y": 5
       },
       "id": 3,
@@ -268,8 +268,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 6,
-        "x": 18,
+        "w": 5,
+        "x": 19,
         "y": 5
       },
       "id": 4,
@@ -572,6 +572,91 @@
               "Value #Fail": "Fail",
               "Value #Wall": "Wall",
               "hardware": "Hardware"
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Whether this workflow run is still queued or in progress, straight from the GitHub Actions API. While it says Running, the counters on this page are a partial snapshot of the run so far \u2014 the exporter publishes the roll-up once and Prometheus keeps showing that value, so a run can read 100% green long before its failures land.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "image"
+            },
+            "inspect": false
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4NiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDg2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PHRleHQgeD0iMjAiIHk9IjEyIiBmb250LWZhbWlseT0iSW50ZXIsSGVsdmV0aWNhLEFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiNmMmNjNjAiPlJ1bm5pbmc8L3RleHQ+PC9zdmc+",
+                  "index": 0
+                },
+                "0": {
+                  "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4NiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDg2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNzNiZjY5IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNNS4yIDguM2wyIDIgMy42LTQuMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNzNiZjY5IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjx0ZXh0IHg9IjIwIiB5PSIxMiIgZm9udC1mYW1pbHk9IkludGVyLEhlbHZldGljYSxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmaWxsPSIjNzNiZjY5Ij5GaW5pc2hlZDwvdGV4dD48L3N2Zz4=",
+                  "index": 1
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 4,
+        "x": 0,
+        "y": 5
+      },
+      "id": 8,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": false
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max (last_over_time(pytest_run_active{run_id=~\"$run_id\"}[5m])) or vector(0)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Active"
+        }
+      ],
+      "title": "Live",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {},
+            "renameByName": {
+              "Value": "Live"
             }
           }
         }
