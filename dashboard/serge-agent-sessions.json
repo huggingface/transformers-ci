@@ -597,27 +597,32 @@
                       "blind_turn_cap": {
                         "text": "blind-turn cap",
                         "color": "orange",
-                        "index": 3
+                        "index": 4
                       },
                       "strict_tool_cap": {
                         "text": "tool-call cap",
                         "color": "orange",
-                        "index": 4
+                        "index": 5
                       },
                       "absolute_ceiling": {
                         "text": "iteration ceiling",
                         "color": "red",
-                        "index": 5
+                        "index": 6
                       },
                       "chunk_input_token_cap": {
                         "text": "chunks skipped (budget)",
                         "color": "red",
-                        "index": 6
+                        "index": 7
                       },
                       "no_llm_turns": {
                         "text": "never ran",
                         "color": "text",
-                        "index": 7
+                        "index": 8
+                      },
+                      "path_revisit_guard": {
+                        "text": "path re-visit guard",
+                        "color": "orange",
+                        "index": 3
                       }
                     }
                   }
