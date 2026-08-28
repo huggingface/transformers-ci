@@ -2449,6 +2449,7 @@ def extract_run_active_metrics(
     # newest permanently unspun. Branch runs are capped below so the fan-out of
     # GitHub calls stays bounded no matter how busy CI is.
     latest_by_key: dict[tuple[str, str], dict[str, str | int]] = {}
+    earliest_start_by_key: dict[tuple[str, str], int] = {}
     jobs_by_pr_run: dict[tuple[str, str], set[str]] = {}
     for trace_info, _rows in extracted:
         pr = str(trace_info.get("pr", "none"))
@@ -2460,6 +2461,15 @@ def extract_run_active_metrics(
         if test_job and test_job != "unknown":
             jobs_by_pr_run.setdefault((pr, run_id), set()).add(test_job)
         latest_start = int(trace_info.get("latest_start_time", 0) or 0)
+        # Earliest span across the run's shards — the same source the (gated)
+        # roll-up derives pytest_run_start_time_seconds from. Tracked per run
+        # rather than per winning trace so the value does not jump around as
+        # different shards take turns being the newest.
+        run_start = int(trace_info.get("start_time", 0) or 0)
+        if run_start:
+            prior = earliest_start_by_key.get(poll_key)
+            if prior is None or run_start < prior:
+                earliest_start_by_key[poll_key] = run_start
         current = latest_by_key.get(poll_key)
         if current is not None and latest_start < int(current["latest_start"]):
             continue
@@ -2468,6 +2478,7 @@ def extract_run_active_metrics(
             repository = repository_from_pr_url(str(trace_info.get("pr_url", "")))
         latest_by_key[poll_key] = {
             "latest_start": latest_start,
+            "ci_event": str(trace_info.get("ci_event", "none")),
             "pr": pr,
             "run_id": run_id,
             "repository": repository,
@@ -2486,6 +2497,7 @@ def extract_run_active_metrics(
     polled_keys.update(branch_keys[: active_branch_runs()])
 
     run_lines: list[str] = []
+    start_lines: list[str] = []
     job_lines: list[str] = []
     for key, info in sorted(latest_by_key.items()):
         if key not in polled_keys:
@@ -2508,12 +2520,24 @@ def extract_run_active_metrics(
         if status not in GITHUB_ACTIVE_STATUSES:
             continue
         base_labels = {
+            # ci_event so a dashboard scoped to one event kind (the daily
+            # overview) can tell an in-flight daily run from an in-flight PR
+            # run. pytest_run_active is the only run-level series an in-flight
+            # run has — everything else waits on the roll-up gate — so without
+            # it there is no way to filter one.
+            "ci_event": str(info["ci_event"]),
             "pr": pr,
             "provider": str(info["provider"]),
             "run_id": run_id,
             "service_name": str(info["service_name"]),
         }
         run_lines.append(f"pytest_run_active{metric_labels(base_labels)} 1")
+        earliest = earliest_start_by_key.get(key, 0)
+        if earliest:
+            start_lines.append(
+                f"pytest_run_active_start_time_seconds{metric_labels(base_labels)} "
+                f"{earliest / 1_000_000:.6f}"
+            )
 
         # Match each running GitHub job back to a real test_job the run has
         # produced traces for. GitHub only exposes the job *display* name, which
@@ -2548,6 +2572,15 @@ def extract_run_active_metrics(
         )
         lines.append("# TYPE pytest_run_active gauge")
         lines.extend(run_lines)
+    if start_lines:
+        lines.append(
+            "# HELP pytest_run_active_start_time_seconds Start time (unix seconds) "
+            "of a run that is still in flight. The gated roll-up's "
+            "pytest_run_start_time_seconds does not exist yet for such a run, so "
+            "run tables have nothing to sort or date an in-flight row by."
+        )
+        lines.append("# TYPE pytest_run_active_start_time_seconds gauge")
+        lines.extend(start_lines)
     if job_lines:
         lines.append(
             "# HELP pytest_run_job_active 1 while a job in the run is queued or in "

@@ -441,6 +441,42 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "Live"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "image"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 46
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PC9zdmc+",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "Started"
             },
             "properties": [
@@ -683,8 +719,21 @@
       "pluginVersion": "12.0.0",
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "editorMode": "code",
-          "expr": "topk(10, max by (run_id, pr, ci_event) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))))) * 1000",
+          "expr": "max by (run_id, pr) (last_over_time(pytest_run_active{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[5m]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Active"
+        },
+        {
+          "editorMode": "code",
+          "expr": "(topk(10, max by (run_id, pr, ci_event) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[90d]))))) or max by (run_id, pr) (last_over_time(pytest_run_active_start_time_seconds{pr=~\"$pr\",run_id!~\"$latest_run_id\"}[5m]))) * 1000",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -777,16 +826,17 @@
               "commit_sha": true
             },
             "indexByName": {
-              "run_id": 0,
-              "ci_event": 1,
-              "commit_message": 2,
-              "Value #Start": 3,
-              "Value #Jobs": 4,
-              "Value #Total": 5,
-              "Value #Failures": 6,
-              "Value #Result": 7,
-              "Value #Duration": 8,
-              "Value #Wall": 9
+              "run_id": 1,
+              "ci_event": 2,
+              "commit_message": 3,
+              "Value #Start": 4,
+              "Value #Jobs": 5,
+              "Value #Total": 6,
+              "Value #Failures": 7,
+              "Value #Result": 8,
+              "Value #Duration": 9,
+              "Value #Wall": 10,
+              "Value #Active": 0
             },
             "renameByName": {
               "commit_message": "Commit",
@@ -797,7 +847,8 @@
               "Value #Result": "Result",
               "Value #Failures": "Failures",
               "Value #Wall": "Wall",
-              "ci_event": "Event"
+              "ci_event": "Event",
+              "Value #Active": "Live"
             }
           }
         },

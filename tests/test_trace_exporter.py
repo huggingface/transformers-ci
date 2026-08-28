@@ -1479,6 +1479,124 @@ def test_extract_run_active_metrics_covers_branch_runs_not_just_prs() -> None:
     )
 
 
+def test_extract_run_active_metrics_labels_the_ci_event() -> None:
+    """The daily overview filters pytest_run_job_active{ci_event="daily"}; the
+    metric never carried that label, so that spinner matched nothing. An
+    in-flight run has no other run-level series either — the roll-up gate holds
+    those back — so without ci_event a dashboard scoped to one event kind cannot
+    tell an in-flight daily run from an in-flight PR run."""
+    now = 2_000.0
+    trace = make_trace(
+        trace_id="trace-daily",
+        run_id="33143393869:1",
+        job="run_models_gpu",
+        pr="main",
+        ci_event="daily",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_a.py::TestX::test_one",
+                start_time=int(now * 1_000_000),
+                duration=1_000_000,
+            )
+        ],
+    )
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        return "in_progress", frozenset({"run_models_gpu"})
+
+    lines = trace_exporter.extract_run_active_metrics(
+        [trace], _activity_fetcher=fetcher, _now=now
+    )
+    run_active = metric_lines(lines, "pytest_run_active")
+    job_active = metric_lines(lines, "pytest_run_job_active")
+    assert len(run_active) == 1 and 'ci_event="daily"' in run_active[0]
+    assert len(job_active) == 1 and 'ci_event="daily"' in job_active[0]
+
+
+def test_extract_run_active_metrics_dates_an_in_flight_run() -> None:
+    """A run table needs something to sort and date an in-flight row by, and the
+    gated pytest_run_start_time_seconds does not exist yet for one. The value is
+    the EARLIEST span across the run's shards, not the winning trace's, so it
+    does not jump as different shards take turns being newest."""
+    now = 9_000.0
+    spans_late = [
+        make_test_span(
+            process_id="pytest-process",
+            nodeid="tests/test_late.py::TestX::test_one",
+            start_time=8_000_000_000,
+            duration=1_000_000,
+        )
+    ]
+    spans_early = [
+        make_test_span(
+            process_id="pytest-process",
+            nodeid="tests/test_early.py::TestX::test_one",
+            start_time=2_000_000_000,
+            duration=1_000_000,
+        )
+    ]
+    traces = [
+        make_trace(
+            trace_id="shard-late",
+            run_id="777:1",
+            job="run_models_gpu",
+            pr="main",
+            ci_event="daily",
+            spans=spans_late,
+        ),
+        make_trace(
+            trace_id="shard-early",
+            run_id="777:1",
+            job="run_models_gpu_2",
+            pr="main",
+            ci_event="daily",
+            spans=spans_early,
+        ),
+    ]
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        return "in_progress", frozenset()
+
+    lines = trace_exporter.extract_run_active_metrics(
+        traces, _activity_fetcher=fetcher, _now=now
+    )
+    starts = metric_lines(lines, "pytest_run_active_start_time_seconds")
+    assert len(starts) == 1, starts
+    assert starts[0].endswith(" 2000.000000"), starts[0]
+    assert 'run_id="777:1"' in starts[0]
+
+
+def test_extract_run_active_metrics_emits_no_start_for_a_finished_run() -> None:
+    """The start series is only for runs still in flight; once GitHub reports the
+    run finished the gated roll-up owns the start time again."""
+    now = 2_000.0
+    trace = make_trace(
+        trace_id="trace-done",
+        run_id="888:1",
+        job="run_models_gpu",
+        pr="main",
+        ci_event="daily",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_a.py::TestX::test_one",
+                start_time=int(now * 1_000_000),
+                duration=1_000_000,
+            )
+        ],
+    )
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        return "completed", frozenset()
+
+    lines = trace_exporter.extract_run_active_metrics(
+        [trace], _activity_fetcher=fetcher, _now=now
+    )
+    assert metric_lines(lines, "pytest_run_active") == []
+    assert metric_lines(lines, "pytest_run_active_start_time_seconds") == []
+
+
 def test_extract_run_active_metrics_keeps_concurrent_branch_runs_apart() -> None:
     """Several scheduled workflows are in flight on main at once. Keying branch
     runs by pr would collapse them onto one row and leave all but the newest
