@@ -1,0 +1,942 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "graphTooltip": 0,
+  "links": [
+    {
+      "targetBlank": false,
+      "title": "Back to Overview",
+      "type": "link",
+      "url": "/d/pytest-observability/overview"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "transparent": true,
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### serge agent sessions\nHow serge's LLM loop actually spends a job. serge's own store keeps only its last **25 jobs** (~2 days) \u2014 these series are the durable copy, so ask for a wide time range. A gap means jobs aged out of serge before a scrape saw them, not that serge was idle."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Sessions",
+      "description": "Finished serge jobs in the selected range.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 3
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(count by (job_id) (max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_info[$__range]))))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Finished on their own terms",
+      "description": "Share of sessions that ended because the model returned an answer while it still had tools and budget, rather than because a guard cut it off. A low number means the patches being published are written by starved final turns.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 4,
+        "y": 3
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "unit": "percent",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 25
+              },
+              {
+                "color": "yellow",
+                "value": 50
+              },
+              {
+                "color": "green",
+                "value": 75
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "100 * (count(count by (job_id) (max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_info{stop_reason=\"answered\"}[$__range])))) or vector(0)) / (count(count by (job_id) (max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_info[$__range])))) > 0)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Median input tokens",
+      "description": "Median cumulative input tokens per session. The per-loop cap is LLM_MAX_INPUT_TOKENS; a session sitting at it is a session that ran out.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 10,
+        "y": 3
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "unit": "short",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "quantile(0.5, max by (job_id) (last_over_time(serge_job_input_tokens[$__range])))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Budget spent re-opening files",
+      "description": "Share of all tool calls that re-opened a path the session had already opened. Each one costs a full turn \u2014 the whole conversation is resent, not just the file \u2014 so this is the cheapest waste to remove.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 15,
+        "y": 3
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "unit": "percent",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 15
+              },
+              {
+                "color": "orange",
+                "value": 30
+              },
+              {
+                "color": "red",
+                "value": 50
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum(max by (job_id) (last_over_time(serge_job_path_revisits[$__range]))) / (sum(max by (job_id) (last_over_time(serge_job_tool_calls[$__range]))) > 0)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "PRs opened",
+      "description": "Sessions that ended with serge writing to GitHub.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 3
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(count by (job_id) (max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_info{kind=\"task\", status=\"published\"}[$__range]))))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "bargauge",
+      "title": "How sessions ended",
+      "description": "`answered` is the model finishing; everything else is a guard. Bars other than `answered` are sessions whose final patch was written with the budget already gone.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "sizing": "auto",
+        "namePlacement": "auto",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count by (stop_reason) (count by (job_id, stop_reason) (last_over_time(serge_job_info[$__range])))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{stop_reason}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "bargauge",
+      "title": "Outcomes",
+      "description": "What the session produced. `no_fix` means it completed but proposed no patch; `error` means it never produced a usable answer.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "color": {
+            "mode": "palette-classic"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "sizing": "auto",
+        "namePlacement": "auto",
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count by (status) (count by (job_id, status) (last_over_time(serge_job_info[$__range])))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "table",
+      "title": "Sessions",
+      "description": "One row per finished serge job. `Stopped by` is the column to read first: `answered` is the only value meaning the model decided it was done \u2014 every other value is a guard cutting the session off and forcing an answer out of whatever budget was left.\n\n`Path re-opens` counts tool calls that opened a file the session had already opened (per path, visits-1). It is not the same as `Verbatim repeats`, which the tool-repeat guard counts: re-reading a different line range of the same file is a re-open but not a verbatim repeat, and it is the re-opens that dominate.\n\nA repo not on the scrape's public allow-list reads as `other` \u2014 the counters are complete, only the name is withheld.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": true
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Finished"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Stopped by"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "answered": {
+                        "text": "answered",
+                        "color": "green",
+                        "index": 0
+                      },
+                      "input_token_cap": {
+                        "text": "input token cap",
+                        "color": "red",
+                        "index": 1
+                      },
+                      "repeat_guard": {
+                        "text": "repeat guard",
+                        "color": "orange",
+                        "index": 2
+                      },
+                      "blind_turn_cap": {
+                        "text": "blind-turn cap",
+                        "color": "orange",
+                        "index": 3
+                      },
+                      "strict_tool_cap": {
+                        "text": "tool-call cap",
+                        "color": "orange",
+                        "index": 4
+                      },
+                      "absolute_ceiling": {
+                        "text": "iteration ceiling",
+                        "color": "red",
+                        "index": 5
+                      },
+                      "chunk_input_token_cap": {
+                        "text": "chunks skipped (budget)",
+                        "color": "red",
+                        "index": 6
+                      },
+                      "no_llm_turns": {
+                        "text": "never ran",
+                        "color": "text",
+                        "index": 7
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Outcome"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "published": {
+                        "text": "published",
+                        "color": "green",
+                        "index": 0
+                      },
+                      "no_fix": {
+                        "text": "no fix",
+                        "color": "yellow",
+                        "index": 1
+                      },
+                      "error": {
+                        "text": "error",
+                        "color": "red",
+                        "index": 2
+                      },
+                      "done": {
+                        "text": "done",
+                        "color": "green",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Input tokens"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "LLM time"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "PR"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open the pull request",
+                    "targetBlank": true,
+                    "url": "https://github.com/${__data.fields.Repo}/pull/${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Finished"
+          }
+        ]
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "Finished",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_finished_timestamp_seconds[$__range]) * on (job_id) group_left(repo, pr, status, stop_reason, verify_verdict, kind, model) max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_info[$__range]))) * 1000"
+        },
+        {
+          "refId": "Rounds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_rounds[$__range]) * on (job_id) group_left(repo, pr, status, stop_reason, verify_verdict, kind, model) max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_info[$__range])))"
+        },
+        {
+          "refId": "Turns",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_turns[$__range]) * on (job_id) group_left(repo, pr, status, stop_reason, verify_verdict, kind, model) max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_info[$__range])))"
+        },
+        {
+          "refId": "Tools",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_tool_calls[$__range]) * on (job_id) group_left(repo, pr, status, stop_reason, verify_verdict, kind, model) max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_info[$__range])))"
+        },
+        {
+          "refId": "Revisits",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_path_revisits[$__range]) * on (job_id) group_left(repo, pr, status, stop_reason, verify_verdict, kind, model) max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_info[$__range])))"
+        },
+        {
+          "refId": "Paths",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_distinct_paths[$__range]) * on (job_id) group_left(repo, pr, status, stop_reason, verify_verdict, kind, model) max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_info[$__range])))"
+        },
+        {
+          "refId": "Repeats",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_repeat_calls[$__range]) * on (job_id) group_left(repo, pr, status, stop_reason, verify_verdict, kind, model) max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_info[$__range])))"
+        },
+        {
+          "refId": "InTokens",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_input_tokens[$__range]) * on (job_id) group_left(repo, pr, status, stop_reason, verify_verdict, kind, model) max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_info[$__range])))"
+        },
+        {
+          "refId": "Seconds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_llm_seconds[$__range]) * on (job_id) group_left(repo, pr, status, stop_reason, verify_verdict, kind, model) max by (job_id, repo, pr, status, stop_reason, verify_verdict, kind, model) (last_over_time(serge_job_info[$__range])))"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "Value #Finished": 0,
+              "repo": 1,
+              "pr": 2,
+              "kind": 3,
+              "status": 4,
+              "stop_reason": 5,
+              "verify_verdict": 6,
+              "Value #Rounds": 7,
+              "Value #Turns": 8,
+              "Value #Tools": 9,
+              "Value #Paths": 10,
+              "Value #Revisits": 11,
+              "Value #Repeats": 12,
+              "Value #InTokens": 13,
+              "Value #Seconds": 14,
+              "model": 15,
+              "job_id": 16
+            },
+            "renameByName": {
+              "Value #Finished": "Finished",
+              "Value #Rounds": "Loops",
+              "Value #Turns": "Turns",
+              "Value #Tools": "Tool calls",
+              "Value #Revisits": "Path re-opens",
+              "Value #Paths": "Files opened",
+              "Value #Repeats": "Verbatim repeats",
+              "Value #InTokens": "Input tokens",
+              "Value #Seconds": "LLM time",
+              "repo": "Repo",
+              "pr": "PR",
+              "kind": "Kind",
+              "status": "Outcome",
+              "stop_reason": "Stopped by",
+              "verify_verdict": "GPU verify",
+              "model": "Model",
+              "job_id": "Job"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "preload": false,
+  "refresh": "",
+  "schemaVersion": 41,
+  "tags": [
+    "serge",
+    "agent",
+    "observability"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Serge Sessions",
+  "uid": "serge-agent-sessions",
+  "version": 1
+}
