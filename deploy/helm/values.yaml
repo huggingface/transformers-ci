@@ -352,6 +352,10 @@ grafana:
       - pytest-test-dashboard.json
       - pytest-test-health-dashboard.json
       - pytest-observability-stack-health.json
+      # serge-agent-sessions.json is deliberately NOT here: it only has data
+      # where sergeScrape below is enabled, and an always-empty dashboard is
+      # worse than an absent one. Add it in the values file that turns the
+      # scrape on.
     # Dashboards provisioned into a separate folder that can be access-restricted.
     # Empty by default (all dashboards public). A private deployment moves a
     # dashboard here AND removes it from `files` above. The folder is auto-created;
@@ -504,6 +508,24 @@ backupStatus:
 # Disabled by default. Enable in private deployment values to constrain chart pods
 # to the cluster/VPC address space and reduce blast radius from public endpoints.
 #------------------------------------------------------------------------------
+# Scrape serge (the PR review / fix bot), which runs as its own release in its
+# own namespace. Its /metrics exposes per-job agent-loop counters — turns, tool
+# calls, tokens, re-opened paths, and which guard ended the session — over a
+# rolling window of the jobs its store still holds. Prometheus is what makes
+# them durable. Off by default: only a cluster running both is expected to have
+# the target.
+sergeScrape:
+  enabled: false
+  target: serge.serge.svc.cluster.local:80
+  # Job counters are written once and never move, so a slow cadence is plenty;
+  # this only has to sample a job before serge prunes it (25 jobs, ~2 days).
+  interval: 60s
+  # Anchored regex of repositories whose name and PR numbers may reach this
+  # Prometheus, and therefore the public Grafana. Everything else keeps its
+  # counters but is reported as `other`. Widen this deliberately — a repo named
+  # here is a repo published.
+  publicRepos: "huggingface/transformers"
+
 networkPolicy:
   enabled: false
   # CIDRs that this release may receive traffic from and connect to. Set these to

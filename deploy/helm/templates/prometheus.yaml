@@ -208,6 +208,77 @@ data:
             regex: ([^:]+)(?::\d+)?;(\d+)
             replacement: $1:$2
 
+{{- if .Values.sergeScrape.enabled }}
+      # serge's own per-job agent-loop metrics. serge is a different release in
+      # a different namespace, and this is the durable side of its numbers: its
+      # /metrics is a rolling window over the 25 jobs its store keeps (~2 days),
+      # so without something scraping them out, no change to serge's agent loop
+      # can be shown to have helped.
+      #
+      # A static Service target, not kubernetes_sd: serge is one Deployment
+      # behind one Service, so discovery would buy only per-pod labels we
+      # discard anyway (see the `instance` pin below) at the cost of granting
+      # this ServiceAccount pod-list in another namespace. The cluster-boundary
+      # NetworkPolicy already permits this: the ClusterIP is inside the
+      # service CIDR in networkPolicy.allowedCIDRs.
+      - job_name: 'serge'
+        metrics_path: /metrics
+        scrape_interval: {{ .Values.sergeScrape.interval }}
+        static_configs:
+          - targets: [{{ .Values.sergeScrape.target | quote }}]
+        relabel_configs:
+          # Same reasoning as trace-exporter: these series describe *jobs*, not
+          # the pod that reported them, so a per-pod instance label would fork
+          # every series on each serge rollout and leave the dead ones lingering
+          # for the full 90d retention.
+          - target_label: instance
+            replacement: serge
+        metric_relabel_configs:
+          # This Prometheus backs a PUBLIC Grafana, and an anonymous viewer can
+          # query any datasource directly through /api/datasources/proxy — so a
+          # restricted folder or a hidden panel is not a boundary; whatever lands
+          # here is published. serge is authorized per repo and can be pointed at
+          # a private one, so the repo identity is collapsed to `other` unless it
+          # is on the allow-list. The counters still arrive, so the aggregate
+          # ("how many sessions ended on a guard") stays complete and honest —
+          # only the name of a repo we have not declared public is dropped.
+          # Same principle as the ingest-side deny rule on vcs.repository.name.
+          #
+          # Every rule below is scoped to serge_job_info by matching __name__.
+          # Only that series carries repo/pr/number; on the value series the
+          # source label is absent, which reads as "not allow-listed" and would
+          # otherwise *add* repo="other" to every counter — a label that forks
+          # the series and breaks the job_id join the table depends on.
+          - source_labels: [repo]
+            regex: {{ .Values.sergeScrape.publicRepos | quote }}
+            action: replace
+            target_label: __serge_public
+            replacement: "yes"
+          - source_labels: [__name__, __serge_public]
+            regex: "serge_job_info;"
+            action: replace
+            target_label: repo
+            replacement: other
+          # A PR number is as identifying as the repo name once you know serge
+          # only reviews one org, so it goes with it. An empty replacement
+          # removes the label outright.
+          - source_labels: [__name__, __serge_public]
+            regex: "serge_job_info;"
+            action: replace
+            target_label: pr
+            replacement: ""
+          - source_labels: [__name__, __serge_public]
+            regex: "serge_job_info;"
+            action: replace
+            target_label: number
+            replacement: ""
+          # metric_relabel_configs does NOT drop __-prefixed labels the way
+          # target relabeling does, so the marker has to go explicitly — else
+          # allow-listed series carry it and non-allow-listed ones do not.
+          - action: labeldrop
+            regex: __serge_public
+{{- end }}
+
       - job_name: 'backup-status-exporter'
         kubernetes_sd_configs:
           - role: pod
