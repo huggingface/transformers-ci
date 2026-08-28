@@ -3092,6 +3092,38 @@ def extract_run_rollup_metrics(
     # practice, so this simply heals the snapshot. The counts come from an
     # in-memory cache populated by persist_run_rows this render — no extra I/O.
     store_counts = _run_store_counts_snapshot()
+
+    # Raising the numbers on the job keys this render happened to see is not
+    # enough: a shard can be missing from the window *entirely* — it aged out, or
+    # the exporter restarted and rebuilt its membership from scratch mid-run —
+    # and then it gets no row at all, so whatever partial sample it last emitted
+    # stands in Prometheus forever. The run store is a PVC-backed union that
+    # survives both, so mint the job keys it knows about and this render does
+    # not. Only for runs already being rolled up: this heals a run's own missing
+    # shards, it never resurrects a run the gate has not released.
+    store_only_jobs: set[tuple[str, str, str, str, str, str]] = set()
+    for run_key, run_aggregate in run_aggregates.items():
+        service_name, provider, pr, run_id = run_key
+        for (test_job, hardware), stored in store_counts.get(run_id, {}).items():
+            job_key = (service_name, provider, pr, run_id, test_job, hardware)
+            if job_key in job_aggregates:
+                continue
+            job_aggregates[job_key] = {
+                "ci_event": run_aggregate.get("ci_event", "none"),
+                "total": int(stored["total"]),
+                "failed": int(stored["failed"]),
+                "total_duration": float(stored["duration"]),
+                # The store keeps no timestamps (see _RUN_STORE_FIELDS), so this
+                # job's own start/end are genuinely unknown. Left at 0, and the
+                # wall metric is skipped below rather than published as a zero.
+                "start_time": 0,
+                "end_time": 0,
+            }
+            job_names = run_aggregate["job_names"]
+            assert isinstance(job_names, set)
+            job_names.add((test_job, hardware))
+            store_only_jobs.add(job_key)
+
     reconciled_jobs: dict[
         tuple[str, str, str, str, str, str], tuple[int, int, float]
     ] = {}
@@ -3207,16 +3239,25 @@ def extract_run_rollup_metrics(
         lines.append(
             f"pytest_run_job_duration_seconds{metric_labels(job_labels)} {job_duration:.6f}"
         )
-        job_start_seconds = int(aggregate["start_time"]) / 1_000_000
-        job_end_seconds = int(aggregate["end_time"]) / 1_000_000
-        wall_seconds = (
-            max(0.0, job_end_seconds - job_start_seconds)
-            if job_start_seconds > 0
-            else 0.0
-        )
-        lines.append(
-            f"pytest_run_job_wall_seconds{metric_labels(job_labels)} {wall_seconds:.6f}"
-        )
+        if (
+            service_name,
+            provider,
+            pr,
+            run_id,
+            test_job,
+            hardware,
+        ) not in store_only_jobs:
+            job_start_seconds = int(aggregate["start_time"]) / 1_000_000
+            job_end_seconds = int(aggregate["end_time"]) / 1_000_000
+            wall_seconds = (
+                max(0.0, job_end_seconds - job_start_seconds)
+                if job_start_seconds > 0
+                else 0.0
+            )
+            lines.append(
+                f"pytest_run_job_wall_seconds{metric_labels(job_labels)} "
+                f"{wall_seconds:.6f}"
+            )
     return lines
 
 

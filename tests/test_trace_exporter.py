@@ -1317,6 +1317,123 @@ def test_fetch_github_commit_message_returns_empty_on_error() -> None:
         )
 
 
+def test_rollup_emits_a_job_only_the_run_store_knows_about() -> None:
+    """A shard can be missing from the render entirely — aged out of the window,
+    or lost when the exporter restarted mid-run and rebuilt its membership from
+    scratch. Reconciling only the keys this render saw leaves such a shard with
+    no row, so its last partial sample stands in Prometheus forever. This is the
+    live case: run 33143393869 finished with 12806 tests and 132 failures on
+    multi-gpu and the same on single-gpu, but only the multi-gpu shards were
+    still in the window, so single-gpu kept a "112 passed, 0 failed" sample
+    written sixteen minutes into a two-hour run."""
+    trace = make_trace(
+        trace_id="trace-multi",
+        run_id="33143393869:1",
+        job="run_models_gpu",
+        pr="main",
+        ci_event="daily",
+        hardware="multi-gpu",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/models/bert/test_modeling_bert.py::T::test_one",
+                start_time=1_000_000,
+                duration=1_000_000,
+                status_code="ERROR",
+            )
+        ],
+    )
+    extracted = trace_exporter._precompute_trace_rows([trace])
+
+    trace_exporter._run_store_counts.clear()
+    trace_exporter._run_store_counts["33143393869:1"] = {
+        ("run_models_gpu", "multi-gpu"): {
+            "total": 12806.0,
+            "failed": 132.0,
+            "duration": 500.0,
+        },
+        # Only the store remembers this one.
+        ("run_models_gpu", "single-gpu"): {
+            "total": 12806.0,
+            "failed": 129.0,
+            "duration": 400.0,
+        },
+    }
+    try:
+        lines = trace_exporter.extract_run_rollup_metrics(_extracted=extracted)
+    finally:
+        trace_exporter._run_store_counts.clear()
+
+    def value(metric: str, hardware: str) -> float:
+        matches = [
+            ln for ln in metric_lines(lines, metric) if f'hardware="{hardware}"' in ln
+        ]
+        assert len(matches) == 1, (metric, hardware, matches)
+        return float(matches[0].rsplit(" ", 1)[1])
+
+    # The shard that was in the window reconciles up to the store, as before.
+    assert value("pytest_run_job_total_tests", "multi-gpu") == 12806
+    assert value("pytest_run_job_failed_tests", "multi-gpu") == 132
+    # The shard that was NOT in the window now gets a row at all.
+    assert value("pytest_run_job_total_tests", "single-gpu") == 12806
+    assert value("pytest_run_job_failed_tests", "single-gpu") == 129
+    assert value("pytest_run_job_passed_tests", "single-gpu") == 12806 - 129
+    # It must also be a member of the run, or the dashboards' joins drop it.
+    member = [
+        ln
+        for ln in metric_lines(lines, "pytest_run_job_member_info")
+        if 'hardware="single-gpu"' in ln
+    ]
+    assert len(member) == 1, member
+    # And the run-level totals must cover both shards, not just the visible one.
+    run_total = metric_lines(lines, "pytest_run_total_tests")
+    run_failed = metric_lines(lines, "pytest_run_failed_tests")
+    assert float(run_total[0].rsplit(" ", 1)[1]) == 12806 * 2
+    assert float(run_failed[0].rsplit(" ", 1)[1]) == 132 + 129
+    assert (
+        float(metric_lines(lines, "pytest_run_job_count")[0].rsplit(" ", 1)[1]) == 1
+    )  # one logical job name, across two hardwares
+
+
+def test_rollup_does_not_invent_wall_time_for_a_store_only_job() -> None:
+    """The store keeps no timestamps, so a store-only shard's wall time is
+    genuinely unknown. Omitting the series leaves whatever was last known in
+    place; publishing a zero would overwrite it with a lie."""
+    trace = make_trace(
+        trace_id="trace-multi",
+        run_id="99:1",
+        job="run_models_gpu",
+        pr="main",
+        ci_event="daily",
+        hardware="multi-gpu",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_a.py::T::test_one",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    extracted = trace_exporter._precompute_trace_rows([trace])
+    trace_exporter._run_store_counts.clear()
+    trace_exporter._run_store_counts["99:1"] = {
+        ("run_models_gpu", "single-gpu"): {
+            "total": 10.0,
+            "failed": 1.0,
+            "duration": 5.0,
+        },
+    }
+    try:
+        lines = trace_exporter.extract_run_rollup_metrics(_extracted=extracted)
+    finally:
+        trace_exporter._run_store_counts.clear()
+
+    walls = metric_lines(lines, "pytest_run_job_wall_seconds")
+    assert all('hardware="single-gpu"' not in ln for ln in walls), walls
+    assert any('hardware="multi-gpu"' in ln for ln in walls), walls
+
+
 def test_extract_run_info_metrics_resolves_commit_message_once_per_run() -> None:
     calls: list[tuple[str, str]] = []
 
