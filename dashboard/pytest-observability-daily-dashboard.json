@@ -54,6 +54,102 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "Daily average failed-test count per scheduled run on main, split by hardware. Each run is first reduced to one failed-test count per hardware, then runs in the day are averaged so busier days do not dominate the trend.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "min",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "avg by (hardware) (sum by (run_id, hardware) (max by (run_id, test_job, hardware) (max_over_time(pytest_run_job_failed_tests{ci_event=\"daily\", pr=\"main\", hardware=~\"gpu|single-gpu|multi-gpu\"}[1d]))))",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{hardware}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Daily run failures per run",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "description": "Per-job breakdown of the most recent run for this PR. Each row is one job; columns count tests by pass/fail status.",
       "fieldConfig": {
         "defaults": {
@@ -251,7 +347,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 8
       },
       "id": 13,
       "links": [
@@ -404,6 +500,42 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "Live"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "image"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 46
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PC9zdmc+",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "Started"
             },
             "properties": [
@@ -481,6 +613,11 @@
                     "title": "View this run",
                     "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${__data.fields.run_id}",
                     "targetBlank": false
+                  },
+                  {
+                    "title": "View on GitHub Actions",
+                    "url": "${__data.fields.run_html_url}",
+                    "targetBlank": true
                   }
                 ]
               },
@@ -587,7 +724,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 12
+        "y": 20
       },
       "id": 5,
       "options": {
@@ -611,8 +748,21 @@
       "pluginVersion": "12.0.0",
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "editorMode": "code",
-          "expr": "topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))) * 1000",
+          "expr": "max by (run_id, pr) (last_over_time(pytest_run_active{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[5m]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Active"
+        },
+        {
+          "editorMode": "code",
+          "expr": "(topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))) or max by (run_id, pr) (last_over_time(pytest_run_active_start_time_seconds{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[5m]))) * 1000",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -639,12 +789,21 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr, commit_message, commit_sha) (max without (instance) (last_over_time(pytest_run_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
+          "expr": "max by (run_id, pr, commit_message, commit_sha) (max without (instance) (last_over_time(pytest_run_info{run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
           "refId": "Commit"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (run_id, pr, run_html_url) (max without (instance) (last_over_time(pytest_run_info{run_html_url!=\"\",run_id!~\"$latest_run_id\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "RunUrl"
         },
         {
           "editorMode": "code",
@@ -702,18 +861,21 @@
               "service_name": true,
               "pr": true,
               "Value #Commit": true,
-              "commit_sha": true
+              "commit_sha": true,
+              "run_html_url": true,
+              "Value #RunUrl": true
             },
             "indexByName": {
-              "run_id": 0,
-              "commit_message": 1,
-              "Value #Start": 2,
-              "Value #Jobs": 3,
-              "Value #Total": 4,
-              "Value #Failures": 5,
-              "Value #Result": 6,
-              "Value #Duration": 7,
-              "Value #Wall": 8
+              "run_id": 1,
+              "commit_message": 2,
+              "Value #Start": 3,
+              "Value #Jobs": 4,
+              "Value #Total": 5,
+              "Value #Failures": 6,
+              "Value #Result": 7,
+              "Value #Duration": 8,
+              "Value #Wall": 9,
+              "Value #Active": 0
             },
             "renameByName": {
               "commit_message": "Commit",
@@ -723,7 +885,8 @@
               "Value #Duration": "Test Time",
               "Value #Result": "Result",
               "Value #Failures": "Failures",
-              "Value #Wall": "Wall"
+              "Value #Wall": "Wall",
+              "Value #Active": "Live"
             }
           }
         },

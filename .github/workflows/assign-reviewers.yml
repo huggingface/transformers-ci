@@ -1,0 +1,72 @@
+name: Assign PR Reviewers
+
+# Reusable workflow. Requests up to two reviewers on a pull request, ranked by how many lines the
+# PR changes in the files they own.
+#
+# Lives in huggingface/transformers-ci and is called from a caller in the reviewed repo (see
+# .github/workflows/assign-reviewers.yml in huggingface/transformers). The resolution logic ships
+# in this same `transformers-ci` package and is invoked via its `assign-reviewers` console script,
+# so this workflow installs the package rather than checking out this repo.
+#
+# The *codeowners file* stays in the repo being reviewed — who owns what is that repo's decision —
+# so the caller's repository is checked out for the script to read it.
+#
+# Call this from `pull_request_target`: the job needs a write token to request reviews, which a
+# `pull_request` run from a fork does not get. The checkout is therefore the PR's BASE, never its
+# head, and nothing from the head is executed. `assign-reviewers` fetches individual files at the
+# head through the API (to see models and `# Reviewers:` tags the PR adds) and only ever parses
+# them as text; it gates every login through the collaborator check before requesting a review.
+on:
+  workflow_call:
+    inputs:
+      codeowners_file:
+        description: "Path to the codeowners file, in the repository being reviewed"
+        type: string
+        default: .github/scripts/codeowners_for_review_action
+      python_version:
+        description: "Python version to run the assignment script with"
+        type: string
+        default: "3.13"
+      transformersci_ref:
+        description: "Ref of huggingface/transformers-ci to install the reviewer tooling from"
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  assign_reviewers:
+    permissions:
+      contents: read
+      pull-requests: write # required to request reviews on the PR
+    runs-on: ubuntu-22.04
+    steps:
+      # The caller's repo, at the PR base. Only the codeowners file and the base copies of the
+      # changed files are read from it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ inputs.python_version || '3.13' }}
+
+      - name: Install reviewer tooling
+        run: |
+          set -euo pipefail
+          if ! echo "$TRANSFORMERSCI_REF" | grep -qE '^[a-zA-Z0-9/_.-]+$'; then
+            echo "::error::Invalid transformersci_ref format" >&2
+            exit 1
+          fi
+          python -m pip install --upgrade pip
+          pip install "transformers-ci[reviewers] @ git+https://github.com/huggingface/transformers-ci@${TRANSFORMERSCI_REF}"
+        env:
+          TRANSFORMERSCI_REF: ${{ inputs.transformersci_ref || 'main' }}
+
+      - name: Request reviewers
+        run: assign-reviewers
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CODEOWNERS_FILE: ${{ inputs.codeowners_file }}

@@ -74,7 +74,13 @@ jobs:
           python-version: "3.10"
 
       - name: Install triage tooling
-        run: pip install "transformers-ci[agentic] @ git+https://github.com/huggingface/transformers-ci@${TRANSFORMERSCI_REF}"
+        run: |
+          set -euo pipefail
+          if ! echo "$TRANSFORMERSCI_REF" | grep -qE '^[a-zA-Z0-9/_.-]+$'; then
+            echo "::error::Invalid transformersci_ref format" >&2
+            exit 1
+          fi
+          pip install "transformers-ci[agentic] @ git+https://github.com/huggingface/transformers-ci@${TRANSFORMERSCI_REF}"
         env:
           TRANSFORMERSCI_REF: ${{ inputs.transformersci_ref || 'main' }}
 
@@ -113,12 +119,17 @@ jobs:
           # after dispatch (first PR at +7.6 min), so the old 300s default gave up before
           # any group resolved. Reconcile stops early once all groups resolve.
           RECONCILE_TIMEOUT: ${{ inputs.reconcile_timeout || vars.ITF_RECONCILE_TIMEOUT || '1200' }}
-          # Cap how many failure groups become Serge tasks per nightly run (the
-          # top-N highest-priority groups; the rest are dropped with a note).
-          # Held low while the reproduce-first loop is being validated in prod;
-          # raise the ITF_MAX_GROUPS repo variable (or restore the script default
-          # of 20) once we trust it. See docs/plans/serge-reproduce-first.md.
-          ITF_MAX_GROUPS: ${{ vars.ITF_MAX_GROUPS || '3' }}
+          # Cap how many failure groups become Serge tasks per nightly run; the
+          # rest are dropped with a note. The slots are spread over failure
+          # CATEGORIES (round-robin, see select_dispatch_targets), so 5 buys five
+          # kinds of failure rather than five expectation updates.
+          # Was 3 while the reproduce-first loop was being validated in prod; the
+          # script default is 20. See docs/plans/serge-reproduce-first.md.
+          ITF_MAX_GROUPS: ${{ vars.ITF_MAX_GROUPS || '5' }}
+          # Base URL of the CI observability Grafana. Each Serge task PR body gets
+          # a per-test dashboard link built here (Serge holds no Grafana config —
+          # see src/transformersci/agentic/pr_evidence.py). Unset = no links.
+          ITF_GRAFANA_URL: ${{ vars.ITF_GRAFANA_URL || 'https://transformers-ci.lor-e.huggingface.cool' }}
           SERGE_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
           GITHUB_TOKEN: ${{ github.token }}
           # Hand the tracking issue to a human and (by default) auto-close the

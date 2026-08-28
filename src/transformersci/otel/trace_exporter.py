@@ -97,6 +97,20 @@ JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 # cap; set to 0 to disable.
 DEFAULT_MEM_SOFT_MB = 560
 DEFAULT_SERVICE_NAME = "pytest-observability-demo"
+# Repository privacy boundary, mirroring the collector's filter/repository_privacy.
+# Comma-separated; emptying the owners disables the filter.
+#
+# Every clone of huggingface/transformers inherits the CI workflow and the OTLP
+# bearer token, so a private clone inside our own org exports its runs into the
+# same Tempo. The dashboard those runs land on is served anonymously, so this
+# exporter must not render them. Repositories
+# outside our org are kept: contributors work on forks, and a fork of a public
+# repo is itself always public on GitHub.
+#
+# Enforced here as well as at the collector because traces stored BEFORE the
+# collector filter existed stay in Tempo for the full block-retention window.
+DEFAULT_INTERNAL_OWNERS = "huggingface"
+DEFAULT_PUBLIC_REPOSITORIES = "huggingface/transformers"
 DEFAULT_CACHE_SECONDS = 10.0
 DEFAULT_REFRESH_COOLDOWN_SECONDS = 60.0
 DEFAULT_REFRESH_SLOW_SECONDS = 30.0
@@ -113,6 +127,11 @@ DEFAULT_ACTIVE_LOOKBACK_SECONDS = 6 * 3600.0
 # can't make one render fan out unboundedly; exceeding it can only under-report a
 # running job, never invent one.
 DEFAULT_ACTIVE_JOBS_PAGES = 5
+# Cap on how many *branch* runs (pr is not a number, e.g. "main") get a live
+# status lookup per render. A PR has exactly one run worth polling — its latest —
+# but "main" is not one run: several scheduled workflows can be in flight at
+# once, so we poll the most recently active few instead of every one of them.
+DEFAULT_ACTIVE_BRANCH_RUNS = 5
 DEFAULT_MAIN_DURATION_STORE_MAX_FILES = 25
 DEFAULT_MAIN_DURATION_STORE_MAX_SERIES = 500
 DEFAULT_MAIN_DURATION_STORE_MAX_AGE_SECONDS = 8 * 86400.0
@@ -166,6 +185,33 @@ DEFAULT_BADGE_PROMETHEUS_LOOKBACK = "90d"
 # merging (abandoned) gets a muted grey so it reads as inert, not active-green.
 BADGE_MERGED_COLOR = "1f6feb"
 BADGE_CLOSED_COLOR = "9f9f9f"
+
+# A PR accumulates two independent CI streams and conflating them is how a badge
+# ends up contradicting the dashboard it links to: regular PR CI (CPU, one run
+# per push) and the GPU runs a maintainer asks for with a `run-slow: <models>`
+# PR comment. The exporter labels the latter ci_event="pr-comment"; everything
+# else -- including runs predating the attribute, which carry no ci_event at all
+# -- is PR CI. Each badge answers for exactly one stream, so the PR body can
+# carry both side by side and each one agrees with the by-PR dashboard, which
+# selects on the same label.
+RUN_SLOW_CI_EVENT = "pr-comment"
+BADGE_EVENT_PR_CI = "pr-ci"
+BADGE_EVENT_RUN_SLOW = "run-slow"
+DEFAULT_BADGE_EVENT = BADGE_EVENT_PR_CI
+BADGE_EVENT_LABELS = {
+    BADGE_EVENT_PR_CI: "CPU CI",
+    BADGE_EVENT_RUN_SLOW: "GPU run-slow",
+}
+# Accepted ?event= spellings. Kept deliberately small: the injector writes the
+# canonical names, the aliases only spare a human hand-editing a URL.
+BADGE_EVENT_ALIASES = {
+    "pr-ci": BADGE_EVENT_PR_CI,
+    "pr_ci": BADGE_EVENT_PR_CI,
+    "cpu": BADGE_EVENT_PR_CI,
+    "run-slow": BADGE_EVENT_RUN_SLOW,
+    "run_slow": BADGE_EVENT_RUN_SLOW,
+    "gpu": BADGE_EVENT_RUN_SLOW,
+}
 DEFAULT_PROMETHEUS_URL = ""
 DEFAULT_PUBLIC_RESPONSE_CACHE_SECONDS = 30.0
 
@@ -578,6 +624,62 @@ def _http_get_json(url: str, timeout: float | None = None) -> object:
         return json.load(response)
 
 
+def _env_list(name: str, default: str) -> tuple[str, ...]:
+    raw = os.getenv(name, default)
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+def internal_owners() -> tuple[str, ...]:
+    """Owners whose repositories are internal unless known to be public."""
+    return _env_list("PYTEST_TRACE_EXPORTER_INTERNAL_OWNERS", DEFAULT_INTERNAL_OWNERS)
+
+
+def public_repositories() -> tuple[str, ...]:
+    """Repositories under an internal owner that are nonetheless public."""
+    return _env_list(
+        "PYTEST_TRACE_EXPORTER_PUBLIC_REPOSITORIES", DEFAULT_PUBLIC_REPOSITORIES
+    )
+
+
+def repository_allowed(repository: str) -> bool:
+    """Whether a trace from ``repository`` may be surfaced on the dashboard.
+
+    Targeted deny: a repository owned by an internal owner is refused unless it
+    is one of the known-public ones; everything else is allowed. Forks live
+    under someone else's owner and a fork of a public repo is itself public, so
+    they pass. An unattributed trace passes too — one we cannot attribute is not
+    one we can attribute to our own org, and local runs legitimately lack the
+    tag.
+    """
+    owners = internal_owners()
+    if not owners or not repository:
+        return True
+    owner = repository.split("/", 1)[0]
+    if owner not in owners:
+        return True
+    return repository in public_repositories()
+
+
+def trace_repository(trace: dict) -> str:
+    """Repository a Jaeger-shaped trace belongs to, or "" if unattributed.
+
+    Reads the resource tag the runner sets from ``GITHUB_REPOSITORY``. Every
+    process in a trace carries the same repository, so the first one found wins.
+    """
+    processes = trace.get("processes")
+    if not isinstance(processes, dict):
+        return ""
+    for process in processes.values():
+        if not isinstance(process, dict):
+            continue
+        for tag in process.get("tags") or []:
+            if isinstance(tag, dict) and tag.get("key") == "vcs.repository.name":
+                value = str(tag.get("value") or "")
+                if value:
+                    return value
+    return ""
+
+
 def search_trace_ids(
     base_url: str,
     service_name: str,
@@ -946,6 +1048,15 @@ def _fetch_trace_with_settled(
         return None, False
 
     trace = tempo_trace_to_jaeger(trace_id, payload)
+    # Enforce the repository boundary on the fetch-by-id path: /failure, /run
+    # and /badge take a trace or run id straight from the query string, and
+    # those endpoints are served on the public domain with no authentication in
+    # front of them. Refusing the trace here means an id guessed or copied out
+    # of a private run renders nothing, exactly as if it did not exist. This is
+    # also the choke point for every search-driven caller, since they all reach
+    # a trace's contents through get_trace.
+    if not repository_allowed(trace_repository(trace)):
+        return None, False
     settled = _trace_is_settled(
         trace_id, trace, now, settle_seconds, _trace_reverify_seconds()
     )
@@ -1199,6 +1310,22 @@ def _fetch_and_shape(
 
 
 def _iter_window_shaped(
+    base_url: str | None = None,
+) -> Iterator[tuple[dict[str, str | int], list[dict[str, str | float]], bool]]:
+    """Yield the window's shaped traces, minus any private internal clone.
+
+    Enforced on the way out rather than in the search selector because the
+    shaped cache outlives any one render: a trace shaped before the filter was
+    configured is served straight from cache without going near Tempo. Checking
+    here means no render can emit an internal repository, whatever the cache
+    happens to hold.
+    """
+    for trace_info, rows, is_new in _iter_window_shaped_all(base_url):
+        if repository_allowed(str(trace_info.get("repository", ""))):
+            yield trace_info, rows, is_new
+
+
+def _iter_window_shaped_all(
     base_url: str | None = None,
 ) -> Iterator[tuple[dict[str, str | int], list[dict[str, str | float]], bool]]:
     """Yield ``(trace_info, rows, is_new)`` for the COMPLETE enumerated window.
@@ -1544,6 +1671,26 @@ def github_commit_html_url(repository: str, sha: str) -> str:
     return f"https://github.com/{repository}/commit/{quote(sha, safe='')}"
 
 
+def github_run_html_url(repository: str, run_id: str) -> str:
+    """Return the GitHub Actions URL for an exporter run_id ("{db_id}:{attempt}").
+
+    The run id every metric is keyed on is not a URL, and a Grafana data link
+    cannot split the ":attempt" suffix off, so the ready-made link has to be a
+    label. Lets the daily overview's Past Runs table point at the workflow run
+    the way ``html_url`` points at the commit. Returns "" when the repository or
+    the run's database id is missing.
+    """
+    if not repository:
+        return ""
+    run_db_id, run_attempt = split_run_id(run_id)
+    if not run_db_id:
+        return ""
+    base = f"https://github.com/{repository}/actions/runs/{quote(run_db_id, safe='')}"
+    if run_attempt:
+        return f"{base}/attempts/{quote(run_attempt, safe='')}"
+    return base
+
+
 def fetch_github_commit_message(repository: str, sha: str) -> str:
     """Return the first line (subject) of a commit's message from GitHub.
 
@@ -1745,29 +1892,51 @@ def extract_trace_rows(
 
         node_parts = split_pytest_nodeid(nodeid)
         exc_type, exc_stacktrace = extract_exception_info(span)
-        rows.append(
-            {
-                "duration_seconds": int(span.get("duration", 0)) / 1_000_000,
-                "exception_type": exc_type,
-                # The capped stacktrace is consumed here for test_line only; no
-                # metric emits it, so it is deliberately not retained in the row
-                # (it would otherwise bloat the kept rows under high failure
-                # volume — the exporter must stay under ~1G at high volume).
-                "pr": process_pr or "none",
-                "provider": process_provider or "unknown",
-                "run_id": process_run_id or trace_id,
-                "service_name": service_name or "unknown",
-                "status_code": span_tags.get("otel.status_code", "UNSET"),
-                "hardware": process_hardware or hardware_from_job(process_job),
-                "test_class": node_parts["test_class"],
-                "test_function": node_parts["test_function"],
-                "test_line": extract_test_line(exc_stacktrace, nodeid),
-                "test_job": process_job or "unknown",
-                "test_module": node_parts["test_module"],
-                "test_nodeid": nodeid,
-                "trace_id": trace_id,
-            }
-        )
+        # Device memory this test left behind for the next test in its process,
+        # stamped by the pytest plugin (see resource_plugin). Only present on
+        # GPU jobs running a plugin new enough to set it, so the key is added
+        # only when the span carries it and every consumer must use .get() —
+        # an absent value is "unknown", NOT zero.
+        row: dict[str, str | float] = {
+            "duration_seconds": (
+                float(span_tags["pytest.worker_duration_seconds"])
+                if "pytest.worker_duration_seconds" in span_tags
+                else int(span.get("duration", 0)) / 1_000_000
+            ),
+            "exception_type": exc_type,
+            # The capped stacktrace is consumed here for test_line only; no
+            # metric emits it, so it is deliberately not retained in the row
+            # (it would otherwise bloat the kept rows under high failure
+            # volume — the exporter must stay under ~1G at high volume).
+            "pr": process_pr or "none",
+            "provider": process_provider or "unknown",
+            "run_id": process_run_id or trace_id,
+            "service_name": service_name or "unknown",
+            "status_code": span_tags.get("otel.status_code", "UNSET"),
+            "hardware": process_hardware or hardware_from_job(process_job),
+            "test_class": node_parts["test_class"],
+            "test_function": node_parts["test_function"],
+            "test_line": extract_test_line(exc_stacktrace, nodeid),
+            "test_job": process_job or "unknown",
+            "test_module": node_parts["test_module"],
+            "test_nodeid": nodeid,
+            "trace_id": trace_id,
+        }
+        for tag, field in (
+            ("pytest.cuda_delta_bytes", "cuda_delta_bytes"),
+            ("pytest.cuda_delta_after_gc_bytes", "cuda_delta_after_gc_bytes"),
+            # Absolute readings, present only on spans from a plugin new enough
+            # to send them. Absent -> the field is simply missing from the row
+            # and no series is emitted, exactly as before they existed.
+            ("pytest.cuda_inherited_bytes", "cuda_inherited_bytes"),
+            ("pytest.cuda_retained_bytes", "cuda_retained_bytes"),
+        ):
+            if tag in span_tags:
+                try:
+                    row[field] = float(span_tags[tag])
+                except (TypeError, ValueError):
+                    pass
+        rows.append(row)
 
     if not process_repository and process_pr_url:
         process_repository = repository_from_pr_url(process_pr_url)
@@ -2090,6 +2259,16 @@ def active_lookback_seconds() -> float:
         return DEFAULT_ACTIVE_LOOKBACK_SECONDS
 
 
+def active_branch_runs() -> int:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_ACTIVE_BRANCH_RUNS")
+    if raw is None or raw == "":
+        return DEFAULT_ACTIVE_BRANCH_RUNS
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return DEFAULT_ACTIVE_BRANCH_RUNS
+
+
 def active_api_timeout_seconds() -> float:
     raw = os.getenv("PYTEST_TRACE_EXPORTER_ACTIVE_API_TIMEOUT_SECONDS")
     if raw is None or raw == "":
@@ -2177,6 +2356,34 @@ def fetch_github_run_activity(
     return status, frozenset(active_jobs)
 
 
+def cached_run_is_active(repository: str, run_id: str) -> bool | None:
+    """Whether GitHub last said this run was still queued/in progress.
+
+    Reads only what :func:`extract_run_active_metrics` has already fetched this
+    render — it deliberately never calls GitHub itself, so gating a roll-up on
+    run completion adds no API fan-out of its own. Returns None when the answer
+    is simply unknown (no repository, a run outside the active poller's bounded
+    set, an expired entry, a cold cache after a restart); the caller must then
+    fall back to its own heuristic rather than block forever.
+    """
+    if not repository:
+        return None
+    run_db_id, _attempt = split_run_id(run_id)
+    if not run_db_id:
+        return None
+    with _run_activity_cache_lock:
+        cached = _cached_run_activity.get((repository, run_db_id))
+    if cached is None:
+        return None
+    cached_at, value = cached
+    status = value[0]
+    active = status in GITHUB_ACTIVE_STATUSES
+    ttl = active_cache_ttl_seconds() if active else github_cache_ttl_seconds()
+    if ttl <= 0 or (time.monotonic() - cached_at) >= ttl:
+        return None
+    return active
+
+
 def fetch_github_run_activity_cached(
     repository: str, run_db_id: str, run_attempt: str
 ) -> tuple[str, frozenset[str]]:
@@ -2215,15 +2422,16 @@ def extract_run_active_metrics(
     | None = None,
     _now: float | None = None,
 ) -> list[str]:
-    """Emit ``pytest_run_active`` (one per PR whose latest run is in flight) and
+    """Emit ``pytest_run_active`` (one per in-flight run) and
     ``pytest_run_job_active`` (one per still-running job) from the GitHub Actions
     API, so the dashboards can show an animated spinner that stops when CI ends.
 
     The signal is deliberately *not* trace-derived: a queued or just-started job
-    may have emitted no spans yet. To keep it cheap we resolve only the latest run
-    per PR, skip runs whose newest span is older than the lookback (certainly
-    finished), and cache aggressively — so steady state is a small, bounded number
-    of API calls regardless of window size."""
+    may have emitted no spans yet. To keep it cheap we resolve one run per PR (its
+    latest) plus the most recently active branch runs, skip runs whose newest span
+    is older than the lookback (certainly finished), and cache aggressively — so
+    steady state is a small, bounded number of API calls regardless of window
+    size."""
     extracted = (
         _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
     )
@@ -2231,38 +2439,70 @@ def extract_run_active_metrics(
     now_seconds = _now if _now is not None else time.time()
     lookback_us = active_lookback_seconds() * 1_000_000
 
-    # The panels key on the *latest* run per PR, so resolve that (and its repo)
-    # here and poll only it. We also collect the set of test_jobs each run has
-    # actually produced traces for, so the per-job spinner can be matched back to
-    # a real row instead of minting a phantom row under GitHub's display name.
-    latest_by_pr: dict[str, dict[str, str | int]] = {}
+    # Resolve which runs are worth a live lookup (and their repo) here. We also
+    # collect the set of test_jobs each run has actually produced traces for, so
+    # the per-job spinner can be matched back to a real row instead of minting a
+    # phantom row under GitHub's display name.
+    # A numeric pr collapses onto its latest run; a branch (pr="main", a release
+    # branch name) is keyed per run, because several scheduled workflows can be
+    # in flight at the same time and collapsing them would leave all but the
+    # newest permanently unspun. Branch runs are capped below so the fan-out of
+    # GitHub calls stays bounded no matter how busy CI is.
+    latest_by_key: dict[tuple[str, str], dict[str, str | int]] = {}
+    earliest_start_by_key: dict[tuple[str, str], int] = {}
     jobs_by_pr_run: dict[tuple[str, str], set[str]] = {}
     for trace_info, _rows in extracted:
         pr = str(trace_info.get("pr", "none"))
         run_id = str(trace_info.get("run_id", ""))
-        if not pr.isdigit() or not run_id:
+        if not run_id:
             continue
+        poll_key = ("pr", pr) if pr.isdigit() else ("run", run_id)
         test_job = str(trace_info.get("test_job", ""))
         if test_job and test_job != "unknown":
             jobs_by_pr_run.setdefault((pr, run_id), set()).add(test_job)
         latest_start = int(trace_info.get("latest_start_time", 0) or 0)
-        current = latest_by_pr.get(pr)
+        # Earliest span across the run's shards — the same source the (gated)
+        # roll-up derives pytest_run_start_time_seconds from. Tracked per run
+        # rather than per winning trace so the value does not jump around as
+        # different shards take turns being the newest.
+        run_start = int(trace_info.get("start_time", 0) or 0)
+        if run_start:
+            prior = earliest_start_by_key.get(poll_key)
+            if prior is None or run_start < prior:
+                earliest_start_by_key[poll_key] = run_start
+        current = latest_by_key.get(poll_key)
         if current is not None and latest_start < int(current["latest_start"]):
             continue
         repository = str(trace_info.get("repository", ""))
         if not repository:
             repository = repository_from_pr_url(str(trace_info.get("pr_url", "")))
-        latest_by_pr[pr] = {
+        latest_by_key[poll_key] = {
             "latest_start": latest_start,
+            "ci_event": str(trace_info.get("ci_event", "none")),
+            "pr": pr,
             "run_id": run_id,
             "repository": repository,
             "service_name": str(trace_info.get("service_name", "unknown")),
             "provider": str(trace_info.get("provider", "unknown")),
         }
 
+    # Keep every PR (already one run each) but only the most recently active
+    # branch runs, so a burst of scheduled workflows cannot fan out unboundedly.
+    branch_keys = sorted(
+        (key for key in latest_by_key if key[0] == "run"),
+        key=lambda key: int(latest_by_key[key]["latest_start"]),
+        reverse=True,
+    )
+    polled_keys = {key for key in latest_by_key if key[0] == "pr"}
+    polled_keys.update(branch_keys[: active_branch_runs()])
+
     run_lines: list[str] = []
+    start_lines: list[str] = []
     job_lines: list[str] = []
-    for pr, info in sorted(latest_by_pr.items()):
+    for key, info in sorted(latest_by_key.items()):
+        if key not in polled_keys:
+            continue
+        pr = str(info["pr"])
         repository = str(info["repository"])
         if not repository:
             continue
@@ -2280,12 +2520,24 @@ def extract_run_active_metrics(
         if status not in GITHUB_ACTIVE_STATUSES:
             continue
         base_labels = {
+            # ci_event so a dashboard scoped to one event kind (the daily
+            # overview) can tell an in-flight daily run from an in-flight PR
+            # run. pytest_run_active is the only run-level series an in-flight
+            # run has — everything else waits on the roll-up gate — so without
+            # it there is no way to filter one.
+            "ci_event": str(info["ci_event"]),
             "pr": pr,
             "provider": str(info["provider"]),
             "run_id": run_id,
             "service_name": str(info["service_name"]),
         }
         run_lines.append(f"pytest_run_active{metric_labels(base_labels)} 1")
+        earliest = earliest_start_by_key.get(key, 0)
+        if earliest:
+            start_lines.append(
+                f"pytest_run_active_start_time_seconds{metric_labels(base_labels)} "
+                f"{earliest / 1_000_000:.6f}"
+            )
 
         # Match each running GitHub job back to a real test_job the run has
         # produced traces for. GitHub only exposes the job *display* name, which
@@ -2315,11 +2567,20 @@ def extract_run_active_metrics(
     lines: list[str] = []
     if run_lines:
         lines.append(
-            "# HELP pytest_run_active 1 while the PR's latest CI run is queued or "
-            "in progress (live, from the GitHub Actions API)."
+            "# HELP pytest_run_active 1 while a CI run is queued or in progress "
+            "(live, from the GitHub Actions API)."
         )
         lines.append("# TYPE pytest_run_active gauge")
         lines.extend(run_lines)
+    if start_lines:
+        lines.append(
+            "# HELP pytest_run_active_start_time_seconds Start time (unix seconds) "
+            "of a run that is still in flight. The gated roll-up's "
+            "pytest_run_start_time_seconds does not exist yet for such a run, so "
+            "run tables have nothing to sort or date an in-flight row by."
+        )
+        lines.append("# TYPE pytest_run_active_start_time_seconds gauge")
+        lines.extend(start_lines)
     if job_lines:
         lines.append(
             "# HELP pytest_run_job_active 1 while a job in the run is queued or in "
@@ -2403,6 +2664,7 @@ def extract_run_info_metrics(
             "html_url": github_commit_html_url(repository, commit_sha),
             "pr": pr,
             "provider": provider,
+            "run_html_url": github_run_html_url(repository, run_id),
             "run_id": run_id,
             "service_name": service_name,
         }
@@ -2439,10 +2701,21 @@ def extract_per_test_duration_metrics(
     lines = [
         "# HELP pytest_test_duration_seconds Duration of the most recent run of each pytest test span (current state; not keyed by run).",
         "# TYPE pytest_test_duration_seconds gauge",
+        "# HELP pytest_test_cuda_delta_bytes Device memory the most recent run of each test left allocated for the next test in its process. Only emitted for tests whose span carries it (GPU jobs).",
+        "# TYPE pytest_test_cuda_delta_bytes gauge",
+        "# HELP pytest_test_cuda_delta_after_gc_bytes Of that retained memory, how much survives a gc.collect(). Near zero means uncollected garbage a tearDown would free; a large value means a live reference no tearDown can free. Only emitted when the pytest gc probe is enabled.",
+        "# TYPE pytest_test_cuda_delta_after_gc_bytes gauge",
+        "# HELP pytest_test_cuda_inherited_bytes Device memory already allocated when the test started, i.e. what earlier tests in its process left it. This is what an OOM turns on: a test asking for a few MiB on a card someone else filled.",
+        "# TYPE pytest_test_cuda_inherited_bytes gauge",
+        "# HELP pytest_test_cuda_retained_bytes Device memory still allocated when the test finished, i.e. what the next test in its process inherits. Absolute, so unlike the delta it is never negative.",
+        "# TYPE pytest_test_cuda_retained_bytes gauge",
     ]
-    # key -> (trace_start_time, duration_seconds). On collision the later run
-    # (higher start time) wins, so the metric reflects the test's latest result.
-    latest: dict[tuple[str, ...], tuple[int, float]] = {}
+    # key -> (trace_start_time, duration_seconds, retained|None, after_gc|None). On
+    # collision the later run (higher start time) wins, so the metric reflects
+    # the test's latest result. Retained memory rides the SAME key on purpose:
+    # per-run labels are what OOM-killed Prometheus (see above), so this metric
+    # must not reintroduce them.
+    latest: dict[tuple[str, ...], tuple[int, float, float | None, float | None]] = {}
     for trace_info, rows in extracted:
         trace_start = int(
             trace_info.get("latest_start_time", 0)
@@ -2461,10 +2734,28 @@ def extract_per_test_duration_metrics(
                 str(row["test_nodeid"]),
             )
             duration = float(row["duration_seconds"])
+            retained = row.get("cuda_delta_bytes")
+            after_gc = row.get("cuda_delta_after_gc_bytes")
+            inherited_abs = row.get("cuda_inherited_bytes")
+            retained_abs = row.get("cuda_retained_bytes")
             existing = latest.get(key)
             if existing is None or trace_start >= existing[0]:
-                latest[key] = (trace_start, duration)
-    for key, (_trace_start, duration) in sorted(latest.items()):
+                latest[key] = (
+                    trace_start,
+                    duration,
+                    float(retained) if retained is not None else None,
+                    float(after_gc) if after_gc is not None else None,
+                    float(inherited_abs) if inherited_abs is not None else None,
+                    float(retained_abs) if retained_abs is not None else None,
+                )
+    for key, (
+        _trace_start,
+        duration,
+        retained,
+        after_gc,
+        inherited_abs,
+        retained_abs,
+    ) in sorted(latest.items()):
         (
             provider,
             service_name,
@@ -2488,6 +2779,22 @@ def extract_per_test_duration_metrics(
         lines.append(
             f"pytest_test_duration_seconds{metric_labels(test_labels)} {duration:.9f}"
         )
+        if retained is not None:
+            lines.append(
+                f"pytest_test_cuda_delta_bytes{metric_labels(test_labels)} {retained:.0f}"
+            )
+        if after_gc is not None:
+            lines.append(
+                f"pytest_test_cuda_delta_after_gc_bytes{metric_labels(test_labels)} {after_gc:.0f}"
+            )
+        if inherited_abs is not None:
+            lines.append(
+                f"pytest_test_cuda_inherited_bytes{metric_labels(test_labels)} {inherited_abs:.0f}"
+            )
+        if retained_abs is not None:
+            lines.append(
+                f"pytest_test_cuda_retained_bytes{metric_labels(test_labels)} {retained_abs:.0f}"
+            )
     return lines
 
 
@@ -2545,7 +2852,10 @@ def extract_main_per_test_duration_metrics(
         node_parts = split_pytest_nodeid(nodeid)
         key = (
             "github_actions",
-            str(row.get("service_name") or os.getenv("PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME)),
+            str(
+                row.get("service_name")
+                or os.getenv("PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME)
+            ),
             "main",
             str(row.get("status_code") or "UNSET"),
             node_parts["test_class"],
@@ -2782,6 +3092,38 @@ def extract_run_rollup_metrics(
     # practice, so this simply heals the snapshot. The counts come from an
     # in-memory cache populated by persist_run_rows this render — no extra I/O.
     store_counts = _run_store_counts_snapshot()
+
+    # Raising the numbers on the job keys this render happened to see is not
+    # enough: a shard can be missing from the window *entirely* — it aged out, or
+    # the exporter restarted and rebuilt its membership from scratch mid-run —
+    # and then it gets no row at all, so whatever partial sample it last emitted
+    # stands in Prometheus forever. The run store is a PVC-backed union that
+    # survives both, so mint the job keys it knows about and this render does
+    # not. Only for runs already being rolled up: this heals a run's own missing
+    # shards, it never resurrects a run the gate has not released.
+    store_only_jobs: set[tuple[str, str, str, str, str, str]] = set()
+    for run_key, run_aggregate in run_aggregates.items():
+        service_name, provider, pr, run_id = run_key
+        for (test_job, hardware), stored in store_counts.get(run_id, {}).items():
+            job_key = (service_name, provider, pr, run_id, test_job, hardware)
+            if job_key in job_aggregates:
+                continue
+            job_aggregates[job_key] = {
+                "ci_event": run_aggregate.get("ci_event", "none"),
+                "total": int(stored["total"]),
+                "failed": int(stored["failed"]),
+                "total_duration": float(stored["duration"]),
+                # The store keeps no timestamps (see _RUN_STORE_FIELDS), so this
+                # job's own start/end are genuinely unknown. Left at 0, and the
+                # wall metric is skipped below rather than published as a zero.
+                "start_time": 0,
+                "end_time": 0,
+            }
+            job_names = run_aggregate["job_names"]
+            assert isinstance(job_names, set)
+            job_names.add((test_job, hardware))
+            store_only_jobs.add(job_key)
+
     reconciled_jobs: dict[
         tuple[str, str, str, str, str, str], tuple[int, int, float]
     ] = {}
@@ -2897,16 +3239,25 @@ def extract_run_rollup_metrics(
         lines.append(
             f"pytest_run_job_duration_seconds{metric_labels(job_labels)} {job_duration:.6f}"
         )
-        job_start_seconds = int(aggregate["start_time"]) / 1_000_000
-        job_end_seconds = int(aggregate["end_time"]) / 1_000_000
-        wall_seconds = (
-            max(0.0, job_end_seconds - job_start_seconds)
-            if job_start_seconds > 0
-            else 0.0
-        )
-        lines.append(
-            f"pytest_run_job_wall_seconds{metric_labels(job_labels)} {wall_seconds:.6f}"
-        )
+        if (
+            service_name,
+            provider,
+            pr,
+            run_id,
+            test_job,
+            hardware,
+        ) not in store_only_jobs:
+            job_start_seconds = int(aggregate["start_time"]) / 1_000_000
+            job_end_seconds = int(aggregate["end_time"]) / 1_000_000
+            wall_seconds = (
+                max(0.0, job_end_seconds - job_start_seconds)
+                if job_start_seconds > 0
+                else 0.0
+            )
+            lines.append(
+                f"pytest_run_job_wall_seconds{metric_labels(job_labels)} "
+                f"{wall_seconds:.6f}"
+            )
     return lines
 
 
@@ -2926,11 +3277,11 @@ def extract_per_run_metrics(
     extracted = (
         _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
     )
-    return extract_per_test_duration_metrics(
-        _extracted=extracted
-    ) + extract_main_per_test_duration_metrics(
-        _extracted=extracted
-    ) + extract_run_rollup_metrics(_extracted=extracted)
+    return (
+        extract_per_test_duration_metrics(_extracted=extracted)
+        + extract_main_per_test_duration_metrics(_extracted=extracted)
+        + extract_run_rollup_metrics(_extracted=extracted)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3064,21 +3415,35 @@ def settled_runs_complete_extracted(
     window_extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]],
     now: float,
     settle_seconds: float,
+    *,
+    _run_active_lookup: Callable[[str, str], bool | None] | None = None,
 ) -> list[tuple[dict[str, str | int], list[dict[str, str | float]]]]:
     """Return complete per-run extracted rows for runs that are settled.
 
-    For every run with at least one trace in the current window that has not
-    received a new trace for ``settle_seconds``, gather all of its member
-    traces — the in-window ones plus any aged-out ones still cached — so the
-    roll-up reflects the whole run. Aged-out members are resolved from the
-    shaped cache (small per-entry, holds the whole window+) and, failing that,
-    the raw trace cache. Runs still ingesting are skipped this cycle (so only
-    one stable, complete series is ever emitted per run).
+    For every run with at least one trace in the current window that looks
+    finished, gather all of its member traces — the in-window ones plus any
+    aged-out ones still cached — so the roll-up reflects the whole run. Aged-out
+    members are resolved from the shaped cache (small per-entry, holds the whole
+    window+) and, failing that, the raw trace cache. Runs still ingesting are
+    skipped this cycle (so only one stable, complete series is ever emitted per
+    run).
+
+    "Finished" is decided by GitHub where we know the answer, and by trace
+    quiescence otherwise. Quiescence alone is not enough: it only tracks when a
+    *new* job trace joined the run, so a staggered GPU matrix that pauses two
+    minutes between shard arrivals — while the shards already in flight keep
+    filling with test spans — reads as complete. That is how a run froze
+    "112 tests, 112 passed, 0 failed" into Prometheus at minute 16 of a
+    two-hour run whose drill-down table went on to show 41 failures: the gate
+    let the partial through, then skipped the run for the rest of its life
+    because it never stopped ingesting, so nothing ever corrected it.
     """
+    active_lookup = _run_active_lookup or cached_run_is_active
     by_trace_id: dict[
         str, tuple[dict[str, str | int], list[dict[str, str | float]]]
     ] = {}
     active_runs: set[str] = set()
+    repo_by_run: dict[str, str] = {}
     for trace_info, rows in window_extracted:
         trace_id = str(trace_info.get("trace_id", ""))
         run_id = str(trace_info.get("run_id", ""))
@@ -3086,12 +3451,33 @@ def settled_runs_complete_extracted(
             by_trace_id[trace_id] = (trace_info, rows)
         if run_id:
             active_runs.add(run_id)
+            if not repo_by_run.get(run_id):
+                repository = str(trace_info.get("repository", ""))
+                if not repository:
+                    repository = repository_from_pr_url(
+                        str(trace_info.get("pr_url", ""))
+                    )
+                if repository:
+                    repo_by_run[run_id] = repository
+
+    # GitHub is authoritative when it has an answer for us; when it does not
+    # (unknown repo, a run outside the active poller's bounded set, a cold cache
+    # after a restart) we fall through to quiescence rather than withhold the
+    # roll-up forever. Resolved before taking _run_state_lock so the lookup's own
+    # lock is never nested inside it.
+    still_running = {
+        run_id
+        for run_id in active_runs
+        if active_lookup(repo_by_run.get(run_id, ""), run_id) is True
+    }
 
     complete: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] = []
     with _run_state_lock:
         for run_id in active_runs:
             if now - _run_last_growth.get(run_id, now) < settle_seconds:
                 continue  # still ingesting — wait until it looks complete
+            if run_id in still_running:
+                continue  # GitHub says the run is still going — it is not final
             for trace_id in _run_members.get(run_id, set()):
                 entry = by_trace_id.get(trace_id)
                 if entry is not None:
@@ -3133,6 +3519,11 @@ def extract_average_metrics(
     for trace_info, rows in extracted:
         trace_start = int(trace_info.get("latest_start_time", 0) or 0)
         trace_id = str(trace_info.get("trace_id", "unknown"))
+        # The CI run the failure belongs to. Needed because a trace is NOT a run:
+        # one `run_models_gpu` run produces ~19 per-model traces, so `trace_id`
+        # alone cannot answer "has this test failed in the last N runs of its
+        # job?" — the question the dashboard's Sticky Failures panels ask.
+        run_id = str(trace_info.get("run_id", "") or "unknown")
         for row in rows:
             key = (
                 str(row["service_name"]),
@@ -3147,6 +3538,7 @@ def extract_average_metrics(
                     "failure_count": 0,
                     "last_failure_start_time": 0,
                     "last_failure_trace_id": "",
+                    "last_failure_run_id": "",
                     "last_failure_exception_type": "",
                     "test_class": str(row["test_class"]),
                     "test_function": str(row["test_function"]),
@@ -3158,6 +3550,7 @@ def extract_average_metrics(
                 if trace_start >= aggregates[key]["last_failure_start_time"]:
                     aggregates[key]["last_failure_start_time"] = trace_start
                     aggregates[key]["last_failure_trace_id"] = trace_id
+                    aggregates[key]["last_failure_run_id"] = run_id
                     aggregates[key]["last_failure_exception_type"] = (
                         str(row.get("exception_type", "")) or "unknown"
                     )
@@ -3179,6 +3572,14 @@ def extract_average_metrics(
             "test_module": str(aggregate["test_module"]),
             "test_nodeid": test_nodeid,
             "trace_id": str(aggregate["last_failure_trace_id"]),
+            # Additive, with a safe default: every existing consumer ignores
+            # unknown labels, and queries that group by the old label set are
+            # unaffected. Series churn on this pointer metric is what makes a
+            # failure history queryable at all — each time the latest failure
+            # moves, a new (trace_id, run_id) series appears and Prometheus keeps
+            # the old one, so `count by (test_nodeid, test_job)` over a window
+            # counts failing RUNS once run_id is present.
+            "run_id": str(aggregate["last_failure_run_id"]) or "unknown",
             # No stacktrace label here — the trace_id pointer is enough for the
             # dashboard to deep-link into the Tempo trace view.
             "exception_type": str(aggregate["last_failure_exception_type"]),
@@ -3200,6 +3601,10 @@ def extract_average_resource_metrics(
         "# TYPE pytest_test_average_rss_delta_bytes gauge",
         "# HELP pytest_test_average_cuda_peak_allocated_bytes Average peak CUDA allocated bytes across recorded test runs.",
         "# TYPE pytest_test_average_cuda_peak_allocated_bytes gauge",
+        "# HELP pytest_test_average_cuda_delta_bytes Average CUDA allocated bytes a test leaves behind for the next test in its process (retained memory).",
+        "# TYPE pytest_test_average_cuda_delta_bytes gauge",
+        "# HELP pytest_test_average_cuda_delta_after_gc_bytes Average CUDA bytes still allocated after a gc.collect() at test end; non-zero means a live reference, not uncollected garbage. Only present when the gc probe is enabled.",
+        "# TYPE pytest_test_average_cuda_delta_after_gc_bytes gauge",
         "# HELP pytest_test_resource_run_count Number of recorded resource samples for a given test.",
         "# TYPE pytest_test_resource_run_count gauge",
     ]
@@ -3218,6 +3623,8 @@ def extract_average_resource_metrics(
                 "rss_delta_bytes": [],
                 "rss_peak_bytes": [],
                 "cuda_peak_allocated_bytes": [],
+                "cuda_delta_bytes": [],
+                "cuda_delta_after_gc_bytes": [],
                 "test_class": str(record.get("test_class", "")),
                 "test_function": str(record.get("test_function", "")),
                 "test_module": str(record.get("test_module", "")),
@@ -3229,6 +3636,10 @@ def extract_average_resource_metrics(
             "rss_delta_bytes",
             "rss_peak_bytes",
             "cuda_peak_allocated_bytes",
+            # Records written before these fields existed simply have no value
+            # here, so the aggregate stays empty and no series is emitted.
+            "cuda_delta_bytes",
+            "cuda_delta_after_gc_bytes",
         ):
             value = record.get(metric_name)
             metric_values = aggregate[metric_name]
@@ -3260,6 +3671,11 @@ def extract_average_resource_metrics(
             (
                 "cuda_peak_allocated_bytes",
                 "pytest_test_average_cuda_peak_allocated_bytes",
+            ),
+            ("cuda_delta_bytes", "pytest_test_average_cuda_delta_bytes"),
+            (
+                "cuda_delta_after_gc_bytes",
+                "pytest_test_average_cuda_delta_after_gc_bytes",
             ),
         ):
             metric_values = aggregate[metric_name]
@@ -3707,7 +4123,7 @@ def _iter_metric_samples(
 
 
 def _latest_pr_run_summary_from_metrics(
-    pr: str, text: str
+    pr: str, text: str, event: str = DEFAULT_BADGE_EVENT
 ) -> dict[str, str | float | int | None] | None:
     runs: dict[tuple[str, str, str, str], dict[str, str | float | int | None]] = {}
     metric_to_field = {
@@ -3730,6 +4146,8 @@ def _latest_pr_run_summary_from_metrics(
             continue
         labels = _parse_metric_labels(match.group(2) or "")
         if labels.get("pr") != pr:
+            continue
+        if not _badge_event_matches(event, labels.get("ci_event", "none")):
             continue
         try:
             value = float(match.group(3))
@@ -3766,10 +4184,10 @@ def _latest_pr_run_summary_from_metrics(
 
 
 def _latest_pr_run_summary(
-    pr: str, source: str | None = None
+    pr: str, source: str | None = None, event: str = DEFAULT_BADGE_EVENT
 ) -> dict[str, str | float | int | None] | None:
     return _latest_pr_run_summary_from_metrics(
-        pr, source if source is not None else render_metrics()
+        pr, source if source is not None else render_metrics(), event
     )
 
 
@@ -3800,6 +4218,28 @@ def _badge_fill(color: str) -> str:
     if re.fullmatch(r"[0-9a-fA-F]{3}|[0-9a-fA-F]{6}", color):
         return f"#{color}"
     return color
+
+
+def normalize_badge_event(raw: str) -> str | None:
+    """Map a ``?event=`` value onto a stream name, or ``None`` if unrecognized.
+
+    An *absent* value selects PR CI rather than "whichever stream ran last".
+    That is what the by-PR dashboard shows, so a legacy ``/badge/pr?pr=N`` URL
+    still sitting in an old PR body agrees with the dashboard it links to
+    instead of flipping to a run-slow run the dashboard would then explain with
+    a different set of numbers.
+    """
+    value = raw.strip().lower()
+    if not value:
+        return DEFAULT_BADGE_EVENT
+    return BADGE_EVENT_ALIASES.get(value)
+
+
+def _badge_event_matches(event: str, ci_event: str) -> bool:
+    """Does a run's ``ci_event`` label belong to ``event``'s stream?"""
+    if event == BADGE_EVENT_RUN_SLOW:
+        return ci_event == RUN_SLOW_CI_EVENT
+    return ci_event != RUN_SLOW_CI_EVENT
 
 
 def _pr_state_for_badge(pr: str) -> str | None:
@@ -3860,10 +4300,13 @@ def _badge_prometheus_lookback() -> str:
 
 
 _pr_summary_cache_lock = threading.Lock()
-# pr -> (expiry_monotonic, summary-or-None). None (a genuinely-unknown PR) is
-# cached too, so a miss doesn't re-search Tempo on every single badge hit.
+# (pr, event) -> (expiry_monotonic, summary-or-None). None (a genuinely-unknown
+# PR, or a PR nobody has run run-slow on) is cached too, so a miss doesn't
+# re-search Tempo on every single badge hit. The event is part of the key: the
+# two streams have independent answers, and "no run-slow run" is the common case
+# we most want to serve from cache.
 _pr_summary_cache: dict[
-    str, tuple[float, dict[str, str | float | int | None] | None]
+    tuple[str, str], tuple[float, dict[str, str | float | int | None] | None]
 ] = {}
 _public_response_cache_lock = threading.Lock()
 _public_response_cache: "OrderedDict[str, tuple[float, bytes]]" = OrderedDict()
@@ -3896,7 +4339,7 @@ def _public_response_cache_put(key: str, payload: bytes) -> None:
 
 
 def _pr_run_summary_from_prometheus(
-    pr: str,
+    pr: str, event: str = DEFAULT_BADGE_EVENT
 ) -> dict[str, str | float | int | None] | None:
     """Read a PR's latest run from Prometheus rollups.
 
@@ -3920,9 +4363,17 @@ def _pr_run_summary_from_prometheus(
         "pytest_run_job_total_tests|"
         "pytest_run_job_failed_tests"
     )
+    # `ci_event!="pr-comment"` also matches series carrying no ci_event label at
+    # all, which is what we want: runs from before the attribute existed are PR
+    # CI. This mirrors the by-PR dashboard's own selector.
+    ci_event_matcher = (
+        f'ci_event="{RUN_SLOW_CI_EVENT}"'
+        if event == BADGE_EVENT_RUN_SLOW
+        else f'ci_event!="{RUN_SLOW_CI_EVENT}"'
+    )
     query = (
-        f'last_over_time({{__name__=~"{metric_pattern}",pr="{pr}"}}'
-        f"[{_badge_prometheus_lookback()}])"
+        f'last_over_time({{__name__=~"{metric_pattern}",{ci_event_matcher},'
+        f'pr="{pr}"}}[{_badge_prometheus_lookback()}])'
     )
     url = f"{base_url}/api/v1/query?{urlencode({'query': query})}"
     try:
@@ -3940,7 +4391,7 @@ def _pr_run_summary_from_prometheus(
 
     lines: list[str] = []
     job_values: dict[
-        tuple[tuple[str, str, str, str], str], dict[str, float | bool]
+        tuple[tuple[str, str, str, str], str, str], dict[str, float | bool]
     ] = {}
     for item in result:
         if not isinstance(item, dict):
@@ -3977,7 +4428,16 @@ def _pr_run_summary_from_prometheus(
             labels.get("pr", ""),
             labels.get("run_id", ""),
         )
-        job_key = (run_key, test_job)
+        # `hardware` is half of a job's identity: one run_models_gpu run executes
+        # the same test_job on single- *and* multi-GPU, and those are separate
+        # executions with their own totals (which is why the exporter emits the
+        # job rollups keyed by (test_job, hardware), and why the PR dashboard's
+        # Past Runs panel counts and sums the per-hardware series). Keying on
+        # test_job alone collapsed the pair into one entry, so the max() below
+        # reported the worse hardware's failure count against a single
+        # hardware's test count -- 7 failed / 52 tests / 1 job for a run that
+        # really did 8 failed / 104 tests / 2 jobs.
+        job_key = (run_key, test_job, labels.get("hardware", ""))
         aggregate = job_values.setdefault(
             job_key, {"member": False, "total_tests": 0.0, "failed_tests": 0.0}
         )
@@ -3991,7 +4451,11 @@ def _pr_run_summary_from_prometheus(
             aggregate["failed_tests"] = max(
                 float(aggregate["failed_tests"]), metric_value
             )
-    summary = _latest_pr_run_summary(pr, source="\n".join(lines)) if lines else None
+    summary = (
+        _latest_pr_run_summary(pr, source="\n".join(lines), event=event)
+        if lines
+        else None
+    )
     if summary is None:
         return None
 
@@ -4003,7 +4467,7 @@ def _pr_run_summary_from_prometheus(
     )
     matching_jobs = [
         aggregate
-        for (run_key, _), aggregate in job_values.items()
+        for (run_key, _test_job, _hardware), aggregate in job_values.items()
         if run_key == summary_key
     ]
     if matching_jobs:
@@ -4081,51 +4545,68 @@ def _pr_extracted_rows(
     return extracted
 
 
-def _pr_run_summary_cached(pr: str) -> dict[str, str | float | int | None] | None:
-    """Latest-run summary for a PR: payload, Prometheus, then memoized Tempo.
+def _pr_run_summary_cached(
+    pr: str, event: str = DEFAULT_BADGE_EVENT
+) -> dict[str, str | float | int | None] | None:
+    """Latest-run summary for one of a PR's CI streams: payload, Prometheus,
+    then memoized Tempo.
 
     The live payload is the cheap path — a PR that ran inside the render window
     is already there. Otherwise query persisted Prometheus rollups, falling back
     to a per-PR Tempo search when needed. Misses are memoized for
     :func:`_badge_cache_seconds`.
     """
-    summary = _latest_pr_run_summary(pr)
+    summary = _latest_pr_run_summary(pr, event=event)
     if summary is not None:
         return summary
 
+    cache_key = (pr, event)
     now = time.monotonic()
     with _pr_summary_cache_lock:
-        hit = _pr_summary_cache.get(pr)
+        hit = _pr_summary_cache.get(cache_key)
         if hit is not None and hit[0] > now:
             return hit[1]
 
-    summary = _pr_run_summary_from_prometheus(pr)
+    summary = _pr_run_summary_from_prometheus(pr, event)
     if summary is not None:
         with _pr_summary_cache_lock:
-            _pr_summary_cache[pr] = (
+            _pr_summary_cache[cache_key] = (
                 time.monotonic() + _badge_cache_seconds(),
                 summary,
             )
         return summary
 
+    # The Tempo search is not stream-scoped: TraceQL would have to test an
+    # attribute that legitimately does not exist on PR CI traces, so we fetch the
+    # PR's traces once and let the roll-up filter by ci_event, exactly as the
+    # payload and Prometheus paths do.
     extracted = _pr_extracted_rows(pr)
     summary = (
         _latest_pr_run_summary(
             pr,
             source="\n".join(extract_run_rollup_metrics(_extracted=extracted)),
+            event=event,
         )
         if extracted
         else None
     )
     with _pr_summary_cache_lock:
-        _pr_summary_cache[pr] = (time.monotonic() + _badge_cache_seconds(), summary)
+        _pr_summary_cache[cache_key] = (
+            time.monotonic() + _badge_cache_seconds(),
+            summary,
+        )
     return summary
 
 
-def render_pr_badge_svg(pr: str) -> bytes:
-    summary = _pr_run_summary_cached(pr)
+def render_pr_badge_svg(pr: str, event: str = DEFAULT_BADGE_EVENT) -> bytes:
+    summary = _pr_run_summary_cached(pr, event)
     if summary is None:
-        message = "no data"
+        # Every PR gets PR CI, so a missing PR-CI summary means the pipeline has
+        # not ingested it (yet) — "no data", a statement about us. A run-slow run
+        # only exists once a maintainer asks for one, so its absence is a fact
+        # about the PR: "not run" makes the badge a usable answer to "has anyone
+        # run the GPU tests on this?" instead of implying a broken exporter.
+        message = "not run" if event == BADGE_EVENT_RUN_SLOW else "no data"
         color = "9f9f9f"
     else:
         failed = int(float(summary.get("failed_tests") or 0))
@@ -4146,7 +4627,9 @@ def render_pr_badge_svg(pr: str) -> bytes:
                 color = BADGE_CLOSED_COLOR
                 message = f"closed / {total} tests / {jobs} jobs"
 
-    label = f"PR {pr} CI"
+    # The badge lives inside the PR body, where the number is already obvious;
+    # spending the label on which stream this is lets both badges sit on one line.
+    label = BADGE_EVENT_LABELS.get(event, BADGE_EVENT_LABELS[DEFAULT_BADGE_EVENT])
     label_width = max(70, 7 * len(label) + 10)
     message_width = max(120, 7 * len(message) + 10)
     width = label_width + message_width
@@ -4174,9 +4657,14 @@ def render_pr_badge_svg(pr: str) -> bytes:
     return svg.encode("utf-8")
 
 
-def render_pr_summary_json(pr: str) -> bytes:
-    summary = _pr_run_summary_cached(pr)
-    payload = {"pr": pr, "available": summary is not None, "latest_run": summary}
+def render_pr_summary_json(pr: str, event: str = DEFAULT_BADGE_EVENT) -> bytes:
+    summary = _pr_run_summary_cached(pr, event)
+    payload = {
+        "pr": pr,
+        "event": event,
+        "available": summary is not None,
+        "latest_run": summary,
+    }
     return json.dumps(payload, sort_keys=True).encode("utf-8") + b"\n"
 
 
@@ -4881,14 +5369,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
 
     def _serve_pr_badge(self, params: dict[str, list[str]]) -> None:
         pr = (params.get("pr") or [""])[0].strip()
-        if not pr.isdigit():
+        event = normalize_badge_event((params.get("event") or [""])[0])
+        if not pr.isdigit() or event is None:
             self._send(400, SVG_CONTENT_TYPE, render_pr_badge_svg("unknown"))
             return
-        cache_key = f"badge:{pr}"
+        cache_key = f"badge:{event}:{pr}"
         payload = _public_response_cache_get(cache_key)
         if payload is None:
             self._request_cache = "miss"
-            payload = render_pr_badge_svg(pr)
+            payload = render_pr_badge_svg(pr, event)
             _public_response_cache_put(cache_key, payload)
         else:
             self._request_cache = "hit"
@@ -4904,11 +5393,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if not pr.isdigit():
             self._send(400, JSON_CONTENT_TYPE, b'{"error":"missing numeric pr"}\n')
             return
-        cache_key = f"summary:{pr}"
+        event = normalize_badge_event((params.get("event") or [""])[0])
+        if event is None:
+            self._send(400, JSON_CONTENT_TYPE, b'{"error":"unknown event"}\n')
+            return
+        cache_key = f"summary:{event}:{pr}"
         payload = _public_response_cache_get(cache_key)
         if payload is None:
             self._request_cache = "miss"
-            payload = render_pr_summary_json(pr)
+            payload = render_pr_summary_json(pr, event)
             _public_response_cache_put(cache_key, payload)
         else:
             self._request_cache = "hit"

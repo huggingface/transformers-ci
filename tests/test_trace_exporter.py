@@ -340,7 +340,58 @@ def test_per_test_duration_dedups_same_test_across_runs() -> None:
     assert lines[0].endswith(" 5.000000000")  # newer run wins
 
 
-def test_main_per_test_duration_is_branch_keyed_without_regressing_pr_cardinality() -> None:
+def test_per_test_duration_uses_worker_duration_when_present() -> None:
+    """pytest.worker_duration_seconds (real worker time) takes precedence over
+    the Jaeger span duration (inflated by xdist queue-wait on the controller)."""
+    process_id = "pytest-process"
+    span = make_test_span(
+        process_id=process_id,
+        nodeid="tests/test_foo.py::T::test_x",
+        start_time=1_000_000,
+        duration=11_594_000,  # 11.594s — inflated controller-side span duration
+    )
+    span["tags"].append(make_tag("pytest.worker_duration_seconds", 0.03))
+    trace = make_trace(
+        trace_id="trace-1", run_id="run-1", job="tests_torch", spans=[span]
+    )
+    lines = metric_lines(
+        trace_exporter.extract_per_test_duration_metrics([trace]),
+        "pytest_test_duration_seconds",
+    )
+    assert len(lines) == 1
+    assert lines[0].endswith(" 0.030000000")  # worker time, not 11.594
+
+
+def test_per_test_duration_falls_back_to_span_duration_when_worker_duration_absent() -> (
+    None
+):
+    """Without pytest.worker_duration_seconds the exporter falls back to
+    the Jaeger span duration (existing behaviour for older traces)."""
+    process_id = "pytest-process"
+    trace = make_trace(
+        trace_id="trace-1",
+        run_id="run-1",
+        job="tests_torch",
+        spans=[
+            make_test_span(
+                process_id=process_id,
+                nodeid="tests/test_foo.py::T::test_x",
+                start_time=1_000_000,
+                duration=2_000_000,  # 2.0s in µs
+            )
+        ],
+    )
+    lines = metric_lines(
+        trace_exporter.extract_per_test_duration_metrics([trace]),
+        "pytest_test_duration_seconds",
+    )
+    assert len(lines) == 1
+    assert lines[0].endswith(" 2.000000000")
+
+
+def test_main_per_test_duration_is_branch_keyed_without_regressing_pr_cardinality() -> (
+    None
+):
     process_id = "pytest-process"
     main = make_trace(
         trace_id="trace-main",
@@ -1266,6 +1317,123 @@ def test_fetch_github_commit_message_returns_empty_on_error() -> None:
         )
 
 
+def test_rollup_emits_a_job_only_the_run_store_knows_about() -> None:
+    """A shard can be missing from the render entirely — aged out of the window,
+    or lost when the exporter restarted mid-run and rebuilt its membership from
+    scratch. Reconciling only the keys this render saw leaves such a shard with
+    no row, so its last partial sample stands in Prometheus forever. This is the
+    live case: run 33143393869 finished with 12806 tests and 132 failures on
+    multi-gpu and the same on single-gpu, but only the multi-gpu shards were
+    still in the window, so single-gpu kept a "112 passed, 0 failed" sample
+    written sixteen minutes into a two-hour run."""
+    trace = make_trace(
+        trace_id="trace-multi",
+        run_id="33143393869:1",
+        job="run_models_gpu",
+        pr="main",
+        ci_event="daily",
+        hardware="multi-gpu",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/models/bert/test_modeling_bert.py::T::test_one",
+                start_time=1_000_000,
+                duration=1_000_000,
+                status_code="ERROR",
+            )
+        ],
+    )
+    extracted = trace_exporter._precompute_trace_rows([trace])
+
+    trace_exporter._run_store_counts.clear()
+    trace_exporter._run_store_counts["33143393869:1"] = {
+        ("run_models_gpu", "multi-gpu"): {
+            "total": 12806.0,
+            "failed": 132.0,
+            "duration": 500.0,
+        },
+        # Only the store remembers this one.
+        ("run_models_gpu", "single-gpu"): {
+            "total": 12806.0,
+            "failed": 129.0,
+            "duration": 400.0,
+        },
+    }
+    try:
+        lines = trace_exporter.extract_run_rollup_metrics(_extracted=extracted)
+    finally:
+        trace_exporter._run_store_counts.clear()
+
+    def value(metric: str, hardware: str) -> float:
+        matches = [
+            ln for ln in metric_lines(lines, metric) if f'hardware="{hardware}"' in ln
+        ]
+        assert len(matches) == 1, (metric, hardware, matches)
+        return float(matches[0].rsplit(" ", 1)[1])
+
+    # The shard that was in the window reconciles up to the store, as before.
+    assert value("pytest_run_job_total_tests", "multi-gpu") == 12806
+    assert value("pytest_run_job_failed_tests", "multi-gpu") == 132
+    # The shard that was NOT in the window now gets a row at all.
+    assert value("pytest_run_job_total_tests", "single-gpu") == 12806
+    assert value("pytest_run_job_failed_tests", "single-gpu") == 129
+    assert value("pytest_run_job_passed_tests", "single-gpu") == 12806 - 129
+    # It must also be a member of the run, or the dashboards' joins drop it.
+    member = [
+        ln
+        for ln in metric_lines(lines, "pytest_run_job_member_info")
+        if 'hardware="single-gpu"' in ln
+    ]
+    assert len(member) == 1, member
+    # And the run-level totals must cover both shards, not just the visible one.
+    run_total = metric_lines(lines, "pytest_run_total_tests")
+    run_failed = metric_lines(lines, "pytest_run_failed_tests")
+    assert float(run_total[0].rsplit(" ", 1)[1]) == 12806 * 2
+    assert float(run_failed[0].rsplit(" ", 1)[1]) == 132 + 129
+    assert (
+        float(metric_lines(lines, "pytest_run_job_count")[0].rsplit(" ", 1)[1]) == 1
+    )  # one logical job name, across two hardwares
+
+
+def test_rollup_does_not_invent_wall_time_for_a_store_only_job() -> None:
+    """The store keeps no timestamps, so a store-only shard's wall time is
+    genuinely unknown. Omitting the series leaves whatever was last known in
+    place; publishing a zero would overwrite it with a lie."""
+    trace = make_trace(
+        trace_id="trace-multi",
+        run_id="99:1",
+        job="run_models_gpu",
+        pr="main",
+        ci_event="daily",
+        hardware="multi-gpu",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_a.py::T::test_one",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    extracted = trace_exporter._precompute_trace_rows([trace])
+    trace_exporter._run_store_counts.clear()
+    trace_exporter._run_store_counts["99:1"] = {
+        ("run_models_gpu", "single-gpu"): {
+            "total": 10.0,
+            "failed": 1.0,
+            "duration": 5.0,
+        },
+    }
+    try:
+        lines = trace_exporter.extract_run_rollup_metrics(_extracted=extracted)
+    finally:
+        trace_exporter._run_store_counts.clear()
+
+    walls = metric_lines(lines, "pytest_run_job_wall_seconds")
+    assert all('hardware="single-gpu"' not in ln for ln in walls), walls
+    assert any('hardware="multi-gpu"' in ln for ln in walls), walls
+
+
 def test_extract_run_info_metrics_resolves_commit_message_once_per_run() -> None:
     calls: list[tuple[str, str]] = []
 
@@ -1320,6 +1488,412 @@ def test_extract_run_info_metrics_resolves_commit_message_once_per_run() -> None
         'html_url="https://github.com/huggingface/transformers/commit/cafef00d1234"'
         in info_lines[0]
     )
+
+
+def test_extract_run_info_metrics_links_the_github_actions_run() -> None:
+    """The Past Runs table links the workflow run itself, not just the commit, so
+    the run id's ":attempt" suffix has to be resolved into a real URL here."""
+
+    def commit_fetcher(repository: str, sha: str) -> str:
+        return "Bump version to 5.0"
+
+    trace = make_trace(
+        trace_id="trace-main",
+        run_id="33143393869:1",
+        job="run_models_gpu",
+        pr="main",
+        commit_sha="cafef00d1234",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_main.py::TestMain::test_one",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    metrics = trace_exporter.extract_run_info_metrics(
+        [trace], _commit_fetcher=commit_fetcher
+    )
+    info_lines = metric_lines(metrics, "pytest_run_info")
+    assert len(info_lines) == 1
+    assert (
+        'run_html_url="https://github.com/huggingface/transformers/actions/runs/'
+        '33143393869/attempts/1"' in info_lines[0]
+    )
+    # Additive only: the commit link the column already had is untouched.
+    assert (
+        'html_url="https://github.com/huggingface/transformers/commit/cafef00d1234"'
+        in info_lines[0]
+    )
+
+
+def test_github_run_html_url_degrades_without_repo_or_attempt() -> None:
+    # No repository (e.g. a trace with neither repository nor a parseable pr_url)
+    # must yield an empty label rather than a link to nowhere.
+    assert trace_exporter.github_run_html_url("", "33143393869:1") == ""
+    # A run id that is not "{db_id}:{attempt}" (older traces key on the trace id).
+    assert trace_exporter.github_run_html_url("huggingface/transformers", "") == ""
+    # Bare run id, no attempt recorded -> the run's own page.
+    assert (
+        trace_exporter.github_run_html_url("huggingface/transformers", "33143393869")
+        == "https://github.com/huggingface/transformers/actions/runs/33143393869"
+    )
+
+
+def _active_trace(*, run_id: str, pr: str, job: str, start_us: int) -> dict:
+    return make_trace(
+        trace_id=f"trace-{run_id}-{job}",
+        run_id=run_id,
+        job=job,
+        pr=pr,
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid=f"tests/test_{job}.py::TestX::test_one",
+                start_time=start_us,
+                duration=1_000_000,
+            )
+        ],
+    )
+
+
+def test_extract_run_active_metrics_covers_branch_runs_not_just_prs() -> None:
+    """A daily/scheduled run has pr="main", not a number. It used to be skipped
+    outright, so its dashboards could never say the run was still in flight — the
+    stat panels showed a partial snapshot with nothing marking it as partial."""
+    now = 2_000.0
+    traces = [
+        _active_trace(
+            run_id="33143393869:1",
+            pr="main",
+            job="run_models_gpu",
+            start_us=int(now * 1_000_000),
+        ),
+        _active_trace(
+            run_id="99999:1",
+            pr="4321",
+            job="tests_torch",
+            start_us=int(now * 1_000_000),
+        ),
+    ]
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        return "in_progress", frozenset({"run_models_gpu", "tests_torch"})
+
+    lines = trace_exporter.extract_run_active_metrics(
+        traces, _activity_fetcher=fetcher, _now=now
+    )
+    active = metric_lines(lines, "pytest_run_active")
+    assert len(active) == 2
+    assert any('pr="main"' in ln and 'run_id="33143393869:1"' in ln for ln in active)
+    assert any('pr="4321"' in ln for ln in active)
+    # The per-job spinner has to reach the branch run's job row too.
+    job_active = metric_lines(lines, "pytest_run_job_active")
+    assert any(
+        'run_id="33143393869:1"' in ln and 'test_job="run_models_gpu"' in ln
+        for ln in job_active
+    )
+
+
+def test_extract_run_active_metrics_labels_the_ci_event() -> None:
+    """The daily overview filters pytest_run_job_active{ci_event="daily"}; the
+    metric never carried that label, so that spinner matched nothing. An
+    in-flight run has no other run-level series either — the roll-up gate holds
+    those back — so without ci_event a dashboard scoped to one event kind cannot
+    tell an in-flight daily run from an in-flight PR run."""
+    now = 2_000.0
+    trace = make_trace(
+        trace_id="trace-daily",
+        run_id="33143393869:1",
+        job="run_models_gpu",
+        pr="main",
+        ci_event="daily",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_a.py::TestX::test_one",
+                start_time=int(now * 1_000_000),
+                duration=1_000_000,
+            )
+        ],
+    )
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        return "in_progress", frozenset({"run_models_gpu"})
+
+    lines = trace_exporter.extract_run_active_metrics(
+        [trace], _activity_fetcher=fetcher, _now=now
+    )
+    run_active = metric_lines(lines, "pytest_run_active")
+    job_active = metric_lines(lines, "pytest_run_job_active")
+    assert len(run_active) == 1 and 'ci_event="daily"' in run_active[0]
+    assert len(job_active) == 1 and 'ci_event="daily"' in job_active[0]
+
+
+def test_extract_run_active_metrics_dates_an_in_flight_run() -> None:
+    """A run table needs something to sort and date an in-flight row by, and the
+    gated pytest_run_start_time_seconds does not exist yet for one. The value is
+    the EARLIEST span across the run's shards, not the winning trace's, so it
+    does not jump as different shards take turns being newest."""
+    now = 9_000.0
+    spans_late = [
+        make_test_span(
+            process_id="pytest-process",
+            nodeid="tests/test_late.py::TestX::test_one",
+            start_time=8_000_000_000,
+            duration=1_000_000,
+        )
+    ]
+    spans_early = [
+        make_test_span(
+            process_id="pytest-process",
+            nodeid="tests/test_early.py::TestX::test_one",
+            start_time=2_000_000_000,
+            duration=1_000_000,
+        )
+    ]
+    traces = [
+        make_trace(
+            trace_id="shard-late",
+            run_id="777:1",
+            job="run_models_gpu",
+            pr="main",
+            ci_event="daily",
+            spans=spans_late,
+        ),
+        make_trace(
+            trace_id="shard-early",
+            run_id="777:1",
+            job="run_models_gpu_2",
+            pr="main",
+            ci_event="daily",
+            spans=spans_early,
+        ),
+    ]
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        return "in_progress", frozenset()
+
+    lines = trace_exporter.extract_run_active_metrics(
+        traces, _activity_fetcher=fetcher, _now=now
+    )
+    starts = metric_lines(lines, "pytest_run_active_start_time_seconds")
+    assert len(starts) == 1, starts
+    assert starts[0].endswith(" 2000.000000"), starts[0]
+    assert 'run_id="777:1"' in starts[0]
+
+
+def test_extract_run_active_metrics_emits_no_start_for_a_finished_run() -> None:
+    """The start series is only for runs still in flight; once GitHub reports the
+    run finished the gated roll-up owns the start time again."""
+    now = 2_000.0
+    trace = make_trace(
+        trace_id="trace-done",
+        run_id="888:1",
+        job="run_models_gpu",
+        pr="main",
+        ci_event="daily",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_a.py::TestX::test_one",
+                start_time=int(now * 1_000_000),
+                duration=1_000_000,
+            )
+        ],
+    )
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        return "completed", frozenset()
+
+    lines = trace_exporter.extract_run_active_metrics(
+        [trace], _activity_fetcher=fetcher, _now=now
+    )
+    assert metric_lines(lines, "pytest_run_active") == []
+    assert metric_lines(lines, "pytest_run_active_start_time_seconds") == []
+
+
+def test_extract_run_active_metrics_keeps_concurrent_branch_runs_apart() -> None:
+    """Several scheduled workflows are in flight on main at once. Keying branch
+    runs by pr would collapse them onto one row and leave all but the newest
+    permanently unspun, so they are keyed per run."""
+    now = 2_000.0
+    traces = [
+        _active_trace(
+            run_id=f"{run}:1",
+            pr="main",
+            job="run_models_gpu",
+            start_us=int(now * 1_000_000),
+        )
+        for run in ("111", "222", "333")
+    ]
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        return "queued", frozenset()
+
+    lines = trace_exporter.extract_run_active_metrics(
+        traces, _activity_fetcher=fetcher, _now=now
+    )
+    active = metric_lines(lines, "pytest_run_active")
+    assert len(active) == 3
+    assert {'run_id="111:1"', 'run_id="222:1"', 'run_id="333:1"'} == {
+        next(part for part in ln.split(",") if part.startswith("run_id="))
+        for ln in active
+    }
+
+
+def test_extract_run_active_metrics_caps_branch_run_lookups(monkeypatch) -> None:
+    """ "main" is not one run, so the branch bucket is capped: only the most
+    recently active few are polled, keeping the GitHub fan-out bounded however
+    busy CI gets. PRs are unaffected — each already contributes exactly one run."""
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_ACTIVE_BRANCH_RUNS", "2")
+    now = 10_000.0
+    # Oldest first, so the cap has to sort rather than take insertion order.
+    traces = [
+        _active_trace(
+            run_id=f"{run}:1",
+            pr="main",
+            job="run_models_gpu",
+            start_us=start,
+        )
+        for run, start in (
+            ("oldest", 1_000_000_000),
+            ("newest", 9_000_000_000),
+            ("middle", 5_000_000_000),
+        )
+    ]
+    polled: list[str] = []
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        polled.append(run_db_id)
+        return "in_progress", frozenset()
+
+    lines = trace_exporter.extract_run_active_metrics(
+        traces, _activity_fetcher=fetcher, _now=now
+    )
+    assert sorted(polled) == ["middle", "newest"]
+    assert len(metric_lines(lines, "pytest_run_active")) == 2
+
+
+def _settle_trace(*, run_id: str, trace_id: str, job: str) -> dict:
+    return make_trace(
+        trace_id=trace_id,
+        run_id=run_id,
+        job=job,
+        pr="main",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid=f"tests/test_{job}.py::TestX::test_one",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+
+
+def _settle_setup(run_id: str = "33143393869:1"):
+    """One run, one shard trace, quiet for well over the settle window."""
+    traces = [
+        _settle_trace(run_id=run_id, trace_id="trace-shard-1", job="run_models_gpu")
+    ]
+    extracted = trace_exporter._precompute_trace_rows(traces)
+    trace_exporter._run_members.clear()
+    trace_exporter._run_last_growth.clear()
+    trace_exporter.record_run_membership(extracted, 1_000.0)
+    return extracted
+
+
+def test_settled_runs_waits_while_github_says_the_run_is_going() -> None:
+    """Trace quiescence only tracks when a *new* shard joined the run, so a
+    staggered GPU matrix that pauses between shards looks finished while its
+    already-running shards are still emitting tests. GitHub knows better."""
+    extracted = _settle_setup()
+    # Quiescent by the old rule: no new trace for far longer than the window.
+    complete = trace_exporter.settled_runs_complete_extracted(
+        extracted,
+        1_000.0 + 600.0,
+        120.0,
+        _run_active_lookup=lambda repo, run_id: True,
+    )
+    assert complete == [], "a run GitHub reports as in flight must not roll up"
+
+
+def test_settled_runs_rolls_up_once_github_says_the_run_finished() -> None:
+    extracted = _settle_setup()
+    complete = trace_exporter.settled_runs_complete_extracted(
+        extracted,
+        1_000.0 + 600.0,
+        120.0,
+        _run_active_lookup=lambda repo, run_id: False,
+    )
+    assert len(complete) == 1
+
+
+def test_settled_runs_falls_back_to_quiescence_when_github_is_unknown() -> None:
+    """No repository, a run outside the active poller's bounded set, or a cold
+    cache after a restart must degrade to the old heuristic, never to silence."""
+    extracted = _settle_setup()
+    seen: list[tuple[str, str]] = []
+
+    def unknown(repo: str, run_id: str):
+        seen.append((repo, run_id))
+        return None
+
+    complete = trace_exporter.settled_runs_complete_extracted(
+        extracted, 1_000.0 + 600.0, 120.0, _run_active_lookup=unknown
+    )
+    assert len(complete) == 1
+    # The repository is resolved off the trace so the lookup can be keyed on it.
+    assert seen == [("huggingface/transformers", "33143393869:1")]
+
+    # Still ingesting -> still skipped, whatever GitHub thinks.
+    assert (
+        trace_exporter.settled_runs_complete_extracted(
+            extracted, 1_000.0 + 10.0, 120.0, _run_active_lookup=unknown
+        )
+        == []
+    )
+
+
+def test_cached_run_is_active_never_calls_github() -> None:
+    """The roll-up gate reads only what the active-metrics pass already fetched;
+    it must add no API fan-out of its own, and say "unknown" on a cold cache."""
+    trace_exporter._cached_run_activity.clear()
+    assert (
+        trace_exporter.cached_run_is_active("huggingface/transformers", "1:1") is None
+    )
+    assert trace_exporter.cached_run_is_active("", "1:1") is None
+    assert trace_exporter.cached_run_is_active("huggingface/transformers", "") is None
+
+    import time as _time
+
+    trace_exporter._cached_run_activity[("huggingface/transformers", "1")] = (
+        _time.monotonic(),
+        ("in_progress", frozenset()),
+    )
+    assert (
+        trace_exporter.cached_run_is_active("huggingface/transformers", "1:1") is True
+    )
+
+    trace_exporter._cached_run_activity[("huggingface/transformers", "1")] = (
+        _time.monotonic(),
+        ("completed", frozenset()),
+    )
+    assert (
+        trace_exporter.cached_run_is_active("huggingface/transformers", "1:1") is False
+    )
+
+    # An entry older than its TTL is unknown again, not stale-active.
+    trace_exporter._cached_run_activity[("huggingface/transformers", "1")] = (
+        _time.monotonic() - 100_000.0,
+        ("in_progress", frozenset()),
+    )
+    assert (
+        trace_exporter.cached_run_is_active("huggingface/transformers", "1:1") is None
+    )
+    trace_exporter._cached_run_activity.clear()
 
 
 def test_extract_run_info_metrics_skips_github_when_no_commit_sha() -> None:
@@ -1465,8 +2039,13 @@ def make_otlp_trace(
     status_code: str = "STATUS_CODE_UNSET",
     exception_type: str | None = None,
     service_name: str = "pytest-observability-demo",
+    repository: str | None = "huggingface/transformers",
 ) -> dict:
-    """Build a Tempo /api/traces/<id> payload (OTLP JSON) for one test span."""
+    """Build a Tempo /api/traces/<id> payload (OTLP JSON) for one test span.
+
+    ``repository=None`` omits ``vcs.repository.name`` entirely, for the
+    unattributed-trace case the allow-list has to reject.
+    """
     events = []
     if exception_type is not None:
         events.append(
@@ -1492,8 +2071,12 @@ def make_otlp_trace(
                             "vcs.change.url",
                             "https://github.com/huggingface/transformers/pull/4321",
                         ),
-                        otlp_attr("vcs.repository.name", "huggingface/transformers"),
                     ]
+                    + (
+                        [otlp_attr("vcs.repository.name", repository)]
+                        if repository is not None
+                        else []
+                    )
                 },
                 "scopeSpans": [
                     {
@@ -3341,3 +3924,797 @@ def test_pr_badge_prefers_prometheus_job_rollups_for_latest_run(monkeypatch) -> 
     assert "1 failed" in svg
     assert "4 tests" in svg
     assert "2 jobs" in svg
+
+
+def test_pr_badge_counts_each_hardware_of_a_job_separately(monkeypatch) -> None:
+    """A run-slow run executes one test_job on single- *and* multi-GPU. Those are
+    two job executions with their own totals, so the badge must sum them rather
+    than collapse them by test_job.
+
+    Regression fixture is real prod data for transformers PR #48171, run-slow run
+    32483586670:1: single-gpu 1/52, multi-gpu 7/52. Collapsing by test_job alone
+    reported "7 failed / 52 tests / 1 jobs" -- the worse hardware's failures
+    against one hardware's test count.
+    """
+    trace_exporter._pr_summary_cache.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
+    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
+
+    def _query(url):
+        labels = {
+            "ci_event": "pr-comment",
+            "pr": "48171",
+            "provider": "github_actions",
+            "run_id": "32483586670:1",
+            "service_name": "pytest-observability",
+        }
+        job = {**labels, "test_job": "run_models_gpu"}
+        single = {**job, "hardware": "single-gpu"}
+        multi = {**job, "hardware": "multi-gpu"}
+        rows = [
+            ("pytest_run_start_time_seconds", labels, "1787316605.869470"),
+            ("pytest_run_end_time_seconds", labels, "1787317971.806538"),
+            # The run-level rollups only sum the traces still inside the render
+            # window, so they can decay below the job-level truth; the badge
+            # prefers the job rollups precisely because of that.
+            ("pytest_run_total_tests", labels, "52"),
+            ("pytest_run_failed_tests", labels, "1"),
+            ("pytest_run_duration_seconds", labels, "1358.992739"),
+            ("pytest_run_job_count", labels, "1"),
+            ("pytest_run_job_member_info", single, "1"),
+            ("pytest_run_job_total_tests", single, "52"),
+            ("pytest_run_job_failed_tests", single, "1"),
+            ("pytest_run_job_member_info", multi, "1"),
+            ("pytest_run_job_total_tests", multi, "52"),
+            ("pytest_run_job_failed_tests", multi, "7"),
+        ]
+        return {
+            "status": "success",
+            "data": {
+                "result": [
+                    {"metric": {"__name__": name, **metric_labels}, "value": [0, value]}
+                    for name, metric_labels, value in rows
+                ]
+            },
+        }
+
+    def _must_not_search(*args, **kwargs):
+        raise AssertionError("Tempo search must not run when Prometheus has rollups")
+
+    monkeypatch.setattr(trace_exporter, "_http_get_json", _query)
+    monkeypatch.setattr(trace_exporter, "search_trace_ids", _must_not_search)
+
+    summary = trace_exporter._pr_run_summary_from_prometheus(
+        "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+    )
+    assert summary is not None
+    assert summary["failed_tests"] == 8
+    assert summary["total_tests"] == 104
+    assert summary["job_count"] == 2
+
+    svg = trace_exporter.render_pr_badge_svg(
+        "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+    ).decode()
+    assert "8 failed" in svg
+    assert "104 tests" in svg
+    assert "2 jobs" in svg
+
+
+# --- the two CI streams a PR accumulates -------------------------------------
+# A PR gets regular PR CI (CPU, one run per push) and, if a maintainer asks for
+# it, run-slow GPU runs from a `run-slow: <models>` comment. They are separate
+# streams with separate verdicts, and a badge that mixes them contradicts the
+# by-PR dashboard, which filters on the same ci_event label.
+
+
+def _pr_ci_run_lines(pr: str = "48171") -> list[str]:
+    """Payload lines for PR 48171's last CPU PR-CI run: 3,692 tests, 8 jobs, green."""
+    labels = (
+        f'{{ci_event="none",pr="{pr}",provider="github_actions",'
+        f'run_id="32483327955:1",service_name="pytest-observability"}}'
+    )
+    return [
+        f"pytest_run_start_time_seconds{labels} 1787316317.329458",
+        f"pytest_run_end_time_seconds{labels} 1787316484.000000",
+        f"pytest_run_total_tests{labels} 3692",
+        f"pytest_run_failed_tests{labels} 0",
+        f"pytest_run_duration_seconds{labels} 449.000000",
+        f"pytest_run_job_count{labels} 8",
+    ]
+
+
+def _run_slow_run_lines(pr: str = "48171") -> list[str]:
+    """Payload lines for the run-slow GPU run that *followed* it by 288s: two
+    hardware jobs, 104 tests, 8 failures. The later start time is the whole
+    problem -- an unfiltered "latest run" picks this one and reports it against a
+    dashboard that was showing the CPU run."""
+    labels = (
+        f'{{ci_event="pr-comment",pr="{pr}",provider="github_actions",'
+        f'run_id="32483586670:1",service_name="pytest-observability"}}'
+    )
+    return [
+        f"pytest_run_start_time_seconds{labels} 1787316605.869470",
+        f"pytest_run_end_time_seconds{labels} 1787317971.806538",
+        f"pytest_run_total_tests{labels} 104",
+        f"pytest_run_failed_tests{labels} 8",
+        f"pytest_run_duration_seconds{labels} 1718.515044",
+        f"pytest_run_job_count{labels} 2",
+    ]
+
+
+def test_pr_badge_reports_each_ci_stream_separately(monkeypatch) -> None:
+    """One PR, one payload, two badges: each reads only its own stream."""
+    trace_exporter._pr_summary_cache.clear()
+    payload = "\n".join(_pr_ci_run_lines() + _run_slow_run_lines())
+    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: payload)
+
+    cpu = trace_exporter.render_pr_badge_svg(
+        "48171", trace_exporter.BADGE_EVENT_PR_CI
+    ).decode()
+    assert "CPU CI" in cpu
+    assert "0 failed / 3,692 tests / 8 jobs" in cpu
+
+    gpu = trace_exporter.render_pr_badge_svg(
+        "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+    ).decode()
+    assert "GPU run-slow" in gpu
+    assert "8 failed / 104 tests / 2 jobs" in gpu
+
+    # A legacy /badge/pr?pr=N URL still sitting in an old PR body must resolve to
+    # PR CI -- the stream the dashboard it links to shows -- not to whichever run
+    # happened last.
+    assert trace_exporter.render_pr_badge_svg("48171").decode() == cpu
+
+    summary = json.loads(
+        trace_exporter.render_pr_summary_json(
+            "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+        ).decode()
+    )
+    assert summary["event"] == "run-slow"
+    assert summary["available"] is True
+    assert summary["latest_run"]["run_id"] == "32483586670:1"
+
+
+def test_pr_badge_run_slow_reads_not_run_when_the_pr_has_none(monkeypatch) -> None:
+    """The GPU badge is emitted for every PR, so the common case -- nobody ran
+    run-slow -- has to render as a statement about the PR ("not run") rather than
+    as the pipeline shrugging ("no data")."""
+    trace_exporter._pr_summary_cache.clear()
+    # No Prometheus and no traces: the run-slow stream is genuinely empty.
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "")
+    monkeypatch.setattr(
+        trace_exporter, "render_metrics", lambda: "\n".join(_pr_ci_run_lines())
+    )
+    monkeypatch.setattr(trace_exporter, "search_trace_ids", lambda *a, **k: [])
+
+    gpu = trace_exporter.render_pr_badge_svg(
+        "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+    ).decode()
+    assert "GPU run-slow" in gpu
+    assert "not run" in gpu
+    assert "no data" not in gpu
+    assert f'fill="#{trace_exporter.BADGE_CLOSED_COLOR}"' in gpu
+
+    # ... while the same PR's CPU badge is unaffected.
+    cpu = trace_exporter.render_pr_badge_svg(
+        "48171", trace_exporter.BADGE_EVENT_PR_CI
+    ).decode()
+    assert "0 failed / 3,692 tests / 8 jobs" in cpu
+
+    summary = json.loads(
+        trace_exporter.render_pr_summary_json(
+            "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+        ).decode()
+    )
+    assert summary["event"] == "run-slow"
+    assert summary["available"] is False
+    assert summary["latest_run"] is None
+
+
+def test_pr_badge_scopes_the_prometheus_query_to_its_stream(monkeypatch) -> None:
+    """Push the stream filter into PromQL. The roll-up filters client-side too,
+    so a missing matcher would still give the right answer -- while making the
+    badge pull every one of a PR's runs out of Prometheus to throw most away."""
+    captured: list[str] = []
+
+    def _query(url):
+        captured.append(url)
+        return {"status": "success", "data": {"result": []}}
+
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
+    monkeypatch.setattr(trace_exporter, "_http_get_json", _query)
+
+    trace_exporter._pr_run_summary_from_prometheus(
+        "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+    )
+    trace_exporter._pr_run_summary_from_prometheus(
+        "48171", trace_exporter.BADGE_EVENT_PR_CI
+    )
+
+    assert len(captured) == 2
+    assert urllib.parse.quote_plus('ci_event="pr-comment"') in captured[0]
+    assert urllib.parse.quote_plus('ci_event!="pr-comment"') in captured[1]
+
+
+def test_normalize_badge_event_defaults_to_pr_ci_and_rejects_unknown() -> None:
+    assert trace_exporter.normalize_badge_event("") == trace_exporter.BADGE_EVENT_PR_CI
+    assert (
+        trace_exporter.normalize_badge_event("  ") == trace_exporter.BADGE_EVENT_PR_CI
+    )
+    for raw in ("pr-ci", "PR-CI", "pr_ci", "cpu", " CPU "):
+        assert (
+            trace_exporter.normalize_badge_event(raw)
+            == trace_exporter.BADGE_EVENT_PR_CI
+        )
+    for raw in ("run-slow", "Run-Slow", "run_slow", "gpu"):
+        assert (
+            trace_exporter.normalize_badge_event(raw)
+            == trace_exporter.BADGE_EVENT_RUN_SLOW
+        )
+    # A daily run is not a PR's run, and the raw label value is not the public
+    # spelling; both are rejected so the handler answers 400 instead of quietly
+    # serving the PR CI stream under a wrong name.
+    assert trace_exporter.normalize_badge_event("daily") is None
+    assert trace_exporter.normalize_badge_event("pr-comment") is None
+
+
+# --- pytest_test_last_failure_info: run_id -----------------------------------
+# A trace is NOT a run: one run_models_gpu run emits ~19 per-model traces. Without
+# run_id on this pointer metric, "has this test failed in the last N runs of its
+# job?" is unanswerable, which is what the dashboard's Sticky Failures panels ask.
+
+
+def test_last_failure_info_carries_the_run_id_of_the_failing_run() -> None:
+    metrics = trace_exporter.extract_average_metrics(workflow_split_across_three_jobs())
+    lines = metric_lines(metrics, "pytest_test_last_failure_info")
+    assert len(lines) == 1
+    assert 'run_id="12345:2"' in lines[0]
+    assert 'trace_id="trace-torch"' in lines[0]
+
+
+def test_last_failure_info_keeps_every_pre_existing_label() -> None:
+    """Backward-compat guard: run_id is ADDITIVE. Any dashboard/recap query that
+    groups by the old label set must keep working, so none of these may move."""
+    metrics = trace_exporter.extract_average_metrics(workflow_split_across_three_jobs())
+    line = metric_lines(metrics, "pytest_test_last_failure_info")[0]
+    for label in (
+        'pr="4321"',
+        'test_job="tests_torch"',
+        'provider="github_actions"',
+        'service_name="transformers-tests"',
+        'test_class="TestTorch"',
+        'test_function="test_fail"',
+        'test_module="test_torch.py"',
+        'test_nodeid="tests/test_torch.py::TestTorch::test_fail"',
+        'trace_id="trace-torch"',
+        'exception_type="AssertionError"',
+    ):
+        assert label in line, label
+    assert "stacktrace=" not in line
+
+
+def test_last_failure_info_run_id_follows_the_most_recent_failure() -> None:
+    """The pointer tracks the LATEST failure, so run_id must move with it — that
+    is what makes each new failing run appear as a fresh series (and therefore
+    countable as a streak) instead of overwriting the previous one."""
+    nodeid = "tests/test_torch.py::TestTorch::test_flaky"
+    older = make_trace(
+        trace_id="trace-old",
+        run_id="run-1",
+        job="tests_torch",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid=nodeid,
+                start_time=1_000_000,
+                duration=1_000_000,
+                status_code="ERROR",
+                exception_type="AssertionError",
+            )
+        ],
+    )
+    newer = make_trace(
+        trace_id="trace-new",
+        run_id="run-2",
+        job="tests_torch",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid=nodeid,
+                start_time=9_000_000,
+                duration=1_000_000,
+                status_code="ERROR",
+                exception_type="ValueError",
+            )
+        ],
+    )
+    for traces in ([older, newer], [newer, older]):  # order must not matter
+        lines = metric_lines(
+            trace_exporter.extract_average_metrics(traces),
+            "pytest_test_last_failure_info",
+        )
+        assert len(lines) == 1
+        assert 'run_id="run-2"' in lines[0]
+        assert 'trace_id="trace-new"' in lines[0]
+        assert 'exception_type="ValueError"' in lines[0]
+
+
+def test_last_failure_info_run_id_falls_back_to_unknown() -> None:
+    """Safe default: a trace whose run id could not be resolved still emits a
+    valid series rather than an empty label or a crash."""
+    extracted = [
+        (
+            {"trace_id": "trace-x", "latest_start_time": 5},
+            [
+                {
+                    "service_name": "transformers-tests",
+                    "test_job": "tests_torch",
+                    "pr": "main",
+                    "provider": "github_actions",
+                    "test_nodeid": "tests/a.py::A::test_x",
+                    "test_class": "A",
+                    "test_function": "test_x",
+                    "test_module": "a.py",
+                    "duration_seconds": 1.0,
+                    "status_code": "ERROR",
+                    "exception_type": "AssertionError",
+                }
+            ],
+        )
+    ]
+    lines = metric_lines(
+        trace_exporter.extract_average_metrics([], _extracted=extracted),
+        "pytest_test_last_failure_info",
+    )
+    assert len(lines) == 1
+    assert 'run_id="unknown"' in lines[0]
+
+
+def test_last_failure_info_run_id_distinguishes_runs_of_the_same_job() -> None:
+    """Two different tests failing in two different runs of one job must carry
+    their own run_id — the property the per-job 'last N runs' scoping relies on."""
+
+    def failing(trace_id: str, run_id: str, nodeid: str, start: int) -> dict:
+        return make_trace(
+            trace_id=trace_id,
+            run_id=run_id,
+            job="tests_torch",
+            spans=[
+                make_test_span(
+                    process_id="pytest-process",
+                    nodeid=nodeid,
+                    start_time=start,
+                    duration=1_000,
+                    status_code="ERROR",
+                    exception_type="AssertionError",
+                )
+            ],
+        )
+
+    lines = metric_lines(
+        trace_exporter.extract_average_metrics(
+            [
+                failing("t1", "run-1", "tests/test_torch.py::A::test_one", 1_000),
+                failing("t2", "run-2", "tests/test_torch.py::A::test_two", 2_000),
+            ]
+        ),
+        "pytest_test_last_failure_info",
+    )
+    assert len(lines) == 2
+    by_run = {("run-1" if 'run_id="run-1"' in ln else "run-2"): ln for ln in lines}
+    assert "test_one" in by_run["run-1"]
+    assert "test_two" in by_run["run-2"]
+
+
+def _resource_record(nodeid: str, **metrics) -> dict:
+    """One line of the per-test resource JSONL the pytest plugin appends."""
+    record = {
+        "pr": "none",
+        "provider": "github",
+        "run_id": "12345:1",
+        "service_name": "transformers-tests",
+        "test_job": "run_models_gpu",
+        "test_nodeid": nodeid,
+        "test_class": "Mamba2IntegrationTest",
+        "test_function": nodeid.rsplit("::", 1)[-1],
+        "test_module": "tests/models/mamba2/test_modeling_mamba2.py",
+        "cpu_time_seconds": 12.5,
+        "rss_delta_bytes": 1024,
+        "rss_peak_bytes": 4096,
+        "cuda_peak_allocated_bytes": 15 * 1024**3,
+    }
+    record.update(metrics)
+    return record
+
+
+def test_resource_metrics_expose_retained_device_memory() -> None:
+    gib = 1024**3
+    metrics = trace_exporter.extract_average_resource_metrics(
+        [
+            _resource_record("t.py::A::test_leaks", cuda_delta_bytes=14 * gib),
+            _resource_record("t.py::A::test_leaks", cuda_delta_bytes=12 * gib),
+        ]
+    )
+    lines = metric_lines(metrics, "pytest_test_average_cuda_delta_bytes")
+    assert len(lines) == 1
+    # Averaged across the two recorded runs, like every other resource metric.
+    assert float(lines[0].rsplit(" ", 1)[1]) == pytest.approx(13 * gib)
+    assert 'test_function="test_leaks"' in lines[0]
+    assert 'test_job="run_models_gpu"' in lines[0]
+
+
+def test_resource_metrics_expose_the_post_gc_delta_when_probed() -> None:
+    gib = 1024**3
+    metrics = trace_exporter.extract_average_resource_metrics(
+        [
+            _resource_record(
+                "t.py::A::test_pinned",
+                cuda_delta_bytes=14 * gib,
+                cuda_delta_after_gc_bytes=14 * gib,
+            )
+        ]
+    )
+    lines = metric_lines(metrics, "pytest_test_average_cuda_delta_after_gc_bytes")
+    assert len(lines) == 1
+    assert float(lines[0].rsplit(" ", 1)[1]) == pytest.approx(14 * gib)
+
+
+def test_resource_records_without_the_new_fields_are_unchanged() -> None:
+    """Backward compatibility: records written by an older plugin carry neither
+    new field. Every pre-existing series must still be emitted, and the new ones
+    must be absent rather than zero — a zero would read as "this test retains
+    nothing", which we do not know."""
+    metrics = trace_exporter.extract_average_resource_metrics(
+        [_resource_record("t.py::A::test_old")]
+    )
+    for existing in (
+        "pytest_test_resource_run_count",
+        "pytest_test_average_cpu_time_seconds",
+        "pytest_test_average_rss_peak_bytes",
+        "pytest_test_average_rss_delta_bytes",
+        "pytest_test_average_cuda_peak_allocated_bytes",
+    ):
+        assert metric_lines(metrics, existing), f"{existing} disappeared"
+    assert metric_lines(metrics, "pytest_test_average_cuda_delta_bytes") == []
+    assert metric_lines(metrics, "pytest_test_average_cuda_delta_after_gc_bytes") == []
+
+
+def _span_with_retained_memory(nodeid: str, retained: int | None, **kwargs) -> dict:
+    """A test span carrying the plugin's pytest.cuda_delta_bytes attribute."""
+    span = make_test_span(
+        process_id="pytest-process",
+        nodeid=nodeid,
+        start_time=1_000_000,
+        duration=1_000_000,
+        **kwargs,
+    )
+    if retained is not None:
+        span["tags"].append(make_tag("pytest.cuda_delta_bytes", str(retained)))
+    return span
+
+
+def test_retained_memory_reaches_the_row_from_the_span() -> None:
+    gib = 1024**3
+    trace = make_trace(
+        trace_id="t-mem",
+        run_id="run-mem",
+        job="run_models_gpu",
+        spans=[_span_with_retained_memory("t.py::A::test_leaks", 14 * gib)],
+    )
+    _info, rows = trace_exporter.extract_trace_rows(trace)
+    assert rows[0]["cuda_delta_bytes"] == float(14 * gib)
+
+
+def test_a_span_without_the_attribute_omits_the_row_key() -> None:
+    """Absent must stay absent, not become 0.0 — a zero would claim the test
+    retains nothing, which is different from "this job did not measure"."""
+    trace = make_trace(
+        trace_id="t-cpu",
+        run_id="run-cpu",
+        job="tests_torch",
+        spans=[_span_with_retained_memory("t.py::A::test_cpu", None)],
+    )
+    _info, rows = trace_exporter.extract_trace_rows(trace)
+    assert "cuda_delta_bytes" not in rows[0]
+
+
+def test_a_non_numeric_attribute_is_ignored() -> None:
+    span = _span_with_retained_memory("t.py::A::test_junk", None)
+    span["tags"].append(make_tag("pytest.cuda_delta_bytes", "not-a-number"))
+    trace = make_trace(
+        trace_id="t-junk", run_id="run-junk", job="run_models_gpu", spans=[span]
+    )
+    _info, rows = trace_exporter.extract_trace_rows(trace)
+    assert "cuda_delta_bytes" not in rows[0]
+
+
+def test_retained_memory_metric_shares_the_per_test_label_set() -> None:
+    gib = 1024**3
+    metrics = trace_exporter.extract_per_test_duration_metrics(
+        [
+            make_trace(
+                trace_id="t-mem",
+                run_id="run-mem",
+                job="run_models_gpu",
+                spans=[_span_with_retained_memory("t.py::A::test_leaks", 14 * gib)],
+            )
+        ]
+    )
+    lines = metric_lines(metrics, "pytest_test_cuda_delta_bytes")
+    assert len(lines) == 1
+    assert lines[0].endswith(f" {14 * gib}")
+    # The cardinality lesson from pytest_test_duration_seconds must hold here too:
+    # no run_id / trace_id / pr labels, or a busy window mints millions of series.
+    for forbidden in ('run_id="', 'trace_id="', 'pr="'):
+        assert forbidden not in lines[0]
+
+
+def test_absolute_memory_readings_become_their_own_metrics() -> None:
+    """The delta is a net change and can be negative; these two are absolute.
+    `retained` is what the next test really inherits — the number the dashboard
+    panel claims to show — and `inherited` is what this test started with, which
+    is what an OOM actually turns on."""
+    gib = 1024**3
+    span = _span_with_retained_memory("t.py::A::test_victim", -17 * gib)
+    span["tags"].append(make_tag("pytest.cuda_inherited_bytes", 17 * gib))
+    span["tags"].append(make_tag("pytest.cuda_retained_bytes", 0))
+    metrics = trace_exporter.extract_per_test_duration_metrics(
+        [
+            make_trace(
+                trace_id="t-abs",
+                run_id="run-abs",
+                job="run_models_gpu",
+                spans=[span],
+            )
+        ]
+    )
+    inherited = metric_lines(metrics, "pytest_test_cuda_inherited_bytes")
+    retained = metric_lines(metrics, "pytest_test_cuda_retained_bytes")
+    assert len(inherited) == 1 and inherited[0].endswith(f" {17 * gib}")
+    assert len(retained) == 1 and retained[0].endswith(" 0")
+    # The delta keeps its own meaning and its sign.
+    delta = metric_lines(metrics, "pytest_test_cuda_delta_bytes")
+    assert delta[0].endswith(f" {-17 * gib}")
+    # Same label discipline as the rest of the per-test family.
+    for forbidden in ('run_id="', 'trace_id="', 'pr="'):
+        assert forbidden not in inherited[0] and forbidden not in retained[0]
+
+
+def test_spans_from_an_older_plugin_emit_only_the_delta() -> None:
+    # Backward compatibility: every trace already in Tempo predates these two
+    # attributes, and must keep producing exactly the series it produced before.
+    gib = 1024**3
+    metrics = trace_exporter.extract_per_test_duration_metrics(
+        [
+            make_trace(
+                trace_id="t-old",
+                run_id="run-old",
+                job="run_models_gpu",
+                spans=[_span_with_retained_memory("t.py::A::test_leaks", 14 * gib)],
+            )
+        ]
+    )
+    assert len(metric_lines(metrics, "pytest_test_cuda_delta_bytes")) == 1
+    assert metric_lines(metrics, "pytest_test_cuda_inherited_bytes") == []
+    assert metric_lines(metrics, "pytest_test_cuda_retained_bytes") == []
+
+
+def test_no_retained_memory_metric_for_tests_that_did_not_report_it() -> None:
+    metrics = trace_exporter.extract_per_test_duration_metrics(
+        [
+            make_trace(
+                trace_id="t-cpu",
+                run_id="run-cpu",
+                job="tests_torch",
+                spans=[_span_with_retained_memory("t.py::A::test_cpu", None)],
+            )
+        ]
+    )
+    assert metric_lines(metrics, "pytest_test_cuda_delta_bytes") == []
+    # …while the duration metric it shares a key with is unaffected.
+    assert len(metric_lines(metrics, "pytest_test_duration_seconds")) == 1
+
+
+def test_after_gc_delta_rides_the_span_and_gets_its_own_metric() -> None:
+    """The gc probe's answer has to be readable somewhere. It only lands in the
+    resource JSONL otherwise, which CI never writes and nothing transports."""
+    gib = 1024**3
+    span = _span_with_retained_memory("t.py::A::test_pinned", 14 * gib)
+    span["tags"].append(make_tag("pytest.cuda_delta_after_gc_bytes", str(14 * gib)))
+    trace = make_trace(
+        trace_id="t-pin", run_id="run-pin", job="run_models_gpu", spans=[span]
+    )
+    _info, rows = trace_exporter.extract_trace_rows(trace)
+    assert rows[0]["cuda_delta_after_gc_bytes"] == float(14 * gib)
+
+    lines = metric_lines(
+        trace_exporter.extract_per_test_duration_metrics([trace]),
+        "pytest_test_cuda_delta_after_gc_bytes",
+    )
+    assert len(lines) == 1
+    assert lines[0].endswith(f" {14 * gib}")
+
+
+def test_raw_delta_without_the_probe_emits_no_after_gc_series() -> None:
+    # The probe is opt-in, so most runs carry only the raw delta. An absent
+    # after-gc value must not become 0 — that would read as "a tearDown fixes
+    # this", the opposite of what we know.
+    trace = make_trace(
+        trace_id="t-raw",
+        run_id="run-raw",
+        job="run_models_gpu",
+        spans=[_span_with_retained_memory("t.py::A::test_raw", 3 * 1024**3)],
+    )
+    _info, rows = trace_exporter.extract_trace_rows(trace)
+    assert "cuda_delta_after_gc_bytes" not in rows[0]
+    metrics = trace_exporter.extract_per_test_duration_metrics([trace])
+    assert metric_lines(metrics, "pytest_test_cuda_delta_after_gc_bytes") == []
+    assert len(metric_lines(metrics, "pytest_test_cuda_delta_bytes")) == 1
+
+
+# ---------------------------------------------------------------------------
+# Repository privacy boundary.
+#
+# A private clone inside our OWN org inherits the CI workflow and the OTLP
+# token, so it exports into the same Tempo as the public repo. The dashboard in front of it is anonymous, so they must not
+# be surfaced. Contributors work on FORKS, and a fork of a public repo is itself
+# always public on GitHub — so anything outside our org must keep working. The
+# collector drops internal clones at ingest; these cover the read side, which is
+# what keeps traces stored BEFORE the filter existed out of the render for the
+# remainder of Tempo's 90d block retention.
+# ---------------------------------------------------------------------------
+
+PRIVATE_REPO = "huggingface/internal-clone-example"
+
+
+@pytest.fixture
+def repository_filter(monkeypatch):
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_INTERNAL_OWNERS", "huggingface")
+    monkeypatch.setenv(
+        "PYTEST_TRACE_EXPORTER_PUBLIC_REPOSITORIES", "huggingface/transformers"
+    )
+    return monkeypatch
+
+
+def test_defaults_deny_internal_clones_only(monkeypatch) -> None:
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_INTERNAL_OWNERS", raising=False)
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PUBLIC_REPOSITORIES", raising=False)
+    assert trace_exporter.internal_owners() == ("huggingface",)
+    assert trace_exporter.public_repositories() == ("huggingface/transformers",)
+
+
+def test_env_lists_are_parsed_and_trimmed(monkeypatch) -> None:
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_INTERNAL_OWNERS", " one , two ,, ")
+    assert trace_exporter.internal_owners() == ("one", "two")
+
+
+def test_the_public_repo_is_allowed(repository_filter) -> None:
+    assert trace_exporter.repository_allowed("huggingface/transformers") is True
+
+
+def test_an_internal_clone_is_refused(repository_filter) -> None:
+    assert trace_exporter.repository_allowed(PRIVATE_REPO) is False
+    assert (
+        trace_exporter.repository_allowed("huggingface/transformers-internal") is False
+    )
+
+
+def test_forks_keep_working(repository_filter) -> None:
+    """The reason this is a targeted deny and not an allow-list: contributors
+    push to their own forks, and a fork of a public repo is itself public."""
+    assert trace_exporter.repository_allowed("contributor/transformers") is True
+    # A renamed fork must work too — the rule keys on the owner, not the name.
+    assert trace_exporter.repository_allowed("contributor/transformers-fork") is True
+    # Another org's repo is not ours to hide.
+    assert trace_exporter.repository_allowed("pytorch/transformers") is True
+
+
+def test_an_unattributed_trace_is_allowed(repository_filter) -> None:
+    """A trace we cannot attribute is not one we can attribute to our own org,
+    and local/dev runs legitimately carry no repository tag."""
+    assert trace_exporter.repository_allowed("") is True
+
+
+def test_emptying_the_owners_disables_the_filter(monkeypatch) -> None:
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_INTERNAL_OWNERS", "")
+    assert trace_exporter.repository_allowed(PRIVATE_REPO) is True
+
+
+def test_trace_repository_reads_the_resource_tag() -> None:
+    trace = make_trace(
+        trace_id="t1",
+        run_id="1:1",
+        job="tests_torch",
+        spans=[],
+        repository=PRIVATE_REPO,
+    )
+    assert trace_exporter.trace_repository(trace) == PRIVATE_REPO
+    assert trace_exporter.trace_repository({"processes": {}}) == ""
+    assert trace_exporter.trace_repository({}) == ""
+
+
+def _fetch_one(trace_id: str, payload: dict):
+    with patch(
+        "transformersci.otel.trace_exporter.urlopen",
+        side_effect=lambda url, timeout=None: _UrlResponse(json.dumps(payload)),
+    ):
+        return trace_exporter.get_trace(trace_id, "http://tempo:3200")
+
+
+def _otlp(nodeid: str, repository):
+    return make_otlp_trace(
+        nodeid=nodeid,
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        repository=repository,
+    )
+
+
+def test_fetch_by_id_refuses_an_internal_clone(repository_filter) -> None:
+    """/failure, /run and /badge take a trace id straight off the query string
+    and are served on the public domain with no auth in front. An id belonging
+    to a private run must render nothing, exactly as if it did not exist."""
+    trace_exporter._trace_cache.clear()
+    payload = _otlp("tests/test_secret_model.py::test_one", PRIVATE_REPO)
+    assert _fetch_one("private-trace", payload) is None
+    # Nor may it be memoized — a later render must not serve it from cache.
+    assert "private-trace" not in trace_exporter._trace_cache
+
+
+def test_fetch_by_id_serves_the_public_repo_and_forks(repository_filter) -> None:
+    trace_exporter._trace_cache.clear()
+    for trace_id, repository in (
+        ("public-trace", "huggingface/transformers"),
+        ("fork-trace", "contributor/transformers"),
+        ("unattributed-trace", None),
+    ):
+        trace = _fetch_one(trace_id, _otlp("tests/test_torch.py::test_one", repository))
+        assert trace is not None, f"{repository} should have been served"
+
+
+def test_window_render_drops_a_cached_internal_shape(repository_filter) -> None:
+    """The shaped cache outlives any one render, so the boundary is re-checked on
+    the way out — a shape cached before the filter existed still never reaches
+    the render. The fork shape must survive the same pass."""
+
+    def _span(nodeid: str) -> dict:
+        return make_test_span(
+            process_id="pytest-process",
+            nodeid=nodeid,
+            start_time=1_000_000,
+            duration=2_000_000,
+        )
+
+    traces = [
+        make_trace(
+            trace_id="public",
+            run_id="1:1",
+            job="tests_torch",
+            spans=[_span("tests/test_torch.py::test_one")],
+        ),
+        make_trace(
+            trace_id="fork",
+            run_id="2:1",
+            job="tests_torch",
+            spans=[_span("tests/test_torch.py::test_two")],
+            repository="contributor/transformers",
+        ),
+        make_trace(
+            trace_id="private",
+            run_id="3:1",
+            job="tests_torch",
+            spans=[_span("tests/test_secret_model.py::test_one")],
+            repository=PRIVATE_REPO,
+        ),
+    ]
+
+    def _fake_all(base_url=None):
+        for trace in traces:
+            info, rows = trace_exporter.extract_trace_rows(trace)
+            yield info, rows, True
+
+    repository_filter.setattr(trace_exporter, "_iter_window_shaped_all", _fake_all)
+    surfaced = [
+        info["repository"] for info, _, _ in trace_exporter._iter_window_shaped()
+    ]
+    assert surfaced == ["huggingface/transformers", "contributor/transformers"]

@@ -33,7 +33,15 @@ import urllib.request
 
 class SergeDispatchError(Exception):
     """A single ``POST /tasks`` failed. Raised (not ``SystemExit``) so a
-    fan-out loop can record the failure and continue to the next task."""
+    fan-out loop can record the failure and continue to the next task.
+
+    ``status`` carries the HTTP status when Serge answered (``None`` when the
+    host was unreachable), so a caller can tell an expired bearer apart from a
+    rejected payload."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 def build_task_payload(
@@ -49,6 +57,8 @@ def build_task_payload(
     slack_channel: str | None = None,
     notify_pr_created: bool = True,
     notify_task_finished: bool = False,
+    test_links: dict[str, list[dict[str, str]]] | None = None,
+    reviewers: list[str] | None = None,
 ) -> dict:
     """Assemble the ``POST /tasks`` body.
 
@@ -56,7 +66,17 @@ def build_task_payload(
     otherwise it opens a new PR on a branch under ``branch_prefix``. The caller
     supplies both ``instruction`` (the trusted task directive) and ``context``
     (the untrusted failure report), keeping this function free of any
-    per-source wording."""
+    per-source wording.
+
+    ``test_links`` (node-id → ``[{label, url}]``, built by
+    :mod:`transformersci.agentic.pr_evidence`) is where each failing test can be
+    watched. Serge renders the entries for the group its patch fixes and knows
+    nothing about what they point at; an older Serge ignores the field.
+
+    ``reviewers`` (GitHub logins) are requested on the PR Serge opens. The
+    dispatcher decides who is relevant — it is the side that knows *why* these
+    tests fail — and Serge only forwards the request, dropping anything
+    malformed. An older Serge ignores the field."""
     if existing_pr is not None:
         output: dict = {"mode": "existing_pr", "pr_number": existing_pr}
     else:
@@ -74,6 +94,12 @@ def build_task_payload(
     # Serge the tracking issue so it comments the outcome there directly.
     if tracking_issue is not None:
         payload["tracking_issue"] = tracking_issue
+    # Omitted rather than sent empty: no links is the same as no field, and an
+    # absent key keeps the payload readable in the action log.
+    if test_links:
+        payload["test_links"] = test_links
+    if reviewers:
+        payload["reviewers"] = list(reviewers)
     notifications: dict[str, str | bool] = {
         "pr_created": notify_pr_created,
         "task_finished": notify_task_finished,
@@ -85,10 +111,8 @@ def build_task_payload(
     return payload
 
 
-def dispatch_to_serge(
-    serge_url: str, token: str, payload: dict, timeout: int = 240
-) -> dict:
-    """POST the task to Serge. Returns the parsed 202 response body."""
+def _post_task(serge_url: str, token: str, payload: dict, timeout: int) -> dict:
+    """One ``POST /tasks`` attempt. Returns the parsed 202 response body."""
     url = serge_url.rstrip("/") + "/tasks"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -107,10 +131,37 @@ def dispatch_to_serge(
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
         raise SergeDispatchError(
-            f"Serge POST /tasks failed: {e.code} {e.reason}\n{detail}"
+            f"Serge POST /tasks failed: {e.code} {e.reason}\n{detail}", status=e.code
         )
     except urllib.error.URLError as e:
         raise SergeDispatchError(f"could not reach Serge at {url}: {e.reason}")
+
+
+def dispatch_to_serge(
+    serge_url: str, token: str, payload: dict, timeout: int = 240
+) -> dict:
+    """POST the task to Serge. Returns the parsed 202 response body.
+
+    A GitHub Actions OIDC token is valid for **minutes**, while a dispatch loop
+    that throttles and retries provider 429s runs for the better part of an
+    hour — it sleeps through the backoff holding a bearer minted before it. The
+    2026-08-18 nightly lost the `deepseek_vl` group exactly there: its retried
+    POST came back ``401 oidc_verification_failed: invalid OIDC token:
+    Signature has expired``, six minutes after the bearer was minted.
+
+    So let the request that *discovers* the expiry fix it: on a 401, re-mint and
+    replay once. Only once, only on 401, and only when the fresh token differs,
+    so a genuinely unauthorized dispatch (wrong audience, untrusted repo) still
+    surfaces as a 401 instead of doubling every call."""
+    try:
+        return _post_task(serge_url, token, payload, timeout)
+    except SergeDispatchError as e:
+        if e.status != 401:
+            raise
+        fresh = mint_serge_oidc_token()
+        if not fresh or fresh == token:
+            raise
+        return _post_task(serge_url, fresh, payload, timeout)
 
 
 def poll_serge_status(

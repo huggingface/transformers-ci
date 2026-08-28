@@ -12,9 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import datetime
+import itertools
+import json
+import os
 import unittest
+import urllib.error
 from unittest.mock import patch
 
+from transformersci.agentic import github_api as gh_api
 from transformersci.agentic import integration_failure_triage as itf
 from transformersci.agentic import serge_dispatch as sd
 
@@ -427,6 +433,501 @@ class MatchExistingPrTest(unittest.TestCase):
         self.assertIsNone(itf.match_existing_pr(pulls, "c" * 64))
 
 
+class FingerprintStabilityTest(unittest.TestCase):
+    """v1 hashed the traceback excerpt into the group identity, so an unchanged
+    failure fingerprinted differently every run and the existing-PR lookup never
+    matched. Observed as six mamba2 OOM attempts with six distinct fingerprints."""
+
+    def _target(self, trace):
+        return {
+            "kind": "model_failures",
+            "label": "2 tests for model `mamba2` failing with `OOM`",
+            "cluster": None,
+            "failures": [
+                {
+                    "test": "tests/models/mamba2/test_modeling_mamba2.py::T::test_a",
+                    "gpu": "single-gpu",
+                    "failure_mode": "OOM",
+                    "latest_trace": trace,
+                }
+            ],
+        }
+
+    def test_stable_across_differing_tracebacks(self):
+        a = self._target("CUDA out of memory. Tried to allocate 20.00 MiB")
+        b = self._target("CUDA out of memory. Tried to allocate 44.00 MiB")
+        self.assertEqual(itf.target_fingerprint(a), itf.target_fingerprint(b))
+
+    def test_v1_was_unstable(self):
+        a = self._target("CUDA out of memory. Tried to allocate 20.00 MiB")
+        b = self._target("CUDA out of memory. Tried to allocate 44.00 MiB")
+        self.assertNotEqual(
+            itf.target_fingerprint(a, version=1),
+            itf.target_fingerprint(b, version=1),
+        )
+
+    def test_identity_change_still_changes_the_fingerprint(self):
+        a = self._target("boom")
+        b = self._target("boom")
+        b["failures"][0]["test"] = "tests/models/mamba2/test_modeling_mamba2.py::T::z"
+        self.assertNotEqual(itf.target_fingerprint(a), itf.target_fingerprint(b))
+
+    def test_candidates_include_the_legacy_scheme(self):
+        t = self._target("boom")
+        cands = itf.fingerprint_candidates(t)
+        self.assertEqual(cands[0], itf.target_fingerprint(t))
+        self.assertIn(itf.target_fingerprint(t, version=1), cands)
+
+
+class PriorAttemptsTest(unittest.TestCase):
+    FP = "d" * 64
+
+    def _pr(self, number, state, merged=False, fp=None):
+        return {
+            "number": number,
+            "state": state,
+            "merged_at": "2026-08-01T00:00:00Z" if merged else None,
+            "body": itf.fingerprint_marker(fp or self.FP),
+            "head": {"ref": "x"},
+        }
+
+    def test_buckets_open_merged_and_rejected(self):
+        pulls = [
+            self._pr(1, "closed"),
+            self._pr(2, "closed", merged=True),
+            self._pr(3, "open"),
+            self._pr(4, "closed"),
+            {"number": 9, "state": "closed", "body": "other", "head": {"ref": "y"}},
+        ]
+        prior = itf.classify_prior_attempts(pulls, [self.FP])
+        self.assertEqual(prior.open_pr, 3)
+        self.assertEqual(prior.merged, (2,))
+        self.assertEqual(prior.rejected, (1, 4))
+        self.assertEqual(prior.attempts, 4)
+
+    def test_open_only_listing_degrades_safely(self):
+        """Given only open PRs (the old ledger) nothing is ever deferred."""
+        prior = itf.classify_prior_attempts([self._pr(3, "open")], [self.FP])
+        self.assertEqual(prior.rejected, ())
+        self.assertEqual(itf.rejected_attempts_reason(prior, 2), "")
+
+    def test_a_pr_without_an_explicit_state_counts_as_open(self):
+        """Fail-safe: a phantom rejection would wrongly skip a live group."""
+        prior = itf.classify_prior_attempts(
+            [{"number": 62, "body": itf.fingerprint_marker(self.FP), "head": {}}],
+            [self.FP],
+        )
+        self.assertEqual(prior.open_pr, 62)
+        self.assertEqual(prior.rejected, ())
+
+    def test_matches_a_legacy_fingerprint(self):
+        legacy = "e" * 64
+        prior = itf.classify_prior_attempts(
+            [self._pr(7, "closed", fp=legacy)], [self.FP, legacy]
+        )
+        self.assertEqual(prior.rejected, (7,))
+
+
+class RejectedAttemptsReasonTest(unittest.TestCase):
+    def test_defers_at_the_threshold(self):
+        prior = itf.PriorAttempts(rejected=(11, 12))
+        reason = itf.rejected_attempts_reason(prior, 2)
+        self.assertIn("#11", reason)
+        self.assertIn("#12", reason)
+
+    def test_below_threshold_still_dispatches(self):
+        self.assertEqual(
+            itf.rejected_attempts_reason(itf.PriorAttempts(rejected=(11,)), 2), ""
+        )
+
+    def test_an_open_pr_is_a_follow_up_not_a_block(self):
+        prior = itf.PriorAttempts(open_pr=20, rejected=(11, 12))
+        self.assertEqual(itf.rejected_attempts_reason(prior, 2), "")
+
+    def test_a_merged_fix_that_did_not_hold_is_new_information(self):
+        prior = itf.PriorAttempts(merged=(30,), rejected=(11, 12))
+        self.assertEqual(itf.rejected_attempts_reason(prior, 2), "")
+
+    def test_zero_disables(self):
+        prior = itf.PriorAttempts(rejected=(11, 12, 13))
+        self.assertEqual(itf.rejected_attempts_reason(prior, 0), "")
+
+
+class PartitionTargetsPriorAttemptsTest(unittest.TestCase):
+    def _target(self):
+        return {
+            "kind": "model_failures",
+            "label": "2 tests for model `generation` failing with `output_mismatch`",
+            "model": "generation",
+            "failure_mode": "output_mismatch",
+            "cluster": None,
+            "failures": [
+                {
+                    "test": "tests/generation/test_utils.py::T::test_a",
+                    "gpu": "single-gpu",
+                    "failure_mode": "output_mismatch",
+                    "latest_trace": "AssertionError: Tensor-likes are not close",
+                }
+            ],
+        }
+
+    def test_repeatedly_rejected_group_is_deferred(self):
+        t = self._target()
+        priors = {itf.target_fingerprint(t): itf.PriorAttempts(rejected=(1, 2))}
+        dispatch, deferred = partition = itf.partition_targets(
+            [t], priors, max_rejected=2
+        )
+        self.assertEqual(dispatch, [])
+        self.assertEqual(len(deferred), 1)
+        self.assertIn("closed unmerged", deferred[0]["defer_reason"])
+        del partition
+
+    def test_without_priors_behaviour_is_unchanged(self):
+        t = self._target()
+        dispatch, deferred = itf.partition_targets([t])
+        self.assertEqual(dispatch, [t])
+        self.assertEqual(deferred, [])
+
+
+class PriorFeedbackTest(unittest.TestCase):
+    """Carrying the *reason* a previous attempt was rejected, not just the count.
+
+    Both fixtures are real: transformers #48223 (a CHANGES_REQUESTED on an
+    expectation rewrite) and #48322 (a working patch at the wrong altitude)."""
+
+    C_48223 = {
+        "pr": 48223,
+        "kind": "inline",
+        "author": "zucchini-nlp",
+        "created_at": "2026-08-26T07:03:47Z",
+        "state": "",
+        "path": "tests/models/recurrent_gemma/test_modeling_recurrent_gemma.py",
+        "line": 282,
+        "body": (
+            "the linked commit deleted a `partial_rotary_factor` so I think this "
+            "is valid, we need to the fix model."
+        ),
+    }
+    V_48223 = {
+        "pr": 48223,
+        "kind": "review",
+        "author": "zucchini-nlp",
+        "created_at": "2026-08-26T07:03:50Z",
+        "state": "CHANGES_REQUESTED",
+        "path": None,
+        "line": None,
+        "body": "",
+    }
+    RUN_SLOW = {
+        "pr": 48223,
+        "kind": "comment",
+        "author": "a-maintainer",
+        "created_at": "2026-08-22T23:00:00Z",
+        "state": "",
+        "path": None,
+        "line": None,
+        "body": "run-slow: recurrent_gemma",
+    }
+
+    def _target(self):
+        return {
+            "kind": "model_failures",
+            "label": "2 integration tests regressed by commit 6034e90c7d1b",
+            "model": "recurrent_gemma",
+            "failure_mode": "output_mismatch",
+            "cluster": None,
+            "failures": [
+                {
+                    "test": (
+                        "tests/models/recurrent_gemma/"
+                        "test_modeling_recurrent_gemma.py::T::test_long_context"
+                    ),
+                    "model": "recurrent_gemma",
+                    "gpu": "single-gpu",
+                    "failure_mode": "output_mismatch",
+                    "trace": "AssertionError: Lists differ",
+                    "latest_trace": "AssertionError: Lists differ",
+                    "days_seen": 3,
+                }
+            ],
+        }
+
+    # ── collection ──────────────────────────────────────────────────────────
+
+    def test_reads_only_the_rejected_attempts(self):
+        asked = []
+
+        def fetch(repo, number, token):
+            asked.append(number)
+            return [{**self.C_48223, "pr": number}]
+
+        prior = itf.PriorAttempts(open_pr=99, merged=(30,), rejected=(11, 12))
+        items = itf.collect_prior_feedback(
+            prior, "huggingface/transformers", None, max_prs=2, fetch=fetch
+        )
+        # Neither the open follow-up nor the merged fix is an objection to avoid.
+        self.assertEqual(sorted(asked), [11, 12])
+        self.assertEqual(len(items), 2)
+
+    def test_caps_the_number_of_prs_read_newest_first(self):
+        asked = []
+
+        def fetch(repo, number, token):
+            asked.append(number)
+            return []
+
+        prior = itf.PriorAttempts(rejected=(11, 12, 13))
+        itf.collect_prior_feedback(
+            prior, "huggingface/transformers", None, max_prs=2, fetch=fetch
+        )
+        self.assertEqual(asked, [13, 12])
+
+    def test_a_group_with_no_rejection_makes_no_api_call(self):
+        def fetch(repo, number, token):  # pragma: no cover - must not run
+            raise AssertionError("fetched feedback for a group with no rejection")
+
+        for prior in (None, itf.PriorAttempts(), itf.PriorAttempts(open_pr=7)):
+            self.assertEqual(
+                itf.collect_prior_feedback(
+                    prior, "huggingface/transformers", None, fetch=fetch
+                ),
+                [],
+            )
+
+    def test_zero_disables(self):
+        def fetch(repo, number, token):  # pragma: no cover - must not run
+            raise AssertionError("fetched feedback with --feedback-prs 0")
+
+        self.assertEqual(
+            itf.collect_prior_feedback(
+                itf.PriorAttempts(rejected=(11,)),
+                "huggingface/transformers",
+                None,
+                max_prs=0,
+                fetch=fetch,
+            ),
+            [],
+        )
+
+    # ── rendering ───────────────────────────────────────────────────────────
+
+    def test_quotes_the_reviewer_and_names_the_pr(self):
+        block = "\n".join(itf.prior_feedback_lines([self.V_48223, self.C_48223]))
+        self.assertIn("/pull/48223", block)
+        self.assertIn("zucchini-nlp", block)
+        self.assertIn("partial_rotary_factor", block)
+        self.assertIn("test_modeling_recurrent_gemma.py`:282", block)
+        self.assertIn("requested changes", block)
+        self.assertIn("untrusted", block)
+        self.assertIn("Do not re-send", block)
+
+    def test_a_bare_run_slow_comment_is_not_feedback(self):
+        self.assertEqual(itf.prior_feedback_lines([self.RUN_SLOW]), [])
+        self.assertTrue(itf.is_boilerplate_feedback("run-slow: recurrent_gemma"))
+        self.assertTrue(itf.is_boilerplate_feedback("  run-slow: a\nrun-slow: b\n"))
+        # A directive with an opinion attached is an opinion.
+        self.assertFalse(itf.is_boilerplate_feedback("run-slow: a, and also fix X"))
+        self.assertTrue(itf.is_boilerplate_feedback("run-slow: gemma, llama"))
+
+    def test_an_empty_changes_requested_still_counts(self):
+        """The verdict and the sentence are separate GitHub objects."""
+        self.assertTrue(itf.carries_reviewer_signal(self.V_48223))
+        self.assertFalse(itf.carries_reviewer_signal(self.RUN_SLOW))
+        block = "\n".join(itf.prior_feedback_lines([self.V_48223]))
+        self.assertIn("requested changes", block)
+
+    def test_a_long_comment_is_truncated_not_dropped(self):
+        long = {**self.C_48223, "body": "x" * 2000}
+        block = "\n".join(itf.prior_feedback_lines([long]))
+        self.assertIn("[…]", block)
+        self.assertLess(len(block), 1200)
+
+    def test_nothing_to_say_renders_nothing(self):
+        self.assertEqual(itf.prior_feedback_lines([]), [])
+
+    # ── attach + context ────────────────────────────────────────────────────
+
+    def test_the_failure_report_carries_the_objection(self):
+        t = self._target()
+        priors = {itf.target_fingerprint(t): itf.PriorAttempts(rejected=(48223,))}
+        out = itf.attach_prior_feedback(
+            [t],
+            priors,
+            "huggingface/transformers",
+            None,
+            fetch=lambda repo, number, token: [self.C_48223, self.V_48223],
+        )
+        self.assertEqual(len(out[0]["prior_feedback"]), 2)
+        context = itf.render_serge_context(out, ["2026-08-24", "2026-08-26"])
+        self.assertIn("partial_rotary_factor", context)
+        # The objection has to arrive before the tracebacks, or it reads as a
+        # footnote to a wall of trace.
+        self.assertLess(
+            context.index("partial_rotary_factor"), context.index("Failing tests")
+        )
+
+    def test_attaching_cannot_change_a_group_identity(self):
+        t = self._target()
+        before = itf.target_fingerprint(t)
+        priors = {before: itf.PriorAttempts(rejected=(48223,))}
+        out = itf.attach_prior_feedback(
+            [t],
+            priors,
+            "huggingface/transformers",
+            None,
+            fetch=lambda repo, number, token: [self.C_48223],
+        )
+        self.assertEqual(itf.target_fingerprint(out[0]), before)
+
+    def test_a_group_with_only_boilerplate_is_left_alone(self):
+        t = self._target()
+        priors = {itf.target_fingerprint(t): itf.PriorAttempts(rejected=(48223,))}
+        out = itf.attach_prior_feedback(
+            [t],
+            priors,
+            "huggingface/transformers",
+            None,
+            fetch=lambda repo, number, token: [self.RUN_SLOW],
+        )
+        self.assertNotIn("prior_feedback", out[0])
+
+    def test_no_priors_is_a_no_op(self):
+        t = self._target()
+        self.assertEqual(
+            itf.attach_prior_feedback([t], None, "huggingface/transformers", None), [t]
+        )
+
+
+class ListPrReviewFeedbackTest(unittest.TestCase):
+    """The three-endpoint merge in ``github_api.list_pr_review_feedback``.
+
+    The objection, the verdict, and the close reason live in three different
+    GitHub collections, and none of them is a superset of the others."""
+
+    INLINE = [
+        {
+            "user": {"login": "sergereview[bot]"},
+            "created_at": "2026-08-25T22:32:00Z",
+            "body": "my own finding",
+            "path": "a.py",
+            "line": 1,
+        },
+        {
+            "user": {"login": "zucchini-nlp"},
+            "created_at": "2026-08-26T07:32:53Z",
+            "body": "why don't we pop in `EdgeTamModel` right in the beginning",
+            "path": "src/transformers/models/edgetam/modeling_edgetam.py",
+            "line": 482,
+        },
+    ]
+    REVIEWS = [
+        {
+            "user": {"login": "zucchini-nlp"},
+            "state": "commented",
+            "submitted_at": "2026-08-26T07:32:53Z",
+            "body": "",
+        },
+        {
+            "user": {"login": "zucchini-nlp"},
+            "state": "CHANGES_REQUESTED",
+            "submitted_at": "2026-08-26T07:32:55Z",
+            "body": "",
+        },
+    ]
+    CONVO = [
+        {
+            "user": {"login": "github-actions[bot]"},
+            "created_at": "2026-08-25T22:33:47Z",
+            "body": "run-slow: edgetam",
+        },
+        {
+            "user": {"login": "HuggingFaceDocBuilderDev"},
+            "created_at": "2026-08-25T22:42:22Z",
+            "body": "The docs for this PR live here",
+        },
+        {
+            "user": {"login": "a-human"},
+            "created_at": "2026-08-26T09:00:00Z",
+            "body": "closing, the fix is wrong",
+        },
+    ]
+
+    def _fake(self):
+        class _Resp:
+            def __init__(self, data):
+                self._d = data
+
+            def read(self):
+                return self._d
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def urlopen(req, timeout=None):
+            url = req.full_url
+            if "/pulls/48322/comments" in url:
+                payload = self.INLINE
+            elif "/pulls/48322/reviews" in url:
+                payload = self.REVIEWS
+            elif "/issues/48322/comments" in url:
+                payload = self.CONVO
+            else:  # pragma: no cover - an unexpected endpoint is a bug
+                raise AssertionError(f"unexpected GET {url}")
+            return _Resp(json.dumps(payload).encode())
+
+        return urlopen
+
+    def _fetch(self, **kw):
+        with patch.object(gh_api.urllib.request, "urlopen", self._fake()):
+            return gh_api.list_pr_review_feedback(
+                "huggingface/transformers", 48322, None, **kw
+            )
+
+    def test_bots_are_dropped_and_humans_kept(self):
+        items = self._fetch()
+        authors = {i["author"] for i in items}
+        self.assertEqual(authors, {"zucchini-nlp", "a-human"})
+
+    def test_newest_first(self):
+        items = self._fetch()
+        stamps = [i["created_at"] for i in items]
+        self.assertEqual(stamps, sorted(stamps, reverse=True))
+
+    def test_an_empty_bodied_review_is_kept_only_when_it_blocks(self):
+        states = [i["state"] for i in self._fetch() if i["kind"] == "review"]
+        self.assertEqual(states, ["CHANGES_REQUESTED"])
+
+    def test_the_inline_comment_keeps_its_location(self):
+        inline = [i for i in self._fetch() if i["kind"] == "inline"]
+        self.assertEqual(len(inline), 1)
+        self.assertEqual(inline[0]["line"], 482)
+        self.assertTrue(inline[0]["path"].endswith("modeling_edgetam.py"))
+
+    def test_capped(self):
+        self.assertEqual(len(self._fetch(max_items=2)), 2)
+
+    def test_an_api_error_degrades_to_fewer_items(self):
+        def boom(req, timeout=None):
+            raise urllib.error.URLError("no network")
+
+        with patch.object(gh_api.urllib.request, "urlopen", boom):
+            self.assertEqual(
+                gh_api.list_pr_review_feedback("huggingface/transformers", 1, None), []
+            )
+
+    def test_a_malformed_repo_makes_no_call(self):
+        def boom(req, timeout=None):  # pragma: no cover - must not run
+            raise AssertionError("called GitHub for a repo with no owner")
+
+        with patch.object(gh_api.urllib.request, "urlopen", boom):
+            self.assertEqual(
+                gh_api.list_pr_review_feedback("transformers", 1, None), []
+            )
+
+
 class DispatchTargetsTest(unittest.TestCase):
     def _targets(self):
         return [
@@ -479,7 +980,7 @@ class DispatchTargetsTest(unittest.TestCase):
             patch.object(itf, "list_open_pulls", return_value=[]),
             patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
         ):
-            accepted, failed, _job_ids = itf.dispatch_targets(
+            accepted, failed, _job_ids, _errors = itf.dispatch_targets(
                 self._targets(),
                 repo="o/r",
                 base_ref="main",
@@ -578,7 +1079,7 @@ class DispatchTargetsTest(unittest.TestCase):
             patch.object(itf, "list_open_pulls", return_value=[]),
             patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
         ):
-            accepted, failed, _job_ids = itf.dispatch_targets(
+            accepted, failed, _job_ids, _errors = itf.dispatch_targets(
                 self._targets(),
                 repo="o/r",
                 base_ref="main",
@@ -636,7 +1137,7 @@ class DispatchTargetsTest(unittest.TestCase):
             patch.object(itf, "mint_serge_oidc_token", return_value=None),
             patch.object(itf.time, "sleep", lambda _s: None),
         ):
-            accepted, failed, _job_ids = itf.dispatch_targets(
+            accepted, failed, _job_ids, _errors = itf.dispatch_targets(
                 targets,
                 repo="o/r",
                 base_ref="main",
@@ -679,7 +1180,7 @@ class DispatchTargetsTest(unittest.TestCase):
             patch.object(itf.random, "uniform", return_value=0),
             patch.object(itf.time, "sleep", lambda _s: None),
         ):
-            accepted, failed, job_ids = itf.dispatch_targets(
+            accepted, failed, job_ids, _errors = itf.dispatch_targets(
                 target,
                 repo="o/r",
                 base_ref="main",
@@ -697,6 +1198,233 @@ class DispatchTargetsTest(unittest.TestCase):
         self.assertEqual((accepted, failed), (1, 0))
         self.assertEqual(jobs, ["job1", "job2"])
         self.assertEqual(job_ids[itf.target_fingerprint(target[0])], "job2")
+
+    def test_bounded_dispatch_mints_a_fresh_bearer_for_the_retry_post(self):
+        """A GitHub Actions OIDC token lives minutes; the 429 backoff sleeps for
+        minutes before the retry POST. Dispatching with the bearer this loop
+        started with is what lost the 2026-08-18 `deepseek_vl` group to
+        ``401 ... Signature has expired``, so every POST re-mints."""
+        target = self._targets()[:1]
+        bearers = []
+        minted = itertools.count(1)
+
+        def fake_dispatch(serge_url, token, payload, timeout=240):
+            bearers.append(token)
+            job_id = f"job{len(bearers)}"
+            return {"id": job_id, "url": f"/tasks/o/r/{job_id}"}
+
+        def fake_poll(serge_url, token, repo, job_id):
+            if job_id == "job1":
+                return {
+                    "status": "error",
+                    "error": "LLM endpoint returned 429 Too Many Requests: rate limit exceeded",
+                }
+            return {"status": "published", "error": None}
+
+        with (
+            patch.object(itf, "list_open_pulls", return_value=[]),
+            patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
+            patch.object(itf, "poll_serge_task", side_effect=fake_poll),
+            patch.object(
+                itf,
+                "mint_serge_oidc_token",
+                side_effect=lambda: f"fresh{next(minted)}",
+            ),
+            patch.object(itf.random, "uniform", return_value=0),
+            patch.object(itf.time, "sleep", lambda _s: None),
+        ):
+            accepted, failed, _job_ids, _errors = itf.dispatch_targets(
+                target,
+                repo="o/r",
+                base_ref="main",
+                serge_url="http://s",
+                token="stale",
+                window=["2026-06-19"],
+                timeout=10,
+                github_token=None,
+                serge_concurrency=1,
+                retry_attempts=1,
+                retry_base_seconds=1,
+                poll_seconds=0,
+            )
+
+        self.assertEqual((accepted, failed), (1, 0))
+        self.assertEqual(len(bearers), 2)
+        self.assertNotIn("stale", bearers)
+
+    def test_a_failed_post_is_reported_against_its_fingerprint(self):
+        """`failed` counts; it does not say *which* group or *why*. Reconcile
+        needs both to mark the group terminal instead of leaving it pending."""
+        target = self._targets()[:1]
+        err = sd.SergeDispatchError(
+            "Serge POST /tasks failed: 401 Unauthorized\n"
+            '{"detail": "oidc_verification_failed: invalid OIDC token: '
+            'Signature has expired"}',
+            status=401,
+        )
+        for concurrency, attempts in ((0, 0), (1, 1)):
+            with self.subTest(bounded=bool(concurrency or attempts)):
+                with (
+                    patch.object(itf, "list_open_pulls", return_value=[]),
+                    patch.object(itf, "dispatch_to_serge", side_effect=err),
+                    patch.object(itf, "mint_serge_oidc_token", return_value=None),
+                    patch.object(itf.time, "sleep", lambda _s: None),
+                ):
+                    accepted, failed, job_ids, errors = itf.dispatch_targets(
+                        target,
+                        repo="o/r",
+                        base_ref="main",
+                        serge_url="http://s",
+                        token="tok",
+                        window=["2026-06-19"],
+                        timeout=10,
+                        github_token=None,
+                        serge_concurrency=concurrency,
+                        retry_attempts=attempts,
+                        retry_base_seconds=1,
+                        poll_seconds=0,
+                    )
+
+                fp = itf.target_fingerprint(target[0])
+                self.assertEqual((accepted, failed), (0, 1))
+                self.assertEqual(job_ids, {})
+                self.assertIn("Signature has expired", errors[fp])
+
+    def test_bounded_dispatch_keeps_its_bearer_outside_actions(self):
+        """Outside Actions there is no token service to ask, so
+        ``mint_serge_oidc_token`` returns ``None`` and the initial bearer must
+        survive rather than being replaced by nothing."""
+        target = self._targets()[:1]
+        bearers = []
+
+        def fake_dispatch(serge_url, token, payload, timeout=240):
+            bearers.append(token)
+            return {"id": "job1", "url": "/tasks/o/r/job1"}
+
+        with (
+            patch.object(itf, "list_open_pulls", return_value=[]),
+            patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
+            patch.object(itf, "poll_serge_task", return_value={"status": "published"}),
+            patch.object(itf, "mint_serge_oidc_token", return_value=None),
+            patch.object(itf.time, "sleep", lambda _s: None),
+        ):
+            itf.dispatch_targets(
+                target,
+                repo="o/r",
+                base_ref="main",
+                serge_url="http://s",
+                token="tok",
+                window=["2026-06-19"],
+                timeout=10,
+                github_token=None,
+                serge_concurrency=1,
+                retry_attempts=0,
+                poll_seconds=0,
+            )
+
+        self.assertEqual(bearers, ["tok"])
+
+
+class DispatchFailureReasonTest(unittest.TestCase):
+    def test_lifts_the_detail_out_of_serges_json_body(self):
+        err = sd.SergeDispatchError(
+            "Serge POST /tasks failed: 401 Unauthorized\n"
+            '{"detail": "oidc_verification_failed: invalid OIDC token: '
+            'Signature has expired", "serge": {"version": "0.1.0"}}',
+            status=401,
+        )
+        reason = itf.dispatch_failure_reason(err)
+        self.assertIn("401 Unauthorized", reason)
+        self.assertIn("Signature has expired", reason)
+        self.assertNotIn("\n", reason)
+
+    def test_keeps_a_non_json_body_as_text(self):
+        err = sd.SergeDispatchError("Serge POST /tasks failed: 502\n<html>bad</html>")
+        self.assertEqual(
+            itf.dispatch_failure_reason(err),
+            "Serge POST /tasks failed: 502 — <html>bad</html>",
+        )
+
+    def test_a_single_line_error_needs_no_detail(self):
+        err = sd.SergeDispatchError(
+            "could not reach Serge at http://s/tasks: timed out"
+        )
+        self.assertEqual(
+            itf.dispatch_failure_reason(err),
+            "could not reach Serge at http://s/tasks: timed out",
+        )
+
+
+class DispatchTokenReplayTest(unittest.TestCase):
+    """``dispatch_to_serge`` re-mints and replays once on a 401 — the safety net
+    under the per-POST re-mint, and the only protection the other callers
+    (``dashboard_failure_triage``) get."""
+
+    def _expired(self):
+        return sd.SergeDispatchError(
+            "Serge POST /tasks failed: 401 Unauthorized\n"
+            '{"detail": "oidc_verification_failed: invalid OIDC token: '
+            'Signature has expired"}',
+            status=401,
+        )
+
+    def test_replays_once_with_a_freshly_minted_bearer(self):
+        seen = []
+
+        def fake_post(serge_url, token, payload, timeout):
+            seen.append(token)
+            if token == "stale":
+                raise self._expired()
+            return {"id": "job1"}
+
+        with (
+            patch.object(sd, "_post_task", side_effect=fake_post),
+            patch.object(sd, "mint_serge_oidc_token", return_value="fresh"),
+        ):
+            resp = sd.dispatch_to_serge("http://s", "stale", {})
+
+        self.assertEqual(resp, {"id": "job1"})
+        self.assertEqual(seen, ["stale", "fresh"])
+
+    def test_a_401_that_re_mints_to_the_same_token_is_not_replayed(self):
+        """A 401 holding a *valid* bearer is a real authorization failure (wrong
+        audience, untrusted repo). Replaying it would only double the load."""
+        seen = []
+
+        def fake_post(serge_url, token, payload, timeout):
+            seen.append(token)
+            raise self._expired()
+
+        with (
+            patch.object(sd, "_post_task", side_effect=fake_post),
+            patch.object(sd, "mint_serge_oidc_token", return_value="tok"),
+        ):
+            with self.assertRaises(sd.SergeDispatchError):
+                sd.dispatch_to_serge("http://s", "tok", {})
+
+        self.assertEqual(seen, ["tok"])
+
+    def test_a_non_401_failure_is_not_replayed(self):
+        seen = []
+
+        def fake_post(serge_url, token, payload, timeout):
+            seen.append(token)
+            raise sd.SergeDispatchError("Serge POST /tasks failed: 422", status=422)
+
+        with (
+            patch.object(sd, "_post_task", side_effect=fake_post),
+            patch.object(sd, "mint_serge_oidc_token", return_value="fresh"),
+        ):
+            with self.assertRaises(sd.SergeDispatchError):
+                sd.dispatch_to_serge("http://s", "tok", {})
+
+        self.assertEqual(seen, ["tok"])
+
+    def test_an_unreachable_serge_carries_no_status(self):
+        """``URLError`` means Serge never answered, so there is no status to
+        confuse with a 401."""
+        err = sd.SergeDispatchError("could not reach Serge at http://s/tasks: nope")
+        self.assertIsNone(err.status)
 
 
 class TrackingIssueTest(unittest.TestCase):
@@ -889,7 +1617,7 @@ class TrackingIssueTest(unittest.TestCase):
             patch.object(itf, "list_open_pulls", return_value=[]),
             patch.object(itf, "dispatch_to_serge", side_effect=fake_dispatch),
         ):
-            accepted, failed, job_ids = itf.dispatch_targets(
+            accepted, failed, job_ids, _errors = itf.dispatch_targets(
                 [t],
                 repo="o/r",
                 base_ref="main",
@@ -901,6 +1629,81 @@ class TrackingIssueTest(unittest.TestCase):
             )
         self.assertEqual(accepted, 1)
         self.assertEqual(job_ids[itf.target_fingerprint(t)], "job-123")
+
+    def test_dispatch_failure_lands_in_the_table_and_the_recap(self):
+        """A group whose POST never landed has no job to poll. Left alone it sits
+        `(pending)` for the whole reconcile window and then reads as "Serge is
+        still working" — when Serge never received it. Seeded as terminal, the
+        dispatcher's own error becomes the group's reason."""
+        targets = [self._target("g1", "deepseek_vl")]
+        fp = itf.target_fingerprint(targets[0])
+        patched = []
+
+        with (
+            patch.object(itf, "list_open_pulls", return_value=[]),
+            patch.object(
+                itf,
+                "update_issue_body",
+                side_effect=lambda r, n, body, t: patched.append(body) or True,
+            ),
+            patch.object(itf.time, "sleep", lambda _s: None),
+        ):
+            itf.reconcile_tracking_issue(
+                targets,
+                repo="o/r",
+                window=["2026-08-18"],
+                run_key="2026-08-18",
+                issue_number=48050,
+                github_token="tok",
+                timeout_seconds=300,
+                poll_seconds=1,
+                dispatch_errors={
+                    fp: "Serge POST /tasks failed: 401 Unauthorized — "
+                    "oidc_verification_failed: invalid OIDC token: Signature has expired"
+                },
+            )
+
+        self.assertEqual(len(patched), 1)
+        body = patched[-1]
+        row = next(line for line in body.splitlines() if "| `deepseek_vl` |" in line)
+        self.assertIn("⚠️ task failed", row)
+        self.assertNotIn("(pending)", row)
+        self.assertIn("## Outcome recap", body)
+        self.assertIn("Signature has expired", body)
+
+    def test_recap_rows_carry_forward_with_their_marker(self):
+        """The table carries a resolved group's 🚫/⚠️ cell into a later run; the
+        recap is re-rendered from this run's polls only. Without carrying the
+        recap row too, the marker survives and the reason behind it does not."""
+        prior = "\n".join(
+            [
+                "| Group | Reason | LLM | Tokens (in / out) | Failing tests |",
+                "| --- | --- | --- | --- | --- |",
+                "| `deepseek_vl` | dispatch failed: 401 expired bearer | `k2` | 1 / 2 | [t](u) |",
+                "| `kimi_k25` (regressed by PR #47573) | [not_fixed] still red | `k2` | 3 / 4 | [t](u) |",
+                "",
+            ]
+        )
+        targets = [self._target("g1", "kimi_k25")]
+        rows = itf._carry_forward_recap_rows(prior, targets)
+
+        # deepseek_vl is not in this run, so its reason has to survive; kimi_k25
+        # is, and will be re-rendered from this run's own poll details.
+        self.assertEqual(len(rows), 1)
+        self.assertIn("deepseek_vl", rows[0])
+
+    def test_carried_recap_rows_render_without_a_current_recap(self):
+        targets = [self._target("g1", "alpha")]
+        carried = "| `deepseek_vl` | dispatch failed: 401 | `k2` | 1 / 2 | — |"
+        body = itf.render_tracking_issue_body(
+            targets,
+            ["2026-08-18"],
+            "2026-08-18",
+            existing_prs={},
+            carry_recap_rows=[carried],
+        )
+        self.assertIn("## Outcome recap", body)
+        self.assertIn(carried, body)
 
     def test_render_shows_serge_statuses(self):
         targets = [self._target("g1", "a"), self._target("g2", "b")]
@@ -982,6 +1785,85 @@ class TrackingIssueTest(unittest.TestCase):
     def test_distill_outcome_error_uses_error_text(self):
         out = itf._distill_outcome({"status": "error", "error": "boom", "result": None})
         self.assertEqual(out["reason"], "boom")
+        self.assertIsNone(out["normalizer_error"])
+
+    def test_distill_outcome_surfaces_failing_checker_on_error_path(self):
+        # The 2026-07-29 longcat_flash shape: the terminal error names only the
+        # last symptom, while the normalizer failure is what doomed the run.
+        detail = {
+            "status": "error",
+            "error": "LLM returned unparseable output (finish_reason=stop, 62 LLM turns)",
+            "result": None,
+            "normalizer_error": (
+                "Normalizer failed (exit 1) for `bash -lc make style`:\n"
+                "Docstring formatting\n"
+                "ModuleNotFoundError: No module named "
+                "'transformers.models.granitemoe_swa'\n"
+                "FAILED (12.46s)\n\n1 failed: docstrings"
+            ),
+        }
+        out = itf._distill_outcome(detail)
+        self.assertIn("unparseable output", out["reason"])
+        self.assertIn("normalizer: 1 failed: docstrings", out["reason"])
+        self.assertIn("granitemoe_swa", out["normalizer_error"])
+
+    def test_distill_outcome_normalizer_falls_back_to_exit_line(self):
+        # No checker summary (make style itself died) — still name the failure.
+        out = itf._distill_outcome(
+            {
+                "status": "no_fix",
+                "result": {"message": "no PR opened"},
+                "normalizer_error": "Normalizer failed (exit 137) for `make style`:\nKilled",
+            }
+        )
+        self.assertIn("normalizer: Normalizer failed (exit 137)", out["reason"])
+
+    def test_recap_renders_normalizer_output_block(self):
+        targets = [self._target("g1", "longcat_flash")]
+        fp0 = itf.target_fingerprint(targets[0])
+        body = itf.render_tracking_issue_body(
+            targets,
+            ["2026-07-29"],
+            "2026-07-29",
+            existing_prs={},
+            statuses={fp0: "error"},
+            details={
+                fp0: {
+                    "reason": "unparseable — normalizer: 1 failed: docstrings",
+                    "normalizer_error": "FAILED\nNo module named 'x.granitemoe_swa'\n1 failed: docstrings",
+                    "model": "kimi",
+                    "prompt_tokens": 1,
+                    "completion_tokens": 2,
+                }
+            },
+        )
+        self.assertIn("normalizer output (tail)", body)
+        self.assertIn("granitemoe_swa", body)
+        # The collapsible must sit after the recap table, not inside it.
+        self.assertLess(body.index("| Group | Reason |"), body.index("<details>"))
+
+    def test_recap_normalizer_block_fence_survives_backticks(self):
+        output = "checker said:\n```\nboom\n```\n1 failed: docstrings"
+        lines = itf._render_normalizer_block("`m`", output)
+        block = "\n".join(lines)
+        # Our fence must be longer than any run inside, so it can't close early.
+        self.assertIn("````", block)
+        self.assertIn("boom", block)
+
+    def test_recap_normalizer_block_empty_when_absent(self):
+        self.assertEqual(itf._render_normalizer_block("`m`", None), [])
+        self.assertEqual(itf._render_normalizer_block("`m`", "   "), [])
+
+    def test_recap_normalizer_block_keeps_the_tail(self):
+        output = (
+            "HEAD-MARKER\n"
+            + ("x" * itf._NORMALIZER_DETAIL_CHARS)
+            + "\n1 failed: docstrings"
+        )
+        block = "\n".join(itf._render_normalizer_block("`m`", output))
+        self.assertIn("1 failed: docstrings", block)  # tail survives
+        self.assertNotIn("HEAD-MARKER", block)
+        self.assertIn("omitted", block)
 
     def test_poll_serge_status_parses_status(self):
         class _Resp:
@@ -1216,6 +2098,74 @@ class SelectDispatchTargetsTest(unittest.TestCase):
         self.assertEqual(len(set(ids)), 3)  # no dupes
         self.assertEqual(ids, sorted(ids))  # returned in original priority order
 
+    def _modal(self, spec):
+        """`spec` = list of (category-shaping mode, terminal_exc) in priority order."""
+        return [
+            {"id": i, "kind": "model_failures", "failure_mode": m, "terminal_exc": e}
+            for i, (m, e) in enumerate(spec)
+        ]
+
+    def test_mix_spends_the_cap_on_distinct_categories(self):
+        # A realistic pool: mismatches dominate, with one load error and one
+        # dependency error buried below them. Priority order alone (and a
+        # uniform sample) would spend all 3 slots on mismatches.
+        t = self._modal(
+            [("output_mismatch", "AssertionError")] * 6
+            + [("load_error", "OSError"), ("import_or_config", "AttributeError")]
+        )
+        out = itf.select_dispatch_targets(t, 3, shuffle=False)
+        cats = [itf.dispatch_category(x) for x in out]
+        self.assertEqual(len(out), 3)
+        self.assertEqual(
+            sorted(cats), ["import_or_config", "load_error", "output_mismatch"]
+        )
+        self.assertEqual([x["id"] for x in out], sorted(x["id"] for x in out))
+
+    def test_mix_falls_back_to_priority_within_a_single_category(self):
+        t = self._modal([("output_mismatch", "AssertionError")] * 5)
+        out = itf.select_dispatch_targets(t, 3, shuffle=False)
+        self.assertEqual([x["id"] for x in out], [0, 1, 2])
+
+    def test_mix_can_be_disabled(self):
+        t = self._modal(
+            [("output_mismatch", "AssertionError")] * 3 + [("load_error", "OSError")]
+        )
+        out = itf.select_dispatch_targets(t, 3, shuffle=False, mix_categories=False)
+        self.assertEqual([x["id"] for x in out], [0, 1, 2])  # top-N, all mismatch
+
+    def test_assertion_wearing_a_crash_label_counts_as_a_mismatch(self):
+        # `other`/`cuda_runtime` + AssertionError already gets _MISMATCH_GUIDANCE;
+        # counting it as a crash is what made "3 modes" mean 3 expectation updates.
+        self.assertEqual(
+            itf.dispatch_category(_target("other", exc="AssertionError")),
+            "output_mismatch",
+        )
+        self.assertEqual(
+            itf.dispatch_category(_target("cuda_runtime", exc="RuntimeError")),
+            "cuda_runtime",
+        )
+        self.assertEqual(
+            itf.dispatch_category(_target("OOM", kind="cluster")), "cluster"
+        )
+
+    def test_mix_still_varies_which_member_of_a_category_runs(self):
+        import random
+
+        t = self._modal([("output_mismatch", "AssertionError")] * 10)
+        a = [
+            x["id"]
+            for x in itf.select_dispatch_targets(
+                t, 3, shuffle=True, rng=random.Random(1)
+            )
+        ]
+        b = [
+            x["id"]
+            for x in itf.select_dispatch_targets(
+                t, 3, shuffle=True, rng=random.Random(2)
+            )
+        ]
+        self.assertNotEqual(a, b)
+
     def test_shuffle_varies_across_seeds(self):
         import random
 
@@ -1281,6 +2231,42 @@ class InstructionAddendumTest(unittest.TestCase):
         # …but the escape hatch must not swallow a real regression.
         self.assertIn("far larger than such a precedent would cover", text)
 
+    def test_mismatch_requires_a_plausible_expectation_not_the_observed_output(self):
+        # transformers PR #47938 recorded a degenerate A10 completion
+        # ("1. The image is a 1.你好!") as the expectation and went green.
+        text = itf.build_instruction(_target("output_mismatch"))
+        self.assertIn("PLAUSIBLE VARIANT", text)
+        self.assertIn("not simply whatever the run produced", text)
+        # The two tells from that PR: the output stopped describing the image,
+        # and the divergence was excused as a hardware quirk.
+        self.assertIn("stops describing the actual input image", text)
+        self.assertIn("blaming the hardware", text)
+        # A device-keyed entry stays legitimate for small backend divergence.
+        self.assertIn("known SMALL divergence between backends", text)
+
+    def test_retention_oom_gets_the_teardown_fix_not_a_shrug(self):
+        text = itf.instruction_addendum(_oom_target(_OOM_RETENTION_TRACE))
+        self.assertIn("RETAINED-MEMORY", text)
+        self.assertIn("cleanup(torch_device, gc_collect=True)", text)
+        self.assertIn("tearDown", text)
+        # The coverage guard must survive the rewrite.
+        self.assertIn("no shrinking the model", text)
+        # …and it must not tell the agent this is probably unfixable.
+        self.assertNotIn("very often NOT fixable", text)
+        # Both non-fixable labels are named, so an ambiguous test is not treated
+        # as a teardown bug just because a sibling in the group was one.
+        self.assertIn("over capacity", text)
+        self.assertIn("unclear", text)
+
+    def test_capacity_oom_keeps_the_conservative_guidance(self):
+        text = itf.instruction_addendum(_oom_target(_OOM_CAPACITY_TRACE))
+        self.assertIn("very often NOT fixable", text)
+        self.assertNotIn("RETAINED-MEMORY", text)
+
+    def test_plausibility_gate_is_absent_from_crash_guidance(self):
+        text = itf.build_instruction(_target("cuda_runtime", exc="RuntimeError"))
+        self.assertNotIn("PLAUSIBLE VARIANT", text)
+
     def test_crash_forbids_test_side_edits_and_names_the_site(self):
         text = itf.build_instruction(
             _target("cuda_runtime", exc="RuntimeError", site="src/transformers/x.py:42")
@@ -1330,9 +2316,302 @@ class InstructionAddendumTest(unittest.TestCase):
         self.assertEqual(bare["instruction"], itf._INSTRUCTION)
 
 
+class PayloadTestLinksTest(unittest.TestCase):
+    """Serge holds no Grafana config: the per-test dashboard links in its PR body
+    are built HERE, where the dashboard UID and its variables are defined."""
+
+    def test_payload_links_every_failing_test_in_the_group(self):
+        target = _target("output_mismatch", n=2, model="gemma3")
+        payload = itf.build_task_payload(
+            "huggingface/transformers",
+            "main",
+            "ctx",
+            "title",
+            fingerprint="f" * 64,
+            target=target,
+            grafana_url="https://grafana.example/",
+        )
+        links = payload["test_links"]
+        self.assertEqual(sorted(links), sorted(f["test"] for f in target["failures"]))
+        url = links["tests/models/gemma3/t.py::T::t0"][0]["url"]
+        self.assertTrue(url.startswith("https://grafana.example/d/pytest-test/test?"))
+        self.assertIn("var-test_nodeid=tests%2Fmodels%2Fgemma3", url)
+        self.assertIn("var-test_job=run_models_gpu", url)
+        self.assertIn("var-pr=main", url)
+
+    def test_no_grafana_url_omits_the_field(self):
+        # An unconfigured deployment dispatches exactly as before: no field, and
+        # Serge renders no link section.
+        payload = itf.build_task_payload(
+            "huggingface/transformers",
+            "main",
+            "ctx",
+            "title",
+            fingerprint="f" * 64,
+            target=_target("output_mismatch"),
+            grafana_url="",
+        )
+        self.assertNotIn("test_links", payload)
+
+    def test_grafana_url_falls_back_to_the_environment(self):
+        with patch.dict(os.environ, {"ITF_GRAFANA_URL": "https://env.example"}):
+            payload = itf.build_task_payload(
+                "huggingface/transformers",
+                "main",
+                "ctx",
+                "title",
+                fingerprint="f" * 64,
+                target=_target("output_mismatch"),
+            )
+        self.assertIn("https://env.example/d/", str(payload["test_links"]))
+
+
+class RegressionReviewerTest(unittest.TestCase):
+    """When CI's bisect pinned the regression to a commit, its author is the one
+    person who knows what that change meant to do — so the fix PR asks them for
+    the review instead of waiting to be noticed."""
+
+    def _clustered(self, author, pr_number=46556):
+        target = _target("output_mismatch", model="florence2")
+        target["cluster"] = {
+            "bad_commit": "254e4b6e7cd9",
+            "pr_number": pr_number,
+            "author": author,
+            "merged_by": "someone-else",
+        }
+        return target
+
+    def test_payload_requests_the_blamed_commits_author(self):
+        payload = itf.build_task_payload(
+            "huggingface/transformers",
+            "main",
+            "ctx",
+            "title",
+            fingerprint="f" * 64,
+            target=self._clustered("ArthurZucker"),
+            grafana_url="",
+        )
+        self.assertEqual(payload["reviewers"], ["ArthurZucker"])
+
+    def test_unattributed_groups_request_nobody(self):
+        # A `model_failures` group has no cluster, and an unconverged bisect
+        # leaves the author null — the PR then keeps whatever the repo's own
+        # reviewer routing decides.
+        for target in (
+            _target("output_mismatch"),
+            self._clustered(None),
+            self._clustered(""),
+        ):
+            payload = itf.build_task_payload(
+                "huggingface/transformers",
+                "main",
+                "ctx",
+                "title",
+                fingerprint="f" * 64,
+                target=target,
+                grafana_url="",
+            )
+            self.assertNotIn("reviewers", payload)
+
+    def test_bot_authors_are_dropped(self):
+        # A bot cannot review, and GitHub 422s the whole request when one login
+        # is invalid — which would take any real reviewer down with it.
+        self.assertEqual(
+            itf.regression_reviewers(self._clustered("dependabot[bot]")), []
+        )
+
+    def test_no_target_is_safe(self):
+        self.assertEqual(itf.regression_reviewers(None), [])
+
+
+# Real CUDA OOM messages from the 2026-08-14 daily run (see
+# docs/plans/serge-oom-retention.md). The numbers are what make these two the
+# same label and different bugs.
+_OOM_RETENTION_TRACE = (
+    "(line 134)  torch.OutOfMemoryError: CUDA out of memory. Tried to allocate "
+    "14.00 MiB. GPU 0 has a total capacity of 22.30 GiB of which 4.69 MiB is free. "
+    "Process 860120 has 22.29 GiB memory in use. Of the allocated memory 21.92 GiB "
+    "is allocated by PyTorch, with 22.00 MiB allocated in private pools (e.g., CUDA "
+    "Graphs), and 16.47 MiB is reserved by PyTorch but unallocated."
+)
+_OOM_CAPACITY_TRACE = (
+    "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 21.10 GiB. GPU 0 "
+    "has a total capacity of 22.30 GiB of which 50.00 MiB is free. Process 189021 has "
+    "22.28 GiB memory in use. Of the allocated memory 20.94 GiB is allocated by "
+    "PyTorch, with 22.00 MiB allocated in private pools (e.g., CUDA Graphs)."
+)
+# mamba2's batched test: the request alone fits on an empty card, but we cannot
+# tell how much of `held` is its own model, so it must NOT be called fixable.
+_OOM_AMBIGUOUS_TRACE = (
+    "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 12.00 GiB. GPU 0 "
+    "has a total capacity of 22.30 GiB of which 8.01 GiB is free. Process 440984 has "
+    "14.29 GiB memory in use. Of the allocated memory 13.91 GiB is allocated by "
+    "PyTorch, with 22.00 MiB allocated in private pools (e.g., CUDA Graphs)."
+)
+
+
+# muse_glimmer, 2026-08-24: a 30B checkpoint pinned to one 24 GiB A10 by
+# `device_map=torch_device`. The numbers alone are retention-shaped -- a 254 MiB
+# request on a card PyTorch already fills -- but the frame is `from_pretrained`
+# still materializing weights, so there is nothing retained to free.
+_OOM_LOAD_TRACE = (
+    "src/transformers/core_model_loading.py:1219: in _materialize_copy\n"
+    "    tensor = tensor.to(device=device, dtype=dtype)\n"
+    "E   torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 254.00 MiB. "
+    "GPU 0 has a total capacity of 22.30 GiB of which 18.00 MiB is free. Process "
+    "12345 has 22.28 GiB memory in use. Of the allocated memory 21.86 GiB is "
+    "allocated by PyTorch, with 22.00 MiB allocated in private pools (e.g., CUDA "
+    "Graphs)."
+)
+
+
+def _oom_cluster(*traces, model="muse_glimmer"):
+    """A bad-commit cluster whose member failures carry the given traces."""
+    return {
+        "kind": "cluster",
+        "label": f"{len(traces)} integration tests regressed by commit fe95f5423d65",
+        "failures": [
+            _failure(
+                model, "single", f"tests/models/{model}/t.py::T::t{i}", t, mode="OOM"
+            )
+            for i, t in enumerate(traces)
+        ],
+        "cluster": {"author": "someone", "pr_number": 47867},
+        "model": None,
+        "failure_mode": None,
+    }
+
+
+def _oom_target(*traces, model="mamba2"):
+    """An OOM group whose failures carry the given CUDA OOM messages."""
+    return {
+        "kind": "model_failures",
+        "label": f"{len(traces)} test(s) for `{model}` failing with `OOM`",
+        "failures": [
+            _failure(
+                model, "single", f"tests/models/{model}/t.py::T::t{i}", t, mode="OOM"
+            )
+            for i, t in enumerate(traces)
+        ],
+        "cluster": None,
+        "model": model,
+        "failure_mode": "OOM",
+        "terminal_exc": "OutOfMemoryError",
+        "crash_site": "",
+    }
+
+
+class OomShapeTest(unittest.TestCase):
+    """`OOM` is two different bugs wearing one label. Telling them apart is what
+    decides whether a group is dispatched or deferred."""
+
+    def test_trivial_request_on_a_full_card_is_retention(self):
+        shape, nums = itf.oom_shape(_OOM_RETENTION_TRACE)
+        self.assertEqual(shape, itf.OOM_RETENTION)
+        self.assertAlmostEqual(nums["want"], 14 / 1024, places=4)
+        self.assertAlmostEqual(nums["held"], 21.92, places=2)
+        self.assertAlmostEqual(nums["capacity"], 22.30, places=2)
+
+    def test_one_allocation_near_the_whole_card_is_capacity(self):
+        shape, nums = itf.oom_shape(_OOM_CAPACITY_TRACE)
+        self.assertEqual(shape, itf.OOM_CAPACITY)
+        self.assertAlmostEqual(nums["want"], 21.10, places=2)
+
+    def test_a_big_request_on_a_half_full_card_stays_unknown(self):
+        # 12 GiB would fit on an empty 22.3 GiB card, but 13.91 GiB is already
+        # held and we cannot attribute it — claiming "fixable" here would send the
+        # agent after a teardown that does not exist.
+        shape, _ = itf.oom_shape(_OOM_AMBIGUOUS_TRACE)
+        self.assertEqual(shape, itf.OOM_UNKNOWN)
+
+    def test_an_unparseable_message_is_unknown_with_no_numbers(self):
+        shape, nums = itf.oom_shape("torch.OutOfMemoryError: CUDA out of memory.")
+        self.assertEqual(shape, itf.OOM_UNKNOWN)
+        self.assertEqual(nums, {})
+        self.assertEqual(itf.oom_shape(""), (itf.OOM_UNKNOWN, {}))
+
+
+class OomEvidenceTest(unittest.TestCase):
+    def test_evidence_labels_each_test_and_keeps_the_numbers(self):
+        target = _oom_target(_OOM_RETENTION_TRACE, _OOM_CAPACITY_TRACE)
+        text = "\n".join(itf.oom_evidence_lines(target))
+        self.assertIn("retained memory (fixable)", text)
+        self.assertIn("over capacity (do not patch)", text)
+        self.assertIn("already held 21.92 GiB of 22.30 GiB", text)
+
+    def test_the_same_test_on_two_runners_keeps_the_conservative_shape(self):
+        # Real case: test_deepseek_v2_lite was retention-shaped on multi-gpu and
+        # capacity-shaped on single-gpu. Calling it fixable would send the agent
+        # after a teardown that cannot make the single-gpu runner fit it.
+        target = {
+            "kind": "model_failures",
+            "label": "1 test for `deepseek_v2` failing with `OOM`",
+            "failure_mode": "OOM",
+            "model": "deepseek_v2",
+            "cluster": None,
+            "terminal_exc": "OutOfMemoryError",
+            "crash_site": "",
+            "failures": [
+                _failure(
+                    "deepseek_v2",
+                    "multi",
+                    "t.py::T::lite",
+                    _OOM_RETENTION_TRACE,
+                    mode="OOM",
+                ),
+                _failure(
+                    "deepseek_v2",
+                    "single",
+                    "t.py::T::lite",
+                    _OOM_CAPACITY_TRACE,
+                    mode="OOM",
+                ),
+            ],
+        }
+        shapes = itf.oom_shapes(target)
+        self.assertEqual(shapes["t.py::T::lite"][0], itf.OOM_CAPACITY)
+        # …and the order the runners appear in must not change the verdict.
+        target["failures"].reverse()
+        self.assertEqual(itf.oom_shapes(target)["t.py::T::lite"][0], itf.OOM_CAPACITY)
+
+    def test_no_parseable_message_renders_nothing(self):
+        self.assertEqual(itf.oom_evidence_lines(_oom_target("OutOfMemoryError")), [])
+
+    def test_evidence_reaches_the_serge_context(self):
+        context = itf.render_serge_context(
+            [_oom_target(_OOM_RETENTION_TRACE)], ["2026-08-14"]
+        )
+        self.assertIn("Device-memory shape per failing test", context)
+        self.assertIn("retained memory (fixable)", context)
+
+
 class PartitionTargetsTest(unittest.TestCase):
     """Groups no minimal patch can fix must not spend a GPU reproduce run, an
     investigation, or a --max-groups slot."""
+
+    def test_retention_shaped_oom_is_dispatched_not_deferred(self):
+        # 26 of the 54 persistent OOMs on 2026-08-14 had this shape and were being
+        # deferred as "needs runner capacity" — they are missing-tearDown bugs.
+        oom = _oom_target(_OOM_RETENTION_TRACE)
+        dispatch, deferred = itf.partition_targets([oom])
+        self.assertEqual(len(dispatch), 1)
+        self.assertEqual(deferred, [])
+
+    def test_capacity_shaped_oom_is_still_deferred(self):
+        oom = _oom_target(_OOM_CAPACITY_TRACE)
+        dispatch, deferred = itf.partition_targets([oom])
+        self.assertEqual(dispatch, [])
+        self.assertIn("device memory", deferred[0]["defer_reason"])
+
+    def test_a_mixed_group_is_dispatched_for_the_fixable_test(self):
+        oom = _oom_target(_OOM_CAPACITY_TRACE, _OOM_RETENTION_TRACE)
+        dispatch, _ = itf.partition_targets([oom])
+        self.assertEqual(len(dispatch), 1)
+
+    def test_ambiguous_oom_stays_deferred(self):
+        dispatch, deferred = itf.partition_targets([_oom_target(_OOM_AMBIGUOUS_TRACE)])
+        self.assertEqual(dispatch, [])
+        self.assertEqual(len(deferred), 1)
 
     def test_oom_is_deferred_with_a_reason(self):
         oom = _target("OOM", exc="OutOfMemoryError", model="big")
@@ -1377,6 +2656,128 @@ class PartitionTargetsTest(unittest.TestCase):
         carried = itf._carry_forward_rows(body, [])
         self.assertFalse(any("big" in row for row in carried))
 
+    def test_oom_groups_collapse_to_one_line_instead_of_a_table(self):
+        # Nobody patches an OOM, and a week can defer 18 of them; the section
+        # must not spend a table row each (issue #47936).
+        oom = [
+            _target("OOM", exc="OutOfMemoryError", model=f"m{i}", n=i + 1)
+            for i in range(3)
+        ]
+        section = "\n".join(itf._render_deferred_section(oom))
+        self.assertIn("3 models ran out of device memory", section)
+        self.assertIn("6 failures", section)  # 1 + 2 + 3
+        self.assertNotIn("| Model |", section)  # no table at all
+        # Worst-first, with each model's occurrence count kept inline.
+        self.assertIn("`m2` (3), `m1` (2), `m0` (1)", section)
+
+    def test_non_oom_deferred_groups_keep_their_table_row(self):
+        dep = _target("import_or_config", exc="ModuleNotFoundError", model="dep")
+        _, deferred = itf.partition_targets(
+            [_target("OOM", exc="OutOfMemoryError", model="big"), dep]
+        )
+        section = "\n".join(itf._render_deferred_section(deferred))
+        self.assertIn("1 model ran out of device memory", section)
+        self.assertIn("| Model |", section)
+        rows = [ln for ln in section.splitlines() if ln.startswith("| `")]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("`dep`", rows[0])
+
+
+class UnresolvedGroupEvidenceLinksTest(unittest.TestCase):
+    """The groups that end WITHOUT a PR are the ones a human picks up, so the
+    issue must link their failing tests rather than only naming them
+    (transformers#48050: `gpt_oss` and `phimoe` were classified as environment
+    issues with no way to reach the failure)."""
+
+    GRAFANA = "https://grafana.example/d/abc/tests"
+
+    def test_outcome_recap_links_each_failing_test(self):
+        target = _target("import_or_config", model="gpt_oss", n=2)
+        fp = itf.target_fingerprint(target)
+        body = itf.render_tracking_issue_body(
+            [target],
+            ["2026-08-18"],
+            "2026-08-18",
+            existing_prs={},
+            statuses={fp: "no_fix"},
+            details={
+                fp: {
+                    "reason": "[reproduced] ENVIRONMENT issue: `kernels` not installed",
+                    "prompt_tokens": 1,
+                    "completion_tokens": 2,
+                }
+            },
+            grafana_url=self.GRAFANA,
+        )
+        recap = body.split("## Outcome recap", 1)[1]
+        # One link per failing test, labelled by the node-id's last segment.
+        self.assertIn("[t0](https://grafana.example/", recap)
+        self.assertIn("[t1](https://grafana.example/", recap)
+        # The node-id itself is what the link resolves — not a bare dashboard URL.
+        self.assertIn("gpt_oss", recap)
+
+    def test_deferred_rows_and_oom_models_link_too(self):
+        dep = _target("import_or_config", exc="ModuleNotFoundError", model="dep")
+        oom = _target("OOM", exc="OutOfMemoryError", model="big")
+        _, deferred = itf.partition_targets([oom, dep])
+        section = "\n".join(itf._render_deferred_section(deferred, self.GRAFANA))
+        # The collapsed OOM sentence links the model name…
+        self.assertIn("[`big`](https://grafana.example/", section)
+        # …and the table row links the test.
+        self.assertIn("[t0](https://grafana.example/", section)
+        self.assertIn("| Failing tests |", section)
+
+    def test_links_are_capped_with_a_remainder(self):
+        target = _target("output_mismatch", model="m", n=5)
+        cell = itf._evidence_cell(target, self.GRAFANA)
+        self.assertEqual(cell.count("https://grafana.example/"), 3)
+        self.assertTrue(cell.endswith("+2 more"))
+
+    def test_unconfigured_grafana_renders_no_links(self):
+        target = _target("output_mismatch", model="m", n=2)
+        self.assertEqual(itf._evidence_cell(target, ""), "—")
+        # …and the OOM sentence keeps its plain model names rather than an
+        # empty link, so an unconfigured deployment reads exactly as before.
+        oom = [_target("OOM", exc="OutOfMemoryError", model="big")]
+        self.assertIn("`big` (1)", itf._oom_sentence(oom))
+        self.assertNotIn("](", itf._oom_sentence(oom))
+
+    def test_evidence_columns_do_not_confuse_carry_forward(self):
+        # _carry_forward_rows keys off a `| PR |` header; the recap/deferred
+        # tables gaining a column must not start matching it.
+        target = _target("import_or_config", model="gpt_oss")
+        oom = _target("OOM", exc="OutOfMemoryError", model="big")
+        dispatch, deferred = itf.partition_targets([oom, target])
+        fp = itf.target_fingerprint(dispatch[0])
+        body = itf.render_tracking_issue_body(
+            dispatch,
+            ["2026-08-18"],
+            "2026-08-18",
+            existing_prs={},
+            statuses={fp: "no_fix"},
+            details={fp: {"reason": "env", "prompt_tokens": 1, "completion_tokens": 2}},
+            deferred=deferred,
+            grafana_url=self.GRAFANA,
+        )
+        carried = itf._carry_forward_rows(body, [])
+        self.assertFalse(any("grafana.example" in row for row in carried))
+
+    def test_grafana_url_defaults_to_the_environment(self):
+        target = _target("output_mismatch", model="m")
+        fp = itf.target_fingerprint(target)
+        with patch.dict(os.environ, {"ITF_GRAFANA_URL": self.GRAFANA}):
+            body = itf.render_tracking_issue_body(
+                [target],
+                ["2026-08-18"],
+                "2026-08-18",
+                existing_prs={},
+                statuses={fp: "no_fix"},
+                details={
+                    fp: {"reason": "r", "prompt_tokens": 1, "completion_tokens": 2}
+                },
+            )
+        self.assertIn("grafana.example", body)
+
 
 class TraceBudgetByCategoryTest(unittest.TestCase):
     """A crash group is N copies of one traceback (it was keyed by `crash_site`);
@@ -1413,5 +2814,539 @@ class TraceBudgetByCategoryTest(unittest.TestCase):
         )
 
 
+def _attr_day(test, *, status, bad_commit=None, model="foo", gpu="single-gpu"):
+    """One day's `new_failures_with_bad_commit_grouped_by_authors.json`."""
+    return {
+        "someone": {
+            model: {gpu: [{"test": test, "status": status, "bad_commit": bad_commit}]}
+        }
+    }
+
+
+class AttributionHistoryTests(unittest.TestCase):
+    TEST = "tests/models/foo/test_modeling_foo.py::FooIntegrationTest::test_x"
+    KEY = ("foo", "single", TEST)
+
+    def test_walks_back_past_the_window_and_stamps_the_day(self):
+        idx = itf.index_attribution_history(
+            {
+                "2026-08-01": _attr_day(
+                    self.TEST, status=itf._GOOD_STATUS, bad_commit="deadbeef"
+                ),
+                "2026-08-10": {},
+            }
+        )
+        self.assertEqual(idx[self.KEY]["bad_commit"], "deadbeef")
+        self.assertEqual(idx[self.KEY]["attributed_on"], "2026-08-01")
+
+    def test_a_later_flaky_record_does_not_bury_an_earlier_pin(self):
+        # Upstream stops re-bisecting once it converges, so the pin is usually
+        # the OLDER record; newest-wins would throw the culprit away.
+        idx = itf.index_attribution_history(
+            {
+                "2026-08-01": _attr_day(
+                    self.TEST, status=itf._GOOD_STATUS, bad_commit="deadbeef"
+                ),
+                "2026-08-09": _attr_day(self.TEST, status="flaky: passed and failed"),
+            }
+        )
+        self.assertEqual(idx[self.KEY]["bad_commit"], "deadbeef")
+
+    def test_newest_wins_between_two_unpinned_records(self):
+        idx = itf.index_attribution_history(
+            {
+                "2026-08-01": _attr_day(self.TEST, status="flaky: old"),
+                "2026-08-09": _attr_day(self.TEST, status="flaky: new"),
+            }
+        )
+        self.assertEqual(idx[self.KEY]["status"], "flaky: new")
+
+    def test_cluster_failures_uses_the_history_index(self):
+        failure = {
+            "model": "foo",
+            "gpu": "single",
+            "test": self.TEST,
+            "trace": "boom",
+            "latest_trace": "boom",
+        }
+        idx = itf.index_attribution_history(
+            {
+                "2026-08-01": _attr_day(
+                    self.TEST, status=itf._GOOD_STATUS, bad_commit="deadbeef"
+                )
+            }
+        )
+        # The latest day is empty — exactly the production case — so without the
+        # history index this failure is unattributed.
+        plain = itf.cluster_failures([failure], {})
+        self.assertEqual(plain["totals"]["clusters"], 0)
+        withhist = itf.cluster_failures([failure], {}, attribution=idx)
+        self.assertEqual(withhist["totals"]["clusters"], 1)
+        self.assertIn("deadbeef", withhist["clusters"])
+
+
+class GroupLabelTests(unittest.TestCase):
+    """The issue tables used to show a bare `cluster <sha>` (and `—` in the
+    recap), which says nothing about what is broken."""
+
+    def _cluster(self, models, **cluster):
+        failures = [
+            {"model": m, "gpu": "single", "test": f"tests/models/{m}/t.py::T::t"}
+            for m in models
+        ]
+        return {
+            "kind": "cluster",
+            "label": "N integration tests regressed by commit deadbeefcafe",
+            "model": None,
+            "failures": failures,
+            "cluster": {"bad_commit": "deadbeefcafe1234", **cluster},
+        }
+
+    def test_a_model_group_is_just_its_model(self):
+        self.assertEqual(
+            itf.group_label({"model": "whisper", "failures": []}), "`whisper`"
+        )
+
+    def test_a_cluster_names_the_model_and_the_pr(self):
+        label = itf.group_label(self._cluster(["florence2"], pr_number=46556))
+        self.assertEqual(label, "`florence2` (regressed by PR #46556)")
+
+    def test_a_cluster_without_a_pr_falls_back_to_the_commit(self):
+        self.assertEqual(
+            itf.group_label(self._cluster(["florence2"])),
+            "`florence2` (regressed by commit deadbeef)",
+        )
+
+    def test_many_models_are_capped(self):
+        label = itf.group_label(self._cluster(["a", "b", "c", "d", "e"], pr_number=1))
+        self.assertEqual(label, "`a`, `b`, `c` +2 more (regressed by PR #1)")
+
+    def test_no_sha_is_never_shown_alone(self):
+        for target in (
+            self._cluster(["florence2"], pr_number=46556),
+            self._cluster(["florence2"]),
+        ):
+            self.assertNotIn("cluster ", itf.group_label(target))
+            self.assertIn("florence2", itf.group_label(target))
+
+    def test_a_group_with_no_model_at_all_still_renders(self):
+        self.assertEqual(
+            itf.group_label({"kind": "cluster", "failures": [], "cluster": {}}),
+            "unknown model",
+        )
+
+
+class CrossGpuAttributionTests(unittest.TestCase):
+    TEST = "tests/models/t5/test_modeling_t5.py::T5ModelIntegrationTests::test_x"
+
+    def setUp(self):
+        self.attr = {
+            ("t5", "single", self.TEST): {
+                "status": itf._GOOD_STATUS,
+                "bad_commit": "9f66415a",
+            }
+        }
+
+    def test_the_other_machine_type_inherits_the_pin(self):
+        # Upstream bisects one machine type; the daily CI runs both, so the
+        # multi-gpu half of the same regression arrives unattributed.
+        rec = itf.lookup_attribution(self.attr, ("t5", "multi", self.TEST))
+        self.assertEqual(rec["bad_commit"], "9f66415a")
+        self.assertEqual(rec["attributed_gpu"], "single")
+
+    def test_the_pinned_machine_type_is_not_stamped(self):
+        rec = itf.lookup_attribution(self.attr, ("t5", "single", self.TEST))
+        self.assertNotIn("attributed_gpu", rec)
+
+    def test_a_different_test_does_not_inherit(self):
+        self.assertIsNone(
+            itf.lookup_attribution(self.attr, ("t5", "multi", "other.py::T::t"))
+        )
+
+    def test_an_unpinned_exact_record_still_loses_to_a_pin_elsewhere(self):
+        self.attr[("t5", "multi", self.TEST)] = {"status": "flaky: x"}
+        rec = itf.lookup_attribution(self.attr, ("t5", "multi", self.TEST))
+        self.assertEqual(rec["bad_commit"], "9f66415a")
+
+    def test_renders_where_the_pin_came_from(self):
+        failure = {
+            "model": "t5",
+            "gpu": "multi",
+            "test": self.TEST,
+            "failure_mode": "other",
+            "days_seen": 7,
+            "latest_trace": "boom",
+        }
+        target = {
+            "kind": "cluster",
+            "label": "c",
+            "failures": [failure],
+            "cluster": {
+                "bad_commit": "9f66415a",
+                "failures": [failure],
+                "attributed_gpu": "single",
+                "attributed_on": "2026-08-05",
+            },
+        }
+        text = "\n".join(itf._render_serge_target(target, 7))
+        self.assertIn("bisect ran on the single-gpu run", text)
+        self.assertIn("2026-08-05", text)
+
+
+class JobProducedResultsTests(unittest.TestCase):
+    def test_a_crashed_job_is_not_a_green_day(self):
+        # 2026-08-13 models_gpt_oss: reported nothing, so its 74 red tests
+        # simply vanished from the failure list.
+        crashed = {
+            "success": 0,
+            "skipped": 0,
+            "errors": 0,
+            "error": True,
+            "time_spent": [],
+        }
+        self.assertFalse(itf.model_job_produced_results(crashed))
+
+    def test_a_real_run_counts(self):
+        self.assertTrue(
+            itf.model_job_produced_results({"success": 141, "error": False})
+        )
+
+    def test_a_job_with_no_successes_does_not_count(self):
+        self.assertFalse(itf.model_job_produced_results({"success": 0, "error": False}))
+        self.assertFalse(itf.model_job_produced_results(None))
+
+
+def _history(days):
+    """days: {date: (models_with_results, {failing keys})}"""
+    return {
+        "dates": sorted(days),
+        "ran": {d: set(v[0]) for d, v in days.items()},
+        "failures": {d: set(v[1]) for d, v in days.items()},
+    }
+
+
+class FindFlipTests(unittest.TestCase):
+    KEY = ("foo", "single", "tests/models/foo/test_modeling_foo.py::F::test_x")
+
+    def test_finds_the_day_it_went_red(self):
+        h = _history(
+            {
+                "2026-08-01": ({"foo"}, set()),
+                "2026-08-02": ({"foo"}, {self.KEY}),
+                "2026-08-03": ({"foo"}, {self.KEY}),
+            }
+        )
+        self.assertEqual(itf.find_flip(self.KEY, h), ("2026-08-01", "2026-08-02"))
+
+    def test_a_day_without_results_is_skipped_not_treated_as_green(self):
+        h = _history(
+            {
+                "2026-08-01": ({"foo"}, {self.KEY}),
+                "2026-08-02": (set(), set()),  # job crashed
+                "2026-08-03": ({"foo"}, {self.KEY}),
+            }
+        )
+        self.assertIsNone(itf.find_flip(self.KEY, h))
+
+    def test_red_for_the_whole_window_has_no_bracket(self):
+        h = _history(
+            {
+                "2026-08-01": ({"foo"}, {self.KEY}),
+                "2026-08-02": ({"foo"}, {self.KEY}),
+            }
+        )
+        self.assertIsNone(itf.find_flip(self.KEY, h))
+
+    def test_green_on_the_newest_day_has_no_bracket(self):
+        h = _history(
+            {
+                "2026-08-01": ({"foo"}, {self.KEY}),
+                "2026-08-02": ({"foo"}, set()),
+            }
+        )
+        self.assertIsNone(itf.find_flip(self.KEY, h))
+
+
+class ComputeBracketTests(unittest.TestCase):
+    NODEID = "tests/models/foo/test_modeling_foo.py::F::test_x"
+    FAILURE = {"model": "foo", "gpu": "single", "test": NODEID}
+    TODAY = datetime.date(2026, 8, 3)
+
+    def setUp(self):
+        self.history = _history(
+            {
+                "2026-08-01": ({"foo"}, set()),
+                "2026-08-02": ({"foo"}, {("foo", "single", self.NODEID)}),
+            }
+        )
+        self.shas = {
+            "2026-08-01": {"single": "good123"},
+            "2026-08-02": {"single": "bad456"},
+        }
+
+    def _run(self, status="passed", compare={"total_commits": 3}, **kw):
+        with (
+            patch.object(itf, "collated_test_status", return_value=status),
+            patch.object(itf, "compare_commits", return_value=compare),
+        ):
+            return itf.compute_bracket(
+                self.FAILURE,
+                self.history,
+                self.shas,
+                repo="huggingface/transformers",
+                today=self.TODAY,
+                **kw,
+            )
+
+    def test_a_confirmed_pass_produces_a_bracket(self):
+        b = self._run()
+        self.assertEqual(b["good_sha"], "good123")
+        self.assertEqual(b["bad_sha"], "bad456")
+        self.assertEqual(b["commits"], 3)
+
+    def test_skipped_is_not_a_pass(self):
+        self.assertIsNone(self._run(status="skipped"))
+
+    def test_absent_from_the_report_is_not_a_pass(self):
+        self.assertIsNone(self._run(status=itf.STATUS_ABSENT))
+
+    def test_an_unresolvable_sha_drops_the_bracket(self):
+        # A daily-CI commit can be force-pushed away (918dbf1 → HTTP 422).
+        self.assertIsNone(self._run(compare=None))
+
+    def test_zero_commits_between_is_a_flake_not_a_regression(self):
+        self.assertIsNone(self._run(compare={"total_commits": 0}))
+
+    def test_a_green_day_older_than_the_cap_is_ignored(self):
+        self.assertIsNone(self._run(max_age_days=0))
+
+    def test_a_missing_day_sha_drops_the_bracket(self):
+        self.shas = {"2026-08-01": {"single": "good123"}}
+        self.assertIsNone(self._run())
+
+
+class BracketRenderingTests(unittest.TestCase):
+    def _target(self, **bracket):
+        base = {
+            "good_day": "2026-08-03",
+            "good_sha": "b3a3603",
+            "bad_day": "2026-08-04",
+            "bad_sha": "ff2421c",
+            "commits": 14,
+            "compare": "https://example/compare",
+            "evidence": "collated_reports: `passed` …",
+            "subjects": ["Update daily CI Docker image to torch 2.13 (#47738)"],
+        }
+        base.update(bracket)
+        return {
+            "kind": "model_failures",
+            "label": "foo",
+            "failures": [],
+            "cluster": None,
+            "bracket": base,
+        }
+
+    def test_emits_a_machine_readable_block(self):
+        text = "\n".join(itf._bracket_lines(self._target()))
+        self.assertIn("```serge-bisect", text)
+        self.assertIn('"good_sha": "b3a3603"', text)
+        self.assertIn("b3a3603", text)
+        self.assertIn("torch 2.13", text)
+
+    def test_many_unrelated_models_reads_as_infrastructure(self):
+        models = [f"m{i}" for i in range(itf._INFRA_MODEL_THRESHOLD)]
+        text = "\n".join(itf._bracket_lines(self._target(shared_models=models)))
+        self.assertIn("infrastructure", text)
+
+    def test_one_model_does_not(self):
+        text = "\n".join(itf._bracket_lines(self._target(shared_models=["foo"])))
+        self.assertNotIn("infrastructure", text)
+
+    def test_no_bracket_renders_nothing(self):
+        self.assertEqual(itf._bracket_lines({"bracket": None}), [])
+
+
+class FlakyHandlingTests(unittest.TestCase):
+    def _group(self, flaky, label="g"):
+        status = "flaky: test both passed and failed …: 0cdd8a19" if flaky else ""
+        return {
+            "kind": "model_failures",
+            "label": label,
+            "model": "foo",
+            "failure_mode": "output_mismatch",
+            "terminal_exc": "AssertionError",
+            "cluster": None,
+            "failures": [
+                {
+                    "model": "foo",
+                    "gpu": "single",
+                    "test": "tests/models/foo/test_modeling_foo.py::F::test_x",
+                    "status": status,
+                }
+            ],
+        }
+
+    def test_flaky_is_warned_about_in_the_task_context(self):
+        text = "\n".join(itf._flaky_lines(self._group(True)))
+        self.assertIn("Known flaky upstream", text)
+        self.assertIn("0cdd8a19", text)
+        self.assertIn("does not prove a fix", text)
+
+    def test_non_flaky_group_says_nothing(self):
+        self.assertEqual(itf._flaky_lines(self._group(False)), [])
+
+    def test_flaky_groups_lose_the_tie_for_a_dispatch_slot(self):
+        targets = [self._group(True, "flaky-a"), self._group(False, "solid-b")]
+        picked = itf.select_dispatch_targets(
+            targets, 1, shuffle=False, mix_categories=True
+        )
+        self.assertEqual([t["label"] for t in picked], ["solid-b"])
+
+    def test_flaky_groups_are_not_excluded_when_there_is_room(self):
+        targets = [self._group(True, "flaky-a"), self._group(False, "solid-b")]
+        picked = itf.select_dispatch_targets(
+            targets, 2, shuffle=False, mix_categories=True
+        )
+        self.assertEqual(len(picked), 2)
+
+    def test_a_flaky_group_is_never_bracketed(self):
+        targets = [self._group(True)]
+        with patch.object(itf, "compute_bracket") as cb:
+            itf.attach_brackets(targets, _history({}), {}, repo="x/y")
+        cb.assert_not_called()
+        self.assertIsNone(targets[0]["bracket"])
+
+
+class AttachBracketsTests(unittest.TestCase):
+    def _group(self, tests):
+        return {
+            "kind": "model_failures",
+            "label": "g",
+            "cluster": None,
+            "failures": [
+                {"model": "foo", "gpu": "single", "test": t, "status": ""}
+                for t in tests
+            ],
+        }
+
+    def test_members_must_agree_on_one_window(self):
+        targets = [self._group(["a", "b"])]
+        brackets = [
+            {"good_day": "2026-08-01", "bad_day": "2026-08-02"},
+            {"good_day": "2026-07-20", "bad_day": "2026-07-21"},
+        ]
+        with patch.object(itf, "compute_bracket", side_effect=brackets):
+            itf.attach_brackets(targets, _history({}), {}, repo="x/y")
+        self.assertIsNone(targets[0]["bracket"])
+
+    def test_one_member_without_a_bracket_drops_the_group(self):
+        targets = [self._group(["a", "b"])]
+        with patch.object(
+            itf,
+            "compute_bracket",
+            side_effect=[{"good_day": "d1", "bad_day": "d2"}, None],
+        ):
+            itf.attach_brackets(targets, _history({}), {}, repo="x/y")
+        self.assertIsNone(targets[0]["bracket"])
+
+    def test_an_already_pinned_group_is_not_bracketed(self):
+        # The pin names the culprit exactly; a 20-commit window around it is
+        # noise, and deriving it costs a ~25 MB download.
+        target = self._group(["a"])
+        target["cluster"] = {"bad_commit": "deadbeef"}
+        with patch.object(itf, "compute_bracket") as cb:
+            itf.attach_brackets([target], _history({}), {}, repo="x/y")
+        cb.assert_not_called()
+        self.assertIsNone(target["bracket"])
+
+    def test_shared_windows_collect_every_model(self):
+        a, b = self._group(["a"]), self._group(["b"])
+        b["failures"][0]["model"] = "bar"
+        window = {"good_day": "d1", "bad_day": "d2"}
+        with patch.object(
+            itf, "compute_bracket", side_effect=[dict(window), dict(window)]
+        ):
+            itf.attach_brackets([a, b], _history({}), {}, repo="x/y")
+        self.assertEqual(a["bracket"]["shared_models"], ["bar", "foo"])
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class OomLoadShapeTest(unittest.TestCase):
+    """A checkpoint too big for the card fills it one tensor at a time, so the
+    failing request is small and the card is full -- byte-for-byte a retention
+    bug. Only the frame separates them, and getting it wrong sends the agent
+    after a `tearDown` that cannot free anything."""
+
+    def test_an_oom_inside_the_loading_path_is_load_shaped_not_retention(self):
+        shape, nums = itf.oom_shape(_OOM_LOAD_TRACE)
+        self.assertEqual(shape, itf.OOM_LOAD)
+        # The arithmetic on its own says retention: a trivial request on a card
+        # PyTorch already holds 98% of. This is exactly the trap.
+        self.assertLess(nums["want"], itf._OOM_TRIVIAL_WANT_GIB)
+        self.assertGreater(nums["held"], nums["capacity"] * itf._OOM_HELD_SHARE)
+
+    def test_the_same_numbers_off_the_loading_path_stay_retention(self):
+        self.assertEqual(itf.oom_shape(_OOM_RETENTION_TRACE)[0], itf.OOM_RETENTION)
+
+    def test_one_allocation_over_the_whole_card_is_still_capacity(self):
+        # Capacity wins even on the loading path: no device map makes a single
+        # allocation larger than the card fit.
+        trace = (
+            "core_model_loading.py:1219: in _materialize_copy\n" + _OOM_CAPACITY_TRACE
+        )
+        self.assertEqual(itf.oom_shape(trace)[0], itf.OOM_CAPACITY)
+
+    def test_an_unparseable_load_oom_is_still_recognised(self):
+        trace = "core_model_loading.py: torch.OutOfMemoryError: CUDA out of memory."
+        self.assertEqual(itf.oom_shape(trace), (itf.OOM_LOAD, {}))
+
+
+class OomLoadGuidanceTest(unittest.TestCase):
+    def test_a_load_oom_is_pointed_at_the_device_map_not_a_teardown(self):
+        text = itf.instruction_addendum(_oom_target(_OOM_LOAD_TRACE))
+        self.assertIn('device_map="auto"', text)
+        # The lazy idiom the maintainers asked for, not an eager loading setUpClass.
+        self.assertIn("def get_model(cls):", text)
+        self.assertIn("cls.model = None", text)
+        # The retention block's fix must not be what this group is told to do.
+        self.assertNotIn("def tearDown(self)", text)
+
+    def test_a_load_oom_permits_trimming_tokens_but_not_the_assertion(self):
+        text = itf.instruction_addendum(_oom_target(_OOM_LOAD_TRACE))
+        self.assertIn("max_new_tokens", text)
+        self.assertIn("assertion must still hold unchanged", text)
+
+    def test_a_load_oom_dispatches_instead_of_waiting_for_a_bigger_runner(self):
+        self.assertEqual(itf.env_only_reason(_oom_target(_OOM_LOAD_TRACE)), "")
+
+    def test_a_pure_capacity_group_is_still_deferred(self):
+        self.assertIn(
+            "runner capacity", itf.env_only_reason(_oom_target(_OOM_CAPACITY_TRACE))
+        )
+
+    def test_a_retention_group_keeps_its_teardown_guidance(self):
+        text = itf.instruction_addendum(_oom_target(_OOM_RETENTION_TRACE))
+        self.assertIn("def tearDown(self)", text)
+
+
+class OomClusterGuidanceTest(unittest.TestCase):
+    """The muse_glimmer regression: a bad-commit cluster that was uniformly OOM
+    got the trunk alone, so the agent never saw any memory guidance."""
+
+    def test_an_all_oom_cluster_now_gets_the_memory_guidance(self):
+        text = itf.instruction_addendum(_oom_cluster(_OOM_LOAD_TRACE, _OOM_LOAD_TRACE))
+        self.assertIn('device_map="auto"', text)
+
+    def test_a_mixed_mode_cluster_still_gets_the_trunk_alone(self):
+        cluster = _oom_cluster(_OOM_LOAD_TRACE)
+        cluster["failures"].append(
+            _failure("muse_glimmer", "single", "t.py::T::x", "E   AssertionError: nope")
+        )
+        self.assertEqual(itf.instruction_addendum(cluster), "")
+
+    def test_an_empty_cluster_does_not_claim_to_be_oom(self):
+        cluster = _oom_cluster()
+        self.assertEqual(itf.instruction_addendum(cluster), "")

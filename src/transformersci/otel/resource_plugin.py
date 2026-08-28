@@ -28,11 +28,14 @@ independent jobs via pytest hooks:
   lives).
 
 Hooks: ``pytest_addoption`` (config), ``pytest_sessionstart`` (install the
-mirror), and ``pytest_runtest_protocol`` (sample around each test).
+mirror), ``pytest_runtest_protocol`` (sample around each test), and
+``pytest_runtest_logreport`` (stamp each span with the real worker-measured
+execution time so dashboards are not misled by xdist queue-wait overhead).
 """
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import sys
@@ -70,6 +73,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store",
         default=None,
         help="Write per-test CPU, RSS, and optional CUDA metrics to the given JSONL file.",
+    )
+    group.addoption(
+        "--resource-gc-probe",
+        action="store_true",
+        default=False,
+        help=(
+            "Also record CUDA memory after a gc.collect() at the end of each test, "
+            "which distinguishes uncollected garbage from a live reference. Off by "
+            "default: collecting mid-run perturbs what is being measured."
+        ),
     )
 
 
@@ -118,10 +131,20 @@ def split_pytest_nodeid(nodeid: str) -> dict[str, str]:
 
 
 class ResourceSampler:
-    def __init__(self) -> None:
+    """Per-test CPU/RSS/CUDA sampling.
+
+    ``gc_probe`` adds one extra measurement: after the raw end-of-test reading,
+    run ``gc.collect()`` and read CUDA memory again. That second number is what
+    separates the two reasons a test leaves device memory behind — see
+    ``cuda_delta_after_gc_bytes`` in :meth:`stop`. It is opt-in because
+    collecting mid-run perturbs the very behaviour we are measuring.
+    """
+
+    def __init__(self, gc_probe: bool = False) -> None:
         if psutil is None:  # pragma: no cover
             raise RuntimeError("psutil is required for pytest resource monitoring")
 
+        self.gc_probe = gc_probe
         self.process = psutil.Process(os.getpid())
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
@@ -143,7 +166,10 @@ class ResourceSampler:
         if not self.cuda_available:
             return 0
         try:
-            return int(torch.cuda.memory_allocated())  # type: ignore[union-attr]
+            return sum(
+                int(torch.cuda.memory_allocated(device))  # type: ignore[union-attr]
+                for device in range(torch.cuda.device_count())  # type: ignore[union-attr]
+            )
         except Exception:  # pragma: no cover
             return 0
 
@@ -172,14 +198,39 @@ class ResourceSampler:
             self.peak_cuda_allocated_bytes, end_cuda_allocated_bytes
         )
 
-        return {
+        metrics: dict[str, float | int] = {
             "cpu_time_seconds": max(0.0, end_cpu_time - self.start_cpu_time),
             "rss_delta_bytes": end_rss_bytes - self.start_rss_bytes,
             "rss_end_bytes": end_rss_bytes,
             "rss_peak_bytes": self.peak_rss_bytes,
             "cuda_end_allocated_bytes": end_cuda_allocated_bytes,
             "cuda_peak_allocated_bytes": self.peak_cuda_allocated_bytes,
+            # Device memory this test hands to the NEXT test in the same process.
+            # The absolute end/peak numbers cannot say who is responsible — every
+            # test after a leaky one looks huge. The delta attributes it. This is
+            # the signal behind the daily OOM groups: a test that retains a
+            # multi-GB model leaves the rest of its file to fail on a full card,
+            # asking for tens of MiB.
+            "cuda_start_allocated_bytes": self.start_cuda_allocated_bytes,
+            "cuda_delta_bytes": end_cuda_allocated_bytes
+            - self.start_cuda_allocated_bytes,
         }
+        if self.gc_probe and self.cuda_available:
+            # Why a test retained memory, not just that it did:
+            #   delta > 0 and after_gc ~ 0  → unreferenced garbage CPython had not
+            #       collected yet. A `cleanup(torch_device, gc_collect=True)` in
+            #       tearDown fixes it.
+            #   delta > 0 and after_gc > 0  → something still HOLDS a reference
+            #       (a class attribute, or a failed test's traceback pinning the
+            #       frame that owns the model). No tearDown cleanup can free that,
+            #       so the fix has to drop the reference itself.
+            gc.collect()
+            after_gc = self._cuda_allocated_bytes()
+            metrics["cuda_end_after_gc_bytes"] = after_gc
+            metrics["cuda_delta_after_gc_bytes"] = (
+                after_gc - self.start_cuda_allocated_bytes
+            )
+        return metrics
 
 
 def metrics_file_path(config: pytest.Config | None = None) -> Path | None:
@@ -194,6 +245,19 @@ def metrics_file_path(config: pytest.Config | None = None) -> Path | None:
     if not raw_path:
         return None
     return Path(raw_path)
+
+
+def gc_probe_enabled(config: pytest.Config | None = None) -> bool:
+    """Whether to take the post-``gc.collect()`` CUDA reading. Env var mirrors the
+    flag so a CI job can turn it on without changing its pytest invocation."""
+    if config is not None and config.getoption("resource_gc_probe", default=False):
+        return True
+    return (os.getenv("PYTEST_RESOURCE_GC_PROBE") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def write_resource_record(item: pytest.Item, metrics: dict[str, float | int]) -> None:
@@ -352,13 +416,174 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     _wrap_active_tracer_exporters()
 
 
+# Accumulated worker-side phase durations (setup + call + teardown) keyed by
+# nodeid.  Populated by pytest_runtest_logreport; entries are removed once the
+# teardown phase report arrives and the span attribute has been stamped.
+_worker_durations: dict[str, float] = {}
+
+# CUDA bytes allocated when each test's setup began, keyed by nodeid. Lives in
+# the WORKER process (see pytest_runtest_makereport) because that is where the
+# allocations are: under xdist the controller holds no CUDA memory at all.
+_cuda_at_setup: dict[str, int] = {}
+
+# The user_property carrying retained device memory from worker to controller.
+CUDA_DELTA_PROPERTY = "cuda_delta_bytes"
+
+# Same channel, for the post-gc.collect() reading when the probe is on. It has to
+# ride the span like the raw delta does: the resource JSONL it also lands in has
+# no transport out of a GitHub runner, so a probe run that only wrote there would
+# produce a number nobody can read.
+CUDA_DELTA_AFTER_GC_PROPERTY = "cuda_delta_after_gc_bytes"
+
+# The two ABSOLUTE readings the delta is computed from. The delta alone cannot
+# be read: it is a net change over the test's window, so a negative one is
+# ambiguous — `-17.5 GiB` is equally "inherited 17.5, ended at 0" and "inherited
+# 20, ended at 2.5". Prod is full of them (6767 series on 2026-08-18; gpt_oss's
+# `test_model_outputs_02` reads -17.50 GiB while allocating nothing itself — it
+# fails on an ImportError and merely happens to straddle the release of an
+# earlier test's 18.49 GiB).
+#
+# `inherited` is also the only thing that answers "what did this test start
+# with", which is the question an OOM actually turns on: a test asking for a few
+# MiB on a card someone else filled.
+CUDA_INHERITED_PROPERTY = "cuda_inherited_bytes"
+CUDA_RETAINED_PROPERTY = "cuda_retained_bytes"
+
+
+def _cuda_allocated_now() -> int | None:
+    """CUDA bytes currently allocated, or ``None`` when there is no CUDA to read
+    (no torch, CPU-only job, or a torch that raises on a driverless box)."""
+    if torch is None:
+        return None
+    try:
+        if not torch.cuda.is_available():
+            return None
+        return sum(
+            int(torch.cuda.memory_allocated(device))
+            for device in range(torch.cuda.device_count())
+        )
+    except Exception:  # pragma: no cover - defensive: never break a test run
+        return None
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> Any:
+    """Attach retained device memory to the test's report, worker-side.
+
+    This is the transport, and it has to be this hook. The span is stamped on the
+    *controller* (``pytest_runtest_logreport``), but under pytest-xdist the
+    controller process never allocates CUDA memory — the worker does. So the
+    worker measures here and hands the number over on ``report.user_properties``,
+    which xdist serialises into the controller's copy of the report. It is the
+    same worker→controller hop ``report.duration`` already rides.
+
+    Measured from the start of *setup* to the end of *teardown*, so a fixture that
+    allocates is attributed to the test that used it. No ``gc.collect()`` — the
+    number we want is what the next test actually inherits, not what it would
+    inherit if something collected first.
+    """
+    outcome = yield
+    if call.when == "setup":
+        allocated = _cuda_allocated_now()
+        if allocated is not None:
+            _cuda_at_setup[item.nodeid] = allocated
+        return
+    if call.when != "teardown":
+        return
+    start = _cuda_at_setup.pop(item.nodeid, None)
+    end = _cuda_allocated_now()
+    if start is None or end is None:
+        return
+    try:
+        report = outcome.get_result()
+    except Exception:  # pragma: no cover - a failed report is not ours to fix
+        return
+    report.user_properties.append((CUDA_DELTA_PROPERTY, end - start))
+    # Both sides of that subtraction, so the delta stops being ambiguous: `end`
+    # is what the next test really inherits (never negative), `start` is what
+    # this one was handed.
+    report.user_properties.append((CUDA_INHERITED_PROPERTY, start))
+    report.user_properties.append((CUDA_RETAINED_PROPERTY, end))
+    if not gc_probe_enabled(item.config):
+        return
+    # Opt-in second reading: how much of that delta survives a collection. It is
+    # what separates "a tearDown would fix this" from "something holds a live
+    # reference and no tearDown can". Taken after the raw number is already
+    # recorded, so enabling the probe cannot change what `cuda_delta_bytes` says.
+    gc.collect()
+    after_gc = _cuda_allocated_now()
+    if after_gc is not None:
+        report.user_properties.append((CUDA_DELTA_AFTER_GC_PROPERTY, after_gc - start))
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Stamp the open test span with the real worker-measured execution time.
+
+    Under pytest-xdist the per-test span is opened/closed on the *controller*
+    by pytest-opentelemetry's ``pytest_runtest_protocol`` hookwrapper, but its
+    wall-clock duration includes xdist queue-wait time and IPC overhead — not
+    just the test's execution time.  ``report.duration`` is measured on the
+    *worker* for each phase (setup / call / teardown), so summing the three
+    phases gives the real time the worker spent on the test.
+
+    We set ``pytest.worker_duration_seconds`` on the still-open protocol span
+    (``pytest_runtest_logreport`` is called while still inside the hookwrapper's
+    ``yield``) so dashboards can use it instead of the misleading span duration.
+    In non-xdist runs the two values are identical; the attribute is still set
+    for consistency.
+    """
+    _worker_durations[report.nodeid] = (
+        _worker_durations.get(report.nodeid, 0.0) + report.duration
+    )
+
+    if report.when != "teardown":
+        return
+
+    total = _worker_durations.pop(report.nodeid, 0.0)
+
+    try:
+        from opentelemetry import trace
+    except ImportError:  # pragma: no cover
+        return
+
+    span = trace.get_current_span()
+    if not span.is_recording():
+        return
+
+    span.set_attribute("pytest.worker_duration_seconds", total)
+
+    # Device memory this test leaves behind for the next test in its process,
+    # measured in the worker and carried here on the report (see
+    # pytest_runtest_makereport). Absent for CPU jobs and for any run without
+    # torch/CUDA, in which case no attribute is set at all — the exporter then
+    # emits no series rather than a misleading zero.
+    properties = dict(report.user_properties)
+    retained = properties.get(CUDA_DELTA_PROPERTY)
+    if isinstance(retained, int):
+        span.set_attribute("pytest.cuda_delta_bytes", retained)
+    # Additive: an older exporter ignores these, and a run without them keeps
+    # emitting exactly the series it did before.
+    for prop, attribute in (
+        (CUDA_INHERITED_PROPERTY, "pytest.cuda_inherited_bytes"),
+        (CUDA_RETAINED_PROPERTY, "pytest.cuda_retained_bytes"),
+    ):
+        value = properties.get(prop)
+        if isinstance(value, int):
+            span.set_attribute(attribute, value)
+    # Only present when the gc probe ran. Its whole point is to be readable
+    # somewhere, so it rides the span rather than only the untransported JSONL.
+    after_gc = properties.get(CUDA_DELTA_AFTER_GC_PROPERTY)
+    if isinstance(after_gc, int):
+        span.set_attribute("pytest.cuda_delta_after_gc_bytes", after_gc)
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> Any:
     if psutil is None or metrics_file_path(item.config) is None:
         yield
         return
 
-    sampler = ResourceSampler()
+    sampler = ResourceSampler(gc_probe=gc_probe_enabled(item.config))
     sampler.start()
     outcome = yield
     metrics = sampler.stop()

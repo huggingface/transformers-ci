@@ -80,6 +80,7 @@ from .github_api import (
     search_issues,
     update_issue_body,
 )
+from . import pr_evidence
 from .serge_dispatch import (
     SergeDispatchError,
     build_task_payload,
@@ -458,9 +459,19 @@ def build_dashboard_payload(
     tracking_issue: int | None = None,
     slack_channel: str | None = None,
     notify_task_finished: bool = False,
+    grafana_url: str = "",
+    nodeid: str = "",
+    trace_id: str = "",
+    test_job: str = "",
+    pr: str = "",
 ) -> dict:
     """Build the ``POST /tasks`` body for one dashboard failure, over the shared
-    :func:`serge_dispatch.build_task_payload`."""
+    :func:`serge_dispatch.build_task_payload`.
+
+    The failure came *from* the dashboard, so we can hand Serge the link back to
+    it for the PR body — including the ``trace_id``, which populates the per-test
+    view's traceback panel. Serge itself knows no Grafana URL; see
+    :mod:`transformersci.agentic.pr_evidence`."""
     return build_task_payload(
         repo,
         base_ref,
@@ -472,6 +483,13 @@ def build_dashboard_payload(
         tracking_issue=tracking_issue,
         slack_channel=slack_channel,
         notify_task_finished=notify_task_finished,
+        test_links=pr_evidence.test_links(
+            grafana_url,
+            [nodeid],
+            test_job=test_job,
+            pr=pr,
+            trace_ids={nodeid: trace_id} if trace_id else None,
+        ),
     )
 
 
@@ -865,6 +883,11 @@ def main(argv: list[str] | None = None) -> int:
         tracking_issue=issue_number,
         slack_channel=args.slack_channel,
         notify_task_finished=args.notify_task_finished,
+        grafana_url=args.grafana_url,
+        nodeid=resolved_nodeid,
+        trace_id=trace_id or "",
+        test_job=parsed.get("test_job") or "",
+        pr=parsed.get("pr") or "",
     )
     try:
         resp = dispatch_to_serge(

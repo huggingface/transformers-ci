@@ -334,7 +334,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[$__range])))) * 1000))",
+          "expr": "topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -343,7 +343,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (pr, title) (topk(1, max without (instance) (last_over_time(pytest_pr_info{pr=~\"[0-9]+\",title!=\"\"}[$__range]))) by (pr))",
+          "expr": "(topk by (pr) (1, max by (pr, title) (max_over_time((timestamp(pytest_pr_info{pr=~\"[0-9]+\",title!=\"\"}))[7d:])))) and on (pr) (topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000)))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -352,7 +352,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "count by (pr) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[$__range])))))",
+          "expr": "(count by (pr) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[90d])))))) and on (pr) (topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000)))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -361,7 +361,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr=~\"[0-9]+\"}[$__range]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{pr=~\"[0-9]+\"}[$__range])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[$__range])))) and on (pr, run_id) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[$__range])))) == on (pr) group_left() max by (pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[$__range]))))))",
+          "expr": "(sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr=~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{pr=~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) and on (pr, run_id) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) == on (pr) group_left() max by (pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d]))))))) and on (pr) (topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000)))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -370,7 +370,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "100 * sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr=~\"[0-9]+\"}[$__range]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{pr=~\"[0-9]+\"}[$__range])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[$__range])))) and on (pr, run_id) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[$__range])))) == on (pr) group_left() max by (pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[$__range])))))) / sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{pr=~\"[0-9]+\"}[$__range]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{pr=~\"[0-9]+\"}[$__range])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[$__range])))) and on (pr, run_id) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[$__range])))) == on (pr) group_left() max by (pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[$__range]))))))",
+          "expr": "(100 * sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr=~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{pr=~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) and on (pr, run_id) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) == on (pr) group_left() max by (pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))))) / sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{pr=~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{pr=~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) and on (pr, run_id) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) == on (pr) group_left() max by (pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d]))))))) and on (pr) (topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000)))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -379,7 +379,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "floor((time() - max by (pr) (max without (instance) (last_over_time(pytest_pr_created_at_seconds{pr=~\"[0-9]+\"}[$__range])))) / 86400)",
+          "expr": "(floor((time() - max by (pr) (max without (instance) (last_over_time(pytest_pr_created_at_seconds{pr=~\"[0-9]+\"}[7d])))) / 86400)) and on (pr) (topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000)))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -388,7 +388,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (pr) (max without (instance) (last_over_time(pytest_pr_state{pr=~\"[0-9]+\"}[$__range])))",
+          "expr": "(max by (pr) (max without (instance) (last_over_time(pytest_pr_state{pr=~\"[0-9]+\"}[7d])))) and on (pr) (topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000)))",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -464,7 +464,9 @@
           }
         }
       ],
-      "type": "table"
+      "type": "table",
+      "timeFrom": "7d",
+      "description": "The 10 most recent PRs to run CI. Bounded to the last 7d, not the dashboard time range: the selector matches every PR in the window, so at the 90d default it scanned 1,311 PRs and shipped ~6,700 frames to the browser to render 10 rows -- 12s of Prometheus work every 60s refresh, which is slower than the refresh itself. The detail columns are also joined against the top 10 rather than fetched for every PR in the window. `Runs` alone still counts over 90d -- it is the PR's total run count and widening just that target costs nothing once the join has collapsed the output. `Failures`/`Rate` stay on the 7d window: widening them costs 2.4x (8.7s vs 3.6s) and would undo the fix."
     },
     {
       "datasource": {
@@ -497,9 +499,49 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "Live"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "image"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 46
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PC9zdmc+",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "Started"
             },
             "properties": [
+              {
+                "id": "custom.width",
+                "value": 125
+              },
               {
                 "id": "unit",
                 "value": "dateTimeFromNow"
@@ -515,6 +557,10 @@
               {
                 "id": "unit",
                 "value": "percent"
+              },
+              {
+                "id": "custom.width",
+                "value": 130
               },
               {
                 "id": "custom.cellOptions",
@@ -589,10 +635,6 @@
                     "targetBlank": false
                   }
                 ]
-              },
-              {
-                "id": "custom.width",
-                "value": 480
               }
             ]
           },
@@ -602,6 +644,10 @@
               "options": "Test Time"
             },
             "properties": [
+              {
+                "id": "custom.width",
+                "value": 105
+              },
               {
                 "id": "unit",
                 "value": "s"
@@ -640,7 +686,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 80
+                "value": 95
               }
             ]
           },
@@ -651,8 +697,96 @@
             },
             "properties": [
               {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
                 "id": "unit",
                 "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Hardware"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "CPU",
+                        "index": 0
+                      },
+                      "2": {
+                        "text": "GPU",
+                        "index": 1
+                      },
+                      "3": {
+                        "text": "CPU + GPU",
+                        "index": 2
+                      },
+                      "4": {
+                        "text": "xGPU",
+                        "index": 3
+                      },
+                      "5": {
+                        "text": "CPU + xGPU",
+                        "index": 4
+                      },
+                      "6": {
+                        "text": "GPU + xGPU",
+                        "index": 5
+                      },
+                      "7": {
+                        "text": "CPU + GPU + xGPU",
+                        "index": 6
+                      }
+                    }
+                  },
+                  {
+                    "type": "special",
+                    "options": {
+                      "match": "null",
+                      "result": {
+                        "text": "-",
+                        "index": 7
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Branch"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tests"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 85
               }
             ]
           }
@@ -686,8 +820,21 @@
       "pluginVersion": "12.0.0",
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "editorMode": "code",
-          "expr": "topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[$__range]))))) * 1000",
+          "expr": "max by (run_id, pr) (last_over_time(pytest_run_active{pr!~\"[0-9]+\"}[5m]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Active"
+        },
+        {
+          "editorMode": "code",
+          "expr": "(topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) or max by (run_id, pr) (last_over_time(pytest_run_active_start_time_seconds{pr!~\"[0-9]+\"}[5m]))) * 1000",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -696,7 +843,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "count by (run_id, pr) (max without (instance) (last_over_time(pytest_run_job_member_info{pr!~\"[0-9]+\"}[$__range])))",
+          "expr": "(count by (run_id, pr) (max without (instance) (last_over_time(pytest_run_job_member_info{pr!~\"[0-9]+\"}[7d])))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -705,7 +852,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{pr!~\"[0-9]+\"}[$__range]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{pr!~\"[0-9]+\"}[$__range])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[$__range]))))",
+          "expr": "(max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{pr!~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{pr!~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -714,7 +861,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr, commit_message, html_url) (max without (instance) (last_over_time(pytest_run_info{pr!~\"[0-9]+\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[$__range]))))",
+          "expr": "(max by (run_id, pr, commit_message, html_url) (max without (instance) (last_over_time(pytest_run_info{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -723,7 +870,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_duration_seconds{pr!~\"[0-9]+\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[$__range]))))",
+          "expr": "(max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_duration_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -732,7 +879,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "100 * max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr!~\"[0-9]+\"}[$__range]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{pr!~\"[0-9]+\"}[$__range])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[$__range])))) / max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{pr!~\"[0-9]+\"}[$__range]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{pr!~\"[0-9]+\"}[$__range])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[$__range]))))",
+          "expr": "(100 * max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr!~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{pr!~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d])))) / max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{pr!~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{pr!~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -741,12 +888,21 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_wall_seconds{pr!~\"[0-9]+\"}[$__range])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[$__range]))))",
+          "expr": "(max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_wall_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
           "refId": "Wall"
+        },
+        {
+          "editorMode": "code",
+          "expr": "(sum by (run_id, pr) (label_replace(group by (run_id, pr) (last_over_time(pytest_run_job_member_info{pr!~\"[0-9]+\",hardware=\"cpu\"}[7d])), \"hw\", \"cpu\", \"\", \"\") * 1 or label_replace(group by (run_id, pr) (last_over_time(pytest_run_job_member_info{pr!~\"[0-9]+\",hardware=~\"gpu|single-gpu\"}[7d])), \"hw\", \"gpu\", \"\", \"\") * 2 or label_replace(group by (run_id, pr) (last_over_time(pytest_run_job_member_info{pr!~\"[0-9]+\",hardware=\"multi-gpu\"}[7d])), \"hw\", \"xgpu\", \"\", \"\") * 4)) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "HW"
         }
       ],
       "title": "Branch Runs (no PR) - Last 10",
@@ -769,26 +925,30 @@
               "commit_sha": true
             },
             "indexByName": {
-              "run_id": 0,
-              "pr": 1,
-              "commit_message": 2,
-              "Value #Jobs": 3,
-              "Value #Total": 4,
-              "Value #Start": 5,
-              "Value #Duration": 6,
-              "Value #Wall": 7,
-              "Value #Rate": 8,
-              "html_url": 9
+              "run_id": 1,
+              "pr": 2,
+              "commit_message": 3,
+              "Value #Jobs": 4,
+              "Value #HW": 5,
+              "Value #Total": 6,
+              "Value #Start": 7,
+              "Value #Duration": 8,
+              "Value #Wall": 9,
+              "Value #Rate": 10,
+              "html_url": 11,
+              "Value #Active": 0
             },
             "renameByName": {
               "commit_message": "Commit",
               "Value #Start": "Started",
+              "Value #HW": "Hardware",
               "Value #Jobs": "Job Count",
               "Value #Total": "Tests",
               "Value #Duration": "Test Time",
               "Value #Rate": "Failure Rate",
               "Value #Wall": "Wall",
-              "pr": "Branch"
+              "pr": "Branch",
+              "Value #Active": "Live"
             }
           }
         },
@@ -811,7 +971,9 @@
           }
         }
       ],
-      "type": "table"
+      "type": "table",
+      "timeFrom": "7d",
+      "description": "The 10 most recent branch runs (no PR). Bounded to the last 7d, not the dashboard time range: the selector matches every branch run in the window, so at the 90d default it scanned 1,311 PRs and shipped ~6,700 frames to the browser to render 10 rows -- 12s of Prometheus work every 60s refresh, which is slower than the refresh itself. The detail columns are also joined against the top 10 rather than fetched for every branch run in the window."
     }
   ],
   "schemaVersion": 41,

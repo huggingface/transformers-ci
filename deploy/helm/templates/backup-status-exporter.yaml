@@ -1,0 +1,248 @@
+{{- if .Values.backupStatus.enabled }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backup-status-exporter
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup-status-exporter
+{{- range .Values.backupStatus.namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: backup-status-exporter
+  namespace: {{ . }}
+  labels:
+    {{- include "transformers-ci.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: backup-status-exporter
+rules:
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backup-status-exporter
+  namespace: {{ . }}
+  labels:
+    {{- include "transformers-ci.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: backup-status-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: backup-status-exporter
+subjects:
+  - kind: ServiceAccount
+    name: backup-status-exporter
+    namespace: {{ include "transformers-ci.namespace" $ }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-status-exporter
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup-status-exporter
+data:
+  exporter.py: |
+    import datetime as dt
+    import json
+    import os
+    import ssl
+    import urllib.error
+    import urllib.request
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    API = "https://kubernetes.default.svc"
+    TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    NAMESPACES = [n for n in os.environ.get("BACKUP_STATUS_NAMESPACES", "").split(",") if n]
+    LB = "{"
+    RB = "}"
+
+    def parse_time(value):
+        if not value:
+            return 0
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+
+    def prom_label(value):
+        return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+    def request_json(path):
+        with open(TOKEN_PATH, encoding="utf-8") as handle:
+            token = handle.read().strip()
+        req = urllib.request.Request(
+            API + path,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        )
+        context = ssl.create_default_context(cafile=CA_PATH)
+        with urllib.request.urlopen(req, context=context, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def owner_cronjob(job):
+        for owner in job.get("metadata", {}).get("ownerReferences", []) or []:
+            if owner.get("kind") == "CronJob" and owner.get("name"):
+                return owner["name"]
+        labels = job.get("metadata", {}).get("labels", {}) or {}
+        return labels.get("cronjob.kubernetes.io/name")
+
+    def job_status(job):
+        status = job.get("status", {}) or {}
+        if status.get("succeeded", 0) > 0:
+            return "succeeded"
+        if status.get("failed", 0) > 0:
+            return "failed"
+        if status.get("active", 0) > 0:
+            return "active"
+        return "unknown"
+
+    def latest_timestamp(job):
+        status = job.get("status", {}) or {}
+        metadata = job.get("metadata", {}) or {}
+        return max(
+            parse_time(status.get("completionTime")),
+            parse_time(status.get("startTime")),
+            parse_time(metadata.get("creationTimestamp")),
+        )
+
+    def collect_namespace(namespace):
+        cronjobs = request_json(f"/apis/batch/v1/namespaces/{namespace}/cronjobs").get("items", [])
+        jobs = request_json(f"/apis/batch/v1/namespaces/{namespace}/jobs").get("items", [])
+        jobs_by_cronjob = {}
+        for job in jobs:
+            cronjob = owner_cronjob(job)
+            if cronjob:
+                jobs_by_cronjob.setdefault(cronjob, []).append(job)
+
+        lines = []
+        for cronjob in cronjobs:
+            metadata = cronjob.get("metadata", {}) or {}
+            spec = cronjob.get("spec", {}) or {}
+            status = cronjob.get("status", {}) or {}
+            name = metadata.get("name", "")
+            if not name.startswith("backup-") and name not in {"serge-backup"}:
+                continue
+            labels = f'namespace="{prom_label(namespace)}",cronjob="{prom_label(name)}"'
+            schedule = prom_label(spec.get("schedule", ""))
+            suspend = 1 if spec.get("suspend") else 0
+            active = len(status.get("active", []) or [])
+            lines.append(f'backup_cronjob_info{LB}{labels},schedule="{schedule}"{RB} 1')
+            lines.append(f"backup_cronjob_suspended{LB}{labels}{RB} {suspend}")
+            lines.append(f"backup_cronjob_active_jobs{LB}{labels}{RB} {active}")
+            lines.append(
+                f"backup_cronjob_last_schedule_timestamp_seconds{LB}{labels}{RB} "
+                f"{parse_time(status.get('lastScheduleTime'))}"
+            )
+
+            latest = None
+            for job in jobs_by_cronjob.get(name, []):
+                if latest is None or latest_timestamp(job) > latest_timestamp(latest):
+                    latest = job
+            latest_state = job_status(latest) if latest else "missing"
+            for state in ("succeeded", "failed", "active", "missing", "unknown"):
+                lines.append(
+                    f'backup_cronjob_latest_job_status{LB}{labels},status="{state}"{RB} '
+                    f"{1 if latest_state == state else 0}"
+                )
+
+            last_success = 0
+            last_failure = 0
+            for job in jobs_by_cronjob.get(name, []):
+                status_obj = job.get("status", {}) or {}
+                if status_obj.get("succeeded", 0) > 0:
+                    last_success = max(last_success, parse_time(status_obj.get("completionTime")))
+                if status_obj.get("failed", 0) > 0:
+                    last_failure = max(last_failure, latest_timestamp(job))
+            lines.append(f"backup_cronjob_last_success_timestamp_seconds{LB}{labels}{RB} {last_success}")
+            lines.append(f"backup_cronjob_last_failure_timestamp_seconds{LB}{labels}{RB} {last_failure}")
+        return lines
+
+    def collect():
+        lines = [
+            "# HELP backup_cronjob_last_success_timestamp_seconds Completion timestamp of the latest successful backup job.",
+            "# TYPE backup_cronjob_last_success_timestamp_seconds gauge",
+            "# HELP backup_cronjob_latest_job_status Latest backup job status as one-hot labels.",
+            "# TYPE backup_cronjob_latest_job_status gauge",
+        ]
+        for namespace in NAMESPACES:
+            try:
+                lines.extend(collect_namespace(namespace))
+                lines.append(f'backup_status_scrape_error{LB}namespace="{prom_label(namespace)}"{RB} 0')
+            except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+                lines.append(f'backup_status_scrape_error{LB}namespace="{prom_label(namespace)}"{RB} 1')
+                lines.append(f'backup_status_scrape_error_info{LB}namespace="{prom_label(namespace)}",error="{prom_label(exc)}"{RB} 1')
+        return "\n".join(lines) + "\n"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path not in {"/", "/metrics"}:
+                self.send_response(404)
+                self.end_headers()
+                return
+            payload = collect().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, fmt, *args):
+            return
+
+    HTTPServer(("0.0.0.0", int(os.environ["PORT"])), Handler).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backup-status-exporter
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup-status-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "transformers-ci.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backup-status-exporter
+  template:
+    metadata:
+      labels:
+        {{- include "transformers-ci.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: backup-status-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.backupStatus.port }}"
+    spec:
+      serviceAccountName: backup-status-exporter
+      containers:
+        - name: exporter
+          image: "{{ .Values.backupStatus.image.repository }}:{{ .Values.backupStatus.image.tag }}"
+          imagePullPolicy: {{ .Values.backupStatus.image.pullPolicy }}
+          command: ["python", "/app/exporter.py"]
+          env:
+            - name: PORT
+              value: "{{ .Values.backupStatus.port }}"
+            - name: BACKUP_STATUS_NAMESPACES
+              value: {{ join "," .Values.backupStatus.namespaces | quote }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.backupStatus.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.backupStatus.resources | nindent 12 }}
+          volumeMounts:
+            - name: exporter
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: exporter
+          configMap:
+            name: backup-status-exporter
+{{- end }}
