@@ -70,6 +70,8 @@ report-ci-start = "transformersci.otel.report_start:main"
 pytest-trace-exporter = "transformersci.otel.trace_exporter:main"
 integration-failure-triage = "transformersci.agentic.integration_failure_triage:main"
 dashboard-failure-triage = "transformersci.agentic.dashboard_failure_triage:main"
+cpu-main-failure-triage = "transformersci.agentic.cpu_main_failure_triage:main"
+slowest-main-triage = "transformersci.agentic.slowest_main_triage:main"
 serge-verify-verdict = "transformersci.agentic.serge_verify_verdict:main"
 assign-reviewers = "transformersci.reviewers.assign:main"
 
