@@ -1799,6 +1799,9 @@ def _render_serge_target(
     out.extend(prior_feedback_lines(target.get("prior_feedback") or []))
     out.extend(_flaky_lines(target))
     out.extend(_bracket_lines(target))
+    # Before the tracebacks on purpose: the agent should know where a class is
+    # defined before it reads a traceback pointing at the generated file.
+    out.extend(modular_context_lines(target.get("model") or "", target.get("modular")))
 
     # Divide the trace budget across the failures that get a full traceback, so
     # the whole section fits Serge's context limit while still carrying real
@@ -2074,6 +2077,177 @@ def collect_prior_feedback(
         items.extend(fetch(repo, number, github_token))
     items.sort(key=lambda i: i.get("created_at") or "", reverse=True)
     return items
+
+
+# ── Modular facts (items 5 + 6) ───────────────────────────────────────────────
+# Most transformers models are now defined by a `modular_<name>.py` that the
+# build expands into a generated `modeling_<name>.py`. The trunk instruction
+# already says "edit the modular file, not the generated one" -- and that was
+# live for PR #48322, whose session still spent 15 of its 46 turns (a third of
+# the whole budget, at ~40k input tokens a turn) working out *which* EdgeTam*
+# classes live in `modular_edgetam.py` versus only in the generated file: a
+# six-way OR grep and repeated `# Copied from` sweeps.
+#
+# The rule was never the missing piece. The missing piece is the lookup, and
+# prose cannot answer it -- only the file can. So fetch that one file at triage
+# time and state the answer as fact:
+#
+#   - which classes the modular file actually defines, and what each derives
+#     from (item 5: the class-resolution cost above);
+#   - which other models it imports from (item 6: the "ported from" question
+#     that had sessions reading 7-34% of their calls in *other* model dirs).
+#
+# Both come out of the same source file, which is why one fetch serves both.
+# Note this layer has no transformers checkout -- triage runs off the CI dataset
+# plus GitHub -- so it is an API call, contrary to the plan's assumption that
+# "the checkout is already there" (true for serge's task runner, not here).
+
+# `class Foo(Bar, Baz):` / `class Foo:` at column 0. Nested classes are not
+# interesting here: the question is only what the file defines at module level.
+_MODULAR_CLASS_RE = re.compile(r"^class\s+(\w+)\s*(?:\(([^)]*)\))?\s*:", re.M)
+# `from ..sam2.modeling_sam2 import A, B` and `from ..sam2 import C`. Two dots
+# means "another model package", which is exactly the lineage edge we want; a
+# single dot is this model's own package and says nothing about the parent.
+_MODULAR_IMPORT_RE = re.compile(
+    r"^from\s+\.\.(\w+)(?:\.[\w.]+)?\s+import\s+(\(?)([^\n]*)", re.M
+)
+# Bounds on the rendered block. The point is to remove a lookup, not to paste a
+# file into the context -- a model with 60 classes would otherwise cost more
+# than the grepping it replaces.
+# `..auto` is the registry package (`CONFIG_MAPPING`, `AutoConfig`), not a model
+# this one was ported from. Naming it as lineage would send the agent reading
+# `models/auto/` -- the exact wasted browsing this block exists to prevent.
+_MODULAR_NON_LINEAGE_PACKAGES = frozenset({"auto"})
+_MODULAR_MAX_CLASSES = 24
+_MODULAR_MAX_PARENT_SYMBOLS = 8
+
+
+def parse_modular_source(source: str) -> dict:
+    """Which classes a ``modular_*.py`` defines, and which models it draws from.
+
+    Pure text in, facts out -- no network, no filesystem -- so the interesting
+    logic is testable without touching GitHub.
+    """
+    defined: list[tuple[str, list[str]]] = []
+    for m in _MODULAR_CLASS_RE.finditer(source):
+        bases = [
+            b.strip()
+            for b in (m.group(2) or "").split(",")
+            # Drop `metaclass=`/keyword bases: not a lineage edge.
+            if b.strip() and "=" not in b
+        ]
+        defined.append((m.group(1), bases))
+
+    parents: dict[str, list[str]] = {}
+    for m in _MODULAR_IMPORT_RE.finditer(source):
+        model, names = m.group(1), m.group(3)
+        # A parenthesised import continues over lines; take what is on this one
+        # rather than parsing the whole form -- the first names are enough to
+        # show the edge, and the model name is what matters.
+        syms = [
+            n.strip().rstrip(")").split(" as ")[0].strip()
+            for n in names.split(",")
+            if n.strip().rstrip(")")
+        ]
+        if model in _MODULAR_NON_LINEAGE_PACKAGES:
+            continue
+        bucket = parents.setdefault(model, [])
+        for sym in syms:
+            if sym and sym not in bucket:
+                bucket.append(sym)
+    return {"defined": defined, "parents": parents}
+
+
+def modular_context_lines(model: str, info: dict | None) -> list[str]:
+    """The fact block for one model group, or ``[]`` when there is nothing to
+    say (no modular file, or a fetch that failed -- both mean "say nothing" and
+    fall back to today's behaviour)."""
+    if not info:
+        return []
+    defined = info.get("defined") or []
+    parents = info.get("parents") or {}
+    if not defined and not parents:
+        return []
+
+    path = f"src/transformers/models/{model}/modular_{model}.py"
+    out = [
+        f"Modular layout for `{model}` (read from `{path}` at triage time — you do "
+        "not need to grep for this):",
+    ]
+    if parents:
+        out.append(
+            "- ported from: "
+            + ", ".join(
+                f"`{m}`"
+                + (
+                    " ("
+                    + ", ".join(f"`{s}`" for s in syms[:_MODULAR_MAX_PARENT_SYMBOLS])
+                    + (", …" if len(syms) > _MODULAR_MAX_PARENT_SYMBOLS else "")
+                    + ")"
+                    if syms
+                    else ""
+                )
+                for m, syms in parents.items()
+            )
+        )
+    if defined:
+        shown = defined[:_MODULAR_MAX_CLASSES]
+        out.append(
+            f"- defined IN the modular file ({len(defined)} class"
+            f"{'es' if len(defined) != 1 else ''}) — edit these here:"
+        )
+        for name, bases in shown:
+            base_txt = f" ← {', '.join(f'`{b}`' for b in bases)}" if bases else ""
+            out.append(f"    - `{name}`{base_txt}")
+        if len(defined) > _MODULAR_MAX_CLASSES:
+            out.append(f"    - …and {len(defined) - _MODULAR_MAX_CLASSES} more")
+        out.append(
+            "- Any other class you see in the generated `modeling_"
+            f"{model}.py` is NOT in the list above: it is inherited from a model "
+            "named on the 'ported from' line, so change it THERE (or add an "
+            "override to the modular file) — editing the generated file is lost "
+            "at the next `make fix-repo`. A traceback pointing at "
+            f"`modeling_{model}.py` does not mean the fix belongs there."
+        )
+    out.append("")
+    return out
+
+
+def attach_modular_context(
+    targets: list[dict],
+    repo: str,
+    github_token: str | None,
+    *,
+    fetch=None,
+) -> list[dict]:
+    """Return ``targets`` with ``modular`` set for model groups that have a
+    ``modular_*.py``.
+
+    Same contract as :func:`attach_prior_feedback`: call it **after**
+    ``--max-groups`` so an undispatched group costs no API call, and the key is
+    additive so it cannot change a group's fingerprint. One fetch per distinct
+    model; a model with no modular file (or a failed fetch) is left untouched
+    and renders nothing.
+    """
+    if fetch is None:
+        from .github_api import get_file_text as fetch  # noqa: PLC0415
+    cache: dict[str, dict | None] = {}
+    out: list[dict] = []
+    for t in targets:
+        model = t.get("model")
+        if t.get("kind") != "model_failures" or not model:
+            out.append(t)
+            continue
+        if model not in cache:
+            src = fetch(
+                repo,
+                f"src/transformers/models/{model}/modular_{model}.py",
+                github_token,
+            )
+            cache[model] = parse_modular_source(src) if src else None
+        info = cache[model]
+        out.append({**t, "modular": info} if info else t)
+    return out
 
 
 def attach_prior_feedback(
@@ -3892,6 +4066,14 @@ def main(argv: list[str] | None = None) -> int:
         f"sees why the last patch was declined (0 disables; default {DEFAULT_FEEDBACK_PRS})",
     )
     p.add_argument(
+        "--no-modular-context",
+        action="store_true",
+        default=os.environ.get("ITF_NO_MODULAR_CONTEXT") == "1",
+        help="skip the per-model modular_*.py fetch that tells the agent which "
+        "classes the modular file defines and which model it was ported from "
+        "(one contents call per dispatched model group)",
+    )
+    p.add_argument(
         "--pr-lookback-days",
         type=int,
         default=int(os.environ.get("ITF_PR_LOOKBACK_DAYS", "90")),
@@ -4121,6 +4303,22 @@ def main(argv: list[str] | None = None) -> int:
             prs = ", ".join(f"#{n}" for n in dict.fromkeys(i["pr"] for i in items))
             print(
                 f"      quoting reviewer feedback from {prs} into {t['label']}",
+                flush=True,
+            )
+
+    # One contents fetch per distinct model, after --max-groups for the same
+    # reason as the feedback fetch above: an undispatched group costs nothing.
+    if not getattr(args, "no_modular_context", False):
+        targets = attach_modular_context(targets, args.repo, gh_token)
+        for t in targets:
+            info = t.get("modular")
+            if not info:
+                continue
+            parents = ", ".join((info.get("parents") or {}).keys())
+            print(
+                f"      modular: {t.get('model')} defines "
+                f"{len(info.get('defined') or [])} class(es)"
+                + (f", ported from {parents}" if parents else ""),
                 flush=True,
             )
 
