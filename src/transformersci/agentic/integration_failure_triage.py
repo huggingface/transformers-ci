@@ -4565,20 +4565,23 @@ def main(argv: list[str] | None = None) -> int:
             if not info:
                 continue
             sha = (t.get("cluster") or {}).get("bad_commit")
-            if info["files"]:
-                print(
-                    f"      bad-commit diff: {sha} -> "
-                    f"{len(info['files'])} of {info['total_changed']} file(s) "
-                    "relevant to the failing model",
-                    flush=True,
+            n_model, n_shared = len(info["files"]), len(info["shared_files"])
+            # Say which of the three cases it is. The log is how a human audits
+            # the nightly, so it must not report "unconfirmed" when shared code
+            # was in fact found and rendered.
+            if n_model:
+                what = f"{n_model} file(s) of the failing model" + (
+                    f" + {n_shared} shared" if n_shared else ""
                 )
+            elif n_shared:
+                what = f"no model file, {n_shared} shared src/transformers file(s)"
             else:
-                print(
-                    f"      bad-commit diff: {sha} touches none of the failing "
-                    f"model's files ({info['total_changed']} changed) — "
-                    "attribution flagged as unconfirmed",
-                    flush=True,
-                )
+                what = "nothing that can reach the model — attribution unconfirmed"
+            print(
+                f"      bad-commit diff: {sha[:12]} of {info['total_changed']} "
+                f"changed file(s) -> {what}",
+                flush=True,
+            )
 
     run_key = window[-1] if window else "unknown"
     issue_title = f"[serge] integration failure triage - {run_key}"
