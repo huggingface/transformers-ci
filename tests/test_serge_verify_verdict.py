@@ -523,3 +523,67 @@ class DistillFailureTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# A real torch OOM message, which is what `oom_shape` parses. The numbers decide
+# the shape, so the fixtures vary only those.
+_OOM = (
+    "torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate {want}. "
+    "GPU 0 has a total capacity of 22.19 GiB of which 100.00 MiB is free. "
+    "Of the allocated memory {held} is allocated by PyTorch, and 1.00 MiB is reserved."
+)
+_LOAD_FRAME = (
+    '\n  File "/transformers/src/transformers/core_model_loading.py", line 9, '
+    "in convert_and_load_state_dict_in_model"
+)
+
+
+class OomShapesInVerdictTest(unittest.TestCase):
+    """serge's own classifier makes `environment_issue` cover *any* OOM, so every
+    OOM bails before an LLM turn. The triage in this package has known better
+    since 2026-08-14, when 26 of 54 persistent OOMs turned out to be
+    retention-shaped and had been deferred as "needs capacity" for weeks.
+
+    The GPU run is the only place the full traceback exists — the `phimoe` group
+    that motivated this reads in the CI dataset as only
+    `RuntimeError: We encountered some issues during automatic conversion of the
+    weights` — so the shape is computed here and travels in the artifact.
+    """
+
+    def test_capacity_shape(self) -> None:
+        tb = _OOM.format(want="21.00 GiB", held="500.00 MiB")
+        self.assertEqual(v.oom_shapes_for({"t": tb}), {"t": "capacity"})
+
+    def test_retention_shape_is_fixable(self) -> None:
+        # Trivial request, card already full: an earlier test never freed.
+        tb = _OOM.format(want="20.00 MiB", held="21.00 GiB")
+        self.assertEqual(v.oom_shapes_for({"t": tb}), {"t": "retention"})
+
+    def test_load_path_shape_is_fixable(self) -> None:
+        # The phimoe shape: OOM while materializing checkpoint weights.
+        tb = _OOM.format(want="20.00 MiB", held="500.00 MiB") + _LOAD_FRAME
+        self.assertEqual(v.oom_shapes_for({"t": tb}), {"t": "load"})
+
+    def test_a_non_oom_traceback_is_absent_not_unknown(self) -> None:
+        """Absent means "not an OOM"; a consumer must not have to distinguish
+        that from a shape it could not parse."""
+        self.assertEqual(
+            v.oom_shapes_for({"t": "AssertionError: Tensor-likes are not close!"}), {}
+        )
+
+    def test_no_tracebacks_is_empty(self) -> None:
+        self.assertEqual(v.oom_shapes_for({}), {})
+        self.assertEqual(v.oom_shapes_for(None), {})
+
+    def test_reproduce_verdict_carries_the_shapes(self) -> None:
+        tb = _OOM.format(want="20.00 MiB", held="500.00 MiB") + _LOAD_FRAME
+        rep = {("t.py", "test_x"): {"outcome": "failed", "detail": tb}}
+        out = v.build_reproduce_verdict(["t.py::test_x"], rep)
+        self.assertEqual(out["verdict"], "reproduced")
+        self.assertEqual(out["oom_shapes"], {"t.py::test_x": "load"})
+
+    def test_verify_verdict_carries_the_shapes(self) -> None:
+        tb = _OOM.format(want="21.00 GiB", held="500.00 MiB")
+        red = {("t.py", "test_x"): {"outcome": "failed", "detail": tb}}
+        out = v.build_verdict(["t.py::test_x"], red, red)
+        self.assertEqual(out["oom_shapes"], {"t.py::test_x": "capacity"})

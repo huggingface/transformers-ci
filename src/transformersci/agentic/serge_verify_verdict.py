@@ -58,6 +58,8 @@ import json
 import sys
 import xml.etree.ElementTree as ET
 
+from .integration_failure_triage import _OOM_PAT, oom_shape
+
 
 def nodeid_key(nodeid: str) -> tuple[str, str]:
     """``(class, method)`` key for matching a pytest node-id to a JUnit
@@ -329,7 +331,39 @@ def build_verdict(
         "collateral_new_failures": sorted(collateral_new_failures),
         "verdict": verdict,
         "tracebacks": tracebacks,
+        "oom_shapes": oom_shapes_for(tracebacks),
     }
+
+
+def oom_shapes_for(tracebacks: dict[str, str]) -> dict[str, str]:
+    """The OOM *shape* of each traceback that is an OOM at all, keyed by node-id.
+
+    ``OOM`` is not one failure mode, and serge's own classifier treats it as if
+    it were: its prompt makes ``environment_issue`` cover *any* "device/host
+    out-of-memory", so every OOM bails before an LLM turn. The triage in this
+    same package has known better since 2026-08-14, when 26 of 54 persistent
+    OOMs turned out to be retention-shaped and had been deferred as "needs
+    capacity" for weeks — see :func:`oom_shape`.
+
+    This is the right place to settle it. The triage classifies from the CI
+    dataset's truncated surface, where an OOM can be invisible: the `phimoe`
+    group that motivated this reads only as ``RuntimeError: We encountered some
+    issues during automatic conversion of the weights`` and was classified
+    ``other``, while the reproduce run's full traceback shows a plain CUDA OOM
+    on the weight-conversion path. **The GPU run is the only place the whole
+    traceback exists**, so the shape is computed here and travels in the verdict
+    artifact for serge to act on.
+
+    Absent for a traceback that is not an OOM, so ``{}`` means "no OOM here" and
+    a consumer can treat a missing key as "not an OOM" rather than "unknown".
+    """
+    shapes: dict[str, str] = {}
+    for nodeid, tb in (tracebacks or {}).items():
+        if not _OOM_PAT.search(tb or ""):
+            continue
+        shape, _numbers = oom_shape(tb or "")
+        shapes[nodeid] = shape
+    return shapes
 
 
 def build_reproduce_verdict(
@@ -388,6 +422,7 @@ def build_reproduce_verdict(
         "targeted": targeted,
         "verdict": verdict,
         "tracebacks": tracebacks,
+        "oom_shapes": oom_shapes_for(tracebacks),
     }
 
 
