@@ -3506,3 +3506,184 @@ class AttachModularContextTests(unittest.TestCase):
             [t], "r", None, fetch=lambda *a: ModularSourceParseTests.SRC
         )
         self.assertEqual(itf.target_fingerprint(out[0]), before)
+
+
+def _commit_file(path, patch="@@ -1 +1 @@\n-a\n+b", adds=1, dels=1):
+    return {"filename": path, "patch": patch, "additions": adds, "deletions": dels}
+
+
+def _cluster_target(sha="6034e90c7d1b", model="recurrent_gemma"):
+    return {
+        "kind": "cluster",
+        "label": f"2 integration tests regressed by commit {sha}",
+        "model": None,
+        "failure_mode": None,
+        "cluster": {
+            "bad_commit": sha,
+            "pr_number": 47598,
+            "failure_excerpt": "",
+            "failures": [{"model": model, "failure_mode": "output_mismatch"}],
+        },
+        "failures": [],
+    }
+
+
+class BadCommitDiffSelectionTests(unittest.TestCase):
+    """The attribution block renders a SHA the agent cannot dereference — it has
+    no git tool. PR #48223's reviewer answered the whole question from that
+    commit's diff ("the linked commit deleted a `partial_rotary_factor`")."""
+
+    def test_only_the_failing_models_files_survive(self) -> None:
+        # The real 6034e90c7d1b ("Simplify all Rotary modules") touches 186
+        # files; a raw diff is not an option.
+        files = [
+            _commit_file("src/transformers/models/llama/modeling_llama.py"),
+            _commit_file(
+                "src/transformers/models/recurrent_gemma/modeling_recurrent_gemma.py"
+            ),
+            _commit_file("docs/source/en/index.md"),
+        ]
+        info = itf.select_bad_commit_diff(files, {"recurrent_gemma"})
+        self.assertEqual(
+            [f["path"] for f in info["files"]],
+            ["src/transformers/models/recurrent_gemma/modeling_recurrent_gemma.py"],
+        )
+        self.assertEqual(info["total_changed"], 3)
+
+    def test_a_generated_sibling_is_dropped_for_its_modular_source(self) -> None:
+        # kimi_k25's modeling_*.py and modular_*.py carried the same change
+        # twice (+93/-75 and +94/-76, 27,056 chars together).
+        files = [
+            _commit_file("src/transformers/models/kimi_k25/modeling_kimi_k25.py"),
+            _commit_file("src/transformers/models/kimi_k25/modular_kimi_k25.py"),
+        ]
+        info = itf.select_bad_commit_diff(files, {"kimi_k25"})
+        self.assertEqual(
+            [f["path"] for f in info["files"]],
+            ["src/transformers/models/kimi_k25/modular_kimi_k25.py"],
+        )
+
+    def test_model_source_outranks_tests_and_shared_files(self) -> None:
+        files = [
+            _commit_file("src/transformers/generation/utils.py"),
+            _commit_file("src/transformers/modeling_utils.py"),
+            _commit_file("tests/models/phimoe/test_modeling_phimoe.py"),
+            _commit_file("src/transformers/models/phimoe/modeling_phimoe.py"),
+        ]
+        info = itf.select_bad_commit_diff(files, {"phimoe"})
+        self.assertEqual(
+            [f["path"] for f in info["files"]],
+            [
+                "src/transformers/models/phimoe/modeling_phimoe.py",
+                "tests/models/phimoe/test_modeling_phimoe.py",
+                "src/transformers/modeling_utils.py",
+            ],
+        )
+
+    def test_the_patch_budget_is_enforced(self) -> None:
+        big = _commit_file(
+            "src/transformers/models/blt/modeling_blt.py", patch="x" * 50_000
+        )
+        info = itf.select_bad_commit_diff([big], {"blt"})
+        self.assertLessEqual(
+            sum(len(f["patch"]) for f in info["files"]), itf._BAD_COMMIT_DIFF_CHARS
+        )
+        self.assertTrue(info["files"][0]["truncated"])
+
+    def test_a_file_with_no_patch_key_does_not_crash(self) -> None:
+        # GitHub omits `patch` for binary and very large files.
+        info = itf.select_bad_commit_diff(
+            [{"filename": "src/transformers/models/blt/modeling_blt.py"}], {"blt"}
+        )
+        self.assertEqual(info["files"][0]["patch"], "")
+
+
+class BadCommitMisattributionTests(unittest.TestCase):
+    """bd9509355c8a was blamed for a `phimoe` weight-conversion RuntimeError and
+    changes exactly one file — an unrelated model's test. Rendering nothing would
+    leave the agent trusting a bare SHA."""
+
+    def test_an_unrelated_commit_is_reported_not_silently_empty(self) -> None:
+        files = [_commit_file("tests/models/inkling/test_modeling_inkling.py")]
+        info = itf.select_bad_commit_diff(files, {"phimoe"})
+        self.assertEqual(info["files"], [])
+        text = "\n".join(itf.bad_commit_diff_lines(info))
+        self.assertIn("nothing in the failing model's files", text)
+        self.assertIn("tests/models/inkling/test_modeling_inkling.py", text)
+        self.assertIn("unconfirmed", text)
+
+    def test_no_info_renders_nothing(self) -> None:
+        self.assertEqual(itf.bad_commit_diff_lines(None), [])
+
+
+class AttachBadCommitDiffTests(unittest.TestCase):
+    def test_one_fetch_per_distinct_commit(self) -> None:
+        asked = []
+
+        def fetch(repo, sha, token):
+            asked.append(sha)
+            return [_commit_file("src/transformers/models/x/modeling_x.py")]
+
+        itf.attach_bad_commit_diff(
+            [
+                _cluster_target("aaa", "x"),
+                _cluster_target("aaa", "x"),
+                _cluster_target("bbb", "x"),
+            ],
+            "huggingface/transformers",
+            None,
+            fetch=fetch,
+        )
+        self.assertEqual(asked, ["aaa", "bbb"])
+
+    def test_a_model_group_makes_no_api_call(self) -> None:
+        def fetch(*a):  # pragma: no cover — must not run
+            raise AssertionError("a model group has no bad commit to fetch")
+
+        t = {"kind": "model_failures", "model": "blt", "label": "x", "failures": []}
+        out = itf.attach_bad_commit_diff([t], "r", None, fetch=fetch)
+        self.assertIs(out[0], t)
+
+    def test_a_failed_fetch_leaves_the_target_untouched(self) -> None:
+        t = _cluster_target()
+        out = itf.attach_bad_commit_diff([t], "r", None, fetch=lambda *a: None)
+        self.assertIs(out[0], t)
+
+    def test_attaching_does_not_change_the_fingerprint(self) -> None:
+        # Same contract as prior_feedback and modular: an additive key must not
+        # re-identify a group, or every enriched group looks new to the dedupe.
+        t = _cluster_target()
+        before = itf.target_fingerprint(t)
+        out = itf.attach_bad_commit_diff(
+            [t],
+            "r",
+            None,
+            fetch=lambda *a: [
+                _commit_file(
+                    "src/transformers/models/recurrent_gemma/"
+                    "modeling_recurrent_gemma.py"
+                )
+            ],
+        )
+        self.assertIn("bad_commit_diff", out[0])
+        self.assertEqual(itf.target_fingerprint(out[0]), before)
+
+    def test_the_diff_renders_under_the_sha_and_before_the_tracebacks(self) -> None:
+        out = itf.attach_bad_commit_diff(
+            [_cluster_target()],
+            "r",
+            None,
+            fetch=lambda *a: [
+                _commit_file(
+                    "src/transformers/models/recurrent_gemma/"
+                    "modeling_recurrent_gemma.py",
+                    patch="-        partial_rotary_factor=0.5,",
+                )
+            ],
+        )
+        text = "\n".join(itf._render_serge_target(out[0], 7))
+        self.assertIn("partial_rotary_factor", text)
+        self.assertLess(text.index("bad commit:"), text.index("partial_rotary_factor"))
+        self.assertLess(
+            text.index("partial_rotary_factor"), text.index("Failure-mode mix")
+        )
