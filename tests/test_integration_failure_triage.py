@@ -3563,7 +3563,7 @@ class BadCommitDiffSelectionTests(unittest.TestCase):
             ["src/transformers/models/kimi_k25/modular_kimi_k25.py"],
         )
 
-    def test_model_source_outranks_tests_and_shared_files(self) -> None:
+    def test_the_models_own_files_are_separated_from_shared_code(self) -> None:
         files = [
             _commit_file("src/transformers/generation/utils.py"),
             _commit_file("src/transformers/modeling_utils.py"),
@@ -3576,9 +3576,40 @@ class BadCommitDiffSelectionTests(unittest.TestCase):
             [
                 "src/transformers/models/phimoe/modeling_phimoe.py",
                 "tests/models/phimoe/test_modeling_phimoe.py",
+            ],
+        )
+        self.assertEqual(
+            sorted(f["path"] for f in info["shared_files"]),
+            [
+                "src/transformers/generation/utils.py",
                 "src/transformers/modeling_utils.py",
             ],
         )
+
+    def test_shared_code_below_the_top_level_is_kept(self) -> None:
+        """Caught by a real dry run, not by a fixture. `9f66415aec04` was
+        attributed to a `t5` failure; a top-level-only rule kept
+        `src/transformers/_typing.py` (+1/-3, a type annotation) and dropped
+        `src/transformers/generation/utils.py` (+33/-53), which is the code a
+        failing `test_compile_static_cache` actually runs through."""
+        files = [
+            _commit_file("src/transformers/_typing.py", adds=1, dels=3),
+            _commit_file("src/transformers/generation/utils.py", adds=33, dels=53),
+            _commit_file("tests/generation/test_utils.py", adds=56, dels=0),
+        ]
+        info = itf.select_bad_commit_diff(files, {"t5"})
+        self.assertEqual(info["files"], [])
+        paths = [f["path"] for f in info["shared_files"]]
+        self.assertIn("src/transformers/generation/utils.py", paths)
+        # ...and the substantive change leads, so a tight budget keeps it.
+        self.assertEqual(paths[0], "src/transformers/generation/utils.py")
+
+    def test_another_models_files_are_never_shared_code(self) -> None:
+        info = itf.select_bad_commit_diff(
+            [_commit_file("src/transformers/models/llama/modeling_llama.py")], {"t5"}
+        )
+        self.assertEqual(info["files"], [])
+        self.assertEqual(info["shared_files"], [])
 
     def test_the_patch_budget_is_enforced(self) -> None:
         big = _commit_file(
@@ -3607,10 +3638,22 @@ class BadCommitMisattributionTests(unittest.TestCase):
         files = [_commit_file("tests/models/inkling/test_modeling_inkling.py")]
         info = itf.select_bad_commit_diff(files, {"phimoe"})
         self.assertEqual(info["files"], [])
+        self.assertEqual(info["shared_files"], [])
         text = "\n".join(itf.bad_commit_diff_lines(info))
-        self.assertIn("nothing in the failing model's files", text)
+        self.assertIn("nothing that can reach the failing model", text)
         self.assertIn("tests/models/inkling/test_modeling_inkling.py", text)
         self.assertIn("unconfirmed", text)
+
+    def test_shared_only_is_never_labelled_as_the_models_files(self) -> None:
+        """The heading must not claim a shared file belongs to the model — the
+        agent may go and edit what it is told is the model's."""
+        info = itf.select_bad_commit_diff(
+            [_commit_file("src/transformers/generation/utils.py")], {"t5"}
+        )
+        text = "\n".join(itf.bad_commit_diff_lines(info))
+        self.assertIn("none of the failing model's own files", text)
+        self.assertIn("does not belong in the model directory", text)
+        self.assertNotIn("changed in the failing model's own files", text)
 
     def test_no_info_renders_nothing(self) -> None:
         self.assertEqual(itf.bad_commit_diff_lines(None), [])
