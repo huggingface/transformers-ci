@@ -78,6 +78,55 @@ def compare_commits(
         return None
 
 
+def get_commit_files(
+    repo: str, sha: str, github_token: str | None = None, max_files: int = 3000
+) -> list[dict] | None:
+    """The changed files of one commit, with their patches — or ``None``.
+
+    ``GET /repos/{repo}/commits/{sha}`` returns at most **300 files per page**
+    and pages the rest, so a sweeping refactor needs several requests: the real
+    bad commits this feeds are 186 and 107 files (``6034e90c7d1b`` "Simplify all
+    Rotary modules", ``16780c86b20a``). Reading only the first response would
+    silently drop the tail of the file list and, with it, the one file that
+    explains the failure.
+
+    A missing commit is an ordinary answer, not a fault — a bad-commit sha comes
+    from an upstream dataset and may have been force-pushed away — so 404/422
+    return ``None`` silently, like :func:`compare_commits`. Individual files may
+    have no ``patch`` key (GitHub omits it for very large or binary files); the
+    caller must tolerate that.
+    """
+    if "/" not in repo:
+        return None
+    owner, name = repo.split("/", 1)
+    headers = gh_headers(github_token)
+    files: list[dict] = []
+    page = 1
+    while len(files) < max_files:
+        params = urllib.parse.urlencode({"per_page": 100, "page": page})
+        url = f"{_API}/repos/{owner}/{name}/commits/{urllib.parse.quote(sha)}?{params}"
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code not in (404, 422):
+                print(
+                    f"      warning: could not fetch commit {sha}: {e.code}",
+                    flush=True,
+                )
+            return None if page == 1 else files
+        except (urllib.error.URLError, ValueError) as e:
+            print(f"      warning: could not fetch commit {sha}: {e}", flush=True)
+            return None if page == 1 else files
+        batch = body.get("files") or []
+        files.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+    return files
+
+
 def list_open_pulls(repo: str, github_token: str | None) -> list[dict]:
     """All open PRs for ``repo`` (paginated). Returns ``[]`` on error so the
     caller treats 'could not check' the same as 'no existing PR'."""
