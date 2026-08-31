@@ -335,6 +335,37 @@ def is_bot_login(login: str | None) -> bool:
     return login.endswith("[bot]") or login in _NON_HUMAN_LOGINS
 
 
+def get_file_text(
+    repo: str, path: str, github_token: str | None = None, ref: str = "main"
+) -> str | None:
+    """The text of one file in ``repo`` at ``ref``, or ``None`` when absent.
+
+    A 404 is an ordinary answer here, not a fault: callers ask "does this model
+    have a ``modular_*.py`` at all?", and most models predate modular. So a 404
+    returns ``None`` silently and only other failures warn.
+    """
+    url = (
+        f"{_API}/repos/{repo}/contents/{urllib.parse.quote(path)}"
+        f"?ref={urllib.parse.quote(ref)}"
+    )
+    headers = gh_headers(github_token)
+    # Raw bytes, not the base64 JSON envelope: the contents API inlines at most
+    # 1MB of base64 and silently omits `content` above that, while the raw media
+    # type has no such cap. A big modular_*.py is exactly the case that would
+    # trip it.
+    headers["Accept"] = "application/vnd.github.raw"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            print(f"      warning: could not fetch {repo}:{path}: {e.code}", flush=True)
+    except urllib.error.URLError as e:
+        print(f"      warning: could not fetch {repo}:{path}: {e.reason}", flush=True)
+    return None
+
+
 def _get_json(url: str, headers: dict[str, str], what: str, timeout: int = 30):
     """One best-effort GET returning parsed JSON, or ``None`` on any error."""
     req = urllib.request.Request(url, headers=headers)

@@ -3350,3 +3350,159 @@ class OomClusterGuidanceTest(unittest.TestCase):
     def test_an_empty_cluster_does_not_claim_to_be_oom(self):
         cluster = _oom_cluster()
         self.assertEqual(itf.instruction_addendum(cluster), "")
+
+
+class ModularSourceParseTests(unittest.TestCase):
+    """Items 5 + 6: the facts read out of one `modular_*.py`."""
+
+    SRC = (
+        "from ..auto import CONFIG_MAPPING, AutoConfig\n"
+        "from ..sam2.modeling_sam2 import Sam2VisionModel, Sam2Attention\n"
+        "from ..sam2.configuration_sam2 import Sam2Config\n"
+        "from .configuration_edgetam import EdgeTamVisionConfig\n"
+        "\n"
+        "class EdgeTamVisionModel(Sam2VisionModel):\n"
+        "    pass\n"
+        "\n"
+        "class EdgeTamAttention(Sam2Attention, nn.Module):\n"
+        "    pass\n"
+        "\n"
+        "class EdgeTamConfig:\n"
+        "    pass\n"
+        "\n"
+        "    class NotTopLevel(Nope):\n"
+        "        pass\n"
+    )
+
+    def test_defined_classes_and_bases(self) -> None:
+        info = itf.parse_modular_source(self.SRC)
+        self.assertEqual(
+            info["defined"],
+            [
+                ("EdgeTamVisionModel", ["Sam2VisionModel"]),
+                ("EdgeTamAttention", ["Sam2Attention", "nn.Module"]),
+                ("EdgeTamConfig", []),
+            ],
+        )
+
+    def test_indented_class_is_not_module_level(self) -> None:
+        names = [n for n, _ in itf.parse_modular_source(self.SRC)["defined"]]
+        self.assertNotIn("NotTopLevel", names)
+
+    def test_parents_come_from_two_dot_imports_only(self) -> None:
+        parents = itf.parse_modular_source(self.SRC)["parents"]
+        # `..sam2` is lineage; `.configuration_edgetam` is this model's own
+        # package and says nothing about a parent.
+        self.assertEqual(list(parents), ["sam2"])
+        self.assertIn("Sam2VisionModel", parents["sam2"])
+        self.assertIn("Sam2Config", parents["sam2"])
+
+    def test_auto_registry_is_not_lineage(self) -> None:
+        # Naming `auto` would send the agent reading models/auto/ -- the exact
+        # wasted browsing this block exists to prevent.
+        self.assertNotIn("auto", itf.parse_modular_source(self.SRC)["parents"])
+
+    def test_keyword_bases_are_dropped(self) -> None:
+        info = itf.parse_modular_source("class Foo(Base, metaclass=Meta):\n    pass\n")
+        self.assertEqual(info["defined"], [("Foo", ["Base"])])
+
+    def test_empty_source_yields_nothing(self) -> None:
+        self.assertEqual(itf.parse_modular_source(""), {"defined": [], "parents": {}})
+
+
+class ModularContextRenderTests(unittest.TestCase):
+    def _info(self):
+        return itf.parse_modular_source(ModularSourceParseTests.SRC)
+
+    def test_block_states_lineage_and_definitions(self) -> None:
+        text = "\n".join(itf.modular_context_lines("edgetam", self._info()))
+        self.assertIn("ported from: `sam2`", text)
+        self.assertIn("`EdgeTamVisionModel` ← `Sam2VisionModel`", text)
+        self.assertIn("modular_edgetam.py", text)
+
+    def test_block_says_what_absence_means(self) -> None:
+        # The #48322 cost was not knowing that a class missing from the modular
+        # file is inherited -- so the block must say it explicitly.
+        text = "\n".join(itf.modular_context_lines("edgetam", self._info()))
+        self.assertIn("NOT in the list above", text)
+        self.assertIn("make fix-repo", text)
+
+    def test_no_info_renders_nothing(self) -> None:
+        self.assertEqual(itf.modular_context_lines("bert", None), [])
+        self.assertEqual(
+            itf.modular_context_lines("bert", {"defined": [], "parents": {}}), []
+        )
+
+    def test_class_list_is_bounded(self) -> None:
+        many = "".join(f"class C{i}(B):\n    pass\n\n" for i in range(60))
+        text = "\n".join(
+            itf.modular_context_lines("big", itf.parse_modular_source(many))
+        )
+        self.assertIn(f"and {60 - itf._MODULAR_MAX_CLASSES} more", text)
+        self.assertEqual(text.count("    - `C"), itf._MODULAR_MAX_CLASSES)
+
+
+class AttachModularContextTests(unittest.TestCase):
+    def _target(self, model="edgetam", kind="model_failures"):
+        return {"kind": kind, "model": model, "label": "x", "failures": []}
+
+    def test_attaches_for_model_group(self) -> None:
+        calls = []
+
+        def fetch(repo, path, token):
+            calls.append(path)
+            return ModularSourceParseTests.SRC
+
+        out = itf.attach_modular_context(
+            [self._target()], "huggingface/transformers", None, fetch=fetch
+        )
+        self.assertEqual(calls, ["src/transformers/models/edgetam/modular_edgetam.py"])
+        self.assertEqual(list(out[0]["modular"]["parents"]), ["sam2"])
+
+    def test_missing_modular_file_leaves_target_untouched(self) -> None:
+        t = self._target("bert")
+        out = itf.attach_modular_context(
+            [t], "huggingface/transformers", None, fetch=lambda *a: None
+        )
+        self.assertNotIn("modular", out[0])
+        self.assertIs(out[0], t)
+
+    def test_one_fetch_per_distinct_model(self) -> None:
+        calls = []
+
+        def fetch(repo, path, token):
+            calls.append(path)
+            return ModularSourceParseTests.SRC
+
+        itf.attach_modular_context(
+            [self._target(), self._target(), self._target("blt")],
+            "huggingface/transformers",
+            None,
+            fetch=fetch,
+        )
+        self.assertEqual(len(calls), 2)
+
+    def test_cluster_targets_are_skipped(self) -> None:
+        t = self._target(kind="cluster")
+        calls = []
+        out = itf.attach_modular_context(
+            [t], "r", None, fetch=lambda *a: calls.append(1)
+        )
+        self.assertEqual(calls, [])
+        self.assertIs(out[0], t)
+
+    def test_attaching_does_not_change_the_fingerprint(self) -> None:
+        # Same contract as prior_feedback: an additive key must not re-identify
+        # a group, or every enriched group looks new to the dedupe.
+        t = {
+            "kind": "model_failures",
+            "model": "edgetam",
+            "label": "x",
+            "failures": [],
+            "failure_mode": "output_mismatch",
+        }
+        before = itf.target_fingerprint(t)
+        out = itf.attach_modular_context(
+            [t], "r", None, fetch=lambda *a: ModularSourceParseTests.SRC
+        )
+        self.assertEqual(itf.target_fingerprint(out[0]), before)
