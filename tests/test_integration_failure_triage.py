@@ -2244,6 +2244,49 @@ class InstructionAddendumTest(unittest.TestCase):
         # A device-keyed entry stays legitimate for small backend divergence.
         self.assertIn("known SMALL divergence between backends", text)
 
+    def test_mismatch_carries_the_maintainer_convention(self):
+        """The rule that decides the patch is in no transformers doc.
+
+        `docs/source/en/testing.md` explains what `Expectations` *is* — the SM
+        keys, the fallback — and never says what to do when a value goes stale.
+        The maintainers' answer is only visible in their diffs: PR #48198
+        (`table_transformer`, ydshieh, merged 2026-08-21) demoted the existing
+        `("cuda", None)` entry to `(None, None)` and ADDED `("cuda", 8)`. serge
+        cannot read that from the checkout, so it is stated here as fact.
+        """
+        text = itf.build_instruction(_target("output_mismatch"))
+        self.assertIn("#48198", text)
+        self.assertIn("Add a device key", text)
+        self.assertIn("do not overwrite the value that is there", text)
+        # The shape itself, so the agent copies a form rather than a slogan.
+        self.assertIn("(None, None)", text)
+        self.assertIn('("cuda", 8)', text)
+        # A plain literal has to become an Expectations block, not be replaced.
+        self.assertIn("convert it", text)
+
+    def test_mismatch_calibrates_drift_against_a_real_accepted_one(self):
+        """ "Far larger than a precedent would cover" has no number in it.
+
+        Two groups on 2026-08-31 (`ministral` ~8.5% relative, `smollm3` ~9.36
+        absolute) were correctly refused. The convention above, handed over
+        WITHOUT this calibration, would have turned both into recorded
+        expectations — the exact failure it is meant to prevent. The accepted
+        drift in #48198 was ~0.5%, so the two live an order of magnitude apart.
+        """
+        text = itf.build_instruction(_target("output_mismatch"))
+        self.assertIn("~0.5% relative", text)
+        self.assertIn("one or two orders of magnitude past that is NOT drift", text)
+        self.assertIn("~9.36 absolute", text)
+        # Refusing has to be named as a success, or the agent optimises for a PR.
+        self.assertIn("Producing no patch is a correct outcome", text)
+
+    def test_the_convention_stays_out_of_a_crash_group(self):
+        """A crash never got as far as comparing values, so "add a device key"
+        is the last thing it should hear."""
+        text = itf.build_instruction(_target("cuda_runtime", exc="RuntimeError"))
+        self.assertNotIn("#48198", text)
+        self.assertNotIn("Add a device key", text)
+
     def test_retention_oom_gets_the_teardown_fix_not_a_shrug(self):
         text = itf.instruction_addendum(_oom_target(_OOM_RETENTION_TRACE))
         self.assertIn("RETAINED-MEMORY", text)
