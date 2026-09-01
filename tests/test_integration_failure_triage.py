@@ -3730,3 +3730,71 @@ class AttachBadCommitDiffTests(unittest.TestCase):
         self.assertLess(
             text.index("partial_rotary_factor"), text.index("Failure-mode mix")
         )
+
+
+class UnverifiedBranchInRecapTests(unittest.TestCase):
+    """When the GPU gate never judges a patch — no runner picked the job up, the
+    dispatch failed, no artifact came back — serge keeps the candidate branch
+    instead of tearing it down (serge#110) and opens no PR. Nothing else points
+    at that branch: 5 of 79 serge fix branches were orphaned that way, invisible
+    unless someone listed the refs. The recap is where a human finds it, so the
+    link is the point, not decoration."""
+
+    BRANCH = "serge/fix/itf-71ca76cde2a9-b228e033"
+
+    def _detail(self, **result):
+        base = {
+            "message": "A candidate patch was committed but GPU verification "
+            "could not run (`timeout`), so it is UNVERIFIED.",
+            "verify_verdict": "timeout",
+        }
+        base.update(result)
+        return {"status": "no_fix", "result": base, "model": "kimi"}
+
+    def test_distill_carries_the_kept_branch(self) -> None:
+        out = itf._distill_outcome(self._detail(branch=self.BRANCH))
+        self.assertEqual(out["branch"], self.BRANCH)
+
+    def test_no_branch_when_serge_did_not_keep_one(self) -> None:
+        self.assertIsNone(itf._distill_outcome(self._detail())["branch"])
+        self.assertIsNone(
+            itf._distill_outcome({"status": "error", "error": "boom", "result": None})[
+                "branch"
+            ]
+        )
+
+    def test_the_reason_cell_links_the_branch(self) -> None:
+        cell = itf._reason_cell(itf._distill_outcome(self._detail(branch=self.BRANCH)))
+        self.assertIn(f"[`{self.BRANCH}`]", cell)
+        self.assertIn(f"/tree/{self.BRANCH}", cell)
+        self.assertIn("unverified patch kept on", cell)
+
+    def test_the_reason_cell_is_unchanged_without_a_branch(self) -> None:
+        distilled = itf._distill_outcome(self._detail())
+        self.assertEqual(itf._reason_cell(distilled), distilled["reason"])
+        self.assertNotIn("unverified", itf._reason_cell(distilled))
+
+    def test_the_recap_table_renders_the_link(self) -> None:
+        target = _target("cwm", "output_mismatch")
+        fp = itf.target_fingerprint(target)
+        lines = itf._render_outcome_recap(
+            [target],
+            {fp: None},
+            {fp: itf._distill_outcome(self._detail(branch=self.BRANCH))},
+        )
+        body = "\n".join(lines)
+        self.assertIn("## Outcome recap", body)
+        self.assertIn(f"/tree/{self.BRANCH}", body)
+
+    def test_a_group_with_a_pr_is_still_skipped(self) -> None:
+        """A PR is the outcome; a kept branch must not resurrect a recap row."""
+        target = _target("cwm", "output_mismatch")
+        fp = itf.target_fingerprint(target)
+        self.assertEqual(
+            itf._render_outcome_recap(
+                [target],
+                {fp: 123},
+                {fp: itf._distill_outcome(self._detail(branch=self.BRANCH))},
+            ),
+            [],
+        )

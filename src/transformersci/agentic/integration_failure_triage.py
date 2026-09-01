@@ -2612,6 +2612,12 @@ def _distill_outcome(detail: dict) -> dict:
         "model": detail.get("model"),
         "prompt_tokens": detail.get("prompt_tokens"),
         "completion_tokens": detail.get("completion_tokens"),
+        # Set only when Serge kept an UNVERIFIED candidate branch: the GPU gate
+        # never reached a judgement (no runner, dispatch failed, no artifact), so
+        # the patch was neither published nor torn down. Nothing else points at
+        # that branch — 5 of 79 serge fix branches were orphaned this way before
+        # serge#110 — so the recap is where a human finds it.
+        "branch": result.get("branch") or None,
     }
 
 
@@ -2798,6 +2804,21 @@ def group_label(target: dict) -> str:
     return shown
 
 
+def _reason_cell(distilled: dict) -> str:
+    """The Reason cell, with a link to any unverified branch Serge kept.
+
+    A branch here means the GPU gate never judged the patch, so the work exists
+    but nothing references it. The link is the whole point of rendering it: a
+    reader who cannot reach the branch cannot re-run verification on it or
+    decide to delete it."""
+    reason = distilled.get("reason") or "—"
+    branch = distilled.get("branch")
+    if not branch:
+        return reason
+    link = f"[`{branch}`]({_GH}/tree/{branch})"
+    return f"{reason} — unverified patch kept on {link}"
+
+
 def _render_outcome_recap(
     targets: list[dict],
     existing_prs: dict[str, int | None],
@@ -2828,7 +2849,7 @@ def _render_outcome_recap(
         spend = f"{_fmt_tokens(distilled.get('prompt_tokens'))} / {_fmt_tokens(distilled.get('completion_tokens'))}"
         cells = [
             model_cell,
-            distilled.get("reason") or "—",
+            _reason_cell(distilled),
             f"`{distilled['model']}`" if distilled.get("model") else "—",
             spend,
             _evidence_cell(target, grafana_url),
