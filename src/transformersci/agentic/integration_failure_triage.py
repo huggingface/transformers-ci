@@ -3748,8 +3748,15 @@ _OOM_LOAD_GUIDANCE = (
     "  - An OOM while CONVERTING weights on a model whose individual parameters are "
     "ordinary is usually not a library bug at all. Two likelier causes, in order: "
     "(a) the test's own placement leaves no device headroom for the conversion's "
-    "temporary buffer — look at its `device_map` and at any "
-    "`cap_psutil_cpu_memory(...)` budget it sets, which is test-side and fixable; "
+    'temporary buffer. `device_map="auto"` plans against each device\'s FULL '
+    "capacity, so the placement itself eats the room the loader still needs. "
+    "**Restricting per-device memory is what `max_memory` is for** — pass a "
+    'per-device budget reserving a slice of each accelerator, plus a `"cpu"` '
+    "entry so `auto` can still offload, e.g. "
+    '`max_memory={i: f"{int(total_i * 0.85 / 1024**3)}GiB" for i in range(n)}`. '
+    "A `cap_psutil_cpu_memory(...)` budget CANNOT do this — it only steers how "
+    "much goes to CPU/disk and cannot reserve room ON a device. Test-side and "
+    "fixable; "
     "(b) memory pressure from concurrent async loading on a busy worker, which "
     "`HF_DEACTIVATE_ASYNC_LOAD=true` avoids but which is a transient, not a defect. "
     "**A transient is not something to patch.** If (a) does not explain it, produce "
@@ -3825,6 +3832,33 @@ def _oom_guidance_for(target: dict) -> str:
     return _OOM_GUIDANCE
 
 
+# A failure raised while CONVERTING checkpoint weights. The CI-side message is a
+# wrapper — "issues during automatic conversion of the weights" — that never names
+# the real cause, so `classify` files it as `other`, and on a bad-commit cluster
+# the group then gets no per-category guidance at all. That is what happened to
+# the phimoe group behind transformers#48426: an EMPTY addendum, after which it
+# patched `conversion_mapping.py` — a production loading path — to make one CI
+# runner pass. Whatever the proximate cause, a failure inside the conversion step
+# is a loading/placement problem, which is what `_OOM_LOAD_GUIDANCE` addresses.
+#
+# Routed at GUIDANCE time, deliberately not in `classify`: `failure_mode` is part
+# of `target_fingerprint`'s basis, so relabelling the mode would change the
+# group's identity, orphan its open PR and re-dispatch it as new work.
+_CONVERSION_PAT = re.compile(
+    r"issues during automatic conversion of the weights|"
+    r"`CONVERSION` entries|core_model_loading\.py",
+    re.IGNORECASE,
+)
+
+
+def _is_conversion_failure(target: dict) -> bool:
+    """Whether every failure in this group died in the weight-conversion step."""
+    failures = target.get("failures") or []
+    if not failures:
+        return False
+    return all(_CONVERSION_PAT.search(f.get("latest_trace") or "") for f in failures)
+
+
 def instruction_addendum(target: dict) -> str:
     """The per-category block appended to ``_INSTRUCTION`` for one failure group.
 
@@ -3839,7 +3873,9 @@ def instruction_addendum(target: dict) -> str:
     # guidance at all -- 2.1M tokens spent hunting a regression in a commit that
     # had merely introduced the tests.
     if target.get("kind") == "cluster":
-        return _oom_guidance_for(target) if _is_all_oom(target) else ""
+        if _is_all_oom(target):
+            return _oom_guidance_for(target)
+        return _OOM_LOAD_GUIDANCE if _is_conversion_failure(target) else ""
     if target.get("kind") != "model_failures":
         return ""
     mode = target.get("failure_mode") or ""
@@ -3856,6 +3892,13 @@ def instruction_addendum(target: dict) -> str:
         # gets the mismatch guidance rather than "this is a library bug".
         if target.get("terminal_exc") == "AssertionError":
             return _MISMATCH_GUIDANCE
+        # A crash raised inside the weight-conversion step is a loading/placement
+        # problem, not a library bug to hunt — see `_CONVERSION_PAT`. Checked only
+        # here, in the crash/`other` fallback, so a mode that has its own specific
+        # block (mismatch, load_error, import_or_config, OOM) keeps it even when
+        # its traceback happens to mention a loading path.
+        if _is_conversion_failure(target):
+            return _OOM_LOAD_GUIDANCE
         site = target.get("crash_site") or ""
         site_clause = f" — the CI traceback raises at `{site}`" if site else ""
         return _CRASH_GUIDANCE.format(site_clause=site_clause)
