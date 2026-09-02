@@ -2328,6 +2328,79 @@ class InstructionAddendumTest(unittest.TestCase):
             text.index("the test's own placement"), text.index("async loading")
         )
 
+    _CONV_TRACE = (
+        "RuntimeError: We encountered some issues during automatic conversion of "
+        "the weights. For details look at the `CONVERSION` entries of the above "
+        "report!"
+    )
+
+    def _conv_target(self, mode="other", kind="cluster", exc=None):
+        t = {
+            "kind": kind,
+            "label": "1 integration tests regressed by commit bd9509355c8a",
+            "model": "phimoe",
+            "failure_mode": mode,
+            "failures": [
+                {
+                    "test": "tests/models/phimoe/test_modeling_phimoe.py::PhimoeIntegrationTest::test_phimoe_instruct_generation",
+                    "gpu": "multi-gpu",
+                    "failure_mode": mode,
+                    "latest_trace": self._CONV_TRACE,
+                }
+            ],
+        }
+        if exc:
+            t["terminal_exc"] = exc
+        return t
+
+    def test_a_conversion_failure_reaches_the_load_guidance(self):
+        """The phimoe group behind transformers#48426 got an EMPTY addendum.
+
+        Its CI message is a wrapper — "issues during automatic conversion of the
+        weights" — which names no cause, so `classify` filed it `other`; and a
+        bad-commit cluster gets no per-category block unless every failure is
+        already OOM-labelled. With nothing to go on it patched
+        `conversion_mapping.py`, a production loading path, to make one runner
+        pass. A crash inside the conversion step is a loading problem.
+        """
+        text = itf.instruction_addendum(self._conv_target())
+        self.assertIn("size the checkpoint", text)
+        self.assertIn("max_memory", text)
+        self.assertIn("force_cpu=True", text)
+
+    def test_it_also_covers_a_plain_model_group(self):
+        text = itf.instruction_addendum(self._conv_target(kind="model_failures"))
+        self.assertIn("size the checkpoint", text)
+
+    def test_it_does_not_hijack_a_mode_with_its_own_block(self):
+        """`core_model_loading.py` appears in plenty of tracebacks. A group whose
+        mode has specific guidance must keep it."""
+        t = self._conv_target(mode="output_mismatch", kind="model_failures")
+        t["failures"][0]["latest_trace"] = "core_model_loading.py:1727 in convert"
+        self.assertIn("PLAUSIBLE VARIANT", itf.instruction_addendum(t))
+
+    def test_an_assertion_still_wins_over_the_conversion_route(self):
+        text = itf.instruction_addendum(
+            self._conv_target(kind="model_failures", exc="AssertionError")
+        )
+        self.assertIn("PLAUSIBLE VARIANT", text)
+        self.assertNotIn("size the checkpoint", text)
+
+    def test_a_plain_crash_still_gets_crash_guidance(self):
+        t = self._conv_target(mode="cuda_runtime", kind="model_failures")
+        t["failures"][0]["latest_trace"] = "RuntimeError: expected device cuda:0"
+        self.assertIn("library/model bug until", itf.instruction_addendum(t))
+
+    def test_routing_does_not_change_the_group_identity(self):
+        """Routed at guidance time on purpose: `failure_mode` is in
+        `target_fingerprint`'s basis, so relabelling the mode would orphan the
+        group's open PR and re-dispatch it as new work."""
+        t = self._conv_target(kind="model_failures")
+        before = itf.target_fingerprint(t)
+        itf.instruction_addendum(t)
+        self.assertEqual(itf.target_fingerprint(t), before)
+        self.assertEqual(t["failure_mode"], "other")  # untouched
+
     def test_retention_oom_gets_the_teardown_fix_not_a_shrug(self):
         text = itf.instruction_addendum(_oom_target(_OOM_RETENTION_TRACE))
         self.assertIn("RETAINED-MEMORY", text)
