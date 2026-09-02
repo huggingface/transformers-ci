@@ -2618,6 +2618,9 @@ def _distill_outcome(detail: dict) -> dict:
         # that branch — 5 of 79 serge fix branches were orphaned this way before
         # serge#110 — so the recap is where a human finds it.
         "branch": result.get("branch") or None,
+        # The candidate commit on that branch. Needed to finish the job by hand:
+        # `serge-verify-caller.yml` is dispatched by sha, not by branch name.
+        "commit_sha": result.get("commit_sha") or None,
     }
 
 
@@ -2819,6 +2822,79 @@ def _reason_cell(distilled: dict) -> str:
     return f"{reason} — unverified patch kept on {link}"
 
 
+_VERIFY_WORKFLOW = "serge-verify-caller.yml"
+
+
+def _unverified_branch_blocks(
+    targets: list[dict], details: dict[str, dict], existing_prs: dict[str, int | None]
+) -> list[str]:
+    """A ready-to-run command per kept-but-unverified branch.
+
+    The recap already tells a reader to "re-run verification against it", which
+    is an instruction, not something anyone can act on: dispatching
+    ``serge-verify-caller.yml`` needs a base sha, a candidate sha, the node-ids
+    and the model folder, and only this renderer holds all four at once.
+
+    **Read the run Serge already dispatched first.** On 2026-09-01 both
+    timed-out groups had a verify run that went on to finish *after* Serge
+    stopped waiting — the verdicts existed and were never read (`blt`
+    ``not_fixed``, `smollm3` ``fixed``). The reason cell carries that run's URL,
+    so fetching its artifact costs nothing, while a re-run costs ~40 GPU-minutes
+    to recompute an answer that already exists.
+    """
+    blocks: list[str] = []
+    for target in targets:
+        fp = target_fingerprint(target)
+        if existing_prs.get(fp):
+            continue
+        distilled = details.get(fp) or {}
+        branch, commit = distilled.get("branch"), distilled.get("commit_sha")
+        if not branch or not commit:
+            continue
+        node_ids = []
+        for failure in target.get("failures") or []:
+            test = (failure.get("test") or "").strip()
+            if test and test not in node_ids:
+                node_ids.append(test)
+        if not node_ids:
+            continue
+        model = target.get("model") or ""
+        blocks += [
+            "",
+            f"**{group_label(target)}** — unverified patch on "
+            f"[`{branch}`]({_GH}/tree/{branch}) (`{commit[:12]}`)",
+            "",
+            "```bash",
+            "# 1. The verify run Serge dispatched may have finished after it gave up —",
+            "#    check that run (URL in the Reason cell above) before spending GPU time:",
+            "#    gh run download <run-id> -R huggingface/transformers -n serge-verify-result-aws-g5-12xlarge-cache",
+            "",
+            "# 2. Only if no verdict exists, re-run it:",
+            f"gh workflow run {_VERIFY_WORKFLOW} -R huggingface/transformers \\",
+            "  -f mode=verify \\",
+            f"  -f base_sha=$(gh api repos/huggingface/transformers/commits/{commit}"
+            " --jq '.parents[0].sha') \\",
+            f"  -f commit_sha={commit} \\",
+            f"  -f test_nodeids='{' '.join(node_ids)}' \\",
+            f"  -f model={model} \\",
+            "  -f machine_type=aws-g5-12xlarge-cache",
+            "```",
+        ]
+    if not blocks:
+        return []
+    return [
+        "",
+        "## Unverified branches — how to finish them",
+        "",
+        "Serge committed a patch for each group below but the GPU gate never "
+        "judged it, so no PR was opened and the branch was kept. "
+        "**Check the already-dispatched run before re-running:** it often "
+        "completes after Serge stops waiting, and reading its artifact is free "
+        "where a re-run is not.",
+        *blocks,
+    ]
+
+
 def _render_outcome_recap(
     targets: list[dict],
     existing_prs: dict[str, int | None],
@@ -2874,6 +2950,7 @@ def _render_outcome_recap(
         "| --- | --- | --- | --- | --- |",
         *rows,
         *normalizer_blocks,
+        *_unverified_branch_blocks(targets, details, existing_prs),
     ]
 
 
