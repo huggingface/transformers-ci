@@ -3841,3 +3841,85 @@ class UnverifiedBranchInRecapTests(unittest.TestCase):
             ),
             [],
         )
+
+
+class UnverifiedBranchCommandTests(unittest.TestCase):
+    """The recap told a reader to "re-run verification against it" and gave them
+    no way to do it: dispatching serge-verify-caller.yml needs a base sha, a
+    candidate sha, the node-ids and the model folder, and this renderer is the
+    only place all four exist at once.
+
+    It also has to say the cheaper thing first. On 2026-09-01 both timed-out
+    groups' verify runs finished AFTER Serge stopped waiting — the verdicts were
+    computed and never read — so reading the existing run's artifact is free
+    where a re-run costs ~40 GPU-minutes.
+    """
+
+    BRANCH = "serge/fix/itf-4a72b9af302d-9a266db2"
+    COMMIT = "5fbcc9804e6704dacbb22cff8c952868c2f3987e"
+
+    def _detail(self, **over):
+        base = {
+            "status": "no_fix",
+            "result": {
+                "message": "GPU verification could not run (`timeout`).",
+                "verify_verdict": "timeout",
+                "branch": self.BRANCH,
+                "commit_sha": self.COMMIT,
+            },
+            "model": "kimi",
+        }
+        base["result"].update(over)
+        return base
+
+    def _body(self, detail=None):
+        target = _target("output_mismatch")
+        fp = itf.target_fingerprint(target)
+        return "\n".join(
+            itf._render_outcome_recap(
+                [target],
+                {fp: None},
+                {fp: itf._distill_outcome(detail or self._detail())},
+            )
+        )
+
+    def test_the_commit_sha_survives_distillation(self):
+        self.assertEqual(
+            itf._distill_outcome(self._detail())["commit_sha"], self.COMMIT
+        )
+
+    def test_the_command_carries_all_four_dispatch_inputs(self):
+        body = self._body()
+        self.assertIn("gh workflow run serge-verify-caller.yml", body)
+        self.assertIn(f"-f commit_sha={self.COMMIT}", body)
+        self.assertIn("-f base_sha=$(gh api", body)  # parent resolved, not guessed
+        self.assertIn("-f test_nodeids='tests/", body)
+        self.assertIn("-f model=", body)
+
+    def test_it_says_to_read_the_existing_run_first(self):
+        """A re-run recomputes a verdict that usually already exists."""
+        body = self._body()
+        self.assertIn("gh run download", body)
+        self.assertIn("Only if no verdict exists", body)
+        self.assertLess(body.index("gh run download"), body.index("gh workflow run"))
+
+    def test_no_section_without_a_kept_branch(self):
+        body = self._body(self._detail(branch=None, commit_sha=None))
+        self.assertNotIn("Unverified branches", body)
+        self.assertNotIn("gh workflow run", body)
+
+    def test_no_section_when_the_commit_sha_is_missing(self):
+        """An older Serge build returns a branch and no sha; a command with a
+        blank commit_sha would dispatch a verify against nothing."""
+        body = self._body(self._detail(commit_sha=None))
+        self.assertNotIn("gh workflow run", body)
+
+    def test_a_group_with_a_pr_gets_no_command(self):
+        target = _target("output_mismatch")
+        fp = itf.target_fingerprint(target)
+        body = "\n".join(
+            itf._render_outcome_recap(
+                [target], {fp: 123}, {fp: itf._distill_outcome(self._detail())}
+            )
+        )
+        self.assertNotIn("gh workflow run", body)
