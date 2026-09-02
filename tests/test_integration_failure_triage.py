@@ -2287,6 +2287,47 @@ class InstructionAddendumTest(unittest.TestCase):
         self.assertNotIn("#48198", text)
         self.assertNotIn("Add a device key", text)
 
+    def test_the_trunk_forbids_fixing_ci_in_a_shared_loading_path(self):
+        """serge patched `conversion_mapping.py` to make one runner pass.
+
+        That file is reached by every `from_pretrained` call, so the flag it set
+        would slow loading for every user of the model, for ever, to fix a CI
+        runner condition (transformers#48426). The rule belongs in the TRUNK, not
+        in the OOM block: that group was a bad-commit cluster whose CI message
+        said "issues during automatic conversion", so it was classified `other`
+        and `instruction_addendum` gave it an EMPTY addendum. Only the trunk
+        reaches a group like that.
+        """
+        text = itf.build_instruction(None)  # trunk alone — what that group got
+        self.assertIn("Blast radius", text)
+        self.assertIn("conversion_mapping.py", text)
+        self.assertIn("core_model_loading.py", text)
+        self.assertIn("that is a signal you have the wrong cause", text)
+
+    def test_load_oom_bans_force_cpu_and_gives_the_threshold(self):
+        """The flag's author: it is for EXTREME single-parameter cases only —
+        qwen4's ngram embedding, ~50B params in one tensor. serge copied the
+        mechanism from that one precedent without the magnitude that justifies
+        it, which is the same failure as taking the `Expectations` device-key
+        convention without its drift threshold."""
+        text = itf.instruction_addendum(_oom_target(_OOM_LOAD_TRACE))
+        self.assertIn("force_cpu=True", text)
+        self.assertIn("ONE tensor", text)
+        self.assertIn("no matter how closely the traceback resembles", text)
+
+    def test_load_oom_names_the_test_side_causes_first(self):
+        """Cyril's actual diagnosis: the test's own `device_map` plus its
+        `cap_psutil_cpu_memory(...)` budget. Both are test-side and fixable, and
+        they must be checked before anything in a shared loading path."""
+        text = itf.instruction_addendum(_oom_target(_OOM_LOAD_TRACE))
+        self.assertIn("cap_psutil_cpu_memory", text)
+        self.assertIn("HF_DEACTIVATE_ASYNC_LOAD=true", text)
+        # …and a transient must not be patched at all.
+        self.assertIn("A transient is not something to patch", text)
+        self.assertLess(
+            text.index("the test's own placement"), text.index("async loading")
+        )
+
     def test_retention_oom_gets_the_teardown_fix_not_a_shrug(self):
         text = itf.instruction_addendum(_oom_target(_OOM_RETENTION_TRACE))
         self.assertIn("RETAINED-MEMORY", text)
