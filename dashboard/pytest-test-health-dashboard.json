@@ -215,7 +215,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Streak"
+              "options": "Fails"
             },
             "properties": [
               {
@@ -224,7 +224,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 74
+                "value": 64
               },
               {
                 "id": "custom.cellOptions",
@@ -244,10 +244,46 @@
                     },
                     {
                       "color": "red",
-                      "value": 3
+                      "value": 4
                     }
                   ]
                 }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Fail Rate"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last Failed"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               }
             ]
           }
@@ -281,17 +317,51 @@
       "pluginVersion": "12.0.0",
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "editorMode": "code",
-          "expr": "topk(10, (topk by (test_nodeid, test_job) (1, (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) and on (test_nodeid, test_job, run_id) (topk by (test_nodeid, test_job) (1, (max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) and on (test_job, run_id) topk by (test_job) (5, max by (test_job, run_id) (last_over_time(pytest_run_job_member_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) * on (run_id) group_left() max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range])))) * on (run_id) group_left() max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range])))))) * on (test_nodeid, test_job) group_left() ((count by (test_nodeid, test_job) (max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) and on (test_job, run_id) topk by (test_job) (5, max by (test_job, run_id) (last_over_time(pytest_run_job_member_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) * on (run_id) group_left() max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range]))))) > 1))",
+          "expr": "topk by (test_nodeid, test_job) (1, ((last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) * on (run_id) group_left() (max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range])))) and on (test_nodeid, test_job) (count by (test_nodeid, test_job) (max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) > 1)) * 1000",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
-          "refId": "A"
+          "refId": "LastFail"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (test_nodeid) (count by (test_nodeid, test_job) (max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) > 1)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Fails"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (test_nodeid) (100 * (count by (test_nodeid, test_job) (max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) > 1) / on (test_job) group_left() (count by (test_job) (max by (test_job, run_id) (last_over_time(pytest_run_job_member_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Rate"
         }
       ],
       "title": "Sticky Failures (CPU)",
       "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
         {
           "id": "organize",
           "options": {
@@ -311,21 +381,43 @@
               "test_job": 0,
               "test_function": 1,
               "exception_type": 2,
-              "trace_id": 3,
-              "Value": 4
+              "Value #Fails": 3,
+              "Value #Rate": 4,
+              "Value #LastFail": 5,
+              "trace_id": 6
             },
             "renameByName": {
-              "Value": "Streak",
-              "exception_type": "Error",
-              "test_function": "Function",
               "test_job": "Job",
-              "trace_id": "Last Failure"
+              "test_function": "Function",
+              "exception_type": "Error",
+              "trace_id": "Last Failure",
+              "Value #Fails": "Fails",
+              "Value #Rate": "Fail Rate",
+              "Value #LastFail": "Last Failed"
             }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Last Failed",
+                "desc": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "limit",
+          "options": {
+            "limitField": 25
           }
         }
       ],
       "type": "table",
-      "description": "Tests that keep failing on main, scoped to the LAST 5 RUNS OF EACH JOB. 'Streak' = how many of those runs the test failed in (orange; red at 3+). The run set comes from pytest_run_job_member_info ranked by pytest_run_start_time_seconds, so it is per job \u2014 a job that ran fewer than 5 times in the range contributes all of its runs. Streak counts distinct run_id values, NOT traces: one run_models_gpu run emits ~19 per-model traces, so counting traces would inflate it, and a test that failed twice within one run (retry, or two shards) counts that run once. Single failures are excluded (streak > 1), so an empty panel means nothing is repeatedly broken. 'Last Failure' links to the most recent failing run in the window. The dashboard time range still bounds which runs exist to be ranked \u2014 widen it to reach back further than each job's last 5 runs."
+      "description": "Tests that failed in MORE THAN ONE run of their job within the dashboard time range. 'Fails' = how many distinct runs of that job the test failed in; 'Fail Rate' = that count over every run of the same job in the range, so a 1% rate on a job that runs ~200x/4w is a chronic flake and a 40% rate is an active breakage. Counts distinct run_id values, NOT traces: one run_models_gpu run emits ~19 per-model traces, and a test that failed twice within one run (retry, or two shards) counts that run once. Single failures are excluded, so an empty panel means nothing repeated. The time range IS the window here -- widen it to catch slower flakes, narrow it to see only what is breaking now. 'Last Failed' is the start of the most recent failing run; a row whose Last Failed is old is already-fixed history still inside the range. The Error cell links to that run's failure. Contrast the GPU panel, which stays scoped to each job's last 5 runs on purpose: run_models_gpu carries ~1200 repeat-failing tests over 4 weeks."
     },
     {
       "datasource": {
