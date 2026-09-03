@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 from transformersci.agentic import github_api as gh_api
 from transformersci.agentic import integration_failure_triage as itf
+from transformersci.agentic import prometheus_api as prom
 from transformersci.agentic import serge_dispatch as sd
 
 
@@ -587,6 +588,247 @@ class PartitionTargetsPriorAttemptsTest(unittest.TestCase):
         dispatch, deferred = itf.partition_targets([t])
         self.assertEqual(dispatch, [t])
         self.assertEqual(deferred, [])
+
+
+def _prom_series(pairs):
+    """`[({labels}, value), ...]` -> a Prometheus instant-query result list."""
+    return [{"metric": m, "value": [0, str(v)]} for m, v in pairs]
+
+
+class PrometheusApiTest(unittest.TestCase):
+    def test_parses_a_successful_response(self):
+        body = json.dumps(
+            {
+                "status": "success",
+                "data": {"result": [{"metric": {"a": "b"}, "value": [1, "2"]}]},
+            }
+        )
+        out = prom.instant_query("up", fetch=lambda url: body)
+        self.assertEqual(out[0]["metric"]["a"], "b")
+
+    def test_query_is_url_encoded_into_the_proxy_path(self):
+        seen = {}
+
+        def fetch(url):
+            seen["url"] = url
+            return json.dumps({"status": "success", "data": {"result": []}})
+
+        prom.instant_query('x{y="z"}', base_url="https://g.example", fetch=fetch)
+        self.assertTrue(seen["url"].startswith("https://g.example" + prom.QUERY_PATH))
+        self.assertIn("y%3D%22z%22", seen["url"])
+
+    def test_every_failure_mode_degrades_to_no_data(self):
+        # unattended nightly: "no data" must never become a crashed run
+        for body in (
+            '{"status": "error"}',
+            "not json",
+            '{"data": {"result": {}}}',
+            '{"status": "success"}',
+            "[]",
+        ):
+            self.assertEqual(prom.instant_query("up", fetch=lambda url: body), [])
+
+        def boom(url):
+            raise urllib.error.URLError("unreachable")
+
+        self.assertEqual(prom.instant_query("up", fetch=boom), [])
+
+    def test_scalars_by_label_skips_unparseable_samples(self):
+        series = _prom_series([({"run_id": "a"}, 1.5), ({"run_id": "b"}, "nan-ish")])
+        series.append({"metric": {}, "value": [0, "3"]})
+        series.append({"metric": {"run_id": "c"}, "value": None})
+        out = prom.scalars_by_label(series, "run_id")
+        self.assertEqual(out, {"a": 1.5})
+
+
+class LivenessTest(unittest.TestCase):
+    # Two daily runs a day: one ~12.8k-test run and one ~162k full suite.
+    TOTALS = {
+        "big1": 162000,
+        "small1": 12800,
+        "big2": 160000,
+        "big3": 161000,
+        "small2": 12900,
+        "push1": 10400,
+    }
+    STARTS = {
+        "big1": 100,
+        "small1": 200,
+        "big2": 300,
+        "big3": 400,
+        "small2": 500,
+        "push1": 450,
+    }
+    EVENTS = {
+        "big1": "daily",
+        "small1": "daily",
+        "big2": "daily",
+        "big3": "daily",
+        "small2": "daily",
+        "push1": "push",
+    }
+
+    def _query(self, failing, totals=None, starts=None):
+        totals = self.TOTALS if totals is None else totals
+        starts = self.STARTS if starts is None else starts
+
+        def q(expr):
+            if "pytest_run_job_total_tests" in expr:
+                return _prom_series(
+                    [
+                        ({"run_id": k, "ci_event": self.EVENTS.get(k, "daily")}, v)
+                        for k, v in totals.items()
+                    ]
+                )
+            if "pytest_run_start_time_seconds" in expr:
+                return _prom_series([({"run_id": k}, v) for k, v in starts.items()])
+            if "pytest_test_last_failure_info" in expr:
+                return _prom_series(
+                    [
+                        ({"test_nodeid": n, "run_id": r}, 1)
+                        for n, rs in failing.items()
+                        for r in rs
+                    ]
+                )
+            raise AssertionError(f"unexpected query: {expr}")
+
+        return q
+
+    def _target(self, *tests, kind="model_failures"):
+        return {
+            "kind": kind,
+            "label": "group",
+            "model": "m",
+            "failures": [{"test": t, "gpu": "single-gpu"} for t in tests],
+        }
+
+    def test_baseline_is_full_suite_runs_only_newest_first(self):
+        live = itf.fetch_liveness(runs=3, query=self._query({"t": ["big3"]}))
+        # small2 is the newest run of all, and must NOT be a baseline run: a test
+        # absent from a 12.8k-test run is absent, not green.
+        self.assertEqual(live.runs, ("big3", "big2", "big1"))
+        self.assertNotIn("small2", live.runs)
+        self.assertTrue(live.usable)
+
+    def test_recent_spans_every_run_since_the_baseline_started(self):
+        live = itf.fetch_liveness(runs=3, query=self._query({"t": ["big3"]}))
+        # presence counts everywhere: partial and push runs are in `recent` ...
+        self.assertEqual(live.recent, frozenset(self.STARTS))
+        # ... while absence is only trusted across the full-suite baseline.
+        self.assertEqual(len(live.runs), 3)
+
+    def test_still_failing_group_dispatches(self):
+        live = itf.fetch_liveness(runs=3, query=self._query({"t": ["big3"]}))
+        self.assertEqual(itf.settled_reason(self._target("t"), live), "")
+
+    def test_group_that_only_failed_in_a_PARTIAL_run_still_dispatches(self):
+        # The trap this gate exists to avoid, from the other side: `small2` is a
+        # 12.9k-test run, so it is no baseline — but a failure there is a real,
+        # current failure and must not be skipped.
+        live = itf.fetch_liveness(runs=3, query=self._query({"t": ["small2"]}))
+        self.assertEqual(itf.settled_reason(self._target("t"), live), "")
+
+    def test_group_that_only_failed_in_a_push_run_still_dispatches(self):
+        live = itf.fetch_liveness(runs=3, query=self._query({"t": ["push1"]}))
+        self.assertEqual(itf.settled_reason(self._target("t"), live), "")
+
+    def test_settled_group_is_held_back_with_a_reason(self):
+        # failed only before the baseline window opened
+        live = itf.fetch_liveness(runs=2, query=self._query({"t": ["big1", "small1"]}))
+        self.assertEqual(live.runs, ("big3", "big2"))
+        reason = itf.settled_reason(self._target("t"), live)
+        self.assertIn("stopped failing", reason)
+        self.assertIn("full-suite run_models_gpu", reason)
+
+    def test_unknown_nodeids_fail_SAFE_and_dispatch(self):
+        # A node-id format drift between the dataset and the exporter looks
+        # exactly like "all green". It must never skip the pool.
+        live = itf.fetch_liveness(runs=3, query=self._query({"other": ["big1"]}))
+        self.assertTrue(live.usable)
+        self.assertEqual(itf.settled_reason(self._target("t"), live), "")
+
+    def test_one_still_failing_member_keeps_the_whole_group(self):
+        live = itf.fetch_liveness(
+            runs=3, query=self._query({"a": ["big1"], "b": ["big3"]})
+        )
+        self.assertEqual(itf.settled_reason(self._target("a", "b"), live), "")
+
+    def test_bad_commit_clusters_are_gated_too(self):
+        live = itf.fetch_liveness(runs=2, query=self._query({"t": ["big1"]}))
+        reason = itf.settled_reason(self._target("t", kind="cluster"), live)
+        self.assertIn("stopped failing", reason)
+
+    def test_thin_or_missing_data_dispatches(self):
+        # no failures observed at all -> indistinguishable from a broken query
+        live = itf.fetch_liveness(runs=3, query=self._query({}))
+        self.assertFalse(live.usable)
+        self.assertEqual(itf.settled_reason(self._target("t"), live), "")
+        # empty responses
+        empty = itf.fetch_liveness(runs=3, query=lambda expr: [])
+        self.assertFalse(empty.usable)
+        self.assertEqual(itf.settled_reason(self._target("t"), empty), "")
+        self.assertEqual(itf.settled_reason(self._target("t"), None), "")
+
+    def test_no_daily_run_means_no_baseline(self):
+        live = itf.fetch_liveness(
+            runs=3,
+            query=self._query(
+                {"t": ["push1"]}, totals={"push1": 10400}, starts={"push1": 450}
+            ),
+        )
+        self.assertEqual(live.runs, ())
+        self.assertFalse(live.usable)
+
+    def test_default_runs_stays_within_the_green_days_the_window_allows(self):
+        # A candidate must fail on >= --min-days of --window days to reach this
+        # gate, so it can only have been green for (window - min_days) days. A
+        # baseline wider than that can never be failure-free, so the gate would
+        # silently never fire. Measured 2026-09-03 against prod: 0 of 155 groups
+        # settled at runs>=2, 1 (`phimoe`) at runs=1. Pinned so that
+        # "hardening" the default cannot quietly turn the check off.
+        allowed_green_days = 7 - 5  # --window / --min-days defaults
+        self.assertLessEqual(itf.DEFAULT_LIVENESS_RUNS, allowed_green_days)
+        self.assertLessEqual(itf.MIN_LIVENESS_RUNS, allowed_green_days)
+        # and in practice the dataset yields 6 usable days, not 7
+        self.assertLessEqual(itf.MIN_LIVENESS_RUNS, 6 - 5)
+
+    def test_one_full_suite_run_is_enough_to_gate_on(self):
+        live = itf.fetch_liveness(
+            runs=1, query=self._query({"t": ["big1"], "u": ["big3"]})
+        )
+        self.assertEqual(live.runs, ("big3",))
+        self.assertTrue(live.usable)
+        # `u` failed in that run -> dispatch; `t` did not -> settled
+        self.assertEqual(itf.settled_reason(self._target("u"), live), "")
+        self.assertIn("stopped failing", itf.settled_reason(self._target("t"), live))
+
+
+class DropSettledTargetsTest(LivenessTest):
+    def test_settled_groups_are_split_out_and_annotated(self):
+        live = itf.fetch_liveness(runs=2, query=self._query({"t": ["big1"]}))
+        keep, settled = itf.drop_settled_targets([self._target("t")], live)
+        self.assertEqual(keep, [])
+        self.assertEqual(len(settled), 1)
+        self.assertIn("stopped failing", settled[0]["settled_reason"])
+
+    def test_env_flag_disables_the_gate(self):
+        live = itf.fetch_liveness(runs=2, query=self._query({"t": ["big1"]}))
+        t = self._target("t")
+        with patch.dict(os.environ, {"ITF_LIVENESS_CHECK": "0"}):
+            keep, settled = itf.drop_settled_targets([t], live)
+        self.assertEqual(keep, [t])
+        self.assertEqual(settled, [])
+
+    def test_sentence_names_the_groups_and_carries_no_pr_column(self):
+        # `| PR |` in anything rendered here would let _carry_forward_rows adopt
+        # it as a dispatched row on a same-day re-run.
+        sentence = itf.settled_sentence(
+            [{"model": f"m{i}", "label": "l"} for i in range(6)]
+        )
+        self.assertIn("6 group(s) skipped", sentence)
+        self.assertIn("`m0`", sentence)
+        self.assertIn("+2 more", sentence)
+        self.assertNotIn("| PR |", sentence)
 
 
 class PriorFeedbackTest(unittest.TestCase):
