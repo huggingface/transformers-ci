@@ -76,7 +76,7 @@ import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError
@@ -91,6 +91,7 @@ from .github_api import (
     update_issue_body,
 )
 from . import pr_evidence
+from . import prometheus_api
 from .serge_dispatch import (
     SergeDispatchError,
     build_task_payload as _build_serge_payload,
@@ -1378,6 +1379,236 @@ def rejected_attempts_reason(prior: PriorAttempts | None, max_rejected: int) -> 
     )
 
 
+# ---------------------------------------------------------------------------
+# Liveness — did this group stop failing before we got to it?
+# ---------------------------------------------------------------------------
+#
+# The dataset window is day-granular and 7 days wide, so a failure fixed
+# mid-window still clears --min-days: voxtral_realtime failed 08-20..08-24, was
+# green on 08-25 and 08-26, and was dispatched anyway on 08-26 — a GPU reproduce
+# spent to answer not_reproduced. Prometheus is live to the last run, so it can
+# answer "is this STILL failing?" before a dispatch slot is spent on it.
+#
+# The trap to avoid is the run population. run_models_gpu fires TWICE per day
+# for ci_event=daily, ~1h apart: one run of ~12.8k tests and one of ~162k
+# (measured 2026-09-03). A test that only exists in the full suite is simply
+# absent from the small run, not green — so "did it fail in the most recent
+# run" would skip real breakage. Hence: only FULL-SUITE runs count, several of
+# them, and a group is held back only when Prometheus has actually seen its
+# tests failing in the window. Every unknown dispatches, as before.
+
+LIVENESS_JOB = "run_models_gpu"
+LIVENESS_CI_EVENT = "daily"
+LIVENESS_WINDOW = "7d"
+# ONE green full-suite run is the whole budget, and raising this makes the gate
+# unreachable rather than stricter. A candidate has to fail on >= --min-days of
+# --window days to be here at all, so it can only have been green for
+# (window - min_days) days: 2 at the defaults, and 1 in practice because the
+# dataset usually yields 6 usable days, not 7. Demanding 2 green full-suite runs
+# (~2 days) therefore never fires — measured 2026-09-03, 0 of 155 groups at
+# runs>=2 versus 1 (`phimoe`, 3 tests) at runs=1.
+#
+# What makes that safe is the nightly cadence, not the sample size: a group
+# wrongly skipped is reconsidered tomorrow, so a false negative costs one night,
+# while a false positive costs a GPU reproduce plus an agent run. The guard
+# against a lucky green is the FULL-SUITE requirement below, not a bigger N.
+DEFAULT_LIVENESS_RUNS = 1
+MIN_LIVENESS_RUNS = 1
+# A run counts as full-suite when it ran at least this fraction of the largest
+# suite seen in the window. 0.5 cleanly separates ~12.8k from ~162k.
+_FULL_SUITE_FRACTION = 0.5
+_INTEGRATION_NODEID_RE = ".*IntegrationTests?::.*"
+
+
+@dataclass(frozen=True)
+class Liveness:
+    """Recent full-suite runs, and which tests were seen failing in the window."""
+
+    runs: tuple[str, ...]  # full-suite run_ids, newest first — the baseline
+    newest: str  # start of runs[0] as "YYYY-MM-DD HH:MM UTC"; "" when unknown
+    recent: frozenset[str]  # EVERY run of the job at/after the oldest baseline run
+    failing: dict[str, frozenset[str]]  # test nodeid -> run_ids it failed in
+    job: str = LIVENESS_JOB
+
+    @property
+    def usable(self) -> bool:
+        """Only gate on a snapshot with enough runs AND some observed failures.
+
+        An empty ``failing`` map is indistinguishable from "everything is green"
+        but far more likely to mean the query returned nothing, so on its own it
+        must never skip every group in the run."""
+        return len(self.runs) >= MIN_LIVENESS_RUNS and bool(self.failing)
+
+    @property
+    def max_green_days(self) -> int:
+        """Green days this baseline demands. See DEFAULT_LIVENESS_RUNS."""
+        return len(self.runs)
+
+
+def fetch_liveness(
+    *,
+    job: str = LIVENESS_JOB,
+    ci_event: str = LIVENESS_CI_EVENT,
+    runs: int = DEFAULT_LIVENESS_RUNS,
+    window: str = LIVENESS_WINDOW,
+    base_url: str | None = None,
+    query: Callable[[str], list[dict]] | None = None,
+) -> Liveness:
+    """Snapshot of recent ``job`` runs and integration-test failures.
+
+    Three instant queries, once per triage run. The failure map is small enough
+    to filter in Python (2341 series / 332 tests over 7d, measured 2026-09-03),
+    which avoids building a regex alternation out of pytest node ids — they
+    contain ``.``, ``[`` and ``]``, and one escaping slip there would silently
+    match nothing.
+
+    Two different run sets come out of this, and the distinction is the whole
+    point. ``runs`` is the **baseline**: the newest full-suite ``ci_event``
+    runs, i.e. the ones where every test genuinely had a chance to run.
+    ``recent`` is **every** run of the job from the oldest baseline run onward,
+    partial and other-event runs included, because a failure in any of those
+    still proves the test is failing today. Absence is only trusted over the
+    baseline; presence counts everywhere.
+
+    Returns an unusable snapshot on any error."""
+    ask = query or (lambda e: prometheus_api.instant_query(e, base_url=base_url))
+    total_series = ask(
+        "max by (run_id, ci_event) (last_over_time(pytest_run_job_total_tests"
+        f'{{pr="main", test_job="{job}"}}[{window}]))'
+    )
+    starts = prometheus_api.scalars_by_label(
+        ask(
+            "max by (run_id) (last_over_time(pytest_run_start_time_seconds"
+            f'{{pr="main"}}[{window}]))'
+        ),
+        "run_id",
+    )
+    if not total_series or not starts:
+        return Liveness((), "", frozenset(), {}, job)
+    totals: dict[str, float] = {}
+    events: dict[str, str] = {}
+    for entry in total_series:
+        metric = entry.get("metric") or {}
+        run_id = metric.get("run_id")
+        value = entry.get("value")
+        if not run_id or not isinstance(value, list) or len(value) < 2:
+            continue
+        try:
+            total = float(value[1])
+        except (TypeError, ValueError):
+            continue
+        run_id = str(run_id)
+        if total >= totals.get(run_id, -1.0):
+            totals[run_id] = total
+            events[run_id] = str(metric.get("ci_event") or "")
+    baseline_pool = {
+        run_id: total
+        for run_id, total in totals.items()
+        if events.get(run_id) == ci_event and run_id in starts
+    }
+    if not baseline_pool:
+        return Liveness((), "", frozenset(), {}, job)
+    biggest = max(baseline_pool.values())
+    full = [
+        run_id
+        for run_id, total in baseline_pool.items()
+        if total >= biggest * _FULL_SUITE_FRACTION
+    ]
+    full.sort(key=lambda run_id: starts[run_id], reverse=True)
+    picked = tuple(full[:runs])
+    if not picked:
+        return Liveness((), "", frozenset(), {}, job)
+    newest = datetime.datetime.utcfromtimestamp(starts[picked[0]]).strftime(
+        "%Y-%m-%d %H:%M UTC"
+    )
+    since = starts[picked[-1]]
+    recent = frozenset(
+        run_id for run_id in totals if run_id in starts and starts[run_id] >= since
+    )
+    seen: dict[str, set[str]] = defaultdict(set)
+    for entry in ask(
+        "max by (test_nodeid, run_id) (last_over_time(pytest_test_last_failure_info"
+        f'{{pr="main", test_job="{job}", test_nodeid=~"{_INTEGRATION_NODEID_RE}"}}'
+        f"[{window}]))"
+    ):
+        metric = entry.get("metric") or {}
+        nodeid, run_id = metric.get("test_nodeid"), metric.get("run_id")
+        if nodeid and run_id:
+            seen[str(nodeid)].add(str(run_id))
+    return Liveness(
+        picked, newest, recent, {k: frozenset(v) for k, v in seen.items()}, job
+    )
+
+
+def settled_reason(target: dict, liveness: Liveness | None) -> str:
+    """Why this group should not be dispatched — its tests stopped failing.
+
+    ``""`` dispatches, exactly as before, and that is the answer to every kind of
+    doubt: no snapshot, too few full-suite runs, a group carrying no test names,
+    or node ids Prometheus has never reported failing. That last case is also
+    what a node-id format drift between the dataset and the exporter would look
+    like, and it MUST fail safe — a gate that reads a rename as "everything is
+    green" would skip the entire pool in silence.
+
+    Bad-commit clusters are gated like anything else, unlike
+    :func:`env_only_reason`: however strong the attribution, a cluster whose
+    tests have all gone green has nothing left to fix."""
+    if liveness is None or not liveness.usable:
+        return ""
+    nodeids = {
+        str(f.get("test")) for f in target.get("failures") or [] if f.get("test")
+    }
+    known = [n for n in nodeids if n in liveness.failing]
+    if not known:
+        return ""
+    if any(liveness.failing[n] & liveness.recent for n in known):
+        return ""
+    when = f", newest {liveness.newest}" if liveness.newest else ""
+    return (
+        f"stopped failing — none of its {len(known)} test(s) failed in the last "
+        f"{len(liveness.runs)} full-suite {liveness.job} run(s){when}"
+    )
+
+
+def drop_settled_targets(
+    targets: list[dict], liveness: Liveness | None
+) -> tuple[list[dict], list[dict]]:
+    """Split ordered groups into ``(still_failing, settled)``.
+
+    Settled groups are **skipped, not deferred**. They are neither unfixable nor
+    waiting on a human, so they do not belong in the deferred sections — whose
+    heading promises a runner-capacity or dependency-pin problem — and they do
+    not spend a ``--max-groups`` slot. Each carries its ``settled_reason``.
+
+    Unlike the other exclusions there is no "restore the pool when it empties"
+    guard: an empty pool here means every candidate has genuinely gone green,
+    and dispatching known-green groups is exactly the waste this prevents. The
+    fail-safe lives in :func:`settled_reason` instead. Set
+    ``ITF_LIVENESS_CHECK=0`` to disable."""
+    if not _env_bool("ITF_LIVENESS_CHECK", True):
+        return list(targets), []
+    live: list[dict] = []
+    settled: list[dict] = []
+    for t in targets:
+        reason = settled_reason(t, liveness)
+        if reason:
+            settled.append({**t, "settled_reason": reason})
+        else:
+            live.append(t)
+    return live, settled
+
+
+def settled_sentence(settled: list[dict]) -> str:
+    """One-line summary of the skipped groups for the report / tracking issue."""
+    names = [str(t.get("model") or t.get("label") or "?") for t in settled]
+    shown = ", ".join(f"`{n}`" for n in names[:4])
+    more = f" +{len(names) - 4} more" if len(names) > 4 else ""
+    return (
+        f"_{len(settled)} group(s) skipped — stopped failing before this run "
+        f"({shown}{more}). Not dispatched and not awaiting a human._"
+    )
+
+
 def partition_targets(
     targets: list[dict],
     priors: dict[str, PriorAttempts] | None = None,
@@ -1517,6 +1748,7 @@ def render_report(
     targets: list[dict],
     window: list[str],
     deferred: list[dict] | None = None,
+    skipped: list[dict] | None = None,
 ) -> str:
     """Full Markdown triage summary (for the action log / artifact)."""
     t = report["totals"]
@@ -1551,6 +1783,11 @@ def render_report(
             out.append(f"- {_oom_sentence(oom)}")
         for t in other:
             out.append(f"- **{t['label']}** — {t.get('defer_reason') or 'not fixable'}")
+        out.append("")
+    if skipped:
+        out.append("## Skipped — stopped failing")
+        for t in skipped:
+            out.append(f"- **{t['label']}** — {t.get('settled_reason') or 'settled'}")
         out.append("")
     if report["clusters"]:
         out.append("## Pinned clusters (CI bisect)")
@@ -2996,6 +3233,7 @@ def render_tracking_issue_body(
     deferred: list[dict] | None = None,
     grafana_url: str | None = None,
     carry_recap_rows: list[str] | None = None,
+    skipped: list[dict] | None = None,
 ) -> str:
     """Markdown body for the per-run tracking issue. When a group already has an
     open Serge PR (a follow-up), its number is written inline as ``#<pr>`` — that
@@ -3056,6 +3294,11 @@ def render_tracking_issue_body(
     for row in carry_rows or []:
         lines.append(row)
     lines += _render_deferred_section(deferred, grafana_url)
+    if skipped:
+        # Deliberately one sentence, not a table, and NOT inside the deferred
+        # sections: nobody needs to act on these. No `| PR |` header either, so
+        # _carry_forward_rows cannot adopt anything here as a dispatched row.
+        lines += ["", settled_sentence(skipped)]
     lines += _render_outcome_recap(
         targets, existing_prs, details, grafana_url, carry_recap_rows
     )
@@ -3385,6 +3628,7 @@ def reconcile_tracking_issue(
     deferred: list[dict] | None = None,
     dispatch_errors: dict[str, str] | None = None,
     carry_recap_rows: list[str] | None = None,
+    skipped: list[dict] | None = None,
 ) -> dict[str, int | None]:
     """Poll open PRs after dispatch and refresh the tracking-issue table in
     place, so outcomes Serge produces during THIS run show immediately instead
@@ -3463,6 +3707,7 @@ def reconcile_tracking_issue(
                 carry_rows,
                 deferred=deferred,
                 carry_recap_rows=carry_recap_rows,
+                skipped=skipped,
             )
             update_issue_body(repo, issue_number, body, github_token)
             print(
@@ -4470,6 +4715,30 @@ def main(argv: list[str] | None = None) -> int:
         f"(0 disables; default {DEFAULT_MAX_REJECTED_ATTEMPTS})",
     )
     p.add_argument(
+        "--no-liveness-check",
+        action="store_true",
+        default=not _env_bool("ITF_LIVENESS_CHECK", True),
+        help="dispatch groups even when Prometheus says their tests have stopped "
+        "failing. The check skips a group only when none of its tests failed in "
+        f"the last --liveness-runs full-suite {LIVENESS_JOB} runs; any missing or "
+        "thin data dispatches as before (env: ITF_LIVENESS_CHECK=0)",
+    )
+    p.add_argument(
+        "--liveness-runs",
+        type=int,
+        default=int(os.environ.get("ITF_LIVENESS_RUNS", str(DEFAULT_LIVENESS_RUNS))),
+        help="how many recent full-suite runs must be failure-free before a group "
+        f"is treated as settled (minimum {MIN_LIVENESS_RUNS}; default "
+        f"{DEFAULT_LIVENESS_RUNS}). Raising it above --window minus --min-days "
+        "makes the check unreachable, not stricter",
+    )
+    p.add_argument(
+        "--prometheus-url",
+        default=os.environ.get("ITF_PROMETHEUS_URL") or prometheus_api.DEFAULT_BASE_URL,
+        help="Grafana base URL for the read-only datasource proxy used by the "
+        "liveness check (env: ITF_PROMETHEUS_URL)",
+    )
+    p.add_argument(
         "--feedback-prs",
         type=int,
         default=int(os.environ.get("ITF_FEEDBACK_PRS", str(DEFAULT_FEEDBACK_PRS))),
@@ -4601,6 +4870,41 @@ def main(argv: list[str] | None = None) -> int:
     # or that a human has already rejected repeatedly, BEFORE the --max-groups
     # cap, so they don't spend a dispatch slot on a run that could only end
     # no_fix. They are reported for a human instead.
+    # Drop groups that have already stopped failing. The dataset's newest day can
+    # be ~24h stale and its window is day-granular, so a mid-window fix still
+    # clears --min-days; Prometheus is live to the last run and settles it.
+    settled: list[dict] = []
+    if not args.no_liveness_check:
+        liveness = fetch_liveness(
+            runs=max(args.liveness_runs, MIN_LIVENESS_RUNS),
+            base_url=args.prometheus_url,
+        )
+        if liveness.usable:
+            print(
+                f"      liveness: {len(liveness.runs)} full-suite {liveness.job} "
+                f"run(s), newest {liveness.newest or '?'}; "
+                f"{len(liveness.failing)} test(s) seen failing in the window",
+                flush=True,
+            )
+            targets, settled = drop_settled_targets(targets, liveness)
+            for t in settled:
+                print(
+                    f"      skipped (settled): {t['label']} — {t['settled_reason']}",
+                    flush=True,
+                )
+            if not targets and settled:
+                print(
+                    "      every candidate has stopped failing — nothing to "
+                    "dispatch, which is the point of the check",
+                    flush=True,
+                )
+        else:
+            print(
+                "      liveness: no usable Prometheus snapshot "
+                f"({len(liveness.runs)} full-suite run(s), "
+                f"{len(liveness.failing)} failing test(s)) — dispatching as before",
+                flush=True,
+            )
     targets, deferred = partition_targets(
         targets, priors, max_rejected=args.max_rejected_attempts
     )
@@ -4680,7 +4984,9 @@ def main(argv: list[str] | None = None) -> int:
                 flush=True,
             )
 
-    report_md = render_report(report, targets, window, deferred=deferred)
+    report_md = render_report(
+        report, targets, window, deferred=deferred, skipped=settled
+    )
     if args.report_out:
         with open(args.report_out, "w") as f:
             f.write(report_md)
@@ -4795,6 +5101,7 @@ def main(argv: list[str] | None = None) -> int:
         carry_rows=carry_rows,
         deferred=deferred,
         carry_recap_rows=carry_recap_rows,
+        skipped=settled,
     )
 
     if args.dry_run:
@@ -4921,6 +5228,7 @@ def main(argv: list[str] | None = None) -> int:
             deferred=deferred,
             dispatch_errors=dispatch_errors,
             carry_recap_rows=carry_recap_rows,
+            skipped=settled,
         )
     # Surface a hard failure only when we had work but landed nothing.
     return 1 if accepted == 0 else 0
