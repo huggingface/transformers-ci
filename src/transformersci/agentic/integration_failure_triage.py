@@ -2792,6 +2792,7 @@ _CHECKER_SUMMARY_RE = re.compile(r"(?m)^\s*(\d+ failed:.*)$")
 # Full normalize output can be tens of KB; a tracking issue body is capped at
 # 65536 chars and may carry one block per group.
 _NORMALIZER_DETAIL_CHARS = 3_000
+_PATCH_APPLY_DETAIL_CHARS = 3_000
 
 
 def _normalizer_summary(output: str) -> str:
@@ -2835,6 +2836,7 @@ def _distill_outcome(detail: dict) -> dict:
     if verdict:
         reason = f"[{verdict}] {reason}".strip()
     normalizer = (detail.get("normalizer_error") or "").strip()
+    patch_apply = (detail.get("patch_apply_error") or "").strip()
     if normalizer:
         # The first line of a no_fix message already says "does not pass the
         # repository's normalizer" but stops at the colon, and an error-path
@@ -2843,9 +2845,14 @@ def _distill_outcome(detail: dict) -> dict:
         summary = _normalizer_summary(normalizer)
         if summary:
             reason = f"{reason} — normalizer: {summary}" if reason else summary
+    elif patch_apply:
+        summary = patch_apply.splitlines()[0].strip()
+        if summary:
+            reason = f"{reason} — patch apply: {summary}" if reason else summary
     return {
         "reason": reason,
         "normalizer_error": normalizer or None,
+        "patch_apply_error": patch_apply or None,
         "model": detail.get("model"),
         "prompt_tokens": detail.get("prompt_tokens"),
         "completion_tokens": detail.get("completion_tokens"),
@@ -3150,7 +3157,7 @@ def _render_outcome_recap(
     ``⚠️ task failed`` with nowhere to go."""
     details = details or {}
     rows: list[str] = []
-    normalizer_blocks: list[str] = []
+    validation_blocks: list[str] = []
     for target in targets:
         fp = target_fingerprint(target)
         if existing_prs.get(fp):  # a PR is the outcome; no recap needed
@@ -3168,8 +3175,11 @@ def _render_outcome_recap(
             _evidence_cell(target, grafana_url),
         ]
         rows.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
-        normalizer_blocks += _render_normalizer_block(
+        validation_blocks += _render_normalizer_block(
             model_cell, distilled.get("normalizer_error")
+        )
+        validation_blocks += _render_patch_apply_block(
+            model_cell, distilled.get("patch_apply_error")
         )
     rows += list(carry_recap_rows or [])
     if not rows:
@@ -3186,8 +3196,37 @@ def _render_outcome_recap(
         "| Group | Reason | LLM | Tokens (in / out) | Failing tests |",
         "| --- | --- | --- | --- | --- |",
         *rows,
-        *normalizer_blocks,
+        *validation_blocks,
         *_unverified_branch_blocks(targets, details, existing_prs),
+    ]
+
+
+def _render_validation_output_block(
+    model_cell: str, output: str | None, *, label: str, limit: int
+) -> list[str]:
+    """Collapsible with the tail of a patch validation diagnostic."""
+    output = (output or "").strip()
+    if not output:
+        return []
+    if len(output) > limit:
+        omitted = len(output) - limit
+        output = (
+            f"--- omitted {omitted} leading chars ---\n\n" + output[-limit:].lstrip()
+        )
+    # Validation output is arbitrary console text and may itself contain a
+    # backtick fence. Open with a fence longer than any backtick run inside it
+    # so ours cannot be closed early.
+    longest_run = max((len(m) for m in re.findall(r"`+", output)), default=0)
+    fence = "`" * max(3, longest_run + 1)
+    return [
+        "",
+        f"<details><summary>{model_cell} — {label} (tail)</summary>",
+        "",
+        fence,
+        output,
+        fence,
+        "",
+        "</details>",
     ]
 
 
@@ -3196,30 +3235,18 @@ def _render_normalizer_block(model_cell: str, output: str | None) -> list[str]:
     reviewer can tell a patch the model got wrong from a normalizer failure the
     patch never caused (a stale toolchain, a checker crash). Empty when the
     normalizer never rejected a patch for this group."""
-    output = (output or "").strip()
-    if not output:
-        return []
-    if len(output) > _NORMALIZER_DETAIL_CHARS:
-        omitted = len(output) - _NORMALIZER_DETAIL_CHARS
-        output = (
-            f"--- omitted {omitted} leading chars ---\n\n"
-            + output[-_NORMALIZER_DETAIL_CHARS:].lstrip()
-        )
-    # Normalize output is arbitrary console text and may itself contain a
-    # backtick fence (a checker echoing Markdown). Open with a fence longer than
-    # any backtick run inside it so ours cannot be closed early.
-    longest_run = max((len(m) for m in re.findall(r"`+", output)), default=0)
-    fence = "`" * max(3, longest_run + 1)
-    return [
-        "",
-        f"<details><summary>{model_cell} — normalizer output (tail)</summary>",
-        "",
-        fence,
+    return _render_validation_output_block(
+        model_cell, output, label="normalizer output", limit=_NORMALIZER_DETAIL_CHARS
+    )
+
+
+def _render_patch_apply_block(model_cell: str, output: str | None) -> list[str]:
+    return _render_validation_output_block(
+        model_cell,
         output,
-        fence,
-        "",
-        "</details>",
-    ]
+        label="patch apply error",
+        limit=_PATCH_APPLY_DETAIL_CHARS,
+    )
 
 
 def render_tracking_issue_body(
@@ -3662,7 +3689,12 @@ def reconcile_tracking_issue(
     details: dict[str, dict] = {}
     for fp, reason in (dispatch_errors or {}).items():
         statuses[fp] = "error"
-        details[fp] = {"reason": reason, "normalizer_error": None, "model": None}
+        details[fp] = {
+            "reason": reason,
+            "normalizer_error": None,
+            "patch_apply_error": None,
+            "model": None,
+        }
     print(
         f"      reconciling tracking issue #{issue_number} for up to "
         f"{timeout_seconds}s as Serge runs…",

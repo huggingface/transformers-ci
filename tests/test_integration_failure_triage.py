@@ -2028,6 +2028,7 @@ class TrackingIssueTest(unittest.TestCase):
         out = itf._distill_outcome({"status": "error", "error": "boom", "result": None})
         self.assertEqual(out["reason"], "boom")
         self.assertIsNone(out["normalizer_error"])
+        self.assertIsNone(out["patch_apply_error"])
 
     def test_distill_outcome_surfaces_failing_checker_on_error_path(self):
         # The 2026-07-29 longcat_flash shape: the terminal error names only the
@@ -2060,6 +2061,21 @@ class TrackingIssueTest(unittest.TestCase):
         )
         self.assertIn("normalizer: Normalizer failed (exit 137)", out["reason"])
 
+    def test_distill_outcome_surfaces_patch_apply_error_on_error_path(self):
+        detail = {
+            "status": "error",
+            "error": "LLM returned unparseable output (finish_reason=stop)",
+            "result": None,
+            "patch_apply_error": (
+                "`git apply` rejected the proposed patch:\n"
+                "error: patch failed: src/foo.py:12"
+            ),
+        }
+        out = itf._distill_outcome(detail)
+        self.assertIn("unparseable output", out["reason"])
+        self.assertIn("patch apply: `git apply` rejected", out["reason"])
+        self.assertIn("src/foo.py:12", out["patch_apply_error"])
+
     def test_recap_renders_normalizer_output_block(self):
         targets = [self._target("g1", "longcat_flash")]
         fp0 = itf.target_fingerprint(targets[0])
@@ -2082,6 +2098,32 @@ class TrackingIssueTest(unittest.TestCase):
         self.assertIn("normalizer output (tail)", body)
         self.assertIn("granitemoe_swa", body)
         # The collapsible must sit after the recap table, not inside it.
+        self.assertLess(body.index("| Group | Reason |"), body.index("<details>"))
+
+    def test_recap_renders_patch_apply_error_block(self):
+        targets = [self._target("g1", "blt")]
+        fp0 = itf.target_fingerprint(targets[0])
+        body = itf.render_tracking_issue_body(
+            targets,
+            ["2026-09-03"],
+            "2026-09-03",
+            existing_prs={},
+            statuses={fp0: "error"},
+            details={
+                fp0: {
+                    "reason": "unparseable — patch apply: `git apply` rejected",
+                    "patch_apply_error": (
+                        "`git apply` rejected the proposed patch:\n"
+                        "error: patch failed: src/foo.py:12"
+                    ),
+                    "model": "kimi",
+                    "prompt_tokens": 1,
+                    "completion_tokens": 2,
+                }
+            },
+        )
+        self.assertIn("patch apply error (tail)", body)
+        self.assertIn("src/foo.py:12", body)
         self.assertLess(body.index("| Group | Reason |"), body.index("<details>"))
 
     def test_recap_normalizer_block_fence_survives_backticks(self):
