@@ -2731,12 +2731,14 @@ class InstructionAddendumTest(unittest.TestCase):
         imp = itf.build_instruction(_target("import_or_config", exc="AttributeError"))
         self.assertIn("version pin or a dependency bump", imp)
 
-    def test_cluster_and_unknown_get_the_trunk_alone(self):
-        # A bad-commit cluster already carries a much stronger signal.
-        self.assertEqual(
-            itf.build_instruction(_target("output_mismatch", kind="cluster")),
-            itf._INSTRUCTION,
-        )
+    def test_a_cluster_gets_the_culprit_block_not_the_mode_block(self):
+        # The attributed commit is the stronger signal, and it is usually itself
+        # a fix — so the cluster block is about the attribution, not the mode.
+        text = itf.build_instruction(_target("output_mismatch", kind="cluster"))
+        self.assertIn("REGRESSION cluster", text)
+        self.assertNotIn("PLAUSIBLE VARIANT", text)
+
+    def test_unknown_and_missing_targets_get_the_trunk_alone(self):
         self.assertEqual(itf.build_instruction(None), itf._INSTRUCTION)
         self.assertEqual(itf.build_instruction(_target("")), itf._INSTRUCTION)
 
@@ -3777,20 +3779,144 @@ class OomClusterGuidanceTest(unittest.TestCase):
     """The muse_glimmer regression: a bad-commit cluster that was uniformly OOM
     got the trunk alone, so the agent never saw any memory guidance."""
 
-    def test_an_all_oom_cluster_now_gets_the_memory_guidance(self):
-        text = itf.instruction_addendum(_oom_cluster(_OOM_LOAD_TRACE, _OOM_LOAD_TRACE))
-        self.assertIn('device_map="auto"', text)
-
-    def test_a_mixed_mode_cluster_still_gets_the_trunk_alone(self):
+    def test_a_mixed_mode_cluster_gets_the_culprit_block_without_the_memory_one(self):
         cluster = _oom_cluster(_OOM_LOAD_TRACE)
         cluster["failures"].append(
             _failure("muse_glimmer", "single", "t.py::T::x", "E   AssertionError: nope")
         )
-        self.assertEqual(itf.instruction_addendum(cluster), "")
+        text = itf.instruction_addendum(cluster)
+        self.assertIn("REGRESSION cluster", text)
+        self.assertNotIn('device_map="auto"', text)
 
     def test_an_empty_cluster_does_not_claim_to_be_oom(self):
         cluster = _oom_cluster()
-        self.assertEqual(itf.instruction_addendum(cluster), "")
+        text = itf.instruction_addendum(cluster)
+        self.assertIn("REGRESSION cluster", text)
+        self.assertNotIn("out of device memory", text)
+
+    def test_an_all_oom_cluster_gets_both_blocks(self):
+        text = itf.instruction_addendum(_oom_cluster(_OOM_LOAD_TRACE, _OOM_LOAD_TRACE))
+        self.assertIn("REGRESSION cluster", text)
+        self.assertIn('device_map="auto"', text)
+
+
+class AssertionSidesGuidanceTest(unittest.TestCase):
+    """transformers#48553: the mismatch block was 60 lines about the EXPECTED
+    side, so `.flatten()` on the actual side read as a code fix. The shape
+    mismatch it hid came from a fixture that had changed batch size."""
+
+    def _mismatch_target(self):
+        return {
+            "kind": "model_failures",
+            "failure_mode": "output_mismatch",
+            "failures": [
+                _failure(
+                    "seamless_m4t_v2",
+                    "multi",
+                    "t.py::T::test_to_rus_speech",
+                    "E   AssertionError: Lists differ: [3, 256074] != [[3, 256074]]",
+                )
+            ],
+        }
+
+    def test_the_actual_side_is_off_limits_too(self):
+        text = itf.instruction_addendum(self._mismatch_target())
+        self.assertIn("ACTUAL side of the assertion is off limits", text)
+        self.assertIn(".flatten()", text)
+
+    def test_a_shape_mismatch_is_not_expectation_drift(self):
+        text = itf.instruction_addendum(self._mismatch_target())
+        self.assertIn("SHAPE or LENGTH mismatch is never expectation drift", text)
+        self.assertIn("the INPUT changed", text)
+
+    def test_it_sends_the_agent_to_the_fixture_with_a_tool_it_has(self):
+        text = itf.instruction_addendum(self._mismatch_target())
+        self.assertIn("cached_property", text)
+        self.assertIn("read_file", text)
+        self.assertNotIn("git log", text)
+
+
+class DevicePlacementGuidanceTest(unittest.TestCase):
+    """transformers#48536: a `cuda:0`/`cuda:1` mismatch is a crash, and the crash
+    block says "treat it as a library bug, do NOT edit the test" — but the test
+    had asked for `device_map="auto"` and then called `.to(torch_device)`."""
+
+    def _device_crash(self):
+        return {
+            "kind": "model_failures",
+            "failure_mode": "other",
+            "terminal_exc": "RuntimeError",
+            "crash_site": "src/transformers/models/deepseek_vl/modeling_deepseek_vl.py:151",
+            "failures": [
+                _failure(
+                    "deepseek_vl",
+                    "multi",
+                    "t.py::T::test_model_text_generation",
+                    "E   RuntimeError: Expected all tensors to be on the same device, "
+                    "but found at least two devices, cuda:0 and cuda:1!",
+                )
+            ],
+        }
+
+    def test_the_carve_out_names_the_contradictory_load(self):
+        text = itf.instruction_addendum(self._device_crash())
+        self.assertIn("Device-placement exception", text)
+        self.assertIn("self-contradictory", text)
+
+    def test_dropping_the_device_map_is_labelled_a_real_fix(self):
+        text = itf.instruction_addendum(self._device_crash())
+        self.assertIn("is a REAL fix, not", text)
+
+    def test_it_still_refuses_a_manual_device_hop_in_forward(self):
+        text = itf.instruction_addendum(self._device_crash())
+        self.assertIn("_no_split_modules", text)
+        self.assertIn("papers over a placement bug for every user", text)
+
+    def test_an_ordinary_crash_keeps_the_library_first_framing(self):
+        target = self._device_crash()
+        target["failures"] = [
+            _failure("foo", "single", "t.py::T::x", "E   RuntimeError: boom")
+        ]
+        text = itf.instruction_addendum(target)
+        self.assertIn("library/model bug until", text)
+
+
+class CulpritClusterGuidanceTest(unittest.TestCase):
+    """transformers#48535: the attributed commit was itself a fix (#47988), and
+    the "fix" re-guarded it with a predicate the base class already applies —
+    dead code, so OLMo started appending EOS to every prompt again. A cluster
+    used to get an empty addendum, i.e. nothing said the culprit was load-bearing."""
+
+    def _cluster(self):
+        return {
+            "kind": "cluster",
+            "failures": [
+                _failure(
+                    "modernbert_decoder",
+                    "multi",
+                    "t.py::T::test_inference_causal_lm",
+                    "E   AssertionError: torch.Size([1, 5, 50368])",
+                )
+            ],
+        }
+
+    def test_the_culprit_is_named_as_a_fix_that_must_stay_fixed(self):
+        text = itf.instruction_addendum(self._cluster())
+        self.assertIn("almost always a FIX for something else", text)
+        self.assertIn("must keep that fixed", text)
+
+    def test_it_bans_a_revert_wearing_a_condition(self):
+        text = itf.instruction_addendum(self._cluster())
+        self.assertIn("A revert wearing a condition is still a revert", text)
+        self.assertIn("already", text)
+
+    def test_it_points_at_evidence_the_agent_can_actually_read(self):
+        """No git tool and `fetch_url` is huggingface.co-only, so the block must
+        not send the agent to `git show` or to github.com."""
+        text = itf.instruction_addendum(self._cluster())
+        self.assertIn("no git", text)
+        self.assertNotIn("git show", text)
+        self.assertNotIn("git log", text)
 
 
 class ModularSourceParseTests(unittest.TestCase):
