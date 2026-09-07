@@ -3800,6 +3800,53 @@ class OomClusterGuidanceTest(unittest.TestCase):
         self.assertIn('device_map="auto"', text)
 
 
+class InstructionBudgetTest(unittest.TestCase):
+    """Every category's instruction has to fit serge's cap.
+
+    `build_task_user_prompt` head-truncates the instruction, so an over-long one
+    loses its END — and each block here appends its newest guidance last. At the
+    8,000-char cap the `output_mismatch` instruction was 8,821 chars after #114,
+    so the bullets that change existed to add were the ones dropped, silently.
+    serge raised the cap; this test is the half that lives where the growth
+    happens. Mirror any further change to `MAX_INSTRUCTION_CHARS`.
+    """
+
+    #: `reviewbot.prompts.MAX_INSTRUCTION_CHARS` in huggingface/serge.
+    SERGE_MAX_INSTRUCTION_CHARS = 12000
+
+    def _targets(self):
+        crash = {
+            "kind": "model_failures",
+            "failure_mode": "other",
+            "terminal_exc": "RuntimeError",
+            "crash_site": "src/transformers/models/x/modeling_x.py:151",
+            "failures": [_failure("x", "multi", "t.py::T::x", "E   RuntimeError: b")],
+        }
+        yield "cluster", {"kind": "cluster", "failures": crash["failures"]}
+        yield "crash", crash
+        for mode in ("output_mismatch", "load_error", "import_or_config"):
+            yield mode, {"kind": "model_failures", "failure_mode": mode, "failures": []}
+        yield "oom_retention", _oom_target(_OOM_RETENTION_TRACE)
+        yield "oom_capacity", _oom_target(_OOM_CAPACITY_TRACE)
+        yield "oom_load", _oom_target(_OOM_LOAD_TRACE)
+        yield "oom_cluster", _oom_cluster(_OOM_LOAD_TRACE, _OOM_LOAD_TRACE)
+
+    def test_no_category_instruction_exceeds_serges_cap(self):
+        for label, target in self._targets():
+            with self.subTest(label):
+                size = len(itf.build_instruction(target))
+                self.assertLess(
+                    size,
+                    self.SERGE_MAX_INSTRUCTION_CHARS,
+                    f"the {label} instruction is {size} chars, which serge would "
+                    f"head-truncate to {self.SERGE_MAX_INSTRUCTION_CHARS} — the "
+                    "tail of the guidance would never reach the model",
+                )
+
+    def test_the_trunk_alone_is_far_inside_the_cap(self):
+        self.assertLess(len(itf._INSTRUCTION), self.SERGE_MAX_INSTRUCTION_CHARS // 2)
+
+
 class AssertionSidesGuidanceTest(unittest.TestCase):
     """transformers#48553: the mismatch block was 60 lines about the EXPECTED
     side, so `.flatten()` on the actual side read as a code fix. The shape
