@@ -3868,7 +3868,30 @@ _MISMATCH_GUIDANCE = (
     "  - Whenever you add or change an expectation, state in the PR body how the new "
     "value compares with the one it joins (which key, what differs, why that difference "
     "is benign) so a reviewer can judge the divergence without rerunning anything.\n"
-    "  - Do not delete, weaken, or comment out the assertion, and do not skip the test."
+    "  - Do not delete, weaken, or comment out the assertion, and do not skip the test.\n"
+    "  - **The ACTUAL side of the assertion is off limits too.** Everything above is "
+    "about the expected value, but an assertion has two sides and rewriting either one "
+    "redefines passing. Adding `.flatten()`, `.reshape(...)`, `[0]`, `.item()`, another "
+    "`.squeeze()`, a slice, a `sorted(...)` or a `set(...)` to the expression that "
+    "produces the actual value is the same move as editing the literal, and it is "
+    "usually worse: it hides a shape or ordering change instead of recording it. Leave "
+    "that expression exactly as the test wrote it.\n"
+    "  - **A SHAPE or LENGTH mismatch is never expectation drift.** If the assertion "
+    "fails because one side is nested and the other flat, or because the two sequences "
+    "have different lengths, no value drifted — the INPUT changed. Expected values are "
+    "computed against one specific input, so the fix is upstream of the comparison. "
+    "`read_file` the fixture that builds the inputs (`setUp`, a `cached_property`, a "
+    "module-level constant, the processor/tokenizer call) and check it against what the "
+    "expectation assumes: a flat list of N tokens, one waveform, one `.squeeze()` that "
+    "the test expects to collapse everything — all of those say batch size 1. A fixture "
+    "that now builds two samples, stopped wrapping its sample, or passes a different "
+    "processor kwarg contradicts the expectation, and THAT is the bug. Restoring the "
+    "input the expectations were written for is the fix; say in `body` which fixture you "
+    "restored and why the expectation implies it.\n"
+    "  - A fixture is usually shared: `grep` the test file for its name before you "
+    "change it, and check every test that uses it. A fixture edited to make one test "
+    "pass is a common cause of this shape in the sibling tests, and reshaping the "
+    "comparison in each of them in turn makes the file harder to repair, not easier."
 )
 
 _CRASH_GUIDANCE = (
@@ -3885,10 +3908,65 @@ _CRASH_GUIDANCE = (
     "unverifiable and will be rejected.\n"
     "  - Sibling architectures are still useful, but as a source of the CORRECT code "
     "path: find one that does not crash and align this model's implementation with it.\n"
+    "  - **Device-placement exception, one carve-out.** `Expected all tensors to be on "
+    "the same device` (or a `cuda:0` vs `cuda:1` mismatch) on a multi-gpu runner is the "
+    "one crash where the test is a first-class suspect, because the test is what chose "
+    "the placement. Read its `from_pretrained` call before you read the model. "
+    '`device_map="auto"` immediately followed by `model.to(torch_device)` is '
+    "self-contradictory and is the usual cause: the device map installs accelerate "
+    "hooks that keep moving each submodule's inputs to the device it was mapped to, and "
+    "`.to()` does not remove them, so tensors keep crossing devices however the model "
+    "is written. Dropping the `device_map` the test did not need is a REAL fix, not "
+    "test-editing, and it is preferred over teaching model code to move tensors around: "
+    "a `.to(<other module>.device)` inside `forward`/`get_image_features` papers over a "
+    "placement bug for every user. Only if the test's placement is coherent is this the "
+    "model's bug — and then the fix is a correct `_no_split_modules`, not a manual "
+    "device hop.\n"
     "  - If the crash comes from outside the repository (a dependency, the runner's "
     "CUDA/driver, the Hub) and no source change fixes it, produce no patch and explain "
     "that in `body`."
 )
+
+# A bad-commit cluster's defining feature is that the attributed commit was
+# itself a FIX. Neutralizing it makes the group green and silently restores the
+# bug it was written for, and nothing in the trunk said not to: transformers
+# #48535 re-guarded the `update_post_processor()` call from #47988 with a
+# condition the base class already applies, i.e. made it dead code, and OLMo
+# started appending EOS to every prompt again. The agent has no git and cannot
+# fetch github.com, so this block points it at the evidence it CAN read.
+_CULPRIT_GUIDANCE = (
+    "\u2500\u2500 This group is attributed to one commit (a REGRESSION cluster) "
+    "\u2500\u2500\n"
+    "CI's bisect pinned these failures to a single commit, named in the group label "
+    "above. That commit is almost always a FIX for something else, and it is still "
+    "load-bearing: making this group green by undoing it trades one set of failures for "
+    "another that no daily run will attribute to you.\n"
+    "  - **Establish what the culprit was for, before you touch it.** You have no git "
+    "and cannot fetch github.com, so read what it left behind in the tree: the comment "
+    "block it added above the code it changed (these usually name the PR and the "
+    "symptom outright), the test it added or updated, and the docstrings around it. "
+    "`grep` the PR number from the group label across the repo — a fix that mattered "
+    "normally cites itself in a comment.\n"
+    "  - **Your patch must keep that fixed, and you must say how in `body`**: name the "
+    "behaviour the culprit protected and why your change preserves it. If you cannot "
+    "establish what it protected, you cannot know whether you are breaking it — produce "
+    "no patch and say what you could not determine.\n"
+    "  - **A revert wearing a condition is still a revert.** Before adding a guard to "
+    "the culprit's code, check whether the predicate you are about to write already "
+    "exists upstream: `grep` the base class, or the module the changed file inherits "
+    "from, for the same test. If the base already applies it, your guard makes the "
+    "culprit's code unreachable and the original bug returns. A patch whose net effect "
+    "is that the culprit no longer does anything IS a revert — call it one in `body`, "
+    "and only propose it when you can show the culprit was wrong.\n"
+    "  - Prefer fixing the culprit's ROOT CAUSE over disabling its effect. A fix that "
+    "reads state the caller no longer receives is not wrong to want that state — it is "
+    "wrong about where the state went. Follow the value it depends on back to where it "
+    "is dropped, and fix it there.\n"
+    "  - The failures in a cluster span several tests and often several models, so a "
+    "change that only makes the first bullet pass is not a fix for the group. Read "
+    "enough of them to know whether they share one cause."
+)
+
 
 _LOAD_GUIDANCE = (
     "── This group's failure mode: `load_error` (the model or its config would not "
@@ -4139,20 +4217,28 @@ def _is_conversion_failure(target: dict) -> bool:
 def instruction_addendum(target: dict) -> str:
     """The per-category block appended to ``_INSTRUCTION`` for one failure group.
 
-    Empty for bad-commit clusters: those span several modes and already carry a
-    much stronger signal (the attributed commit), so the shared trunk is right.
+    A bad-commit cluster gets ``_CULPRIT_GUIDANCE`` — how to treat the attributed
+    commit, which is usually itself a fix — plus the mode-specific block when the
+    cluster qualifies for one.
     Returns "" for anything unrecognized — the trunk alone is today's behaviour.
     """
-    # A bad-commit cluster normally gets the trunk alone: it spans several modes
-    # and the attributed commit is the stronger signal. But a cluster whose
-    # failures are ALL OOM has exactly one mode, and withholding the OOM block
-    # there is what left the 2026-08-24 muse_glimmer group with no memory
-    # guidance at all -- 2.1M tokens spent hunting a regression in a commit that
-    # had merely introduced the tests.
+    # A cluster whose failures are ALL OOM has exactly one mode, and withholding
+    # the OOM block there is what left the 2026-08-24 muse_glimmer group with no
+    # memory guidance at all -- 2.1M tokens spent hunting a regression in a
+    # commit that had merely introduced the tests.
     if target.get("kind") == "cluster":
+        # The culprit block is about how to treat the attribution and is
+        # orthogonal to the failure mode, so it is prepended to whichever
+        # mode-specific block the cluster also qualifies for.
         if _is_all_oom(target):
-            return _oom_guidance_for(target)
-        return _OOM_LOAD_GUIDANCE if _is_conversion_failure(target) else ""
+            mode_block = _oom_guidance_for(target)
+        elif _is_conversion_failure(target):
+            mode_block = _OOM_LOAD_GUIDANCE
+        else:
+            mode_block = ""
+        if mode_block:
+            return f"{_CULPRIT_GUIDANCE}\n\n{mode_block}"
+        return _CULPRIT_GUIDANCE
     if target.get("kind") != "model_failures":
         return ""
     mode = target.get("failure_mode") or ""
