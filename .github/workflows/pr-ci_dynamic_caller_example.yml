@@ -442,12 +442,24 @@ jobs:
   # One `uses:` block per CircleCIJob instance.
   # Each block is a 1:1 mapping of CircleCIJob constructor arguments.
   # They depend on `quality_gate`, not on `check_code_quality` directly.
+  #
+  # Every `if:` below MUST contain a status-check function (`!cancelled()` here).
+  # A job whose `if:` has none still carries an implicit "everything upstream
+  # succeeded" requirement, and that is evaluated over the *transitive* needs
+  # graph — so a failed `check_code_quality` skipped these jobs even though their
+  # only quality dependency, `quality_gate`, had succeeded. `always()` on
+  # `quality_gate` lets that job run past the failure; it does not clear the
+  # failure for anything downstream of it. Run 33674711072 on transformers#48473
+  # is the case: gate green ("Test matrix may run"), all 14 test jobs skipped one
+  # second later. `needs.quality_gate.result == 'success'` then restores the
+  # gating that the dropped implicit check used to do.
   # ===========================================================================
 
   # Origin: torch_job in .circleci/create_circleci_config.py
   tests_torch:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_tests_torch == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_tests_torch == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_torch"
@@ -461,7 +473,8 @@ jobs:
   # Origin: generate_job in .circleci/create_circleci_config.py
   tests_generate:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_tests_generate == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_tests_generate == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_generate"
@@ -475,7 +488,8 @@ jobs:
   # Origin: tokenization_job in .circleci/create_circleci_config.py
   tests_tokenization:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_tests_tokenization == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_tests_tokenization == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_tokenization"
@@ -487,7 +501,8 @@ jobs:
   # Origin: processor_job in .circleci/create_circleci_config.py
   tests_processors:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_tests_processors == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_tests_processors == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_processors"
@@ -501,7 +516,8 @@ jobs:
   #       → "tests_pipelines_torch" (mirrors --make-reports=tests_{self.name}).
   pipelines_torch:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_pipelines_torch == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_pipelines_torch == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "pipelines_torch"
@@ -516,7 +532,8 @@ jobs:
   # Origin: custom_tokenizers_job in .circleci/create_circleci_config.py
   tests_custom_tokenizers:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_tests_custom_tokenizers == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_tests_custom_tokenizers == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:               "tests_custom_tokenizers"
@@ -529,7 +546,8 @@ jobs:
   # NOTE: job_name has no "tests_" prefix ("examples" in name).
   examples_torch:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_examples_torch == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_examples_torch == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:           "examples_torch"
@@ -543,7 +561,8 @@ jobs:
   # Origin: exotic_models_job in .circleci/create_circleci_config.py
   tests_exotic_models:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_tests_exotic_models == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_tests_exotic_models == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:              "tests_exotic_models"
@@ -556,7 +575,8 @@ jobs:
   # Origin: repo_utils_job in .circleci/create_circleci_config.py
   tests_repo_utils:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_tests_repo_utils == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_tests_repo_utils == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:           "tests_repo_utils"
@@ -568,7 +588,8 @@ jobs:
   # Origin: non_model_job in .circleci/create_circleci_config.py
   tests_non_model:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_tests_non_model == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_tests_non_model == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_non_model"
@@ -582,7 +603,8 @@ jobs:
   # Origin: training_ci_job in .circleci/create_circleci_config.py
   tests_training_ci:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_tests_training_ci == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_tests_training_ci == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "tests_training_ci"
@@ -597,7 +619,8 @@ jobs:
   # Origin: tensor_parallel_ci_job in .circleci/create_circleci_config.py
   tests_tensor_parallel_ci:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_tests_tensor_parallel_ci == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_tests_tensor_parallel_ci == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "tests_tensor_parallel_ci"
@@ -613,7 +636,8 @@ jobs:
   # Origin: fsdp_ci_job in .circleci/create_circleci_config.py
   tests_fsdp_ci:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_tests_fsdp_ci == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_tests_fsdp_ci == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "tests_fsdp_ci"
@@ -628,7 +652,8 @@ jobs:
   # New: PEFT integration tests
   tests_peft_integration:
     needs: [test-preparation, quality_gate]
-    if: needs.test-preparation.outputs.run_tests_peft_integration == 'true'
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_tests_peft_integration == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "tests_peft_integration"
