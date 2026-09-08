@@ -476,7 +476,7 @@ jobs:
         run: |
           uv pip install --no-cache-dir \
             "torch==$TORCH_VERSION" \
-            "torchaudio==$TORCH_VERSION" \
+            torchaudio \
             torchvision \
             "torchcodec<=0.16.0" \
             --index-url https://download.pytorch.org/whl/cpu
