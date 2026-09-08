@@ -218,6 +218,20 @@ on:
         type: boolean
         default: false
 
+      # ── Torch version override ───────────────────────────────────────────────
+      # When non-empty, the reusable job will install this exact torch version
+      # (+ torchaudio at the same version, torchvision resolved from the CPU index)
+      # from the PyTorch CPU wheel index, overriding whatever the Docker image ships.
+      # Leave empty to keep the image's pre-installed torch (default behaviour).
+      # Example: "2.14.0"
+      torch_version:
+        description: >
+          PyTorch version to install from the CPU wheel index, e.g. "2.14.0".
+          Empty string (default) means use the torch already in the Docker image.
+        required: false
+        type: string
+        default: ""
+
       # ── Context flags ────────────────────────────────────────────────────────
       # Maps to: pipeline.parameters.nightly
       is_nightly:
@@ -453,6 +467,21 @@ jobs:
       # Maps: run "apt-get update && apt-get install -y curl"
       - name: Install system dependencies
         run: apt-get update && apt-get install -y curl
+
+      # ── 3b. Torch CPU upgrade (optional) ────────────────────────────────────
+      # Overrides the Docker image's pre-installed torch with the version
+      # specified by inputs.torch_version. Skipped when the input is empty.
+      - name: Install torch (CPU)
+        if: inputs.torch_version != ''
+        run: |
+          uv pip install --no-cache-dir \
+            "torch==$TORCH_VERSION" \
+            "torchaudio==$TORCH_VERSION" \
+            torchvision \
+            "torchcodec<=0.16.0" \
+            --index-url https://download.pytorch.org/whl/cpu
+        env:
+          TORCH_VERSION: ${{ inputs.torch_version }}
 
       # ── 4. Package installation ──────────────────────────────────────────────
       # Maps: CircleCIJob.__post_init__ install_steps list, which always

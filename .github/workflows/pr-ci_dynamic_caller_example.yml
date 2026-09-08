@@ -467,6 +467,7 @@ jobs:
       parallelism:       8
       marker:            "not (generate or is_training_test or is_tensor_parallel_test or is_fsdp_test)"
       use_dev_image:     ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:     "2.14.0"
     secrets: inherit
       # install_steps, pytest_num_workers, etc. → all defaults
 
@@ -483,6 +484,7 @@ jobs:
       marker:            "generate"
       install_steps:     "uv pip install -e ."
       use_dev_image:     ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:     "2.14.0"
     secrets: inherit
 
   # Origin: tokenization_job in .circleci/create_circleci_config.py
@@ -496,6 +498,7 @@ jobs:
       docker_image:      "huggingface/transformers-torch-light"
       parallelism:       8
       use_dev_image:     ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:     "2.14.0"
     secrets: inherit
 
   # Origin: processor_job in .circleci/create_circleci_config.py
@@ -509,6 +512,7 @@ jobs:
       docker_image:      "huggingface/transformers-torch-light"
       parallelism:       8
       use_dev_image:     ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:     "2.14.0"
     secrets: inherit
 
   # Origin: pipelines_torch_job in .circleci/create_circleci_config.py
@@ -527,6 +531,7 @@ jobs:
       marker:              "is_pipeline_test"
       run_pipeline_tests:  true
       use_dev_image:       ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:       "2.14.0"
     secrets: inherit
 
   # Origin: custom_tokenizers_job in .circleci/create_circleci_config.py
@@ -540,6 +545,7 @@ jobs:
       docker_image:           "huggingface/transformers-custom-tokenizers"
       run_custom_tokenizers:  true
       use_dev_image:          ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:          "2.14.0"
     secrets: inherit
 
   # Origin: examples_torch_job in .circleci/create_circleci_config.py
@@ -556,6 +562,7 @@ jobs:
       pytest_num_workers: 4
       omp_num_threads:    8
       use_dev_image:      ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:      "2.14.0"
     secrets: inherit
 
   # Origin: exotic_models_job in .circleci/create_circleci_config.py
@@ -570,6 +577,7 @@ jobs:
       parallelism:           8
       pytest_extra_options:  "--durations=100"
       use_dev_image:         ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:         "2.14.0"
     secrets: inherit
 
   # Origin: repo_utils_job in .circleci/create_circleci_config.py
@@ -583,6 +591,7 @@ jobs:
       docker_image:       "huggingface/transformers-consistency"
       pytest_num_workers: 4
       use_dev_image:      ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:      "2.14.0"
     secrets: inherit
 
   # Origin: non_model_job in .circleci/create_circleci_config.py
@@ -598,6 +607,7 @@ jobs:
       install_steps:     "uv pip install -e .[serving]"
       marker:            "not generate"
       use_dev_image:     ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:     "2.14.0"
     secrets: inherit
 
   # Origin: training_ci_job in .circleci/create_circleci_config.py
@@ -614,6 +624,7 @@ jobs:
       marker:              "is_training_test"
       run_training_tests:  true
       use_dev_image:       ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:       "2.14.0"
     secrets: inherit
 
   # Origin: tensor_parallel_ci_job in .circleci/create_circleci_config.py
@@ -631,6 +642,7 @@ jobs:
       marker:              "is_tensor_parallel_test"
       run_tensor_parallel_tests:  true
       use_dev_image:       ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:       "2.14.0"
     secrets: inherit
 
   # Origin: fsdp_ci_job in .circleci/create_circleci_config.py
@@ -647,6 +659,7 @@ jobs:
       marker:              "is_fsdp_test"
       run_fsdp_tests:      true
       use_dev_image:       ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:       "2.14.0"
     secrets: inherit
 
   # New: PEFT integration tests
@@ -661,6 +674,7 @@ jobs:
       parallelism:         8
       install_steps:       "uv pip install . && uv pip install peft"
       use_dev_image:       ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+      torch_version:       "2.14.0"
     secrets: inherit
 
   # ---------------------------------------------------------------------------
