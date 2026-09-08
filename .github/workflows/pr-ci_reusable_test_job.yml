@@ -474,6 +474,7 @@ jobs:
       - name: Install torch (CPU)
         if: inputs.torch_version != ''
         run: |
+          uv pip uninstall torch torchaudio torchvision torchcodec || true
           uv pip install --no-cache-dir \
             "torch==$TORCH_VERSION" \
             torchaudio \
