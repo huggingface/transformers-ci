@@ -84,6 +84,19 @@ jobs:
         env:
           TRANSFORMERSCI_REF: ${{ inputs.transformersci_ref || 'main' }}
 
+      # relore ships client and daemon as one version and refuses a request from
+      # any other with 426, so a client pinned at install time goes dead the next
+      # time the daemon is redeployed -- which is often. serge pins its client in
+      # an image because a task pod cannot reach PyPI; this runner can, so it
+      # checks the daemon's x-relore-version header and reinstalls when it is the
+      # stale end. Never fails the run: every consumer of relore here is an extra
+      # defer reason or auxiliary context, so a retrieval outage must shrink the
+      # answer, never the night's work.
+      - name: Match the relore client to the deployed daemon
+        run: relore-ensure-current
+        env:
+          RELORE_API: ${{ vars.RELORE_API || 'https://ghlore.huggingface.tech' }}
+
       - name: Mint Serge OIDC token
         id: oidc
         run: |
