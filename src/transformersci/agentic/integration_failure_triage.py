@@ -91,6 +91,7 @@ from .github_api import (
     update_issue_body,
 )
 from . import pr_evidence
+from .relore_claims import superseded_by_human_reason
 from . import prometheus_api
 from .serge_dispatch import (
     SergeDispatchError,
@@ -1609,11 +1610,40 @@ def settled_sentence(settled: list[dict]) -> str:
     )
 
 
+SUPERSEDED_OFF = "off"
+SUPERSEDED_REPORT = "report"
+SUPERSEDED_DEFER = "defer"
+_SUPERSEDED_MODES = (SUPERSEDED_OFF, SUPERSEDED_REPORT, SUPERSEDED_DEFER)
+
+
+def superseded_mode() -> str:
+    """How to treat a group a human already has an open PR for.
+
+    Three states, not a boolean, because the measurement has to come before the
+    behaviour. ``report`` records what it WOULD have deferred — into the tracking
+    issue, on the target itself as ``superseded_note`` — while still dispatching,
+    which yields the precision number at zero risk. Only ``defer`` changes what
+    the night does.
+
+    Off by default. Merging is shipping here (the nightly pip-installs ``@main``
+    at 22:00 UTC), so this lands inert and is turned on deliberately.
+    """
+    raw = (os.environ.get("ITF_RELORE_SUPERSEDED") or "").strip().lower()
+    if raw in _SUPERSEDED_MODES:
+        return raw
+    # A boolean spelling is what an operator reaches for first; treat it as the
+    # cautious end rather than silently doing nothing.
+    if raw in ("1", "true", "yes", "on"):
+        return SUPERSEDED_REPORT
+    return SUPERSEDED_OFF
+
+
 def partition_targets(
     targets: list[dict],
     priors: dict[str, PriorAttempts] | None = None,
     *,
     max_rejected: int = DEFAULT_MAX_REJECTED_ATTEMPTS,
+    repo: str = "",
 ) -> tuple[list[dict], list[dict]]:
     """Split ordered groups into ``(dispatch, deferred)``.
 
@@ -1632,14 +1662,28 @@ def partition_targets(
         return list(targets), []
     dispatch: list[dict] = []
     deferred: list[dict] = []
+    mode = superseded_mode()
     for t in targets:
         reason = env_only_reason(t)
         if not reason and priors is not None:
             reason = rejected_attempts_reason(
                 priors.get(target_fingerprint(t)), max_rejected
             )
-        if reason:
-            deferred.append({**t, "defer_reason": reason})
+        # Asked LAST, and only for a group that would otherwise be dispatched:
+        # it is the only reason here that costs a network call, and the cheap
+        # local reasons have already answered for most groups. This also keeps
+        # the measurement clean — a group counted here is one no other reason
+        # caught, which is exactly the increment #118 asks to be measured.
+        superseded = ""
+        if not reason and mode != SUPERSEDED_OFF:
+            superseded = superseded_by_human_reason(t, repo=repo)
+        if reason or (superseded and mode == SUPERSEDED_DEFER):
+            deferred.append({**t, "defer_reason": reason or superseded})
+        elif superseded:
+            # Report-only: dispatch exactly as before, but carry what would have
+            # happened so the tracking issue can show it and a human can judge
+            # the precision before this is allowed to change anything.
+            dispatch.append({**t, "superseded_note": superseded})
         else:
             dispatch.append(t)
     return dispatch, deferred
@@ -1770,11 +1814,6 @@ def render_report(
         out.append("## Failure groups dispatched to Serge")
         for idx, target in enumerate(targets, start=1):
             out.append(f"{idx}. **{target['label']}**")
-        out.append("")
-        out.append("## First failure group")
-        out.append(f"**{targets[0]['label']}**")
-        out.append("")
-        out.extend(_failure_lines(targets[0]["failures"], len(window)))
         out.append("")
     if deferred:
         out.append("## Not dispatched — environment / dependency")
@@ -3249,6 +3288,36 @@ def _render_patch_apply_block(model_cell: str, output: str | None) -> list[str]:
     )
 
 
+def _render_superseded_report(targets: list[dict]) -> list[str]:
+    """What the supersede check WOULD have deferred, on a run it did not change.
+
+    Only ``ITF_RELORE_SUPERSEDED=report`` produces these: the groups were
+    dispatched normally and this records the call the check made, so its
+    precision can be judged before it is allowed to defer for real. That is
+    section 10.1's cheapest possible comparison — the measurement costs a run
+    nothing and risks nothing.
+
+    Not a table, and outside the deferred sections on purpose: a ``| PR |``
+    header here would let ``_carry_forward_rows`` adopt these as dispatched rows
+    on a later same-day run, which is exactly the bug the skipped sentence above
+    is shaped to avoid.
+    """
+    noted = [t for t in targets or [] if t.get("superseded_note")]
+    if not noted:
+        return []
+    lines = [
+        "",
+        "### Would have been deferred as superseded (report-only)",
+        "",
+        "_These were dispatched as normal. Was each genuinely already being "
+        "fixed? A wrong call here is the number that decides whether this check "
+        "is allowed to defer for real._",
+        "",
+    ]
+    lines += [f"- **{t['label']}** — {t['superseded_note']}" for t in noted]
+    return lines
+
+
 def render_tracking_issue_body(
     targets: list[dict],
     window: list[str],
@@ -3321,6 +3390,7 @@ def render_tracking_issue_body(
     for row in carry_rows or []:
         lines.append(row)
     lines += _render_deferred_section(deferred, grafana_url)
+    lines += _render_superseded_report(targets)
     if skipped:
         # Deliberately one sentence, not a table, and NOT inside the deferred
         # sections: nobody needs to act on these. No `| PR |` header either, so
@@ -5006,8 +5076,15 @@ def main(argv: list[str] | None = None) -> int:
                 flush=True,
             )
     targets, deferred = partition_targets(
-        targets, priors, max_rejected=args.max_rejected_attempts
+        targets, priors, max_rejected=args.max_rejected_attempts, repo=args.repo
     )
+    for t in targets:
+        if t.get("superseded_note"):
+            print(
+                f"      superseded (report-only, still dispatching): {t['label']} "
+                f"— {t['superseded_note']}",
+                flush=True,
+            )
     for t in deferred:
         print(
             f"      deferred (not agent-fixable): {t['label']} — {t['defer_reason']}",
