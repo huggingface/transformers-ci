@@ -141,6 +141,17 @@ jobs:
           # Was 3 while the reproduce-first loop was being validated in prod; the
           # script default is 20. See docs/plans/serge-reproduce-first.md.
           ITF_MAX_GROUPS: ${{ vars.ITF_MAX_GROUPS || '5' }}
+          # The dispatch-side "a human already has an open PR for this" check
+          # (src/transformersci/agentic/relore_claims.py). Three states:
+          #   off    — never asked (the code default)
+          #   report — asked, recorded in the tracking issue, dispatch UNCHANGED
+          #   defer  — the group is deferred and does not consume a --max-groups slot
+          # Starts at `report` deliberately: transformers-ci#118 pre-registers a
+          # precision measurement before this is allowed to change what the night
+          # dispatches, and `report` yields that measurement at zero risk. Read the
+          # "Would have been deferred as superseded" section of the tracking issue
+          # for a week before considering `defer`.
+          ITF_RELORE_SUPERSEDED: ${{ vars.ITF_RELORE_SUPERSEDED || 'report' }}
           # Base URL of the CI observability Grafana. Each Serge task PR body gets
           # a per-test dashboard link built here (Serge holds no Grafana config —
           # see src/transformersci/agentic/pr_evidence.py). Unset = no links.
