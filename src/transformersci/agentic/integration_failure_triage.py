@@ -3330,6 +3330,9 @@ def render_tracking_issue_body(
     grafana_url: str | None = None,
     carry_recap_rows: list[str] | None = None,
     skipped: list[dict] | None = None,
+    job_ids: dict[str, str] | None = None,
+    serge_url: str | None = None,
+    task_repo: str | None = None,
 ) -> str:
     """Markdown body for the per-run tracking issue. When a group already has an
     open Serge PR (a follow-up), its number is written inline as ``#<pr>`` — that
@@ -3362,10 +3365,16 @@ def render_tracking_issue_body(
         "found no safe change, `⚠️ task failed` on error, or `(pending)` while still running "
         "(a late PR links on the next nightly run).",
         "",
+        "The **Task** column links Serge's own page for the run — the steps it went "
+        "through, what each tool cost, and the full task text. 🔒 means it is not "
+        "public: the host is VPN-internal and the page needs a Serge login. A task "
+        "links once Serge has accepted it, so the column fills in on the first "
+        "refresh after dispatch.",
+        "",
         "## Dispatched failure groups",
         "",
-        "| Model | Error | Occurrences | PR |",
-        "| --- | --- | --- | --- |",
+        "| Model | Error | Occurrences | PR | Task |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for target in targets:
         fp = target_fingerprint(target)
@@ -3383,7 +3392,13 @@ def render_tracking_issue_body(
             pr_cell = "⚠️ task failed"
         else:
             pr_cell = f"`{task_branch_prefix(fp)}` (pending)"
-        cells = [model_cell, error_cell, str(len(target["failures"])), pr_cell]
+        cells = [
+            model_cell,
+            error_cell,
+            str(len(target["failures"])),
+            pr_cell,
+            _task_cell(fp, job_ids, serge_url, task_repo),
+        ]
         lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
     # Rows carried from earlier same-day runs that already have a PR / outcome, so
     # a re-run's shuffled groups don't drop them (and their PR links) from the table.
@@ -3404,6 +3419,29 @@ def render_tracking_issue_body(
         f"_Generated {datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()}._",
     ]
     return "\n".join(lines)
+
+
+def _task_cell(
+    fingerprint: str,
+    job_ids: dict[str, str] | None,
+    serge_url: str | None,
+    task_repo: str | None,
+) -> str:
+    """Link to Serge's page for this group's task, or ``—``.
+
+    The padlock is not decoration: the host is VPN-internal and the page is
+    behind a Serge login, so for most readers of this issue the link will not
+    open. Saying so in the cell is cheaper than a reader concluding the link is
+    broken.
+
+    Empty until Serge has accepted the dispatch — the issue is rendered once
+    before any task exists, and again from the reconcile loop, which has the
+    ids. A group that never got an id (dispatch refused) keeps the dash.
+    """
+    job_id = (job_ids or {}).get(fingerprint)
+    if not job_id or not serge_url or not task_repo or "/" not in task_repo:
+        return "—"
+    return f"[🔒 task]({serge_url.rstrip('/')}/tasks/{task_repo}/{job_id})"
 
 
 def _md_cell(text: str) -> str:
@@ -3505,11 +3543,33 @@ def _carry_forward_rows(existing_body: str, targets: list[dict]) -> list[str]:
             if len(cells) < 4:
                 continue
             model = _row_group_model(cells[0])
-            pr_cell = cells[-1]
+            # Index 3, not -1: the table gained a trailing Task column, and a row
+            # carried from an issue body written before that has four cells while
+            # a new one has five. Reading the last cell would test the Task link
+            # for `#`/🚫/⚠️ and silently drop every resolved row.
+            pr_cell = cells[3]
             resolved = pr_cell.startswith("#") or "🚫" in pr_cell or "⚠️" in pr_cell
             if resolved and model not in current:
-                rows.append(line.rstrip())
+                rows.append(_padded_row(cells))
     return rows
+
+
+# Columns in the dispatched-groups table: Model, Error, Occurrences, PR, Task.
+_DISPATCH_TABLE_COLUMNS = 5
+
+
+def _padded_row(cells: list[str]) -> str:
+    """Re-render a carried row at the current column count.
+
+    A row from an issue body written before the Task column exists has one cell
+    too few; Markdown renders the shortfall as empty, which is fine, but a row
+    from a body with MORE columns would push its extra cell past the header. Pad
+    or trim so a carried row always lines up with the table it is joining.
+    """
+    cells = list(cells[:_DISPATCH_TABLE_COLUMNS])
+    while len(cells) < _DISPATCH_TABLE_COLUMNS:
+        cells.append("—")
+    return "| " + " | ".join(cells) + " |"
 
 
 def ensure_tracking_issue(
@@ -3810,6 +3870,9 @@ def reconcile_tracking_issue(
                 deferred=deferred,
                 carry_recap_rows=carry_recap_rows,
                 skipped=skipped,
+                job_ids=job_ids,
+                serge_url=serge_url,
+                task_repo=repo,
             )
             update_issue_body(repo, issue_number, body, github_token)
             print(
