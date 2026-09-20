@@ -138,7 +138,13 @@ jobs:
           while IFS= read -r f; do
             [ -n "$f" ] || continue
             mkdir -p "/tmp/pr_py/$(dirname "$f")"
-            gh api -H "Accept: application/vnd.github.raw" \
+            # --allow-escape-sequences: a .py file may legitimately contain an ANSI escape
+            # byte — transformers has one in tests/utils/test_modeling_utils.py, in a test
+            # asserting on colourised output. Without the flag gh refuses to emit the body,
+            # exits 1, and `bash -e` fails the whole gate, so a fork PR touching that file
+            # can never have its CI approved. Safe here: the body is redirected to a file
+            # and parsed by Bandit's AST, never rendered to a terminal.
+            gh api -H "Accept: application/vnd.github.raw" --allow-escape-sequences \
               "repos/$REPO/contents/$f?ref=$HEAD_SHA" > "/tmp/pr_py/$f"
           done < /tmp/py_files.txt
 
