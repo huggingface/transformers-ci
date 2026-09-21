@@ -4052,20 +4052,26 @@ _CRASH_GUIDANCE = (
 # bug it was written for, and nothing in the trunk said not to: transformers
 # #48535 re-guarded the `update_post_processor()` call from #47988 with a
 # condition the base class already applies, i.e. made it dead code, and OLMo
-# started appending EOS to every prompt again. The agent has no git and cannot
-# fetch github.com, so this block points it at the evidence it CAN read.
+# started appending EOS to every prompt again.
+#
+# This block used to spend a paragraph teaching the agent to reconstruct what the
+# culprit was FOR out of what it left in the tree — grep the PR number, read the
+# comment block above the changed code, hope it cites itself. serge now fetches
+# the culprit's pull request from relore and quotes it in the task, discussion
+# included, so the paragraph is gone: on #47988 that thread carries @ydshieh's
+# own rationale for merging it, which is the thing #48535 did not know. The
+# OBLIGATION stays here, because it is ours; the method is serge's, and serge
+# also says what to do when the fetch fails (`relore_tool.culprit_thread_note`).
 _CULPRIT_GUIDANCE = (
     "── This group is attributed to one commit (a REGRESSION cluster) ──\n"
     "CI's bisect pinned these failures to the single commit named in the group "
     "label above. That commit is almost always a FIX for something else, and it is "
     "still load-bearing: making this group green by undoing it trades one set of "
     "failures for another that no daily run will attribute to you.\n"
-    "  - **Establish what the culprit was for, before you touch it.** You have no "
-    "git and cannot fetch github.com, so read what it left in the tree: the "
-    "comment block it added above the code it changed (these usually name the PR "
-    "and the symptom outright), the test it added or updated, the docstrings "
-    "around it. `grep` the PR number from the group label — a fix that mattered "
-    "normally cites itself in a comment.\n"
+    "  - **Establish what the culprit was for, before you touch it.** This task "
+    "quotes that pull request — the argument, not just the diff — whenever it "
+    "could be fetched. Read it before the code it changed, and do not "
+    "reconstruct its intent from the diff alone.\n"
     "  - **Your patch must keep that fixed, and must say how in `body`**: name the "
     "behaviour the culprit protected and why your change preserves it. If you "
     "cannot establish what it protected, you cannot know whether you are breaking "

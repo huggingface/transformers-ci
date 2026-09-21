@@ -4026,11 +4026,35 @@ class CulpritClusterGuidanceTest(unittest.TestCase):
 
     def test_it_points_at_evidence_the_agent_can_actually_read(self):
         """No git tool and `fetch_url` is huggingface.co-only, so the block must
-        not send the agent to `git show` or to github.com."""
+        not send the agent to `git show` or to github.com.
+
+        The evidence it points at changed on 2026-09-21 and the constraint did
+        not: serge fetches the culprit's pull request from relore and quotes it
+        in the task, so the block asks the agent to READ that instead of
+        reconstructing the commit's intent from what it left in the tree. The
+        old wording spelled out the constraint ("you have no git and cannot
+        fetch github.com") because it was about to send the agent hunting; there
+        is nothing to hunt now, so it only has to avoid naming the tools.
+        """
         text = itf.instruction_addendum(self._cluster())
-        self.assertIn("no git", text)
+        self.assertIn("quotes that pull request", text)
         self.assertNotIn("git show", text)
         self.assertNotIn("git log", text)
+        self.assertNotIn("github.com", text)
+
+    def test_it_does_not_ask_the_agent_to_reconstruct_the_culprits_intent(self):
+        """The deleted paragraph, asserted gone.
+
+        It told the agent to grep the PR number out of the group label and read
+        the comment block the commit left above the code it changed — a method
+        that ran on every cluster and is wrong often enough to be the failure
+        this whole block exists to prevent. relore answers it directly now. If
+        this assertion is ever satisfied again, the two halves have drifted:
+        serge's block (`relore_tool.culprit_thread_note`) is what replaced it.
+        """
+        text = itf.instruction_addendum(self._cluster())
+        self.assertNotIn("read what it left in the tree", text)
+        self.assertNotIn("cites itself in a comment", text)
 
 
 class ModularSourceParseTests(unittest.TestCase):
