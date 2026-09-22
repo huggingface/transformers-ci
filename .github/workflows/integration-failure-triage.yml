@@ -136,11 +136,26 @@ jobs:
           RECONCILE_TIMEOUT: ${{ inputs.reconcile_timeout || vars.ITF_RECONCILE_TIMEOUT || '1200' }}
           # Cap how many failure groups become Serge tasks per nightly run; the
           # rest are dropped with a note. The slots are spread over failure
-          # CATEGORIES (round-robin, see select_dispatch_targets), so 5 buys five
-          # kinds of failure rather than five expectation updates.
-          # Was 3 while the reproduce-first loop was being validated in prod; the
-          # script default is 20. See docs/plans/serge-reproduce-first.md.
-          ITF_MAX_GROUPS: ${{ vars.ITF_MAX_GROUPS || '5' }}
+          # CATEGORIES (round-robin, see select_dispatch_targets), one per
+          # category per cycle.
+          # 3 while the reproduce-first loop was being validated in prod, then 5,
+          # now 10. The script default is 20. See docs/plans/serge-reproduce-first.md.
+          #
+          # Note what the second five buy. The round-robin gives each category one
+          # slot per cycle, so while the cap was <= the number of categories it
+          # bought VARIETY -- that is the "five kinds of failure rather than five
+          # expectation updates" this comment used to claim. On 2026-09-21 the run
+          # dispatched exactly five categories with one group each, so a cap of 10
+          # starts a second cycle and buys DEPTH: a second group per category. The
+          # pool supports it (375 persistent failures, 327 of them unpinned), so
+          # the cap is what binds, not the supply.
+          #
+          # Cost: ITF_SERGE_CONCURRENCY is unset here, so the dispatcher runs the
+          # script default of 3 active tasks. 5 groups took 2h36m on 2026-09-21
+          # (22:13 -> 00:50); 10 at the same concurrency is about 5h, ending ~03:15
+          # UTC, and roughly doubles the GPU + token spend per night. Raise the
+          # concurrency instead of the cap if wall-clock is what matters.
+          ITF_MAX_GROUPS: ${{ vars.ITF_MAX_GROUPS || '10' }}
           # The dispatch-side "a human already has an open PR for this" check
           # (src/transformersci/agentic/relore_claims.py). Three states:
           #   off    — never asked (the code default)
