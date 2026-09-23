@@ -34,6 +34,8 @@ jobs:
   # as a named artifact consumed by the reusable workflow.
   # ===========================================================================
   test-preparation:
+    permissions:
+      contents: read
     name: "Test preparation (fetcher)"
     runs-on:
       group: aws-m8i-l-cache
@@ -187,6 +189,8 @@ jobs:
   # ===========================================================================
 
   check_code_quality:
+    permissions:
+      contents: read
     name: "Check code quality"
     # Self-hosted so the runner injects OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_TOKEN,
     # same as the pytest jobs and test-preparation. On GitHub-hosted runners
@@ -294,6 +298,8 @@ jobs:
 
 
   check_repository_consistency:
+    permissions:
+      contents: read
     name: "Check repository consistency"
     # Self-hosted so the runner injects OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_TOKEN,
     # same as the pytest jobs and test-preparation. On GitHub-hosted runners
@@ -420,6 +426,7 @@ jobs:
   # author every test result on a large contribution.
   # ===========================================================================
   quality_gate:
+    permissions: {}
     name: "Quality gate"
     runs-on: ubuntu-22.04
     needs: [check_code_quality]
@@ -675,6 +682,8 @@ jobs:
   # Mirrors: poll CircleCI workflow API + process_circleci_workflow_test_reports.py
   # ===========================================================================
   collection:
+    permissions:
+      contents: read
     name: "Collect and aggregate test results"
     runs-on: ubuntu-22.04
     # Wait for all test jobs regardless of their outcome.
@@ -744,6 +753,7 @@ jobs:
   #   - collection                                                            (Stage 3)
   # ===========================================================================
   ci_passed:
+    permissions: {}
     name: "PR CI status"
     runs-on: ubuntu-22.04
     needs:
