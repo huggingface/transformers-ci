@@ -434,7 +434,7 @@ def oom_shape(trace: str) -> tuple[str, dict[str, float]]:
         most of the card. The test's own working set is not the problem — the
         card was already full when it started, because earlier tests in the same
         pytest process never released their models. That IS fixable by a source
-        patch (a ``tearDown`` that frees), and the fix is in the test file.
+        patch (``MemoryCleanupMixin`` on the test class), and the fix is in the test file.
 
     ``OOM_CAPACITY``
         One allocation alone approaches the whole card. No amount of freeing
@@ -4132,7 +4132,10 @@ _OOM_GUIDANCE = (
 # Reached when at least one test in the group died asking for a trivial amount on
 # a card PyTorch already filled (see `oom_shape`). That is a retained-memory bug
 # in the test file, and it has one canonical fix in this repo — so the guidance
-# names it instead of steering the agent away from a patch.
+# names it instead of steering the agent away from a patch. That fix is
+# `MemoryCleanupMixin` since transformers#48681 (2026-09-11); the bare
+# `tearDown` + `cleanup` this block used to teach is what transformers#48839
+# shipped four days later, so keep this in step with `docs/source/en/testing.md`.
 _OOM_RETENTION_GUIDANCE = (
     "── This group's failure mode: `OOM`, and at least one test is a "
     "RETAINED-MEMORY bug, not a capacity limit ──\n"
@@ -4142,17 +4145,28 @@ _OOM_RETENTION_GUIDANCE = (
     "because earlier tests in the SAME pytest process never released their models. "
     "Every test in a class shares one process, so one un-freed model poisons the "
     "rest of the file. This IS fixable, in the test file:\n"
-    "  - Give the failing test's class a `tearDown` that frees the device, using "
-    "this repo's idiom:\n"
-    "        from transformers.testing_utils import cleanup\n"
-    "        def tearDown(self):\n"
-    "            cleanup(torch_device, gc_collect=True)\n"
-    "    Prefer the class-wide `tearDown` — the goal is that no test in the file "
-    "can leak into the next. If the class already has one, the retention is inside "
-    "a single test instead: find a model held in a local that is never dropped "
+    "  - Mix this repo's `MemoryCleanupMixin` into the failing test's class, "
+    "FIRST in the bases (the path is relative to the test file):\n"
+    "        from ...test_memory_cleanup_mixin import MemoryCleanupMixin\n"
+    "        class XIntegrationTest(MemoryCleanupMixin, unittest.TestCase):\n"
+    "    It runs `cleanup(torch_device, gc_collect=True)` around every test, runs "
+    "tests under `torch.no_grad()`, and deletes what a test or `setUpClass` put on "
+    "`self`/the class, `@cached_property` caches included — which a bare `tearDown` "
+    "calling `cleanup` cannot free, since pytest keeps test instances alive. Do NOT "
+    "hand-write that `tearDown` instead. Delete any `tearDown`/`tearDownClass` the "
+    "mixin makes redundant; an overridden `setUp` must call `super().setUp()`; a "
+    "class that calls `backward()` sets `run_under_no_grad = False`. The mixin "
+    "keeps class-BODY attributes, so a model parked on one (`model = None` in the "
+    "body, filled later) is never released — move it into `setUpClass` after "
+    "`super().setUpClass()`. If the class already uses the mixin, the retention is "
+    "inside a single test: find a model held in a local that is never dropped "
     "before the next `from_pretrained`, and `del` it before re-loading.\n"
     "  - Do NOT lower coverage to fit memory — no shrinking the model, no cutting "
     "sequence length, no `skip`/`require_*` decorators, no lowered dtype.\n"
+    "  - Freeing memory does not change what a model outputs, so do NOT edit "
+    "expected values in this patch. If the test, once it fits, fails its "
+    "assertion, that is a separate bug: report the new output in `body` and leave "
+    "the expectations alone.\n"
     "  - Only the tests marked `retained memory (fixable)` are your target. "
     "`over capacity` ones ask for nearly the whole card in one allocation, so "
     "freeing cannot help them; `unclear` ones request too much to blame retention. "
@@ -4192,20 +4206,23 @@ _OOM_LOAD_GUIDANCE = (
     "`from_pretrained` in every method pays for the whole checkpoint each time, "
     "and the first copy can still be alive when the second is materialized. Use "
     "this repo's idiom — a lazy classmethod, NOT an eager `setUpClass` that loads "
-    "(maintainers have asked for this shape in review):\n"
-    "        @classmethod\n"
-    "        def setUpClass(cls):\n"
-    "            cls.model = None\n"
-    "        @classmethod\n"
-    "        def get_model(cls):\n"
-    "            if cls.model is None:\n"
-    '                cls.model = M.from_pretrained(cls.model_id, dtype=..., device_map="auto")\n'
-    "            return cls.model\n"
-    "        @classmethod\n"
-    "        def tearDownClass(cls):\n"
-    "            del cls.model\n"
-    "            cleanup(torch_device, gc_collect=True)\n"
-    "    `tests/models/qwen3_omni_moe/test_modeling_qwen3_omni_moe.py` is the "
+    "(maintainers have asked for this shape in review), on a class that mixes in "
+    "`MemoryCleanupMixin`:\n"
+    "        class XIntegrationTest(MemoryCleanupMixin, unittest.TestCase):\n"
+    "            @classmethod\n"
+    "            def setUpClass(cls):\n"
+    "                super().setUpClass()\n"
+    "                cls.model = None\n"
+    "            @classmethod\n"
+    "            def get_model(cls):\n"
+    "                if cls.model is None:\n"
+    '                    cls.model = M.from_pretrained(cls.model_id, dtype=..., device_map="auto")\n'
+    "                return cls.model\n"
+    "    The mixin drops `cls.model` and frees the device after the class, so write "
+    "no `tearDownClass` for it. Set `cls.model = None` in `setUpClass`, never in "
+    "the class body: the mixin keeps class-body attributes, so a model parked on "
+    "one is never released. "
+    "`tests/models/qwen3_omni_moe/test_modeling_qwen3_omni_moe.py` is the "
     "reference.\n"
     "  - Keep `dtype` at the checkpoint's native precision. Do NOT downcast to "
     "fit: that changes what the test measures.\n"

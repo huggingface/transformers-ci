@@ -2755,8 +2755,16 @@ class InstructionAddendumTest(unittest.TestCase):
     def test_retention_oom_gets_the_teardown_fix_not_a_shrug(self):
         text = itf.instruction_addendum(_oom_target(_OOM_RETENTION_TRACE))
         self.assertIn("RETAINED-MEMORY", text)
-        self.assertIn("cleanup(torch_device, gc_collect=True)", text)
-        self.assertIn("tearDown", text)
+        self.assertIn(
+            "class XIntegrationTest(MemoryCleanupMixin, unittest.TestCase):", text
+        )
+        self.assertIn(
+            "from ...test_memory_cleanup_mixin import MemoryCleanupMixin", text
+        )
+        # transformers#48839: the hand-written teardown the mixin replaced.
+        self.assertNotIn("def tearDown(self)", text)
+        # …and the expectations it rewrote to degenerate output alongside.
+        self.assertIn("do NOT edit expected values", text)
         # The coverage guard must survive the rewrite.
         self.assertIn("no shrinking the model", text)
         # …and it must not tell the agent this is probably unfixable.
@@ -3821,6 +3829,10 @@ class OomLoadGuidanceTest(unittest.TestCase):
         # The lazy idiom the maintainers asked for, not an eager loading setUpClass.
         self.assertIn("def get_model(cls):", text)
         self.assertIn("cls.model = None", text)
+        # On the mixin, which releases `cls.model` itself.
+        self.assertIn("MemoryCleanupMixin", text)
+        self.assertIn("super().setUpClass()", text)
+        self.assertNotIn("del cls.model", text)
         # The retention block's fix must not be what this group is told to do.
         self.assertNotIn("def tearDown(self)", text)
 
@@ -3839,7 +3851,7 @@ class OomLoadGuidanceTest(unittest.TestCase):
 
     def test_a_retention_group_keeps_its_teardown_guidance(self):
         text = itf.instruction_addendum(_oom_target(_OOM_RETENTION_TRACE))
-        self.assertIn("def tearDown(self)", text)
+        self.assertIn("MemoryCleanupMixin", text)
 
 
 class OomClusterGuidanceTest(unittest.TestCase):
