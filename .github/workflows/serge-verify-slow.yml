@@ -103,11 +103,13 @@ env:
   # specific parametrized node-id like `test_x[float16]`.)
   VERIFY_RUNS: "5"
 
-permissions:
-  contents: read
+
+permissions: {}
 
 jobs:
   verify:
+    permissions:
+      contents: read
     name: verify ${{ inputs.model }} (${{ inputs.machine_type }})
     runs-on:
       group: '${{ inputs.machine_type }}'          # same runner groups / ARC scale sets as run-slow
