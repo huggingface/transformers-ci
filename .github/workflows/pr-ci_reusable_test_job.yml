@@ -238,6 +238,8 @@ on:
 # =============================================================================
 # JOBS
 # =============================================================================
+permissions: {}
+
 jobs:
 
   # ---------------------------------------------------------------------------
@@ -247,6 +249,7 @@ jobs:
   # materialise the array in a prior job so the matrix can reference it.
   # ---------------------------------------------------------------------------
   setup:
+    permissions: {}
     name: "Setup — generate shard matrix (${{ inputs.job_name }})"
     runs-on: ubuntu-22.04
     outputs:
@@ -323,6 +326,8 @@ jobs:
   # Mirrors CircleCIJob.to_dict() step-by-step.
   # ---------------------------------------------------------------------------
   run:
+    permissions:
+      contents: read
     name: "${{ inputs.job_name }} [shard ${{ matrix.shard_index }}/${{ needs.setup.outputs.shard_count }}]"
     needs: setup
 
