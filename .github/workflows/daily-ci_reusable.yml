@@ -619,7 +619,6 @@ jobs:
 
   run_extract_warnings:
     permissions:
-      actions: read
       contents: read
     # Let's only do this for the job `run_models_gpu` to simplify the (already complex) logic.
     if: ${{ always() && inputs.job == 'run_models_gpu' }}
