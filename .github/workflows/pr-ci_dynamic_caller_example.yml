@@ -204,6 +204,11 @@ jobs:
       TRANSFORMERS_TEST_OTEL_SUITE: ${{ github.job }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # check_noisy_comments.py diffs against `origin/main` and blames lines to
+          # scope findings to the PR; on a shallow clone it can do neither and
+          # silently degrades to non-blocking.
+          fetch-depth: 0
 
       - name: Resolve PR number for merge_group events
         if: github.event_name == 'merge_group'
