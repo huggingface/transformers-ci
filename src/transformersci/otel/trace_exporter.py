@@ -55,12 +55,14 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
+from contextlib import contextmanager
 from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from itertools import islice
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from math import fsum
 from pathlib import Path
+from typing import NamedTuple
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -163,6 +165,12 @@ DEFAULT_TRACE_SETTLE_SECONDS = 120.0
 # cadence, lets those out-of-order spans arrive and re-open the count before we
 # commit. Purely delays freezing; it does not increase the per-read Tempo load.
 DEFAULT_TRACE_REVERIFY_SECONDS = 180.0
+# A finished PR job's results are published without waiting for the rest of its
+# run (see :func:`completed_job_results_extracted`) once its traces have been
+# read this long after GitHub marked the job completed. Covers the runner's
+# final flush plus the collector's 5s batch; a span Tempo surfaces later still
+# lands, because the trace keeps being re-read until it settles.
+DEFAULT_JOB_RELEASE_GRACE_SECONDS = 30.0
 # Each get_trace() is an independent, blocking Tempo round-trip. Keep this low:
 # fetching several multi-MB traces in parallel can make small single-node Tempo
 # instances spike hard enough to hit their container memory limit.
@@ -617,11 +625,20 @@ def _http_timeout() -> float:
         return DEFAULT_HTTP_TIMEOUT
 
 
-def _http_get_json(url: str, timeout: float | None = None) -> object:
+def _http_get_json(
+    url: str, timeout: float | None = None, upstream: str = "tempo"
+) -> object:
     if timeout is None:
         timeout = _http_timeout()
-    with urlopen(url, timeout=timeout) as response:
-        return json.load(response)
+    started = time.monotonic()
+    try:
+        with urlopen(url, timeout=timeout) as response:
+            body = response.read()
+    except Exception:
+        _observe_upstream_request(upstream, "error", time.monotonic() - started, 0)
+        raise
+    _observe_upstream_request(upstream, "ok", time.monotonic() - started, len(body))
+    return json.loads(body)
 
 
 def _env_list(name: str, default: str) -> tuple[str, ...]:
@@ -1355,15 +1372,22 @@ def _iter_window_shaped_all(
 
     end = int(now)
     start = end - parse_lookback_seconds(lookback)
-    trace_ids, truncated = search_all_trace_ids(
-        base_url, service_name, start, end, limit
-    )
+    with _render_phase("tempo_search"):
+        trace_ids, truncated = search_all_trace_ids(
+            base_url, service_name, start, end, limit
+        )
 
     # Partition the window. ``need_fetch`` = never seen, or in-flight and due for
     # a bounded re-read; ``have_entry`` = any id we hold a (possibly stale) shape
     # for, so a deferred or fetch-failed id can still be served from cache.
+    # ``job_due`` = a finished job's trace whose copy predates the job's end
+    # (see completed_job_results_extracted); read first, ahead of the cadence,
+    # because its job's results are held until it is.
     need_fetch: list[str] = []
+    job_due: list[str] = []
     have_entry: set[str] = set()
+    with _job_refetch_due_lock:
+        refetch_due = dict(_job_refetch_due)
     with _shaped_cache_lock:
         for trace_id in trace_ids:
             entry = _shaped_cache.get(trace_id)
@@ -1372,10 +1396,18 @@ def _iter_window_shaped_all(
                 continue
             have_entry.add(trace_id)
             settled, last_fetch = _shaped_meta.get(trace_id, (False, 0.0))
-            if not settled and (now - last_fetch) >= refetch_interval:
+            not_before = refetch_due.get(trace_id)
+            if (
+                not settled
+                and not_before is not None
+                and now >= not_before > last_fetch
+            ):
+                job_due.append(trace_id)
+            elif not settled and (now - last_fetch) >= refetch_interval:
                 need_fetch.append(trace_id)
             else:
                 _shaped_cache.move_to_end(trace_id)
+    need_fetch = job_due + need_fetch
 
     max_new = _max_new_fetch_per_render()
     to_fetch = need_fetch[:max_new]
@@ -1395,6 +1427,11 @@ def _iter_window_shaped_all(
         _last_enumeration_total = len(trace_ids)
         _last_enumeration_truncated = truncated
         _last_enumeration_deferred = deferred
+    _set_render_count("window", len(trace_ids))
+    _set_render_count("cached", len(serve_cached))
+    _set_render_count("fetched", len(to_fetch))
+    _set_render_count("deferred", deferred)
+    _set_render_count("job_refetch", len(job_due))
 
     # Yield the cache hits first (no I/O), then stream the fetched ones.
     for trace_id in serve_cached:
@@ -1440,7 +1477,9 @@ def _iter_window_shaped_all(
                     entry = None
                 if entry is not None:
                     yield entry[0], entry[1], True
-                elif trace_id in have_entry:
+                    continue
+                _add_render_count("fetch_failed", 1)
+                if trace_id in have_entry:
                     # Fetch failed but we hold a prior shape — serve it (stale,
                     # not new) rather than dropping the trace from the window.
                     with _shaped_cache_lock:
@@ -1526,8 +1565,20 @@ def _github_api_get(api_url: str, timeout: float = 5.0) -> object:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = Request(api_url, headers=headers)
-    with urlopen(request, timeout=timeout) as response:
-        return json.load(response)
+    started = time.monotonic()
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            _observe_github_rate_limit(getattr(response, "headers", None))
+            body = response.read()
+    except HTTPError as error:
+        _observe_github_rate_limit(getattr(error, "headers", None))
+        _observe_upstream_request("github", "error", time.monotonic() - started, 0)
+        raise
+    except Exception:
+        _observe_upstream_request("github", "error", time.monotonic() - started, 0)
+        raise
+    _observe_upstream_request("github", "ok", time.monotonic() - started, len(body))
+    return json.loads(body)
 
 
 def fetch_github_pr_reviews(repository: str, pr: str) -> list[str]:
@@ -2233,6 +2284,24 @@ _cached_run_activity: dict[
     tuple[str, str], tuple[float, tuple[str, frozenset[str]]]
 ] = {}
 
+
+class GitHubJobState(NamedTuple):
+    """One GitHub Actions job of a run, by its logical (``test_job``-like) name."""
+
+    name: str
+    status: str
+    conclusion: str
+    completed_at: float | None
+
+
+# (repository, run_db_id) -> (run_attempt, every job of that attempt), from the
+# last COMPLETE jobs listing of a still-active run. A job that GitHub reported
+# completed stays completed (a rerun is a new attempt, i.e. a new run_id), so
+# unlike the active flag this needs no TTL; it is dropped with the run.
+_run_job_states: dict[
+    tuple[str, str], tuple[float, str, tuple[GitHubJobState, ...]]
+] = {}
+
 # Trailing matrix/shard suffix(es) on a GitHub job display name, e.g. " (1, 8)"
 # or " [shard 1/8]" (transformers uses bracket notation). Strips one or more
 # consecutive trailing bracketed groups.
@@ -2308,6 +2377,29 @@ def slugify_job(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
 
 
+def _job_name_forms(known_jobs: set[str]) -> dict[str, str]:
+    """Map every accepted spelling of a run's ``test_job`` keys back to the key.
+
+    GitHub only exposes a job's *display* name, which differs from the test_job
+    key (= GITHUB_JOB); matching on the key itself and on its slug lets
+    ``"Check repository consistency"`` find ``check_repository_consistency``."""
+    forms: dict[str, str] = {}
+    for known in known_jobs:
+        forms[known] = known
+        forms.setdefault(slugify_job(known), known)
+    return forms
+
+
+def _match_job_name(github_job: str, forms: dict[str, str]) -> str | None:
+    """The test_job a GitHub job name refers to, or None if it matches none."""
+    logical = logical_job_name(github_job)
+    for form in (github_job, slugify_job(github_job), logical, slugify_job(logical)):
+        canonical = forms.get(form)
+        if canonical:
+            return canonical
+    return None
+
+
 def fetch_github_run_activity(
     repository: str, run_db_id: str, run_attempt: str
 ) -> tuple[str, frozenset[str]]:
@@ -2337,22 +2429,46 @@ def fetch_github_run_activity(
     else:
         jobs_url = f"{api_base_url}/repos/{repo}/actions/runs/{run_id_q}/jobs"
     active_jobs: set[str] = set()
+    states: list[GitHubJobState] = []
+    listed_all = False
     for page in range(1, DEFAULT_ACTIVE_JOBS_PAGES + 1):
         payload = _github_api_get(
             f"{jobs_url}?per_page=100&page={page}", timeout=timeout
         )
         jobs = payload.get("jobs") if isinstance(payload, dict) else None
         if not isinstance(jobs, list) or not jobs:
+            listed_all = True
             break
         for job in jobs:
             if not isinstance(job, dict):
                 continue
-            if str(job.get("status") or "") in GITHUB_ACTIVE_STATUSES:
-                name = logical_job_name(str(job.get("name") or ""))
-                if name:
-                    active_jobs.add(name)
+            name = logical_job_name(str(job.get("name") or ""))
+            job_status = str(job.get("status") or "")
+            if job_status in GITHUB_ACTIVE_STATUSES and name:
+                active_jobs.add(name)
+            if name:
+                states.append(
+                    GitHubJobState(
+                        name=name,
+                        status=job_status,
+                        conclusion=str(job.get("conclusion") or ""),
+                        completed_at=parse_github_timestamp(
+                            str(job.get("completed_at") or "")
+                        ),
+                    )
+                )
         if len(jobs) < 100:
+            listed_all = True
             break
+    # Only a complete listing can say a job is finished: a matrix sibling on a
+    # page past the cap may still be running under the same logical name.
+    if listed_all:
+        with _run_activity_cache_lock:
+            _run_job_states[(repository, run_db_id)] = (
+                time.monotonic(),
+                run_attempt,
+                tuple(states),
+            )
     return status, frozenset(active_jobs)
 
 
@@ -2546,19 +2662,12 @@ def extract_run_active_metrics(
         # shards collapse onto one row) means the spinner lands on the actual job
         # row; an unmatched running job simply doesn't spin rather than spawning a
         # phantom row.
-        known_jobs = jobs_by_pr_run.get((pr, run_id), set())
-        known_forms: dict[str, str] = {}
-        for known in known_jobs:
-            known_forms[known] = known
-            known_forms.setdefault(slugify_job(known), known)
+        known_forms = _job_name_forms(jobs_by_pr_run.get((pr, run_id), set()))
         matched_jobs: set[str] = set()
         for job in active_jobs:
-            logical = logical_job_name(job)
-            for form in (job, slugify_job(job), logical, slugify_job(logical)):
-                canonical = known_forms.get(form)
-                if canonical:
-                    matched_jobs.add(canonical)
-                    break
+            canonical = _match_job_name(job, known_forms)
+            if canonical:
+                matched_jobs.add(canonical)
         for job in sorted(matched_jobs):
             job_labels = dict(base_labels)
             job_labels["test_job"] = job
@@ -2949,6 +3058,7 @@ def extract_run_rollup_metrics(
     *,
     _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
     | None = None,
+    _job_only_runs: set[str] | None = None,
 ) -> list[str]:
     """Emit one roll-up series per workflow-level pytest run.
 
@@ -2958,7 +3068,13 @@ def extract_run_rollup_metrics(
     run's job traces age out of the window one by one (which froze a wrong
     "100% pass" into Prometheus). Feeds the PR "Past Runs" table and the
     overview run/PR panels.
+
+    Runs in ``_job_only_runs`` are still in flight and carry only their finished
+    jobs (:func:`completed_job_results_extracted`): they get the per-job series
+    and ``pytest_run_job_member_info``, but no run-level series and no jobs
+    minted from the run store, which would release unfinished jobs' partials.
     """
+    job_only_runs = _job_only_runs or set()
     extracted = (
         _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
     )
@@ -3104,6 +3220,8 @@ def extract_run_rollup_metrics(
     store_only_jobs: set[tuple[str, str, str, str, str, str]] = set()
     for run_key, run_aggregate in run_aggregates.items():
         service_name, provider, pr, run_id = run_key
+        if run_id in job_only_runs:
+            continue
         for (test_job, hardware), stored in store_counts.get(run_id, {}).items():
             job_key = (service_name, provider, pr, run_id, test_job, hardware)
             if job_key in job_aggregates:
@@ -3170,6 +3288,13 @@ def extract_run_rollup_metrics(
             "run_id": run_id,
             "service_name": service_name,
         }
+        if run_id in job_only_runs:
+            for job_name, hardware in job_pairs:
+                job_labels = dict(run_labels)
+                job_labels["test_job"] = job_name
+                job_labels["hardware"] = hardware
+                lines.append(f"pytest_run_job_member_info{metric_labels(job_labels)} 1")
+            continue
         # Every run-level rollup is emitted as a metric *value* keyed only by the
         # stable run identity. Earlier versions baked the mutable totals
         # (total_tests, failed_tests, job_count, ...) into labels on the
@@ -3494,6 +3619,156 @@ def settled_runs_complete_extracted(
     return complete
 
 
+def _job_release_grace_seconds() -> float:
+    raw = os.getenv("PYTEST_TRACE_EXPORTER_JOB_RELEASE_GRACE_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_JOB_RELEASE_GRACE_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return DEFAULT_JOB_RELEASE_GRACE_SECONDS
+
+
+def _early_job_results_enabled() -> bool:
+    return os.getenv("PYTEST_TRACE_EXPORTER_EARLY_JOB_RESULTS", "1") not in {
+        "0",
+        "false",
+        "no",
+    }
+
+
+# trace_id -> wall-clock time after which it must be re-read once, because its
+# job finished and the exporter's copy predates that. Rebuilt every render by
+# completed_job_results_extracted; consumed by _iter_window_shaped_all, which
+# moves these ahead of the ordinary re-fetch cadence.
+_job_refetch_due: dict[str, float] = {}
+_job_refetch_due_lock = threading.Lock()
+
+
+def completed_job_results_extracted(
+    window_extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]],
+    released_runs: set[str],
+) -> tuple[list[tuple[dict[str, str | int], list[dict[str, str | float]]]], set[str]]:
+    """Traces of finished PR jobs whose run the roll-up gate still holds back.
+
+    :func:`settled_runs_complete_extracted` releases a run only once GitHub says
+    the whole run is over, so a two-minute check job used to wait for the last
+    pytest shard: its counts reached Prometheus 8-11 minutes after its step
+    ended. This releases one *job* of a still-running PR run when all of:
+
+    * GitHub's (complete) jobs listing for the run's attempt matches the job,
+      and every matching GitHub job is completed with ``success`` or
+      ``failure`` — cancelled, skipped and the rest wait for the run;
+    * every trace of the job was read at least the release grace after the
+      last matching GitHub job completed (or has settled). Read times are the
+      render's start, so they never overstate freshness. A trace that is not
+      yet is queued for an early re-read (see :data:`_job_refetch_due`);
+    * the traces agree with GitHub: they show a failure exactly when GitHub
+      says the job failed. Tempo can surface a failing test's span minutes
+      after its neighbours (see ``DEFAULT_TRACE_REVERIFY_SECONDS``), so a read
+      that has not seen it yet would publish a red job as green; disagreement
+      waits for the run gate instead.
+
+    Only the job-level series are emitted for such a run (the caller passes the
+    returned run ids as ``_job_only_runs``); the run-level roll-up still waits
+    for the gate and still has the final say, re-emitting every job with its
+    complete trace set. Branch and daily runs are left to the gate: their
+    run-level panels sum job series across hardware and would read a partial
+    run as a finished one.
+
+    Returns ``(extracted rows of the released jobs, their run ids)``.
+    """
+    if not _early_job_results_enabled():
+        with _job_refetch_due_lock:
+            _job_refetch_due.clear()
+        return [], set()
+    grace = _job_release_grace_seconds()
+
+    by_run: dict[
+        str,
+        dict[str, list[tuple[dict[str, str | int], list[dict[str, str | float]]]]],
+    ] = {}
+    repo_by_run: dict[str, str] = {}
+    for trace_info, rows in window_extracted:
+        run_id = str(trace_info.get("run_id", ""))
+        pr = str(trace_info.get("pr", ""))
+        test_job = str(trace_info.get("test_job", ""))
+        if not run_id or run_id in released_runs or not pr.isdigit():
+            continue
+        if not test_job or test_job == "unknown":
+            continue
+        by_run.setdefault(run_id, {}).setdefault(test_job, []).append(
+            (trace_info, rows)
+        )
+        if not repo_by_run.get(run_id):
+            repository = str(trace_info.get("repository", "")) or (
+                repository_from_pr_url(str(trace_info.get("pr_url", "")))
+            )
+            if repository:
+                repo_by_run[run_id] = repository
+
+    # Forget listings of runs long gone, so the map stays bounded.
+    horizon = time.monotonic() - active_lookback_seconds()
+    with _run_activity_cache_lock:
+        for key in [k for k, v in _run_job_states.items() if v[0] < horizon]:
+            del _run_job_states[key]
+
+    released: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] = []
+    released_run_ids: set[str] = set()
+    due: dict[str, float] = {}
+    for run_id, jobs in by_run.items():
+        run_db_id, attempt = split_run_id(run_id)
+        with _run_activity_cache_lock:
+            listing = _run_job_states.get((repo_by_run.get(run_id, ""), run_db_id))
+        if listing is None or listing[1] != attempt:
+            continue
+        forms = _job_name_forms(set(jobs))
+        github_jobs: dict[str, list[GitHubJobState]] = {}
+        for state in listing[2]:
+            canonical = _match_job_name(state.name, forms)
+            if canonical:
+                github_jobs.setdefault(canonical, []).append(state)
+
+        for test_job, entries in jobs.items():
+            states = github_jobs.get(test_job)
+            if not states or any(
+                st.status in GITHUB_ACTIVE_STATUSES or st.completed_at is None
+                for st in states
+            ):
+                continue
+            conclusions = {st.conclusion for st in states}
+            if not conclusions <= {"success", "failure"}:
+                continue
+            not_before = max(float(st.completed_at or 0) for st in states) + grace
+            stale: list[str] = []
+            with _shaped_cache_lock:
+                for trace_info, _rows in entries:
+                    trace_id = str(trace_info.get("trace_id", ""))
+                    settled, fetched_at = _shaped_meta.get(trace_id, (False, 0.0))
+                    if not settled and fetched_at < not_before:
+                        stale.append(trace_id)
+            if stale:
+                for trace_id in stale:
+                    due[trace_id] = not_before
+                continue
+            failed = sum(
+                max(
+                    sum(1 for r in rows if str(r["status_code"]) == "ERROR"),
+                    1 if int(info.get("run_failed", 0) or 0) else 0,
+                )
+                for info, rows in entries
+            )
+            if (failed > 0) != ("failure" in conclusions):
+                continue
+            released.extend(entries)
+            released_run_ids.add(run_id)
+
+    with _job_refetch_due_lock:
+        _job_refetch_due.clear()
+        _job_refetch_due.update(due)
+    return released, released_run_ids
+
+
 def extract_average_metrics(
     traces: list[dict],
     *,
@@ -3761,6 +4036,274 @@ def _http_metric_lines() -> list[str]:
     return lines
 
 
+# Render profile. ``render_duration_seconds`` says a render took three minutes;
+# these say where. Each render records wall-clock per phase (search, fetch+shape,
+# each extract group, the disk write, ...) and a snapshot is taken when it
+# finishes, so the payload always describes the PREVIOUS completed render: the
+# one being written cannot report its own write. ``other`` is the render's
+# wall-clock minus every named phase, so a phase nobody timed still shows up.
+_render_profile_lock = threading.Lock()
+_render_started: float | None = None
+_render_phases: dict[str, float] = {}
+_render_counts: dict[str, int] = {}
+_last_render_phases: dict[str, float] = {}
+_last_render_counts: dict[str, int] = {}
+_render_phase_seconds_total: dict[str, float] = {}
+_renders_total = 0
+_refresh_pause_seconds_total: dict[str, float] = {}
+_refresh_pauses_total: dict[str, int] = {}
+
+# Outbound calls, from every thread (render, fetch pool, HTTP handlers).
+_upstream_requests_total: dict[tuple[str, str], int] = {}
+_upstream_request_seconds_total: dict[tuple[str, str], float] = {}
+_upstream_response_bytes_total: dict[str, int] = {}
+_github_rate_limit: dict[str, float] = {}
+
+
+def _begin_render() -> None:
+    global _render_started
+    with _render_profile_lock:
+        _render_started = time.monotonic()
+        _render_phases.clear()
+        _render_counts.clear()
+
+
+def _finish_render() -> None:
+    global _render_started, _renders_total
+    with _render_profile_lock:
+        if _render_started is None:
+            return
+        phases = dict(_render_phases)
+        wall = time.monotonic() - _render_started
+        phases["other"] = max(0.0, wall - fsum(phases.values()))
+        _last_render_phases.clear()
+        _last_render_phases.update(phases)
+        _last_render_counts.clear()
+        _last_render_counts.update(_render_counts)
+        for phase, seconds in phases.items():
+            _render_phase_seconds_total[phase] = (
+                _render_phase_seconds_total.get(phase, 0.0) + seconds
+            )
+        _renders_total += 1
+        _render_started = None
+
+
+def _add_render_phase(phase: str, seconds: float) -> None:
+    with _render_profile_lock:
+        _render_phases[phase] = _render_phases.get(phase, 0.0) + max(0.0, seconds)
+
+
+def _render_phase_seconds(phase: str) -> float:
+    with _render_profile_lock:
+        return _render_phases.get(phase, 0.0)
+
+
+@contextmanager
+def _render_phase(phase: str) -> Iterator[None]:
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        _add_render_phase(phase, time.monotonic() - started)
+
+
+def _set_render_count(name: str, value: int) -> None:
+    with _render_profile_lock:
+        _render_counts[name] = value
+
+
+def _add_render_count(name: str, value: int) -> None:
+    with _render_profile_lock:
+        _render_counts[name] = _render_counts.get(name, 0) + value
+
+
+def _observe_refresh_pause(reason: str, seconds: float) -> None:
+    with _render_profile_lock:
+        _refresh_pauses_total[reason] = _refresh_pauses_total.get(reason, 0) + 1
+        _refresh_pause_seconds_total[reason] = (
+            _refresh_pause_seconds_total.get(reason, 0.0) + seconds
+        )
+
+
+def _observe_upstream_request(
+    upstream: str, outcome: str, seconds: float, response_bytes: int
+) -> None:
+    key = (upstream, outcome)
+    with _render_profile_lock:
+        _upstream_requests_total[key] = _upstream_requests_total.get(key, 0) + 1
+        _upstream_request_seconds_total[key] = (
+            _upstream_request_seconds_total.get(key, 0.0) + seconds
+        )
+        _upstream_response_bytes_total[upstream] = (
+            _upstream_response_bytes_total.get(upstream, 0) + response_bytes
+        )
+
+
+def _observe_github_rate_limit(headers: object) -> None:
+    """Keep the last X-RateLimit-* values GitHub reported (the core budget)."""
+    get = getattr(headers, "get", None)
+    if get is None:
+        return
+    values: dict[str, float] = {}
+    for key, header in (
+        ("limit", "X-RateLimit-Limit"),
+        ("remaining", "X-RateLimit-Remaining"),
+        ("reset", "X-RateLimit-Reset"),
+    ):
+        raw = get(header)
+        try:
+            values[key] = float(raw)
+        except (TypeError, ValueError):
+            continue
+    if values:
+        with _render_profile_lock:
+            _github_rate_limit.update(values)
+
+
+def _render_profile_lines() -> list[str]:
+    with _render_profile_lock:
+        last_phases = sorted(_last_render_phases.items())
+        last_counts = sorted(_last_render_counts.items())
+        phase_totals = sorted(_render_phase_seconds_total.items())
+        renders = _renders_total
+        pauses = sorted(_refresh_pauses_total.items())
+        pause_seconds = sorted(_refresh_pause_seconds_total.items())
+        upstream_requests = sorted(_upstream_requests_total.items())
+        upstream_seconds = sorted(_upstream_request_seconds_total.items())
+        upstream_bytes = sorted(_upstream_response_bytes_total.items())
+        rate_limit = dict(_github_rate_limit)
+
+    lines = [
+        "# HELP pytest_trace_exporter_renders_total Background renders completed since start.",
+        "# TYPE pytest_trace_exporter_renders_total counter",
+        f"pytest_trace_exporter_renders_total {renders}",
+    ]
+    if last_phases:
+        lines.append(
+            "# HELP pytest_trace_exporter_render_phase_seconds Wall-clock per phase of the last completed render (other = unattributed)."
+        )
+        lines.append("# TYPE pytest_trace_exporter_render_phase_seconds gauge")
+        for phase, seconds in last_phases:
+            lines.append(
+                f"pytest_trace_exporter_render_phase_seconds"
+                f"{metric_labels({'phase': phase})} {seconds:.6f}"
+            )
+    if phase_totals:
+        lines.append(
+            "# HELP pytest_trace_exporter_render_phase_seconds_total Wall-clock per render phase, summed over completed renders."
+        )
+        lines.append("# TYPE pytest_trace_exporter_render_phase_seconds_total counter")
+        for phase, seconds in phase_totals:
+            lines.append(
+                f"pytest_trace_exporter_render_phase_seconds_total"
+                f"{metric_labels({'phase': phase})} {seconds:.6f}"
+            )
+    counts = dict(last_counts)
+    trace_sources = [
+        (source, counts[source])
+        for source in (
+            "window",
+            "cached",
+            "fetched",
+            "deferred",
+            "fetch_failed",
+            "job_refetch",
+        )
+        if source in counts
+    ]
+    if trace_sources:
+        lines.append(
+            "# HELP pytest_trace_exporter_render_traces Traces in the last completed render, by source (cached = no Tempo read)."
+        )
+        lines.append("# TYPE pytest_trace_exporter_render_traces gauge")
+        for source, value in trace_sources:
+            lines.append(
+                f"pytest_trace_exporter_render_traces"
+                f"{metric_labels({'source': source})} {value}"
+            )
+    for name, help_text in (
+        ("payload_lines", "Lines in the last completed payload."),
+        ("payload_bytes", "Size of the last completed payload."),
+    ):
+        if name in counts:
+            lines.append(f"# HELP pytest_trace_exporter_{name} {help_text}")
+            lines.append(f"# TYPE pytest_trace_exporter_{name} gauge")
+            lines.append(f"pytest_trace_exporter_{name} {counts[name]}")
+    if pauses:
+        lines.append(
+            "# HELP pytest_trace_exporter_refresh_pauses_total Pauses between renders, by reason (slow = the render exceeded the slow threshold and took the cooldown)."
+        )
+        lines.append("# TYPE pytest_trace_exporter_refresh_pauses_total counter")
+        for reason, value in pauses:
+            lines.append(
+                f"pytest_trace_exporter_refresh_pauses_total"
+                f"{metric_labels({'reason': reason})} {value}"
+            )
+        lines.append(
+            "# HELP pytest_trace_exporter_refresh_pause_seconds_total Seconds paused between renders, by reason."
+        )
+        lines.append("# TYPE pytest_trace_exporter_refresh_pause_seconds_total counter")
+        for reason, seconds in pause_seconds:
+            lines.append(
+                f"pytest_trace_exporter_refresh_pause_seconds_total"
+                f"{metric_labels({'reason': reason})} {seconds:.3f}"
+            )
+    if upstream_requests:
+        lines.append(
+            "# HELP pytest_trace_exporter_upstream_requests_total Outbound requests to Tempo, Prometheus and GitHub, by outcome."
+        )
+        lines.append("# TYPE pytest_trace_exporter_upstream_requests_total counter")
+        for (upstream, outcome), value in upstream_requests:
+            lines.append(
+                f"pytest_trace_exporter_upstream_requests_total"
+                f"{metric_labels({'upstream': upstream, 'outcome': outcome})} {value}"
+            )
+        lines.append(
+            "# HELP pytest_trace_exporter_upstream_request_seconds_total Wall-clock spent waiting on outbound requests, by outcome."
+        )
+        lines.append(
+            "# TYPE pytest_trace_exporter_upstream_request_seconds_total counter"
+        )
+        for (upstream, outcome), seconds in upstream_seconds:
+            lines.append(
+                f"pytest_trace_exporter_upstream_request_seconds_total"
+                f"{metric_labels({'upstream': upstream, 'outcome': outcome})} {seconds:.6f}"
+            )
+        lines.append(
+            "# HELP pytest_trace_exporter_upstream_response_bytes_total Response bytes read from outbound requests."
+        )
+        lines.append(
+            "# TYPE pytest_trace_exporter_upstream_response_bytes_total counter"
+        )
+        for upstream, value in upstream_bytes:
+            lines.append(
+                f"pytest_trace_exporter_upstream_response_bytes_total"
+                f"{metric_labels({'upstream': upstream})} {value}"
+            )
+    for key, name, help_text in (
+        (
+            "limit",
+            "github_rate_limit",
+            "GitHub API request budget per window, as last reported.",
+        ),
+        (
+            "remaining",
+            "github_rate_limit_remaining",
+            "GitHub API requests left in the window, as last reported.",
+        ),
+        (
+            "reset",
+            "github_rate_limit_reset_timestamp_seconds",
+            "Unix time the GitHub API budget resets, as last reported.",
+        ),
+    ):
+        if key in rate_limit:
+            lines.append(f"# HELP pytest_trace_exporter_{name} {help_text}")
+            lines.append(f"# TYPE pytest_trace_exporter_{name} gauge")
+            lines.append(f"pytest_trace_exporter_{name} {rate_limit[key]:.0f}")
+    return lines
+
+
 def _process_resident_bytes() -> int | None:
     """Current resident set size (RSS) of this process in bytes.
 
@@ -3825,6 +4368,7 @@ def _exporter_self_metric_lines(render_seconds: float) -> list[str]:
             ]
         )
     lines.extend(_http_metric_lines())
+    lines.extend(_render_profile_lines())
     return lines
 
 
@@ -3852,6 +4396,8 @@ def _iter_metric_lines() -> Iterator[str]:
     latest_start = -1
     current_new_ids: set[str] = set()
     new_count = 0
+    window_started = time.monotonic()
+    search_before = _render_phase_seconds("tempo_search")
     try:
         for trace_info, rows, is_new in _iter_window_shaped():
             extracted.append((trace_info, rows))
@@ -3864,7 +4410,16 @@ def _iter_metric_lines() -> Iterator[str]:
             if start > latest_start:
                 latest_start = start
                 latest_info = trace_info
-        resource_records = fetch_resource_records()
+        # Everything the window loop spent that was not the id search: cache
+        # serving plus the concurrent fetch+shape of new/unsettled traces.
+        _add_render_phase(
+            "trace_fetch_shape",
+            time.monotonic()
+            - window_started
+            - (_render_phase_seconds("tempo_search") - search_before),
+        )
+        with _render_phase("resource_records"):
+            resource_records = fetch_resource_records()
     except Exception as error:
         yield "# HELP pytest_trace_exporter_up Whether the exporter could query Tempo."
         yield "# TYPE pytest_trace_exporter_up gauge"
@@ -3891,10 +4446,14 @@ def _iter_metric_lines() -> Iterator[str]:
     # traces — otherwise a run's rollup decays to a wrong partial value as its
     # job traces age out of the lookback window one by one.
     now = time.monotonic()
-    record_run_membership(extracted, now)
-    rollup_extracted = settled_runs_complete_extracted(
-        extracted, now, _run_settle_seconds()
-    )
+    with _render_phase("run_settle"):
+        record_run_membership(extracted, now)
+        rollup_extracted = settled_runs_complete_extracted(
+            extracted, now, _run_settle_seconds()
+        )
+        early_extracted, early_runs = completed_job_results_extracted(
+            extracted, {str(info.get("run_id", "")) for info, _ in rollup_extracted}
+        )
     # Persist per-run rows incrementally for the /run drill-down: any run that
     # gained a trace this render gets its current-window rows merged into the
     # store. Because persist_run_rows UNIONs (it never overwrites the whole run),
@@ -3907,13 +4466,14 @@ def _iter_metric_lines() -> Iterator[str]:
         if str(info.get("trace_id", "")) in current_new_ids
     }
     if runs_with_new:
-        persist_settled_runs(
-            [
-                (info, rows)
-                for info, rows in extracted
-                if str(info.get("run_id", "")) in runs_with_new
-            ]
-        )
+        with _render_phase("persist_run_store"):
+            persist_settled_runs(
+                [
+                    (info, rows)
+                    for info, rows in extracted
+                    if str(info.get("run_id", "")) in runs_with_new
+                ]
+            )
 
     # Per-test is emitted only for traces newly seen this render plus the
     # previous render's new ids (the one-render carryover), so the same
@@ -3938,6 +4498,13 @@ def _iter_metric_lines() -> Iterator[str]:
     yield "# HELP pytest_trace_exporter_trace_count Number of traces aggregated from the window this render."
     yield "# TYPE pytest_trace_exporter_trace_count gauge"
     yield f"pytest_trace_exporter_trace_count {len(extracted)}"
+    yield "# HELP pytest_trace_exporter_jobs_released_early Finished PR jobs whose results this render published ahead of their run."
+    yield "# TYPE pytest_trace_exporter_jobs_released_early gauge"
+    released_jobs = {
+        (str(info.get("run_id", "")), str(info.get("test_job", "")))
+        for info, _rows in early_extracted
+    }
+    yield f"pytest_trace_exporter_jobs_released_early {len(released_jobs)}"
     yield "# HELP pytest_trace_exporter_traces_deferred Window traces not yet fetched this render (picked up on a later render)."
     yield "# TYPE pytest_trace_exporter_traces_deferred gauge"
     yield f"pytest_trace_exporter_traces_deferred {enumeration_deferred}"
@@ -3947,16 +4514,49 @@ def _iter_metric_lines() -> Iterator[str]:
         "pytest_trace_exporter_enumeration_truncated "
         f"{1 if enumeration_truncated else 0}"
     )
-    yield from extract_ci_runner_execution_metrics(_extracted=extracted)
-    yield from extract_per_test_duration_metrics(_extracted=per_test_extracted)
-    yield from extract_main_per_test_duration_metrics(_extracted=per_test_extracted)
-    yield from extract_run_rollup_metrics(_extracted=rollup_extracted)
-    yield from extract_run_info_metrics(_extracted=rollup_extracted)
-    yield from extract_pr_info_metrics([], _extracted=extracted)
-    yield from extract_run_active_metrics(_extracted=extracted)
-    yield from extract_pr_last_failure_metrics([], _extracted=extracted)
-    yield from extract_average_metrics([], _extracted=extracted)
-    yield from extract_average_resource_metrics(resource_records)
+    # Each group is timed as its own phase. The lines are built inside the
+    # timer and yielded outside it, so the publisher's disk writes never count
+    # against the group that produced them.
+    groups: tuple[tuple[str, Callable[[], list[str]]], ...] = (
+        (
+            "ci_runner_execution",
+            lambda: extract_ci_runner_execution_metrics(_extracted=extracted),
+        ),
+        (
+            "per_test_duration",
+            lambda: extract_per_test_duration_metrics(_extracted=per_test_extracted),
+        ),
+        (
+            "main_per_test_duration",
+            lambda: extract_main_per_test_duration_metrics(
+                _extracted=per_test_extracted
+            ),
+        ),
+        (
+            "run_rollup",
+            lambda: extract_run_rollup_metrics(
+                _extracted=rollup_extracted + early_extracted,
+                _job_only_runs=early_runs,
+            ),
+        ),
+        ("run_info", lambda: extract_run_info_metrics(_extracted=rollup_extracted)),
+        ("pr_info", lambda: extract_pr_info_metrics([], _extracted=extracted)),
+        ("run_active", lambda: extract_run_active_metrics(_extracted=extracted)),
+        (
+            "pr_last_failure",
+            lambda: extract_pr_last_failure_metrics([], _extracted=extracted),
+        ),
+        ("average", lambda: extract_average_metrics([], _extracted=extracted)),
+        (
+            "average_resource",
+            lambda: extract_average_resource_metrics(resource_records),
+        ),
+    )
+    for phase, build in groups:
+        with _render_phase(f"extract_{phase}"):
+            group_lines = build()
+        yield from group_lines
+        del group_lines
 
     _traces_processed_total += new_count
     yield from _exporter_self_metric_lines(time.monotonic() - started)
@@ -3992,13 +4592,25 @@ def _write_payload_atomic(path: Path) -> None:
     )
     tmp = Path(tmp_name)
     try:
+        payload_lines = 0
+        payload_chars = 0
+        write_seconds = 0.0
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             for line in _iter_metric_lines():
+                write_started = time.monotonic()
                 handle.write(line)
                 handle.write("\n")
+                write_seconds += time.monotonic() - write_started
+                payload_lines += 1
+                payload_chars += len(line) + 1
+            write_started = time.monotonic()
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+        write_seconds += time.monotonic() - write_started
+        _add_render_phase("payload_write", write_seconds)
+        _set_render_count("payload_lines", payload_lines)
+        _set_render_count("payload_bytes", payload_chars)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -4377,7 +4989,7 @@ def _pr_run_summary_from_prometheus(
     )
     url = f"{base_url}/api/v1/query?{urlencode({'query': query})}"
     try:
-        payload = _http_get_json(url)
+        payload = _http_get_json(url, upstream="prometheus")
     except Exception:
         return None
     if not isinstance(payload, dict) or payload.get("status") != "success":
@@ -4717,9 +5329,15 @@ def _relieve_memory_pressure() -> None:
 
 
 def _refresh_cache_once() -> None:
-    _relieve_memory_pressure()
-    _write_payload_atomic(_payload_path())
-    _maybe_prune_run_store()
+    _begin_render()
+    try:
+        with _render_phase("memory_relief"):
+            _relieve_memory_pressure()
+        _write_payload_atomic(_payload_path())
+        with _render_phase("prune_run_store"):
+            _maybe_prune_run_store()
+    finally:
+        _finish_render()
 
 
 def _refresh_loop(interval: float) -> None:
@@ -4737,9 +5355,13 @@ def _refresh_loop(interval: float) -> None:
             failed = True
         elapsed = time.monotonic() - started
         if failed or elapsed >= _refresh_slow_seconds():
-            time.sleep(max(1.0, _refresh_cooldown_seconds()))
+            reason = "error" if failed else "slow"
+            pause = max(1.0, _refresh_cooldown_seconds())
         else:
-            time.sleep(max(1.0, interval))
+            reason = "interval"
+            pause = max(1.0, interval)
+        _observe_refresh_pause(reason, pause)
+        time.sleep(pause)
 
 
 # ---------------------------------------------------------------------------

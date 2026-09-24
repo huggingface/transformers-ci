@@ -234,6 +234,55 @@ traceExporter:
     retentionDays: 90
 
 #------------------------------------------------------------------------------
+# ci-github-status: live run/job status from GitHub webhooks
+#
+# Off by default. Enabling it needs, in this order: the webhook secret in the
+# Secret under secretKeys.webhookSecret (the pod will not start without it),
+# then the webhook registered on each repository — workflow_run + workflow_job,
+# content type application/json, payload URL https://<grafana domain>/webhook,
+# the same secret. Without a token under secretKeys.githubToken the service
+# still records deliveries but does not repair missed ones, and says so in
+# /metrics (ci_github_status_reconcile_enabled 0).
+#------------------------------------------------------------------------------
+ciGithubStatus:
+  enabled: false
+  sourceRevision: ""
+  image:
+    repository: python
+    tag: "3.12-slim"
+    pullPolicy: IfNotPresent
+  port: 8080
+  # Only public repositories are stored even if listed here: the service
+  # checks GitHub's own visibility flag on every delivery.
+  repositories:
+    - huggingface/transformers
+  # Workflow NAMES (as GitHub reports them), not files. Another workflow on
+  # the same PR must not become its latest run.
+  workflows:
+    - PR CI
+  publishCompleted: 6h
+  retention: 7d
+  reconcile:
+    interval: 60s
+    # Measured 2026-09-24: 155 PR CI runs/24h, peak 11 in flight at once;
+    # ~3 requests per active run per cycle -> ~2k requests/h at peak.
+    requestsPerCycle: 200
+  secretKeys:
+    webhookSecret: github-webhook-secret
+    # Shares the exporter's token by default; give it its own key to keep the
+    # two request budgets apart.
+    githubToken: gh-token
+  storage:
+    size: 1Gi
+    storageClass: ebs-gp3
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+#------------------------------------------------------------------------------
 # Prometheus
 #------------------------------------------------------------------------------
 prometheus:
@@ -352,6 +401,9 @@ grafana:
       - pytest-test-dashboard.json
       - pytest-test-health-dashboard.json
       - pytest-observability-stack-health.json
+      # Shadow live-status page (docs/plans/dashboard-live-status-2026-09-21.md §4).
+      # Public like the PR pages: ci-github-status stores public repositories only.
+      - ci-live-status.json
       # serge-agent-sessions.json is deliberately NOT here: it only has data
       # where sergeScrape below is enabled, and an always-empty dashboard is
       # worse than an absent one. Add it in the values file that turns the

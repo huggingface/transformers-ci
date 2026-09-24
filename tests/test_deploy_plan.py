@@ -780,3 +780,52 @@ def test_source_verification_is_not_a_failure_when_it_cannot_read_head(
     """No python in the image, or a moved checkout: report it, do not claim the
     revision was confirmed and do not fail the deploy over it."""
     assert source_check(monkeypatch, None) is True
+
+
+class TestReloadWaitsForKubelet:
+    """A reload re-reads the file mounted NOW; kubelet updates it up to a minute
+    after `helm upgrade`. Reloading first "succeeds" on the old config."""
+
+    ARGS = type(
+        "Args", (), {"namespace": "transformers-ci", "release": "transformers-ci"}
+    )()
+    TARGET = ("StatefulSet", "prometheus")
+
+    def _fake(self, monkeypatch, mounted_versions):
+        calls = []
+        versions = iter(mounted_versions)
+
+        def try_output(cmd):
+            calls.append(cmd)
+            if cmd[:3] == ["kubectl", "get", "configmap"]:
+                return "new config\n"
+            if cmd[:2] == ["kubectl", "get"]:
+                return "prometheus-0\n"
+            if cmd[-2:] == ["cat", "/etc/prometheus/prometheus.yml"]:
+                return next(versions)
+            raise AssertionError(cmd)
+
+        ran = []
+        monkeypatch.setattr(deploy, "try_output", try_output)
+        monkeypatch.setattr(
+            deploy,
+            "run",
+            lambda cmd, **kw: ran.append(cmd) or type("R", (), {"returncode": 0})(),
+        )
+        monkeypatch.setattr(deploy.time, "sleep", lambda s: None)
+        return calls, ran
+
+    def test_reloads_only_once_the_new_file_is_mounted(self, monkeypatch):
+        _calls, ran = self._fake(
+            monkeypatch, ["old config\n", "old config\n", "new config\n"]
+        )
+        assert deploy.reload_workload(self.TARGET, self.ARGS) is True
+        assert len(ran) == 1 and ran[0][-1] == "http://127.0.0.1:9090/-/reload"
+
+    def test_falls_back_when_kubelet_never_syncs(self, monkeypatch):
+        clock = iter(range(0, 10_000, 50))
+        monkeypatch.setattr(deploy.time, "monotonic", lambda: next(clock))
+        _calls, ran = self._fake(monkeypatch, ["old config\n"] * 100)
+        # False = deploy.py restarts the pod instead, which mounts the new file.
+        assert deploy.reload_workload(self.TARGET, self.ARGS) is False
+        assert ran == []  # never reloaded onto the stale file
