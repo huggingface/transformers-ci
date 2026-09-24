@@ -761,6 +761,10 @@
               {
                 "id": "unit",
                 "value": "dateTimeAsLocal"
+              },
+              {
+                "id": "custom.width",
+                "value": 190
               }
             ]
           },
@@ -773,6 +777,10 @@
               {
                 "id": "unit",
                 "value": "dateTimeAsLocal"
+              },
+              {
+                "id": "custom.width",
+                "value": 190
               }
             ]
           },
@@ -785,6 +793,10 @@
               {
                 "id": "unit",
                 "value": "dateTimeAsLocal"
+              },
+              {
+                "id": "custom.width",
+                "value": 190
               }
             ]
           },
@@ -803,6 +815,10 @@
                     "targetBlank": true
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 150
               }
             ]
           },
@@ -820,6 +836,10 @@
                     "url": "/d/pytest-observability-by-pr/pytest-observability-by-pr?var-pr=${__value.raw}"
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 90
               }
             ]
           },
@@ -832,6 +852,18 @@
               {
                 "id": "custom.hidden",
                 "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Event"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
               }
             ]
           }
@@ -1392,6 +1424,10 @@
               {
                 "id": "unit",
                 "value": "dateTimeAsLocal"
+              },
+              {
+                "id": "custom.width",
+                "value": 190
               }
             ]
           },
