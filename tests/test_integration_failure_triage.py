@@ -4597,3 +4597,74 @@ class UnverifiedBranchCommandTests(unittest.TestCase):
             )
         )
         self.assertNotIn("gh workflow run", body)
+
+
+class TestWindowConfiguration(unittest.TestCase):
+    """`--window` / `--min-days` are env-settable, because the nightly workflow
+    has no other way to pass them (it builds one fixed command line), and the
+    window is the only lever that can surface a bad-commit cluster when none is
+    in reach. A typo in either variable name is silent, so assert the wiring."""
+
+    def _args(self, env, argv=None):
+        with patch.dict(os.environ, env, clear=False):
+            return itf.build_parser().parse_args(argv or [])
+
+    def test_defaults_reproduce_the_previously_hardcoded_values(self):
+        """Unsetting both variables must not change a single dispatched group."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ITF_WINDOW", None)
+            os.environ.pop("ITF_MIN_DAYS", None)
+            args = itf.build_parser().parse_args([])
+        self.assertEqual(args.window, 7)
+        self.assertEqual(args.min_days, 5)
+
+    def test_env_sets_the_window(self):
+        args = self._args({"ITF_WINDOW": "21", "ITF_MIN_DAYS": "7"})
+        self.assertEqual(args.window, 21)
+        self.assertEqual(args.min_days, 7)
+
+    def test_the_flag_still_beats_the_env(self):
+        """The workflow sets the env; a human debugging locally passes the flag."""
+        args = self._args({"ITF_WINDOW": "21"}, ["--window", "10"])
+        self.assertEqual(args.window, 10)
+
+
+class TestLivenessArithmeticWarning(unittest.TestCase):
+    """A group must be red on >= --min-days of --window to exist at all, so a
+    --liveness-runs larger than the slack between them can never be satisfied:
+    the check silently never fires and settled groups get dispatched, each
+    costing a GPU reproduce. Now that the window is configurable this is a
+    reachable misconfiguration, so it must be reported."""
+
+    def _warn(self, window, min_days, liveness_runs, no_check=False):
+        argv = [
+            "--window",
+            str(window),
+            "--min-days",
+            str(min_days),
+            "--liveness-runs",
+            str(liveness_runs),
+        ]
+        if no_check:
+            argv.append("--no-liveness-check")
+        args = itf.build_parser().parse_args(argv)
+        slack = args.window - args.min_days
+        return (not args.no_liveness_check) and args.liveness_runs > slack
+
+    def test_the_default_pairing_is_fine(self):
+        self.assertFalse(self._warn(7, 5, 1))
+
+    def test_a_widened_window_is_fine(self):
+        self.assertFalse(self._warn(21, 7, 1))
+        self.assertFalse(self._warn(21, 7, 14))
+
+    def test_exceeding_the_slack_is_reported(self):
+        """21 - 7 = 14 runs of slack; 15 can never be satisfied."""
+        self.assertTrue(self._warn(21, 7, 15))
+
+    def test_no_slack_is_reported(self):
+        """window == min_days leaves zero slack, so even 1 run is unreachable."""
+        self.assertTrue(self._warn(7, 7, 1))
+
+    def test_opting_out_of_the_check_is_not_a_misconfiguration(self):
+        self.assertFalse(self._warn(7, 7, 1, no_check=True))

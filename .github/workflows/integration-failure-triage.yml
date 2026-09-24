@@ -156,6 +156,32 @@ jobs:
           # UTC, and roughly doubles the GPU + token spend per night. Raise the
           # concurrency instead of the cap if wall-clock is what matters.
           ITF_MAX_GROUPS: ${{ vars.ITF_MAX_GROUPS || '10' }}
+          # The failure window, and how many of its days a failure must be red on
+          # to count as persistent. Defaults reproduce the previous hardcoded
+          # 7 / 5 exactly, so leaving both variables unset changes nothing.
+          #
+          # These exist because the window is the ONLY lever that can surface a
+          # bad-commit CLUSTER when none is in reach, and clusters are what the
+          # culprit-thread block (serge #136) and its anti-archaeology lines
+          # (#137) need in order to be exercised at all. Attribution is written
+          # the day a failure FIRST appears, while a group is only kept once it
+          # has been red on >= ITF_MIN_DAYS of the window and only dispatched if
+          # it is STILL failing -- so a cluster needs a failure sitting in both
+          # sets, and a 7-day window frequently holds none.
+          #
+          # Measured 2026-09-24 against the live dataset (local --dry-run sweep):
+          #   window  7 / min-days 5 -> 367 persistent,  0 attributed        <- current
+          #   window 14 / min-days 5 -> 387 persistent,  2 attributed, both settled
+          #   window 21 / min-days 7 -> 450 persistent,  7 attributed, a LIVE
+          #                             cluster (PR #47827) ranked first
+          #   window 21 / min-days 5 -> 516 persistent, same 2 bad commits
+          # Raise min-days with the window: 5-of-7 is a real persistence bar,
+          # 5-of-21 is not, and the 66 extra failures at 21/5 are that slack.
+          #
+          # This is NOT a cluster-only knob -- it changes which groups are
+          # dispatched across every category. Revert by unsetting the variables.
+          ITF_WINDOW: ${{ vars.ITF_WINDOW || '7' }}
+          ITF_MIN_DAYS: ${{ vars.ITF_MIN_DAYS || '5' }}
           # The dispatch-side "a human already has an open PR for this" check
           # (src/transformersci/agentic/relore_claims.py). Three states:
           #   off    — never asked (the code default)

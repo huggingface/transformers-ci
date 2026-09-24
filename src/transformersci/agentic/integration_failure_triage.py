@@ -4809,21 +4809,37 @@ def _dispatch_targets_bounded(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI. Split out of :func:`main` so the env-var defaults can be
+    asserted without running a triage — several of them (``ITF_WINDOW``,
+    ``ITF_MIN_DAYS``, ``ITF_MAX_GROUPS``) are the only way the nightly
+    workflow can set the flag at all, so a typo in one is silent.
+    """
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument(
         "--window",
         type=int,
-        default=7,
-        help="number of recent daily CI reports to read",
+        default=int(os.environ.get("ITF_WINDOW", "7")),
+        help="number of recent daily CI reports to read. Widening this is the "
+        "only lever that surfaces a bad-commit CLUSTER when none is in reach: "
+        "attribution is written the day a failure FIRST appears (see "
+        "--attr-window), so a cluster needs a failure that is both recently "
+        "bisected and STILL failing, and a 7-day window often holds neither. "
+        "Measured 2026-09-24: window 7 found 0 attributed groups, 14 found only "
+        "a settled one, 21 found a live cluster ranked first. It changes every "
+        "group, not just clusters (env: ITF_WINDOW)",
     )
     p.add_argument(
         "--min-days",
         type=int,
-        default=5,
-        help="keep failures seen on >= this many days",
+        default=int(os.environ.get("ITF_MIN_DAYS", "5")),
+        help="keep failures seen on >= this many days. Scale it with --window or "
+        "'persistent' silently weakens: 5-of-7 is a real bar, 5-of-21 is not "
+        "(2026-09-24: 516 kept at 21/5 against 450 at 21/7). Must also stay at "
+        "least --liveness-runs below --window, or the liveness check can never "
+        "fire (env: ITF_MIN_DAYS)",
     )
     p.add_argument(
         "--attr-window",
@@ -5060,9 +5076,31 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="compute + print everything but POST nothing to Serge",
     )
-    args = p.parse_args(argv)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     assignees = args.assignee or _csv_env("ITF_TRIAGE_ASSIGNEES")
     labels = args.label or _csv_env("ITF_TRIAGE_LABELS")
+
+    # --window and --min-days are settable per deployment, and the liveness check
+    # only ever sees a group that survived them: a group must be red on
+    # >= min_days of the window to exist at all. So if liveness_runs exceeds the
+    # slack between them, no group can ever be quiet for that many runs and still
+    # be here, and the gate silently never fires — settled groups get dispatched
+    # and burn a GPU reproduce each. Loud, not fatal: a wrong window should not
+    # cost the night's run.
+    slack = args.window - args.min_days
+    if not args.no_liveness_check and args.liveness_runs > slack:
+        print(
+            f"      warning: --liveness-runs {args.liveness_runs} exceeds --window "
+            f"minus --min-days ({args.window} - {args.min_days} = {slack}); the "
+            "liveness check can never fire and settled groups will be dispatched. "
+            f"Lower --liveness-runs to {max(slack, 0)} or widen the window.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     print(f"[1/4] Fetching last {args.window} daily CI reports…", flush=True)
     daily = fetch_last_n(args.window, cache_dir=args.cache_dir)
