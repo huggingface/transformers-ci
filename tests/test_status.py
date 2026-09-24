@@ -428,8 +428,8 @@ def test_a_run_and_job_are_published_without_any_trace(running_service) -> None:
         in out
     )
     assert (
-        f'ci_github_job_info{{{job_identity},pr="4321",name="pr-ci / Check repository consistency"}} 1'
-        in out
+        f'ci_github_job_info{{{job_identity},pr="4321",name="pr-ci / Check repository consistency",'
+        f'test_job="check_repository_consistency"}} 1' in out
     )
     assert (
         f"ci_github_job_completed_timestamp_seconds{{{job_identity}}} 1790235030.000"
@@ -524,3 +524,22 @@ def test_a_push_run_is_filed_under_its_branch_whatever_github_lists() -> None:
     )
     state = {"prs": push.prs, "event": push.event, "head_branch": push.head_branch}
     assert metrics.pr_label(state) == "main"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "pr-ci / Check repository consistency",
+        "pr-ci / tests_torch / tests_torch [shard 1/8]",
+        "pr-ci / tests_fsdp_ci / Setup — generate shard matrix (tests_fsdp_ci)",
+        "Model CI / run_models_gpu (models/bert, single-gpu)",
+        "Quality gate",
+        "",
+    ],
+)
+def test_test_job_key_matches_the_exporters_rule(name: str) -> None:
+    # The join to pytest_* series only holds if both sides derive test_job the
+    # same way; pin the status service to the exporter's own functions.
+    from transformersci.otel.trace_exporter import logical_job_name, slugify_job
+
+    assert metrics.test_job_key(name) == slugify_job(logical_job_name(name))

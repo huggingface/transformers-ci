@@ -33,10 +33,29 @@ finished; Prometheus keeps the history, the payload stays small.
 
 from __future__ import annotations
 
+import re
+
 from .reducer import COMPLETED, status_rank
 
 # Events whose runs the exporter files under their branch rather than a PR.
 _BRANCH_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
+
+# Trailing matrix/shard groups on a job display name: " (1, 8)", " [shard 1/8]".
+_MATRIX_SUFFIX = re.compile(r"(?:\s*[(\[][^()\[\]]*[)\]])+\s*$")
+
+
+def test_job_key(name: str) -> str:
+    """The telemetry ``test_job`` a GitHub job display name corresponds to.
+
+    Same rule as the exporter's ``slugify_job(logical_job_name(name))`` (a test
+    pins the two together): last ``caller / job`` segment, matrix suffix
+    dropped, slugged. ``pr-ci / tests_torch / tests_torch [shard 1/8]`` ->
+    ``tests_torch``, ``pr-ci / Check repository consistency`` ->
+    ``check_repository_consistency``. A job that emits no telemetry (a gate, a
+    setup step) simply has no matching ``pytest_*`` series: the page shows its
+    status and no details, rather than a guessed join."""
+    logical = _MATRIX_SUFFIX.sub("", name.rsplit(" / ", 1)[-1]).strip()
+    return re.sub(r"[^a-z0-9]+", "_", logical.lower()).strip("_")
 
 
 def _escape(value: str) -> str:
@@ -184,6 +203,7 @@ def render(
                 **identity,
                 "pr": run_prs.get((job["repository"], run_id), ""),
                 "name": job.get("name") or "",
+                "test_job": test_job_key(job.get("name") or ""),
             },
             1,
         )

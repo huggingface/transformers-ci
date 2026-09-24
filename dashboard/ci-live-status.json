@@ -1,0 +1,1485 @@
+{
+  "uid": "ci-live-status",
+  "title": "Live CI status",
+  "tags": [
+    "ci",
+    "live",
+    "shadow"
+  ],
+  "description": "Run/job status from GitHub webhooks (ci-github-status), with trace-derived test counts joined in.",
+  "editable": true,
+  "graphTooltip": 0,
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m"
+    ]
+  },
+  "timezone": "browser",
+  "liveNow": false,
+  "links": [],
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "pr",
+        "label": "PR",
+        "type": "textbox",
+        "query": ".*",
+        "description": "PR number, or a regex. .* = any PR.",
+        "current": {
+          "text": ".*",
+          "value": ".*"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": ".*",
+            "value": ".*"
+          }
+        ],
+        "hide": 0
+      },
+      {
+        "name": "run",
+        "label": "Run",
+        "type": "textbox",
+        "query": ".*",
+        "description": "Pin one run attempt, e.g. 35969934380:1. .* = newest.",
+        "current": {
+          "text": ".*",
+          "value": ".*"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": ".*",
+            "value": ".*"
+          }
+        ],
+        "hide": 0
+      },
+      {
+        "name": "workflow",
+        "type": "constant",
+        "query": "PR CI",
+        "hide": 2,
+        "current": {
+          "text": "PR CI",
+          "value": "PR CI"
+        },
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Shadow mode.** Run and job status straight from GitHub's `workflow_run` / `workflow_job` webhooks (`ci-github-status`), repaired every minute from the Actions API. Test counts are joined from the trace pipeline where a job emits telemetry \u2014 *Awaiting test details* means GitHub knows the job but no test series exists yet. **STALE** means status has not been reconciled with GitHub recently: treat it as possibly out of date. Pin a run with `?var-run=<id>:<attempt>`, a PR with `?var-pr=<number>`."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Status",
+      "description": "1 = no successful reconciliation with GitHub within 3 minutes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 3
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(ci_github_status_stale)",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Live",
+                  "color": "green",
+                  "index": 0
+                },
+                "1": {
+                  "text": "STALE",
+                  "color": "red",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "noValue": "service down",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Last reconciled",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 3
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "time() - max(ci_github_status_reconcile_last_success_timestamp_seconds > 0)",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "mappings": [],
+          "noValue": "never",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 120
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Last webhook",
+      "description": "Informational: a quiet repository sends nothing, which is not an outage.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 3
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "time() - max(ci_github_status_last_delivery_timestamp_seconds > 0)",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "mappings": [],
+          "noValue": "none since start",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Runs in flight",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 3
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(ci_github_run_status < 3 and on (repository, run_id) ci_github_run_info{workflow=~\"$workflow\"}) or vector(0)",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Jobs queued",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 3
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(ci_github_job_status == 1 and on (repository, run_id) ci_github_run_info{workflow=~\"$workflow\"}) or vector(0)",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Jobs running",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 3
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(ci_github_job_status == 2 and on (repository, run_id) ci_github_run_info{workflow=~\"$workflow\"}) or vector(0)",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Selected run",
+      "description": "The newest run attempt matching $pr / $run. Follows a new run or rerun on the next refresh.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 7
+      },
+      "targets": [
+        {
+          "refId": "Status",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (run_id, gh_run, pr, event, conclusion) ((ci_github_run_status) * on (repository, run_id) group_left(gh_run, pr, event, conclusion) ((label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id) group_left(conclusion) ci_github_run_conclusion_info) or on (repository, run_id) label_replace(label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Created",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (run_id, gh_run, pr, event, conclusion) ((ci_github_run_created_timestamp_seconds * 1000) * on (repository, run_id) group_left(gh_run, pr, event, conclusion) ((label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id) group_left(conclusion) ci_github_run_conclusion_info) or on (repository, run_id) label_replace(label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Started",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (run_id, gh_run, pr, event, conclusion) ((ci_github_run_started_timestamp_seconds * 1000) * on (repository, run_id) group_left(gh_run, pr, event, conclusion) ((label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id) group_left(conclusion) ci_github_run_conclusion_info) or on (repository, run_id) label_replace(label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Completed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (run_id, gh_run, pr, event, conclusion) ((ci_github_run_completed_timestamp_seconds * 1000) * on (repository, run_id) group_left(gh_run, pr, event, conclusion) ((label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id) group_left(conclusion) ci_github_run_conclusion_info) or on (repository, run_id) label_replace(label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Jobs",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (run_id, gh_run, pr, event, conclusion) ((count by (repository, run_id) (ci_github_job_status  and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))) * on (repository, run_id) group_left(gh_run, pr, event, conclusion) ((label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id) group_left(conclusion) ci_github_run_conclusion_info) or on (repository, run_id) label_replace(label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Queued",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (run_id, gh_run, pr, event, conclusion) ((count by (repository, run_id) (ci_github_job_status == 1 and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))) * on (repository, run_id) group_left(gh_run, pr, event, conclusion) ((label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id) group_left(conclusion) ci_github_run_conclusion_info) or on (repository, run_id) label_replace(label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Running",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (run_id, gh_run, pr, event, conclusion) ((count by (repository, run_id) (ci_github_job_status == 2 and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))) * on (repository, run_id) group_left(gh_run, pr, event, conclusion) ((label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id) group_left(conclusion) ci_github_run_conclusion_info) or on (repository, run_id) label_replace(label_replace(ci_github_run_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "run_id": "Run",
+              "pr": "PR",
+              "event": "Event",
+              "conclusion": "Conclusion",
+              "Value #Status": "Status",
+              "Value #Created": "Created",
+              "Value #Started": "Started",
+              "Value #Completed": "Completed",
+              "Value #Jobs": "Jobs",
+              "Value #Queued": "Queued",
+              "Value #Running": "Running"
+            },
+            "indexByName": {
+              "run_id": 0,
+              "pr": 1,
+              "event": 2,
+              "Value #Status": 3,
+              "conclusion": 4,
+              "Value #Created": 5,
+              "Value #Started": 6,
+              "Value #Completed": 7,
+              "Value #Jobs": 8,
+              "Value #Queued": 9,
+              "Value #Running": 10
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "noValue": ""
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "Queued",
+                        "color": "yellow",
+                        "index": 0
+                      },
+                      "2": {
+                        "text": "Running",
+                        "color": "blue",
+                        "index": 1
+                      },
+                      "3": {
+                        "text": "Completed",
+                        "color": "text",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Conclusion"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "success": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "failure": {
+                        "color": "red",
+                        "index": 1
+                      },
+                      "timed_out": {
+                        "color": "red",
+                        "index": 2
+                      },
+                      "startup_failure": {
+                        "color": "red",
+                        "index": 3
+                      },
+                      "cancelled": {
+                        "color": "orange",
+                        "index": 4
+                      },
+                      "action_required": {
+                        "color": "orange",
+                        "index": 5
+                      },
+                      "skipped": {
+                        "color": "text",
+                        "index": 6
+                      },
+                      "neutral": {
+                        "color": "text",
+                        "index": 7
+                      },
+                      "\u2014": {
+                        "text": "",
+                        "index": 8
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Created"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsLocal"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsLocal"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Completed"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsLocal"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Run"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open on GitHub",
+                    "url": "https://github.com/huggingface/transformers/actions/runs/${__data.fields.gh_run}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "PR"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "PR dashboard",
+                    "url": "/d/pytest-observability-by-pr/pytest-observability-by-pr?var-pr=${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "gh_run"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Jobs by test job \u2014 status from GitHub, tests from traces",
+      "description": "Shards are GitHub jobs sharing a test_job. Pass/Fail come from the trace pipeline; empty = awaiting test details. A failed/cancelled job with passing tests means a later step failed \u2014 the two are shown separately on purpose.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
+      "targets": [
+        {
+          "refId": "Shards",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count by (test_job, run_id) (((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Queued",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count by (test_job, run_id) ((ci_github_job_status == 1) * on (repository, run_id, job_id) group_left(test_job) ((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Running",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count by (test_job, run_id) ((ci_github_job_status == 2) * on (repository, run_id, job_id) group_left(test_job) ((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Done",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count by (test_job, run_id) ((ci_github_job_status == 3) * on (repository, run_id, job_id) group_left(test_job) ((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Failed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count by (test_job, run_id) (ci_github_job_conclusion_info{conclusion=~\"failure|timed_out|startup_failure\"} * on (repository, run_id, job_id) group_left(test_job) ((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Cancelled",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count by (test_job, run_id) (ci_github_job_conclusion_info{conclusion=\"cancelled\"} * on (repository, run_id, job_id) group_left(test_job) ((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Pass",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_passed_tests[30m])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Fail",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests[30m])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "test_job": "Job",
+              "Value #Shards": "Shards",
+              "Value #Queued": "Queued",
+              "Value #Running": "Running",
+              "Value #Done": "Done",
+              "Value #Failed": "Failed jobs",
+              "Value #Cancelled": "Cancelled",
+              "Value #Pass": "Tests passed",
+              "Value #Fail": "Tests failed"
+            },
+            "indexByName": {
+              "test_job": 0,
+              "Value #Shards": 1,
+              "Value #Queued": 2,
+              "Value #Running": 3,
+              "Value #Done": 4,
+              "Value #Failed": 5,
+              "Value #Cancelled": 6,
+              "Value #Pass": 7,
+              "Value #Fail": 8
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "noValue": ""
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tests passed"
+            },
+            "properties": [
+              {
+                "id": "noValue",
+                "value": "Awaiting test details"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failed jobs"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tests failed"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Running"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "blue",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Job"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Job dashboard",
+                    "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${__value.raw}&var-run_id=${__data.fields.run_id}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "run_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false
+        },
+        "sortBy": [
+          {
+            "displayName": "Running",
+            "desc": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "GitHub jobs of the selected run",
+      "description": "One row per GitHub job, including jobs that emit no telemetry (setup, gates).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "targets": [
+        {
+          "refId": "Status",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (job_id, gh_run, name, test_job, conclusion) ((ci_github_job_status) * on (repository, run_id, job_id) group_left(name, test_job, conclusion, gh_run) ((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Queued",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (job_id, gh_run, name, test_job, conclusion) ((ci_github_job_created_timestamp_seconds * 1000) * on (repository, run_id, job_id) group_left(name, test_job, conclusion, gh_run) ((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "QueueTime",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (job_id, gh_run, name, test_job, conclusion) ((ci_github_job_started_timestamp_seconds - ci_github_job_created_timestamp_seconds) * on (repository, run_id, job_id) group_left(name, test_job, conclusion, gh_run) ((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Duration",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (job_id, gh_run, name, test_job, conclusion) (((ci_github_job_completed_timestamp_seconds or on (repository, run_id, job_id) (ci_github_job_started_timestamp_seconds * 0 + time())) - ci_github_job_started_timestamp_seconds) * on (repository, run_id, job_id) group_left(name, test_job, conclusion, gh_run) ((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "name": "Job",
+              "test_job": "test_job",
+              "conclusion": "Conclusion",
+              "Value #Status": "Status",
+              "Value #Queued": "Queued at",
+              "Value #QueueTime": "Waited for runner",
+              "Value #Duration": "Duration"
+            },
+            "indexByName": {
+              "name": 0,
+              "Value #Status": 1,
+              "conclusion": 2,
+              "Value #Queued": 3,
+              "Value #QueueTime": 4,
+              "Value #Duration": 5,
+              "test_job": 6
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "noValue": ""
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "Queued",
+                        "color": "yellow",
+                        "index": 0
+                      },
+                      "2": {
+                        "text": "Running",
+                        "color": "blue",
+                        "index": 1
+                      },
+                      "3": {
+                        "text": "Completed",
+                        "color": "text",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Conclusion"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "success": {
+                        "color": "green",
+                        "index": 0
+                      },
+                      "failure": {
+                        "color": "red",
+                        "index": 1
+                      },
+                      "timed_out": {
+                        "color": "red",
+                        "index": 2
+                      },
+                      "startup_failure": {
+                        "color": "red",
+                        "index": 3
+                      },
+                      "cancelled": {
+                        "color": "orange",
+                        "index": 4
+                      },
+                      "action_required": {
+                        "color": "orange",
+                        "index": 5
+                      },
+                      "skipped": {
+                        "color": "text",
+                        "index": 6
+                      },
+                      "neutral": {
+                        "color": "text",
+                        "index": 7
+                      },
+                      "\u2014": {
+                        "text": "",
+                        "index": 8
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Queued at"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsLocal"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Waited for runner"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Job"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open job on GitHub",
+                    "url": "https://github.com/huggingface/transformers/actions/runs/${__data.fields.gh_run}/job/${__data.fields.job_id}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "gh_run"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "job_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true,
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false
+        },
+        "sortBy": [
+          {
+            "displayName": "Status",
+            "desc": false
+          }
+        ]
+      }
+    }
+  ]
+}

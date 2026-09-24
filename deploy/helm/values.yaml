@@ -401,6 +401,9 @@ grafana:
       - pytest-test-dashboard.json
       - pytest-test-health-dashboard.json
       - pytest-observability-stack-health.json
+      # Shadow live-status page (docs/plans/dashboard-live-status-2026-09-21.md §4).
+      # Public like the PR pages: ci-github-status stores public repositories only.
+      - ci-live-status.json
       # serge-agent-sessions.json is deliberately NOT here: it only has data
       # where sergeScrape below is enabled, and an always-empty dashboard is
       # worse than an absent one. Add it in the values file that turns the
