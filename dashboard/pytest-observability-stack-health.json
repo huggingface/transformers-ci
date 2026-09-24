@@ -2454,6 +2454,131 @@
      "sort": "desc"
     }
    }
+  },
+  {
+   "id": 516,
+   "type": "stat",
+   "title": "GitHub events / min",
+   "description": "Signature-verified workflow_run + workflow_job webhook events per minute (5m average), whatever the service then did with them. Zero while CI is busy means GitHub stopped delivering; zero when the repository is quiet is normal.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 6,
+    "x": 0,
+    "y": 131
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "editorMode": "code",
+     "expr": "sum(rate(ci_github_status_events_total{event=~\"workflow_run|workflow_job\"}[5m])) * 60",
+     "legendFormat": "events/min",
+     "range": true,
+     "instant": false
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "decimals": 1,
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "text",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "value",
+    "graphMode": "area",
+    "justifyMode": "auto",
+    "textMode": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   }
+  },
+  {
+   "id": 517,
+   "type": "timeseries",
+   "title": "GitHub events per minute, by event and action",
+   "description": "workflow_job queued / in_progress / completed and workflow_run requested / in_progress / completed, per minute (5m rate). Includes events for workflows the service does not follow; only signature-verified deliveries count.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 18,
+    "x": 6,
+    "y": 131
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "editorMode": "code",
+     "expr": "sum by (event, action) (rate(ci_github_status_events_total[5m])) * 60",
+     "legendFormat": "{{event}} {{action}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 1,
+      "fillOpacity": 20,
+      "showPoints": "never",
+      "stacking": {
+       "mode": "normal",
+       "group": "A"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "showLegend": true,
+     "calcs": [
+      "mean",
+      "max",
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   }
   }
  ],
  "refresh": "30s",

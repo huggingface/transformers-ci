@@ -355,6 +355,15 @@ def render_reconcile(snapshot: dict | None) -> str:
 def _service_lines(service: dict[str, float | int | dict[str, int]]) -> list[str]:
     deliveries = service.get("deliveries") or {}
     assert isinstance(deliveries, dict)
+    events = service.get("events") or {}
+    assert isinstance(events, dict)
+    event_lines = [
+        "# HELP ci_github_status_events_total Signature-verified GitHub webhook events by event and action, since start.",
+        "# TYPE ci_github_status_events_total counter",
+    ] + [
+        f'ci_github_status_events_total{{event="{name}",action="{action}"}} {count}'
+        for (name, action), count in sorted(events.items())
+    ]
     lines = [
         "# HELP ci_github_status_deliveries_total Webhook deliveries by outcome since start.",
         "# TYPE ci_github_status_deliveries_total counter",
@@ -393,4 +402,4 @@ def _service_lines(service: dict[str, float | int | dict[str, int]]) -> list[str
             if isinstance(value, float)
             else f"ci_github_status_{name} {value}"
         )
-    return lines
+    return lines + event_lines

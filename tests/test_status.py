@@ -543,3 +543,47 @@ def test_test_job_key_matches_the_exporters_rule(name: str) -> None:
     from transformersci.otel.trace_exporter import logical_job_name, slugify_job
 
     assert metrics.test_job_key(name) == slugify_job(logical_job_name(name))
+
+
+def test_events_per_minute_are_counted_by_event_and_action(running_service) -> None:
+    # CI Health plots GitHub events per minute from this counter. Only verified
+    # deliveries count, and label values are clamped: a caller cannot mint series.
+    base, _service = running_service()
+    post(base, "workflow_job", job_payload(), delivery="d-1")
+    post(
+        base,
+        "workflow_job",
+        job_payload(action="in_progress", status="in_progress"),
+        delivery="d-2",
+    )
+    post(
+        base,
+        "workflow_job",
+        job_payload(action="in_progress", status="in_progress"),
+        delivery="d-2",
+    )  # redelivery
+    post(
+        base, "workflow_run", run_payload(workflow="Doc builder"), delivery="d-3"
+    )  # ignored, still an event
+    post(base, "ping", {"zen": "hi"}, delivery="p-1")
+    post(base, "made_up_event", {"action": "x" * 50}, delivery="d-4")
+    post(
+        base,
+        "workflow_job",
+        job_payload(),
+        delivery="d-5",
+        signature="sha256=" + "0" * 64,
+    )  # forged
+    out = scrape(base)
+    counted = {
+        line.split(" ")[0]: float(line.split(" ")[1])
+        for line in out.splitlines()
+        if line.startswith("ci_github_status_events_total{")
+    }
+    assert counted == {
+        'ci_github_status_events_total{event="other",action="other"}': 1,
+        'ci_github_status_events_total{event="ping",action="none"}': 1,
+        'ci_github_status_events_total{event="workflow_job",action="in_progress"}': 2,
+        'ci_github_status_events_total{event="workflow_job",action="queued"}': 1,
+        'ci_github_status_events_total{event="workflow_run",action="requested"}': 1,
+    }
