@@ -35,6 +35,7 @@ run or job completed without GitHub saying so.
 
 from __future__ import annotations
 
+import http.client
 import json
 import sys
 import threading
@@ -51,6 +52,26 @@ from .webhook import Filters, Ignored, Rejected, parse_workflow_job, parse_workf
 
 API = "https://api.github.com"
 WATERMARK_KEY = "discovery_watermark"
+
+
+# Failures of a single GET worth retrying: the request is idempotent, and on
+# 2026-09-24 the first production cycle died on one ~480 KB jobs page whose body
+# was cut off (IncompleteRead) — the whole cycle, for one dropped connection.
+TRANSIENT = (
+    http.client.IncompleteRead,
+    http.client.RemoteDisconnected,
+    ConnectionError,
+    TimeoutError,
+    json.JSONDecodeError,
+)
+
+
+def _transient(error: BaseException) -> bool:
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code >= 500
+    if isinstance(error, urllib.error.URLError):
+        return True
+    return isinstance(error, TRANSIENT)
 
 
 class Throttled(Exception):
@@ -78,8 +99,11 @@ class GitHubClient:
         api: str = API,
         timeout: float = 20.0,
         opener: Callable[..., object] = urllib.request.urlopen,
+        retries: int = 2,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._token, self._api, self._timeout, self._open = token, api, timeout, opener
+        self._retries, self._sleep = retries, sleep
         self._etags: dict[str, tuple[str, object]] = {}
         self.rate: dict[str, float] = {}
         self.requests: dict[str, int] = {}
@@ -99,6 +123,21 @@ class GitHubClient:
                 continue
 
     def get(self, path: str, params: dict[str, str | int] | None = None) -> object:
+        """GET ``path``; transient failures are retried with backoff before the
+        last one is raised. A throttle is never retried here: it pauses the loop."""
+        for attempt in range(self._retries + 1):
+            try:
+                return self._get_once(path, params)
+            except Throttled:
+                raise
+            except Exception as error:
+                if attempt == self._retries or not _transient(error):
+                    raise
+                self._count("retried")
+                self._sleep(2.0**attempt)
+        raise AssertionError("unreachable")
+
+    def _get_once(self, path: str, params: dict[str, str | int] | None) -> object:
         url = f"{self._api}{path}"
         if params:
             url += "?" + urllib.parse.urlencode(params)
@@ -184,12 +223,17 @@ class Stats:
     last_requests: int = 0
     last_error: str = ""
     discovery_truncated: int = 0
+    run_errors: int = 0
     paused_until: float = 0.0
     started: float = field(default_factory=time.time)
 
 
 class _Budget(Exception):
     """The per-cycle request budget is spent; the rest waits for next cycle."""
+
+
+class _Partial(Exception):
+    """Some runs could not be refreshed; the others were. Not a success."""
 
 
 class Reconciler:
@@ -263,6 +307,10 @@ class Reconciler:
             except _Budget:
                 outcome = "budget"
                 return False
+            except _Partial as partial:
+                outcome = "partial"
+                self.stats.last_error = str(partial)
+                return False
             except Throttled as throttle:
                 outcome = "throttled"
                 self.stats.paused_until = throttle.resume_at
@@ -330,9 +378,31 @@ class Reconciler:
             touched_since=now - self.settings.active_horizon_seconds
         )
         due.sort(key=lambda run: self._last_refreshed.get(_key(run), 0.0))
+        failed: list[str] = []
         for run in due:
-            self._refresh_run(run, now)
+            try:
+                self._refresh_run(run, now)
+            except (_Budget, Throttled):
+                raise
+            except urllib.error.HTTPError as error:
+                if error.code not in (404, 410):
+                    failed.append(f"{_key(run)[1]}: HTTP {error.code}")
+                else:
+                    # GitHub no longer has it (deleted run): stop asking. It is
+                    # not marked completed, because GitHub never said so.
+                    self.store.mark_run(_key(run), gone=True)
+            except Exception as error:
+                failed.append(f"{_key(run)[1]}: {type(error).__name__}")
+            # Tried either way, so a run that keeps failing goes to the back.
             self._last_refreshed[_key(run)] = now
+        if failed:
+            self.stats.run_errors += len(failed)
+            print(
+                f"[ci-github-status] {len(failed)} run(s) not refreshed: {failed[:5]}",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise _Partial(f"{len(failed)} run(s) not refreshed")
 
     def _refresh_run(self, stored: dict, now: float) -> None:
         repository, run_id, attempt = _key(stored)
@@ -436,6 +506,7 @@ class Reconciler:
             "last_duration": stats.last_duration,
             "last_requests": stats.last_requests,
             "discovery_truncated": stats.discovery_truncated,
+            "run_errors": stats.run_errors,
             "paused_until": stats.paused_until,
             "stale": 1 if now - reference > self.settings.stale_after_seconds else 0,
         }

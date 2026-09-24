@@ -327,7 +327,9 @@ def running_service(tmp_path):
             store=Store(path),
             secret=SECRET,
             filters=FILTERS,
-            completed_window_seconds=6 * 3600,
+            # Fixtures carry fixed 2026 timestamps: a real 6h window would
+            # expire them as the wall clock moves on.
+            completed_window_seconds=10**10,
         )
         server = serve(service, "127.0.0.1", 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)

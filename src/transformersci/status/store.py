@@ -277,6 +277,8 @@ class Store:
         due = []
         for raw, open_jobs in rows:
             state = _load(raw)
+            if state.get("gone"):
+                continue
             if (
                 state["status"] != COMPLETED
                 or state.get("needs_lookup")

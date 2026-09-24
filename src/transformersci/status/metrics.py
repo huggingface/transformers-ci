@@ -241,7 +241,7 @@ def render_reconcile(snapshot: dict | None) -> str:
             "reconcile_cycles_total",
             "cycles",
             "outcome",
-            "Reconciliation cycles by outcome (ok, budget, throttled, paused, error).",
+            "Reconciliation cycles by outcome (ok, partial, budget, throttled, paused, error).",
         ),
         (
             "reconcile_repairs_total",
@@ -290,6 +290,11 @@ def render_reconcile(snapshot: dict | None) -> str:
             "reconcile_discovery_truncated_total",
             snapshot["discovery_truncated"],
             "Discovery listings that hit the page cap (older runs may be missed).",
+        ),
+        (
+            "reconcile_run_errors_total",
+            snapshot.get("run_errors", 0),
+            "Runs a cycle could not refresh after retries; such a cycle ends 'partial'.",
         ),
         (
             "reconcile_paused_until_timestamp_seconds",

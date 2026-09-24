@@ -379,3 +379,98 @@ def test_the_request_budget_rotates_through_runs(tmp_path) -> None:
     reconciler.run_once(now=NOW + 60)
     second = [p for p in fake.paths() if p.endswith("/attempts/1")][len(first) :]
     assert first and second and first != second  # the other run goes first next time
+
+
+def test_a_cut_off_response_is_retried(tmp_path) -> None:
+    # Production's first cycle died on one truncated ~480 KB jobs page.
+    import http.client
+
+    attempts = {"n": 0}
+
+    def flaky(_params, _headers):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise http.client.IncompleteRead(b"", 481096)
+        return jobs(api_job(1))
+
+    store, reconciler, _fake = setup(
+        tmp_path, {RUNS: listing(), ATTEMPT: (200, api_run()), ATTEMPT + "/jobs": flaky}
+    )
+    reconciler.client._sleep = lambda _s: None
+    store.apply(
+        [
+            RunUpdate(
+                REPO,
+                900,
+                1,
+                "in_progress",
+                workflow="PR CI",
+                event="pull_request",
+                prs=(4321,),
+            )
+        ]
+    )
+    assert reconciler.run_once(now=NOW) is True
+    assert store.jobs()[0]["status"] == "completed"
+    assert reconciler.client.requests["retried"] == 1
+
+
+def test_one_failing_run_does_not_block_the_others(tmp_path) -> None:
+    def broken(_params, _headers):
+        raise ConnectionResetError("reset")
+
+    routes = {
+        RUNS: listing(),
+        ATTEMPT: broken,
+        f"/repos/{REPO}/actions/runs/901/attempts/1": (200, api_run(901)),
+        f"/repos/{REPO}/actions/runs/901/attempts/1/jobs": jobs(
+            api_job(9011, run_id=901)
+        ),
+    }
+    store, reconciler, _fake = setup(tmp_path, routes)
+    reconciler.client._sleep = lambda _s: None
+    for run_id in (900, 901):
+        store.apply(
+            [
+                RunUpdate(
+                    REPO,
+                    run_id,
+                    1,
+                    "in_progress",
+                    workflow="PR CI",
+                    event="pull_request",
+                    prs=(1,),
+                )
+            ]
+        )
+    # 900 fails even after retries; 901 is still refreshed, and the cycle is
+    # not a success, so the stale flag stays honest.
+    assert reconciler.run_once(now=NOW) is False
+    assert reconciler.stats.cycles == {"partial": 1}
+    assert reconciler.stats.last_success == 0.0
+    statuses = {r["run_id"]: r["status"] for r in store.runs()}
+    assert statuses == {900: "in_progress", 901: "completed"}
+    assert "ci_github_status_reconcile_run_errors_total 1" in metrics.render_reconcile(
+        reconciler.snapshot(now=NOW)
+    )
+
+
+def test_a_run_github_no_longer_has_stops_being_polled(tmp_path) -> None:
+    store, reconciler, _fake = setup(tmp_path, {RUNS: listing()})  # attempt path 404s
+    store.apply(
+        [
+            RunUpdate(
+                REPO,
+                900,
+                1,
+                "in_progress",
+                workflow="PR CI",
+                event="pull_request",
+                prs=(1,),
+            )
+        ]
+    )
+    assert reconciler.run_once(now=NOW) is True
+    (run,) = store.runs()
+    assert run["gone"] is True and run["status"] == "in_progress"  # never inferred done
+    assert store.runs_needing_reconcile(touched_since=0) == []
