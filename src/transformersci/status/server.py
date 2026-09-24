@@ -50,6 +50,8 @@ class Service:
     processing_seconds: float = 0.0
     last_delivery_at: float = 0.0
     lock: threading.Lock = field(default_factory=threading.Lock)
+    # Set when reconciliation is on; its health joins the payload.
+    reconciler: object | None = None
 
     def _count(self, outcome: str, started: float) -> None:
         with self.lock:
@@ -109,11 +111,13 @@ class Service:
             needs_lookup=counts["needs_lookup"],
             publication_timestamp_seconds=now,
         )
-        return metrics.render(
+        body = metrics.render(
             self.store.runs(completed_since=since),
             self.store.jobs(completed_since=since),
             service=service,
         )
+        snapshot = getattr(self.reconciler, "snapshot", None)
+        return body + metrics.render_reconcile(snapshot(now) if snapshot else None)
 
 
 def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:

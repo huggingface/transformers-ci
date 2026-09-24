@@ -31,6 +31,9 @@ from pathlib import Path
 
 from .reducer import COMPLETED, JobUpdate, RunUpdate, merge_job, merge_run
 
+# Events whose run should name a PR; GitHub omits it for a PR from a fork.
+PR_EVENTS = frozenset({"pull_request", "pull_request_target"})
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     repository TEXT NOT NULL,
@@ -61,7 +64,14 @@ CREATE TABLE IF NOT EXISTS deliveries (
     received_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS deliveries_by_age ON deliveries (received_at);
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
+
+# What a repair is: a change to any of these, or a record that did not exist.
+_PROGRESS_FIELDS = ("status", "conclusion", "needs_lookup", "prs")
 
 
 def _dump(state: dict) -> str:
@@ -73,6 +83,16 @@ def _load(raw: str) -> dict:
     if "prs" in state:
         state["prs"] = tuple(state["prs"])
     return state
+
+
+def _moved(before: dict | None, after: dict) -> bool:
+    if before is None:
+        return True
+    return any(before.get(field) != after.get(field) for field in _PROGRESS_FIELDS)
+
+
+def _pr_unknown(state: dict) -> bool:
+    return not state.get("prs") and state.get("event") in PR_EVENTS
 
 
 class Store:
@@ -106,7 +126,27 @@ class Store:
         """Merge ``updates`` durably. Returns False, changing nothing, when
         ``delivery_id`` was already applied. A job update also merges the stub
         it implies for its run, so a job seen before its run still publishes."""
+        applied, _runs, _jobs = self._apply(updates, delivery_id, authoritative, now)
+        return applied
+
+    def reconcile(
+        self, updates: Iterable[RunUpdate | JobUpdate], *, now: float | None = None
+    ) -> tuple[int, int]:
+        """Merge updates read from the GitHub API (authoritative: they settle a
+        conclusion two deliveries disagreed on). Returns how many runs and jobs
+        it created or moved — i.e. what the webhooks had missed."""
+        _applied, runs, jobs = self._apply(updates, None, True, now)
+        return runs, jobs
+
+    def _apply(
+        self,
+        updates: Iterable[RunUpdate | JobUpdate],
+        delivery_id: str | None,
+        authoritative: bool,
+        now: float | None,
+    ) -> tuple[bool, int, int]:
         now = time.time() if now is None else now
+        changed_runs = changed_jobs = 0
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
@@ -116,31 +156,30 @@ class Store:
                     ).fetchone()
                     if seen:
                         self._db.execute("ROLLBACK")
-                        return False
+                        return False, 0, 0
                     self._db.execute(
                         "INSERT INTO deliveries (delivery_id, received_at) VALUES (?, ?)",
                         (delivery_id, now),
                     )
                 for update in updates:
                     if isinstance(update, JobUpdate):
-                        self._merge_run(update.run_stub(), False, now)
-                        self._merge_job(update, authoritative, now)
+                        changed_runs += self._merge_run(update.run_stub(), False, now)
+                        changed_jobs += self._merge_job(update, authoritative, now)
                     else:
-                        self._merge_run(update, authoritative, now)
+                        changed_runs += self._merge_run(update, authoritative, now)
                 self._db.execute("COMMIT")
             except BaseException:
                 self._db.execute("ROLLBACK")
                 raise
-        return True
+        return True, changed_runs, changed_jobs
 
-    def _merge_run(self, update: RunUpdate, authoritative: bool, now: float) -> None:
+    def _merge_run(self, update: RunUpdate, authoritative: bool, now: float) -> bool:
         row = self._db.execute(
             "SELECT state FROM runs WHERE repository = ? AND run_id = ? AND attempt = ?",
             update.key,
         ).fetchone()
-        state = merge_run(
-            _load(row[0]) if row else None, update, authoritative=authoritative
-        )
+        before = _load(row[0]) if row else None
+        state = merge_run(before, update, authoritative=authoritative)
         finished = (
             (state.get("updated_at") or now) if state["status"] == COMPLETED else None
         )
@@ -152,14 +191,14 @@ class Store:
             " finished_at = excluded.finished_at, touched_at = excluded.touched_at",
             (*update.key, _dump(state), state["status"], finished, now),
         )
+        return _moved(before, state)
 
-    def _merge_job(self, update: JobUpdate, authoritative: bool, now: float) -> None:
+    def _merge_job(self, update: JobUpdate, authoritative: bool, now: float) -> bool:
         row = self._db.execute(
             "SELECT state FROM jobs WHERE repository = ? AND job_id = ?", update.key
         ).fetchone()
-        state = merge_job(
-            _load(row[0]) if row else None, update, authoritative=authoritative
-        )
+        before = _load(row[0]) if row else None
+        state = merge_job(before, update, authoritative=authoritative)
         finished = (
             (state.get("completed_at") or now) if state["status"] == COMPLETED else None
         )
@@ -180,6 +219,73 @@ class Store:
                 now,
             ),
         )
+        return _moved(before, state)
+
+    def mark_run(self, key: tuple[str, int, int], **fields: object) -> None:
+        """Record reconciler bookkeeping (``jobs_synced``, ``pr_lookup_done``)
+        on a run's state. Merges keep unknown fields, so these persist."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._db.execute(
+                    "SELECT state FROM runs WHERE repository = ? AND run_id = ?"
+                    " AND attempt = ?",
+                    key,
+                ).fetchone()
+                if row:
+                    state = _load(row[0])
+                    state.update(fields)
+                    self._db.execute(
+                        "UPDATE runs SET state = ? WHERE repository = ? AND run_id = ?"
+                        " AND attempt = ?",
+                        (_dump(state), *key),
+                    )
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+
+    def get_meta(self, key: str) -> str | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT value FROM meta WHERE key = ?", (key,)
+            ).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO meta (key, value) VALUES (?, ?)"
+                " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+
+    def runs_needing_reconcile(self, *, touched_since: float) -> list[dict]:
+        """Runs the reconciler must read back from GitHub: not completed, or
+        completed but with jobs not yet listed since, with an active or disputed
+        job, a disputed conclusion, or a PR GitHub did not name. Bounded to runs
+        touched recently, so a run GitHub itself lost cannot be polled forever."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT r.state,"
+                " EXISTS (SELECT 1 FROM jobs j WHERE j.repository = r.repository"
+                "   AND j.run_id = r.run_id AND j.attempt = r.attempt"
+                "   AND (j.status != ? OR json_extract(j.state, '$.needs_lookup')))"
+                " FROM runs r WHERE r.touched_at >= ? ORDER BY r.touched_at",
+                (COMPLETED, touched_since),
+            ).fetchall()
+        due = []
+        for raw, open_jobs in rows:
+            state = _load(raw)
+            if (
+                state["status"] != COMPLETED
+                or state.get("needs_lookup")
+                or not state.get("jobs_synced")
+                or open_jobs
+                or (_pr_unknown(state) and not state.get("pr_lookup_done"))
+            ):
+                due.append(state)
+        return due
 
     def prune(self, *, now: float | None = None, retention_seconds: float) -> int:
         """Forget completed runs/jobs and delivery ids older than the retention.

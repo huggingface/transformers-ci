@@ -138,6 +138,9 @@ def parse_workflow_run(payload: dict, filters: Filters) -> RunUpdate:
         event=event,
         head_sha=_text(run.get("head_sha")),
         head_branch=head_branch,
+        head_repository=_text((run.get("head_repository") or {}).get("full_name"))
+        if isinstance(run.get("head_repository"), dict)
+        else "",
         prs=pull_request_numbers(run.get("pull_requests"), event, head_branch),
         conclusion=_text(run.get("conclusion")),
         created_at=parse_timestamp(run.get("created_at")),

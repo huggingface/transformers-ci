@@ -64,6 +64,9 @@ class RunUpdate:
     event: str = ""
     head_sha: str = ""
     head_branch: str = ""
+    # owner/name the head commit lives in: a fork for a PR from a fork, which
+    # is how reconciliation finds the PR GitHub left out of ``pull_requests``.
+    head_repository: str = ""
     prs: tuple[int, ...] = ()
     conclusion: str = ""
     created_at: float | None = None
@@ -122,6 +125,7 @@ _RUN_FILL = (
     "event",
     "head_sha",
     "head_branch",
+    "head_repository",
     "created_at",
     "started_at",
     "html_url",

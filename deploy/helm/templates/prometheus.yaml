@@ -123,6 +123,30 @@ data:
           # replacement pod continue the same series instead of forking a new one.
           - target_label: instance
             replacement: trace-exporter
+      {{- if .Values.ciGithubStatus.enabled }}
+
+      # Live GitHub run/job status. 5s, unlike the trace-exporter's 30s: the
+      # payload is small (active runs + a few hours of completed ones), and this
+      # is the series the live-status panels poll.
+      - job_name: 'ci-github-status'
+        scrape_interval: 5s
+        scrape_timeout: 4s
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - {{ include "transformers-ci.namespace" . }}
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: ci-github-status
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            action: keep
+            regex: {{ .Values.ciGithubStatus.port | quote }}
+          # One logical source: a replacement pod continues the same series.
+          - target_label: instance
+            replacement: ci-github-status
+      {{- end }}
 
       # Infrastructure metrics: observability stack itself (tempo, grafana,
       # otelcol). These are high-cardinality but the single Prometheus in k8s

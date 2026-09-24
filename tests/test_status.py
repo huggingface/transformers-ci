@@ -513,3 +513,12 @@ def test_duration_parsing() -> None:
     assert cli.duration("6h") == 21600
     assert cli.duration("7d") == 604800
     assert cli.duration("30") == 30
+
+
+def test_a_push_run_is_filed_under_its_branch_whatever_github_lists() -> None:
+    # GitHub attached PR #1 (head branch "main" in some fork) to pushes to main.
+    push = webhook.parse_delivery(
+        "workflow_run", run_payload(prs=[1], event="push", head_branch="main"), FILTERS
+    )
+    state = {"prs": push.prs, "event": push.event, "head_branch": push.head_branch}
+    assert metrics.pr_label(state) == "main"

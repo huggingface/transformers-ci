@@ -28,6 +28,7 @@ import threading
 import time
 from collections.abc import Sequence
 
+from .reconcile import GitHubClient, Reconciler, Settings
 from .server import Service, serve
 from .store import Store
 from .webhook import Filters
@@ -71,6 +72,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=duration,
         default=duration("6h"),
         help="how long a completed run/job stays in /metrics (default 6h)",
+    )
+    run.add_argument(
+        "--github-token-env",
+        default="GITHUB_TOKEN",
+        help="env var holding the token the reconciler reads the Actions API with"
+        " (unset: no reconciliation, and /metrics says so)",
+    )
+    run.add_argument(
+        "--reconcile-interval",
+        type=duration,
+        default=duration("60s"),
+        help="seconds between reconciliation cycles (default 60s)",
+    )
+    run.add_argument(
+        "--reconcile-requests",
+        type=int,
+        default=200,
+        help="GitHub requests one cycle may spend (default 200)",
     )
     run.add_argument(
         "--retention",
@@ -120,6 +139,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         daemon=True,
         name="prune",
     ).start()
+    token = os.environ.get(args.github_token_env, "")
+    if token:
+        reconciler = Reconciler(
+            store,
+            GitHubClient(token),
+            service.filters,
+            Settings(
+                interval_seconds=args.reconcile_interval,
+                requests_per_cycle=args.reconcile_requests,
+            ),
+        )
+        service.reconciler = reconciler
+        threading.Thread(
+            target=reconciler.loop, args=(stop,), daemon=True, name="reconcile"
+        ).start()
+    else:
+        print(
+            f"[ci-github-status] ${args.github_token_env} is empty: reconciliation is"
+            " off, so missed webhooks are not repaired",
+            file=sys.stderr,
+            flush=True,
+        )
     server = serve(service, args.host, args.port)
     print(
         f"[ci-github-status] serving on {args.host}:{args.port} "

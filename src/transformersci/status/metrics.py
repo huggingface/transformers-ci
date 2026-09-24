@@ -57,13 +57,16 @@ def run_label(state: dict) -> str:
 
 def pr_label(state: dict) -> str:
     """The PR a run belongs to; its branch for branch runs; "" when unknown
-    (a fork PR before enrichment) — never a guess."""
-    prs = state.get("prs") or ()
-    if prs:
-        return str(min(prs))
+    (a fork PR before enrichment) — never a guess.
+
+    A branch run is filed under its branch even when GitHub lists PRs for it:
+    ``pull_requests`` on a push to ``main`` names any PR whose head branch is
+    also called ``main`` (observed: ``pr="1"`` on two pushes to main), which the
+    exporter never does."""
     if state.get("event") in _BRANCH_EVENTS:
         return str(state.get("head_branch") or "")
-    return ""
+    prs = state.get("prs") or ()
+    return str(min(prs)) if prs else ""
 
 
 class _Family:
@@ -219,6 +222,109 @@ def _progress(
             )
     if state.get("needs_lookup"):
         families[f"ci_github_{kind}_needs_lookup"].add(identity, 1)
+
+
+def render_reconcile(snapshot: dict | None) -> str:
+    """Reconciliation health. ``ci_github_status_stale`` is the flag a panel
+    shows: 1 when no reconciliation succeeded within its window, so status that
+    merely stopped changing (an API outage, a throttle) is never read as
+    current. An idle repository with no new events is not stale."""
+    lines = [
+        "# HELP ci_github_status_reconcile_enabled 1 when the GitHub API reconciler runs.",
+        "# TYPE ci_github_status_reconcile_enabled gauge",
+        f"ci_github_status_reconcile_enabled {1 if snapshot else 0}",
+    ]
+    if not snapshot:
+        return "\n".join(lines) + "\n"
+    counters = (
+        (
+            "reconcile_cycles_total",
+            "cycles",
+            "outcome",
+            "Reconciliation cycles by outcome (ok, budget, throttled, paused, error).",
+        ),
+        (
+            "reconcile_repairs_total",
+            "repairs",
+            "kind",
+            "Runs, jobs and PR numbers the reconciler created or moved: what the webhooks missed.",
+        ),
+        (
+            "github_requests_total",
+            "requests",
+            "outcome",
+            "GitHub API requests by outcome (not_modified costs no rate limit).",
+        ),
+    )
+    for name, key, label, help_text in counters:
+        lines += [
+            f"# HELP ci_github_status_{name} {help_text}",
+            f"# TYPE ci_github_status_{name} counter",
+        ]
+        for value_label, value in sorted(snapshot[key].items()):
+            lines.append(
+                f'ci_github_status_{name}{{{label}="{_escape(value_label)}"}} {value}'
+            )
+    gauges = (
+        (
+            "reconcile_last_attempt_timestamp_seconds",
+            snapshot["last_attempt"],
+            "When the last reconciliation cycle started.",
+        ),
+        (
+            "reconcile_last_success_timestamp_seconds",
+            snapshot["last_success"],
+            "When a reconciliation cycle last completed (0 = never since start).",
+        ),
+        (
+            "reconcile_duration_seconds",
+            snapshot["last_duration"],
+            "Wall-clock of the last cycle.",
+        ),
+        (
+            "reconcile_requests",
+            snapshot["last_requests"],
+            "GitHub requests the last cycle spent.",
+        ),
+        (
+            "reconcile_discovery_truncated_total",
+            snapshot["discovery_truncated"],
+            "Discovery listings that hit the page cap (older runs may be missed).",
+        ),
+        (
+            "reconcile_paused_until_timestamp_seconds",
+            snapshot["paused_until"],
+            "Until when GitHub asked the reconciler to stop (0 = never).",
+        ),
+        (
+            "stale",
+            snapshot["stale"],
+            "1 when status has not been reconciled against GitHub within the window.",
+        ),
+    )
+    for name, value, help_text in gauges:
+        kind = "counter" if name.endswith("_total") else "gauge"
+        lines += [
+            f"# HELP ci_github_status_{name} {help_text}",
+            f"# TYPE ci_github_status_{name} {kind}",
+        ]
+        lines.append(
+            f"ci_github_status_{name} {value:.3f}"
+            if isinstance(value, float)
+            else f"ci_github_status_{name} {value}"
+        )
+    for key, name in (
+        ("limit", "github_rate_limit"),
+        ("remaining", "github_rate_limit_remaining"),
+        ("reset", "github_rate_limit_reset_timestamp_seconds"),
+    ):
+        if key in snapshot["rate"]:
+            lines += [
+                f"# HELP ci_github_status_{name} GitHub API budget as last reported ({key}).",
+                f"# TYPE ci_github_status_{name} gauge",
+            ]
+            lines.append(f"ci_github_status_{name} {snapshot['rate'][key]:.0f}")
+    return "\n".join(lines) + "\n"
 
 
 def _service_lines(service: dict[str, float | int | dict[str, int]]) -> list[str]:
