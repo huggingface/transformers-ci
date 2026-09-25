@@ -391,6 +391,22 @@
                   "mode": "basic",
                   "type": "color-background"
                 }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "special",
+                    "options": {
+                      "match": "null+nan",
+                      "result": {
+                        "text": "",
+                        "color": "transparent",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
               }
             ]
           },
@@ -499,15 +515,15 @@
                         "index": 0
                       },
                       "2": {
-                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iIzNmYjk1MCIvPjxwYXRoIGQ9Ik00LjUgOC4zbDIuMSAyLjEgNC45LTUuMSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjEuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+",
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iI2Y4NTE0OSIvPjxwYXRoIGQ9Ik01LjQgNS40bDUuMiA1LjJNMTAuNiA1LjRsLTUuMiA1LjIiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjgiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==",
                         "index": 1
                       },
                       "3": {
-                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iI2Y4NTE0OSIvPjxwYXRoIGQ9Ik01LjQgNS40bDUuMiA1LjJNMTAuNiA1LjRsLTUuMiA1LjIiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjgiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==",
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iIzZlNzY4MSIvPjxwYXRoIGQ9Ik00LjUgOGg3IiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48L3N2Zz4=",
                         "index": 2
                       },
                       "4": {
-                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iIzZlNzY4MSIvPjxwYXRoIGQ9Ik00LjUgOGg3IiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48L3N2Zz4=",
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iIzNmYjk1MCIvPjxwYXRoIGQ9Ik00LjUgOC4zbDIuMSAyLjEgNC45LTUuMSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjEuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+",
                         "index": 3
                       }
                     }
@@ -538,8 +554,12 @@
         "showHeader": true,
         "sortBy": [
           {
-            "desc": true,
-            "displayName": "Fail"
+            "displayName": "Status",
+            "desc": false
+          },
+          {
+            "displayName": "Fail",
+            "desc": true
           }
         ]
       },
@@ -601,7 +621,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "label_replace(label_replace(((max by (test_job) ((ci_github_job_status{run_id=~\"$run_id\"} < 3) * on (repository, run_id, job_id) group_left(test_job) ci_github_job_info{run_id=~\"$run_id\"}) * 0 + 1) or (max by (test_job) ((ci_github_job_conclusion_info{conclusion=~\"failure|timed_out|startup_failure\",run_id=~\"$run_id\"}) * on (repository, run_id, job_id) group_left(test_job) ci_github_job_info{run_id=~\"$run_id\"}) * 3) or (max by (test_job) ((ci_github_job_conclusion_info{conclusion=\"success\",run_id=~\"$run_id\"}) * on (repository, run_id, job_id) group_left(test_job) ci_github_job_info{run_id=~\"$run_id\"}) * 2) or (max by (test_job) ((ci_github_job_conclusion_info{conclusion!~\"success|failure|timed_out|startup_failure\",run_id=~\"$run_id\"}) * on (repository, run_id, job_id) group_left(test_job) ci_github_job_info{run_id=~\"$run_id\"}) * 4)), \"hardware\", \"cpu\", \"\", \"\"), \"hardware\", \"gpu\", \"test_job\", \"(?i).*gpu.*\") or (((max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]))) >= bool 1) * 3) > 0) or ((max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_passed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]))) >= bool 0) * 2)"
+          "expr": "label_replace(label_replace(((max by (test_job) ((ci_github_job_status{run_id=~\"$run_id\"} < 3) * on (repository, run_id, job_id) group_left(test_job) ci_github_job_info{run_id=~\"$run_id\"}) * 0 + 1) or (max by (test_job) ((ci_github_job_conclusion_info{conclusion=~\"failure|timed_out|startup_failure\",run_id=~\"$run_id\"}) * on (repository, run_id, job_id) group_left(test_job) ci_github_job_info{run_id=~\"$run_id\"}) * 2) or (max by (test_job) ((ci_github_job_conclusion_info{conclusion=\"success\",run_id=~\"$run_id\"}) * on (repository, run_id, job_id) group_left(test_job) ci_github_job_info{run_id=~\"$run_id\"}) * 4) or (max by (test_job) ((ci_github_job_conclusion_info{conclusion!~\"success|failure|timed_out|startup_failure\",run_id=~\"$run_id\"}) * on (repository, run_id, job_id) group_left(test_job) ci_github_job_info{run_id=~\"$run_id\"}) * 3)), \"hardware\", \"cpu\", \"\", \"\"), \"hardware\", \"gpu\", \"test_job\", \"(?i).*gpu.*\") or (((max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]))) >= bool 1) * 2) > 0) or ((max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_passed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]))) >= bool 0) * 4)"
         }
       ],
       "title": "Jobs",
