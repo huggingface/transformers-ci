@@ -2543,6 +2543,29 @@ def test_malloc_trim_is_safe_everywhere() -> None:
     trace_exporter._malloc_trim()  # glibc only; must never raise elsewhere
 
 
+def test_healthz_is_cheap_and_does_not_serve_the_payload(tmp_path, monkeypatch) -> None:
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.request import urlopen
+
+    payload = tmp_path / "payload.prom"
+    payload.write_text("pytest_trace_exporter_up 1\n" * 1000, encoding="utf-8")
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PAYLOAD_FILE", str(payload))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with urlopen(f"{base}/healthz", timeout=5) as response:
+            assert response.status == 200
+            assert response.read() == b"ok\n"
+        with urlopen(f"{base}/metrics", timeout=5) as response:
+            assert len(response.read()) == payload.stat().st_size
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_limit_malloc_arenas_is_safe_everywhere(monkeypatch) -> None:
     # Must never raise — it's a best-effort glibc tweak that no-ops elsewhere
     # (e.g. macOS), so the feature works without any launcher-set env.

@@ -6148,6 +6148,14 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._request_route = "/run"
             self._serve_run(parse_qs(parsed.query))
             return
+        if parsed.path == "/healthz":
+            # For the kubelet probes and the ALB target health check. They used
+            # to GET "/", which streams the whole multi-MB payload, 8+ times a
+            # minute, and hang up after the first bytes (a ConnectionResetError
+            # traceback each time).
+            self._request_route = "/healthz"
+            self._send(200, "text/plain; charset=utf-8", b"ok\n")
+            return
         if parsed.path in {"/metrics", "/"}:
             self._request_route = "/metrics"
             self._serve_metrics()
