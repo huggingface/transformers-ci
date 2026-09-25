@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import gzip
 import json
+import os
 import time
 import urllib.parse
 from unittest.mock import patch
@@ -658,6 +659,135 @@ def test_persist_run_rows_merges_shards_across_renders(tmp_path) -> None:
     # re-persisting an already-seen shard does not duplicate
     trace_exporter.persist_run_rows("7:1", shard1, directory=d)
     assert len(trace_exporter.load_run_rows("7:1", directory=d)) == 2
+
+
+def test_persist_run_rows_skips_a_rewrite_that_changes_nothing(tmp_path) -> None:
+    # An in-flight trace is re-read every few minutes and usually brings back the
+    # rows the store already has: the multi-MB gzip must not be rewritten then.
+    d = str(tmp_path)
+    rows = [
+        {
+            "test_nodeid": "a",
+            "test_job": "j",
+            "status_code": "OK",
+            "duration_seconds": 1.0,
+            "trace_id": "t1",
+            "pr": "1",
+        }
+    ]
+    trace_exporter.persist_run_rows("8:1", rows, directory=d)
+    path = trace_exporter._run_store_path(d, "8:1")
+    os.utime(path, (1, 1))
+    trace_exporter.persist_run_rows("8:1", [dict(r) for r in rows], directory=d)
+    assert os.stat(path).st_mtime == 1  # untouched
+
+    # After a restart the store is the only copy of the counts: an unchanged
+    # merge still seeds them.
+    with trace_exporter._run_store_counts_lock:
+        trace_exporter._run_store_counts.pop("8:1", None)
+    trace_exporter.persist_run_rows("8:1", rows, directory=d)
+    assert os.stat(path).st_mtime == 1
+    assert (
+        trace_exporter._run_store_counts_snapshot()["8:1"][("j", "cpu")]["total"] == 1
+    )
+
+    # A changed row (the test now failed) is written.
+    changed = [dict(rows[0], status_code="ERROR")]
+    trace_exporter.persist_run_rows("8:1", changed, directory=d)
+    assert os.stat(path).st_mtime != 1
+    assert trace_exporter.load_run_rows("8:1", directory=d)[0]["status_code"] == (
+        "ERROR"
+    )
+
+
+def test_prefetch_concurrently_calls_each_lookup_once_and_never_raises() -> None:
+    import threading
+
+    seen: list[tuple[str, str]] = []
+    threads: set[str] = set()
+    lock = threading.Lock()
+
+    def fetch(repo: str, pr: str) -> None:
+        with lock:
+            seen.append((repo, pr))
+            threads.add(threading.current_thread().name)
+        if pr == "2":
+            raise RuntimeError("GitHub is down")
+
+    calls = [("o/r", "1"), ("o/r", "2"), ("o/r", "1"), ("o/r", "3")]
+    trace_exporter._prefetch_concurrently(fetch, calls)
+    assert sorted(seen) == [("o/r", "1"), ("o/r", "2"), ("o/r", "3")]
+    assert all(name.startswith("github-prefetch") for name in threads)
+    trace_exporter._prefetch_concurrently(fetch, [])  # nothing to do
+
+
+def test_average_metrics_ignore_passing_rows() -> None:
+    def row(nodeid: str, status: str) -> dict:
+        module, cls, func = nodeid.split("::")
+        return {
+            "service_name": "s",
+            "test_job": "j",
+            "pr": "1",
+            "provider": "p",
+            "test_nodeid": nodeid,
+            "status_code": status,
+            "duration_seconds": 1.0,
+            "test_class": cls,
+            "test_function": func,
+            "test_module": module,
+            "exception_type": "AssertionError",
+        }
+
+    extracted = [
+        (
+            {"trace_id": "t1", "run_id": "1:1", "latest_start_time": 10},
+            [row("m.py::A::test_ok", "OK"), row("m.py::A::test_bad", "ERROR")],
+        ),
+        (
+            {"trace_id": "t2", "run_id": "2:1", "latest_start_time": 20},
+            [row("m.py::A::test_bad", "ERROR"), row("m.py::A::test_ok", "OK")],
+        ),
+    ]
+    lines = [
+        line
+        for line in trace_exporter.extract_average_metrics([], _extracted=extracted)
+        if not line.startswith("#")
+    ]
+    assert len(lines) == 1
+    assert 'test_nodeid="m.py::A::test_bad"' in lines[0]
+    assert 'trace_id="t2"' in lines[0] and 'run_id="2:1"' in lines[0]
+    assert 'test_class="A"' in lines[0]
+
+
+def test_shaped_rows_share_repeated_strings() -> None:
+    def trace(trace_id: str) -> dict:
+        return make_trace(
+            trace_id=trace_id,
+            run_id="run-intern",
+            job="tests_torch",
+            spans=[
+                make_test_span(
+                    process_id="pytest-process",
+                    nodeid="tests/test_torch.py::TestTorch::test_pass",
+                    start_time=1_000_000,
+                    duration=2_000_000,
+                )
+            ],
+        )
+
+    _info, rows = trace_exporter.extract_trace_rows(trace("trace-intern"))
+    other = trace_exporter.extract_trace_rows(trace("trace-intern-2"))[1]
+    assert rows and other
+    assert rows[0]["test_module"] is other[0]["test_module"]
+    assert rows[0]["run_id"] is other[0]["run_id"]
+
+
+def test_shaped_entry_bytes_uses_the_shaped_factor() -> None:
+    entry = ({"trace_id": "t"}, [{"k": "v" * 100} for _ in range(20)])
+    serialized = len(json.dumps(entry, ensure_ascii=False, separators=(",", ":")))
+    assert trace_exporter._shaped_entry_bytes(entry) == int(
+        serialized * trace_exporter._SHAPED_RAM_OVERHEAD
+    )
 
 
 def test_persist_settled_runs_groups_by_run(tmp_path) -> None:

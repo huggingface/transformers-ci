@@ -137,6 +137,11 @@ DEFAULT_ACTIVE_BRANCH_RUNS = 5
 DEFAULT_MAIN_DURATION_STORE_MAX_FILES = 25
 DEFAULT_MAIN_DURATION_STORE_MAX_SERIES = 500
 DEFAULT_MAIN_DURATION_STORE_MAX_AGE_SECONDS = 8 * 86400.0
+# How long a scan of the run store's main-branch rows is reused. It reads up to
+# MAX_FILES gzip files and feeds only the "slowest on main" panel, whose inputs
+# change a few times an hour; tied to the 60s cooldown, it missed on every
+# render once renders were more than a minute apart.
+DEFAULT_MAIN_DURATION_STORE_CACHE_SECONDS = 900.0
 # The Actions jobs listing for a big reusable-workflow run (~90 jobs) routinely
 # takes 8-10s to respond — well past the 5s default used for the small PR-info
 # calls — so the run-activity calls get their own, longer timeout. Too short and
@@ -1257,12 +1262,19 @@ def _max_new_fetch_per_render() -> int:
     )
 
 
+# In-RAM bytes of a shaped entry per byte of its compact JSON. Measured with
+# tracemalloc on five prod traces (24 to 17,933 rows, interned strings):
+# 1.20-1.38. The raw-trace factor (4) made the shaped budget hold a third of
+# what it was sized for: a 17,933-row shard took 11.6 MiB but was charged 38.
+_SHAPED_RAM_OVERHEAD = 1.5
+
+
 def _shaped_entry_bytes(entry: ShapedEntry) -> int:
     """Approximate resident bytes of a shaped (trace_info, rows) tuple.
 
-    Mirrors :func:`_trace_cache_entry_bytes`: a cheap serialized-size proxy
-    scaled by the parsed-object overhead factor, so the byte budget reflects the
-    in-RAM footprint rather than the compact JSON size.
+    Like :func:`_trace_cache_entry_bytes`, a cheap serialized-size proxy scaled
+    to the in-RAM footprint, with the factor measured for shaped rows (see
+    :data:`_SHAPED_RAM_OVERHEAD`) rather than for raw parsed traces.
     """
     try:
         serialized = len(
@@ -1270,7 +1282,7 @@ def _shaped_entry_bytes(entry: ShapedEntry) -> int:
         )
     except (TypeError, ValueError):
         return 0
-    return serialized * _TRACE_RAM_OVERHEAD
+    return int(serialized * _SHAPED_RAM_OVERHEAD)
 
 
 def _store_shaped(
@@ -1685,6 +1697,47 @@ _pr_info_cache_lock = threading.Lock()
 _cached_pr_info: dict[tuple[str, str], tuple[float, dict[str, str]]] = {}
 
 
+# GitHub lookups a render needs (run activity, PR metadata) are independent
+# round-trips of ~0.5s each; made one after another they cost ~10s per render.
+DEFAULT_GITHUB_PREFETCH_CONCURRENCY = 8
+
+
+def _prefetch_concurrently(
+    fetch: Callable[..., object], calls: list[tuple[str, ...]]
+) -> None:
+    """Warm a cached GitHub fetcher for every call at once.
+
+    The caller then walks its own loop unchanged and every lookup is a cache
+    hit. Errors are the fetcher's to handle (both cached fetchers degrade to a
+    fallback); anything else is swallowed so a prefetch can never fail a
+    render — the serial loop simply fetches what is still missing.
+    """
+    calls = list(dict.fromkeys(calls))
+    workers = min(
+        len(calls),
+        max(
+            1,
+            env_int(
+                "PYTEST_TRACE_EXPORTER_GITHUB_PREFETCH_CONCURRENCY",
+                DEFAULT_GITHUB_PREFETCH_CONCURRENCY,
+            ),
+        ),
+    )
+    if workers <= 1:
+        return
+
+    def _one(args: tuple[str, ...]) -> None:
+        try:
+            fetch(*args)
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="github-prefetch"
+    ) as pool:
+        list(pool.map(_one, calls))
+
+
 def fetch_github_pr_info_cached(repository: str, pr: str) -> dict[str, str]:
     key = (repository, pr)
     ttl = github_cache_ttl_seconds()
@@ -1948,30 +2001,34 @@ def extract_trace_rows(
         # GPU jobs running a plugin new enough to set it, so the key is added
         # only when the span carries it and every consumer must use .get() —
         # an absent value is "unknown", NOT zero.
+        # Every string but the node id repeats across the rows (one trace's run,
+        # job, PR; a module's class and function names across its tests), and
+        # the shaped cache keeps these rows for the whole window. Interning makes
+        # each distinct value one object instead of one per row.
         row: dict[str, str | float] = {
             "duration_seconds": (
                 float(span_tags["pytest.worker_duration_seconds"])
                 if "pytest.worker_duration_seconds" in span_tags
                 else int(span.get("duration", 0)) / 1_000_000
             ),
-            "exception_type": exc_type,
+            "exception_type": _intern(exc_type),
             # The capped stacktrace is consumed here for test_line only; no
             # metric emits it, so it is deliberately not retained in the row
             # (it would otherwise bloat the kept rows under high failure
             # volume — the exporter must stay under ~1G at high volume).
-            "pr": process_pr or "none",
-            "provider": process_provider or "unknown",
-            "run_id": process_run_id or trace_id,
-            "service_name": service_name or "unknown",
-            "status_code": span_tags.get("otel.status_code", "UNSET"),
-            "hardware": process_hardware or hardware_from_job(process_job),
-            "test_class": node_parts["test_class"],
-            "test_function": node_parts["test_function"],
-            "test_line": extract_test_line(exc_stacktrace, nodeid),
-            "test_job": process_job or "unknown",
-            "test_module": node_parts["test_module"],
+            "pr": _intern(process_pr or "none"),
+            "provider": _intern(process_provider or "unknown"),
+            "run_id": _intern(process_run_id or trace_id),
+            "service_name": _intern(service_name or "unknown"),
+            "status_code": _intern(span_tags.get("otel.status_code", "UNSET")),
+            "hardware": _intern(process_hardware or hardware_from_job(process_job)),
+            "test_class": _intern(node_parts["test_class"]),
+            "test_function": _intern(node_parts["test_function"]),
+            "test_line": _intern(extract_test_line(exc_stacktrace, nodeid)),
+            "test_job": _intern(process_job or "unknown"),
+            "test_module": _intern(node_parts["test_module"]),
             "test_nodeid": nodeid,
-            "trace_id": trace_id,
+            "trace_id": _intern(trace_id),
         }
         for tag, field in (
             ("pytest.cuda_delta_bytes", "cuda_delta_bytes"),
@@ -2011,6 +2068,11 @@ def extract_trace_rows(
         "test_job": process_job or "unknown",
         "trace_id": trace_id,
     }, rows
+
+
+def _intern(value: object) -> object:
+    """``sys.intern`` for strings; anything else (a missing tag) passes through."""
+    return sys.intern(value) if type(value) is str else value
 
 
 def _precompute_trace_rows(
@@ -2189,6 +2251,15 @@ def extract_pr_info_metrics(
         if existing is None or trace_score >= existing[0]:
             best_by_pr[key] = (trace_score, candidate)
 
+    if _metadata_fetcher is None:
+        _prefetch_concurrently(
+            metadata_fetcher,
+            [
+                (candidate["repository"], candidate["pr"])
+                for _score, candidate in best_by_pr.values()
+                if candidate["repository"]
+            ],
+        )
     for (_service_name, _pr), (_score, candidate) in sorted(best_by_pr.items()):
         pr = candidate["pr"]
         repository = candidate["repository"]
@@ -2611,6 +2682,19 @@ def extract_run_active_metrics(
     )
     polled_keys = {key for key in latest_by_key if key[0] == "pr"}
     polled_keys.update(branch_keys[: active_branch_runs()])
+
+    if _activity_fetcher is None:
+        calls: list[tuple[str, ...]] = []
+        for key, info in latest_by_key.items():
+            if key not in polled_keys or not info["repository"]:
+                continue
+            latest_start = int(info["latest_start"])
+            if latest_start and (now_seconds * 1_000_000 - latest_start) > lookback_us:
+                continue
+            run_db_id, run_attempt = split_run_id(str(info["run_id"]))
+            if run_db_id:
+                calls.append((str(info["repository"]), run_db_id, run_attempt))
+        _prefetch_concurrently(fetcher, calls)
 
     run_lines: list[str] = []
     start_lines: list[str] = []
@@ -3830,6 +3914,12 @@ def extract_average_metrics(
         # job?" — the question the dashboard's Sticky Failures panels ask.
         run_id = str(trace_info.get("run_id", "") or "unknown")
         for row in rows:
+            # Only failing tests produce a line, so passing rows (the ~1M-row
+            # majority of a busy window) are skipped before any key is built.
+            # test_class/function/module derive from the nodeid, so taking them
+            # from the first failing row equals taking them from the first row.
+            if str(row["status_code"]) != "ERROR":
+                continue
             key = (
                 str(row["service_name"]),
                 str(row["test_job"]),
@@ -3839,7 +3929,6 @@ def extract_average_metrics(
             )
             if key not in aggregates:
                 aggregates[key] = {
-                    "durations": [],
                     "failure_count": 0,
                     "last_failure_start_time": 0,
                     "last_failure_trace_id": "",
@@ -3849,16 +3938,14 @@ def extract_average_metrics(
                     "test_function": str(row["test_function"]),
                     "test_module": str(row["test_module"]),
                 }
-            aggregates[key]["durations"].append(float(row["duration_seconds"]))
-            if str(row["status_code"]) == "ERROR":
-                aggregates[key]["failure_count"] += 1
-                if trace_start >= aggregates[key]["last_failure_start_time"]:
-                    aggregates[key]["last_failure_start_time"] = trace_start
-                    aggregates[key]["last_failure_trace_id"] = trace_id
-                    aggregates[key]["last_failure_run_id"] = run_id
-                    aggregates[key]["last_failure_exception_type"] = (
-                        str(row.get("exception_type", "")) or "unknown"
-                    )
+            aggregates[key]["failure_count"] += 1
+            if trace_start >= aggregates[key]["last_failure_start_time"]:
+                aggregates[key]["last_failure_start_time"] = trace_start
+                aggregates[key]["last_failure_trace_id"] = trace_id
+                aggregates[key]["last_failure_run_id"] = run_id
+                aggregates[key]["last_failure_exception_type"] = (
+                    str(row.get("exception_type", "")) or "unknown"
+                )
 
     for (service_name, test_job, pr, provider, test_nodeid), aggregate in sorted(
         aggregates.items()
@@ -4497,26 +4584,21 @@ def _iter_metric_lines() -> Iterator[str]:
         early_extracted, early_runs = completed_job_results_extracted(
             extracted, {str(info.get("run_id", "")) for info, _ in rollup_extracted}
         )
-    # Persist per-run rows incrementally for the /run drill-down: any run that
-    # gained a trace this render gets its current-window rows merged into the
-    # store. Because persist_run_rows UNIONs (it never overwrites the whole run),
-    # a long/large run accumulates ALL its shards across renders as they rotate
-    # through the lookback window — even though no single render's window ever
-    # holds them all. Bounded to runs with new activity so steady state is cheap.
-    runs_with_new = {
-        str(info.get("run_id", ""))
-        for info, _ in extracted
+    # Persist per-run rows incrementally for the /run drill-down: the traces
+    # fetched this render are merged into their run's store file. Because
+    # persist_run_rows UNIONs (it never overwrites the whole run), a long/large
+    # run accumulates ALL its shards across renders as they rotate through the
+    # lookback window — even though no single render's window ever holds them
+    # all. Only fetched traces can bring rows the store lacks: every other trace
+    # in the window is served from cache, and was merged when it was fetched.
+    new_traces = [
+        (info, rows)
+        for info, rows in extracted
         if str(info.get("trace_id", "")) in current_new_ids
-    }
-    if runs_with_new:
+    ]
+    if new_traces:
         with _render_phase("persist_run_store"):
-            persist_settled_runs(
-                [
-                    (info, rows)
-                    for info, rows in extracted
-                    if str(info.get("run_id", "")) in runs_with_new
-                ]
-            )
+            persist_settled_runs(new_traces)
 
     # Per-test is emitted only for traces newly seen this render plus the
     # previous render's new ids (the one-render carryover), so the same
@@ -5518,7 +5600,11 @@ def iter_recent_main_run_store_rows(
     now = time.time() if now is None else now
     with _main_run_store_rows_lock:
         cached_at, cached_rows = _main_run_store_rows_cache
-        if now - cached_at < DEFAULT_REFRESH_COOLDOWN_SECONDS:
+        ttl = env_int(
+            "PYTEST_TRACE_EXPORTER_MAIN_DURATION_STORE_CACHE_SECONDS",
+            int(DEFAULT_MAIN_DURATION_STORE_CACHE_SECONDS),
+        )
+        if now - cached_at < ttl:
             return list(cached_rows)
     max_files = env_int(
         "PYTEST_TRACE_EXPORTER_MAIN_DURATION_STORE_MAX_FILES",
@@ -5623,17 +5709,35 @@ def persist_run_rows(
         existing_rows = existing.get("rows")
         for r in existing_rows if isinstance(existing_rows, list) else []:
             merged[(str(r.get("trace_id", "")), str(r.get("test_nodeid", "")))] = r
+        # A re-read of an in-flight trace usually brings back rows the store
+        # already has; only rewrite the (multi-MB, gzipped) file when the union
+        # actually changed.
+        changed = not existing
         for r in rows:
             slim_row = {k: r.get(k) for k in _RUN_STORE_FIELDS}
-            merged[(str(r.get("trace_id", "")), str(r.get("test_nodeid", "")))] = (
-                slim_row
-            )
+            key = (str(r.get("trace_id", "")), str(r.get("test_nodeid", "")))
+            if merged.get(key) != slim_row:
+                merged[key] = slim_row
+                changed = True
         merged_failed: dict[str, dict[str, str]] = {}
         existing_failed = existing.get("failed_traces")
         if isinstance(existing_failed, dict):
             merged_failed.update(existing_failed)
         if failed_traces:
-            merged_failed.update(failed_traces)
+            for trace_id, failed in failed_traces.items():
+                if merged_failed.get(trace_id) != failed:
+                    merged_failed[trace_id] = failed
+                    changed = True
+        if not changed:
+            # Still (re)seed the counts after a restart, when the store is the
+            # only copy of them; otherwise they are already current.
+            with _run_store_counts_lock:
+                known = run_id in _run_store_counts
+            if not known:
+                _update_run_store_counts(
+                    run_id, iter(merged.values()), failed_traces=merged_failed
+                )
+            return
         payload = json.dumps(
             {
                 "run_id": run_id,
