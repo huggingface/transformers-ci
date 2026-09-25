@@ -83,6 +83,10 @@ processors:
         statements:
           - set(attributes["test_job"], resource.attributes["transformers.test.job"])
           - set(attributes["hardware"], resource.attributes["transformers.test.hardware"])
+          # Same fallback as the exporter's hardware_from_job(), so live and final
+          # series join on identical labels.
+          - set(attributes["hardware"], "gpu") where attributes["hardware"] == nil and IsMatch(attributes["test_job"], "gpu")
+          - set(attributes["hardware"], "cpu") where attributes["hardware"] == nil
           - set(name, "test")
       - context: resource
         statements:
@@ -107,7 +111,6 @@ connectors:
     dimensions:
       - name: test_job
       - name: hardware
-        default: none
     # Runs held (and re-exported every flush), least recently updated evicted
     # first. An active run evicted by newer ones restarts from 0, so keep this well
     # above the runs in flight at once (peak 11 PR CI runs on 2026-09-24).
