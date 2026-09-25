@@ -2357,6 +2357,62 @@ def test_memory_guard_drops_cache_over_soft_limit(monkeypatch) -> None:
     assert trace_exporter._trace_cache_bytes == 0
 
 
+def _seed_caches() -> None:
+    trace_exporter._drop_trace_cache()
+    trace_exporter._drop_shaped_cache()
+    trace_exporter._trace_cache["t0"] = {"traceID": "t0"}
+    trace_exporter._trace_cache_sizes["t0"] = 100
+    trace_exporter._trace_cache_bytes = 100
+    trace_exporter._store_shaped("s0", ({"trace_id": "s0"}, []), True, 1.0)
+
+
+def test_memory_guard_keeps_shaped_cache_when_trim_is_enough(monkeypatch) -> None:
+    # Over the limit, but dropping the raw traces brings RSS back under it: the
+    # shaped cache (what lets a render skip Tempo) must survive. Dropping it on
+    # every render was the zero-cache-hit spiral.
+    _seed_caches()
+    trace_exporter._memory_relief_total.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_MEM_SOFT_MB", "500")
+    rss = iter([600, 400])
+    monkeypatch.setattr(
+        trace_exporter, "_process_resident_bytes", lambda: next(rss) * 1024 * 1024
+    )
+    trimmed = []
+    monkeypatch.setattr(trace_exporter, "_malloc_trim", lambda: trimmed.append(1))
+    trace_exporter._relieve_memory_pressure()
+    assert len(trace_exporter._trace_cache) == 0
+    assert "s0" in trace_exporter._shaped_cache
+    assert trimmed == [1]
+    assert trace_exporter._memory_relief_total == {"trace": 1}
+    assert (
+        'pytest_trace_exporter_memory_relief_total{cache="trace"} 1'
+        in trace_exporter._render_profile_lines()
+    )
+    trace_exporter._drop_shaped_cache()
+
+
+def test_memory_guard_escalates_to_shaped_cache(monkeypatch) -> None:
+    # Still over the limit after the raw traces are gone and the heap trimmed:
+    # the shaped cache goes too.
+    _seed_caches()
+    trace_exporter._memory_relief_total.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_MEM_SOFT_MB", "500")
+    rss = iter([600, 590, 450])
+    monkeypatch.setattr(
+        trace_exporter, "_process_resident_bytes", lambda: next(rss) * 1024 * 1024
+    )
+    monkeypatch.setattr(trace_exporter, "_malloc_trim", lambda: None)
+    trace_exporter._relieve_memory_pressure()
+    assert len(trace_exporter._trace_cache) == 0
+    assert len(trace_exporter._shaped_cache) == 0
+    assert trace_exporter._shaped_meta == {}
+    assert trace_exporter._memory_relief_total == {"trace": 1, "shaped": 1}
+
+
+def test_malloc_trim_is_safe_everywhere() -> None:
+    trace_exporter._malloc_trim()  # glibc only; must never raise elsewhere
+
+
 def test_limit_malloc_arenas_is_safe_everywhere(monkeypatch) -> None:
     # Must never raise — it's a best-effort glibc tweak that no-ops elsewhere
     # (e.g. macOS), so the feature works without any launcher-set env.
@@ -5056,24 +5112,30 @@ def test_run_the_gate_released_is_left_to_the_gate() -> None:
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "why"),
+    ("kwargs", "why", "reason"),
     [
-        ({"status": "in_progress"}, "GitHub says the job is still running"),
-        ({"conclusion": "cancelled"}, "cancelled jobs wait for the run"),
-        ({"conclusion": "skipped"}, "skipped jobs wait for the run"),
+        ({"status": "in_progress"}, "GitHub says the job is still running", "active"),
+        ({"conclusion": "cancelled"}, "cancelled jobs wait for the run", "conclusion"),
+        ({"conclusion": "skipped"}, "skipped jobs wait for the run", "conclusion"),
         (
             {"conclusion": "failure"},
             "GitHub failed it but the traces show no failure yet",
+            "disagree",
         ),
-        ({"failing": True}, "the traces fail a job GitHub passed"),
-        ({"pr": "main"}, "branch runs keep the whole-run gate"),
-        ({"attempt": "2"}, "the listing is for another attempt"),
+        ({"failing": True}, "the traces fail a job GitHub passed", "disagree"),
+        ({"pr": "main"}, "branch runs keep the whole-run gate", None),
+        ({"attempt": "2"}, "the listing is for another attempt", "no_listing"),
     ],
 )
-def test_finished_job_is_held_when(kwargs, why) -> None:
+def test_finished_job_is_held_when(kwargs, why, reason) -> None:
     extracted = _early_setup(**kwargs)
     released, _runs = trace_exporter.completed_job_results_extracted(extracted, set())
     assert released == [], why
+    held = trace_exporter._last_jobs_held
+    if reason is None:  # never a candidate, so never counted as held
+        assert sum(held.values()) == 0
+    else:
+        assert held[reason] >= 1, (why, held)
     _reset_window_state()
 
 
@@ -5090,6 +5152,7 @@ def test_job_read_before_it_finished_is_queued_for_a_reread() -> None:
     extracted = _early_setup(completed_at=1_000.0, fetched_at=1_010.0)
     released, _runs = trace_exporter.completed_job_results_extracted(extracted, set())
     assert released == []
+    assert trace_exporter._last_jobs_held["stale_read"] == 1
     grace = trace_exporter.DEFAULT_JOB_RELEASE_GRACE_SECONDS
     assert trace_exporter._job_refetch_due == {"trace-check": 1_000.0 + grace}
 

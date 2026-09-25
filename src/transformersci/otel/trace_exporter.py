@@ -3644,6 +3644,25 @@ def _early_job_results_enabled() -> bool:
 _job_refetch_due: dict[str, float] = {}
 _job_refetch_due_lock = threading.Lock()
 
+# Why the last render held back each PR job it could have released early, one
+# count per (run, test_job). Rebuilt by completed_job_results_extracted, read by
+# the payload. Reasons, in the order they are checked:
+#   no_listing   — no complete GitHub jobs listing for the run's attempt yet
+#   unmatched    — no GitHub job name maps to this test_job
+#   active       — a matching GitHub job is still queued or running
+#   conclusion   — a matching job ended neither success nor failure
+#   stale_read   — a trace was last read before completion + grace (re-read queued)
+#   disagree     — the traces' failure state disagrees with GitHub's conclusion
+EARLY_RELEASE_HOLD_REASONS = (
+    "no_listing",
+    "unmatched",
+    "active",
+    "conclusion",
+    "stale_read",
+    "disagree",
+)
+_last_jobs_held: dict[str, int] = {}
+
 
 def completed_job_results_extracted(
     window_extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]],
@@ -3716,11 +3735,13 @@ def completed_job_results_extracted(
     released: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] = []
     released_run_ids: set[str] = set()
     due: dict[str, float] = {}
+    held = dict.fromkeys(EARLY_RELEASE_HOLD_REASONS, 0)
     for run_id, jobs in by_run.items():
         run_db_id, attempt = split_run_id(run_id)
         with _run_activity_cache_lock:
             listing = _run_job_states.get((repo_by_run.get(run_id, ""), run_db_id))
         if listing is None or listing[1] != attempt:
+            held["no_listing"] += len(jobs)
             continue
         forms = _job_name_forms(set(jobs))
         github_jobs: dict[str, list[GitHubJobState]] = {}
@@ -3731,13 +3752,18 @@ def completed_job_results_extracted(
 
         for test_job, entries in jobs.items():
             states = github_jobs.get(test_job)
-            if not states or any(
+            if not states:
+                held["unmatched"] += 1
+                continue
+            if any(
                 st.status in GITHUB_ACTIVE_STATUSES or st.completed_at is None
                 for st in states
             ):
+                held["active"] += 1
                 continue
             conclusions = {st.conclusion for st in states}
             if not conclusions <= {"success", "failure"}:
+                held["conclusion"] += 1
                 continue
             not_before = max(float(st.completed_at or 0) for st in states) + grace
             stale: list[str] = []
@@ -3750,6 +3776,7 @@ def completed_job_results_extracted(
             if stale:
                 for trace_id in stale:
                     due[trace_id] = not_before
+                held["stale_read"] += 1
                 continue
             failed = sum(
                 max(
@@ -3759,6 +3786,7 @@ def completed_job_results_extracted(
                 for info, rows in entries
             )
             if (failed > 0) != ("failure" in conclusions):
+                held["disagree"] += 1
                 continue
             released.extend(entries)
             released_run_ids.add(run_id)
@@ -3766,6 +3794,8 @@ def completed_job_results_extracted(
     with _job_refetch_due_lock:
         _job_refetch_due.clear()
         _job_refetch_due.update(due)
+        _last_jobs_held.clear()
+        _last_jobs_held.update(held)
     return released, released_run_ids
 
 
@@ -4052,6 +4082,8 @@ _render_phase_seconds_total: dict[str, float] = {}
 _renders_total = 0
 _refresh_pause_seconds_total: dict[str, float] = {}
 _refresh_pauses_total: dict[str, int] = {}
+# Soft-limit cache drops, by cache (trace = raw traces, shaped = shaped window).
+_memory_relief_total: dict[str, int] = {}
 
 # Outbound calls, from every thread (render, fetch pool, HTTP handlers).
 _upstream_requests_total: dict[tuple[str, str], int] = {}
@@ -4168,6 +4200,7 @@ def _render_profile_lines() -> list[str]:
         renders = _renders_total
         pauses = sorted(_refresh_pauses_total.items())
         pause_seconds = sorted(_refresh_pause_seconds_total.items())
+        relief = sorted(_memory_relief_total.items())
         upstream_requests = sorted(_upstream_requests_total.items())
         upstream_seconds = sorted(_upstream_request_seconds_total.items())
         upstream_bytes = sorted(_upstream_response_bytes_total.items())
@@ -4247,6 +4280,16 @@ def _render_profile_lines() -> list[str]:
             lines.append(
                 f"pytest_trace_exporter_refresh_pause_seconds_total"
                 f"{metric_labels({'reason': reason})} {seconds:.3f}"
+            )
+    if relief:
+        lines.append(
+            "# HELP pytest_trace_exporter_memory_relief_total Cache drops because RSS was over the soft limit, by cache."
+        )
+        lines.append("# TYPE pytest_trace_exporter_memory_relief_total counter")
+        for cache, value in relief:
+            lines.append(
+                f"pytest_trace_exporter_memory_relief_total"
+                f"{metric_labels({'cache': cache})} {value}"
             )
     if upstream_requests:
         lines.append(
@@ -4505,6 +4548,16 @@ def _iter_metric_lines() -> Iterator[str]:
         for info, _rows in early_extracted
     }
     yield f"pytest_trace_exporter_jobs_released_early {len(released_jobs)}"
+    with _job_refetch_due_lock:
+        jobs_held = dict(_last_jobs_held)
+    if jobs_held:
+        yield "# HELP pytest_trace_exporter_jobs_held PR jobs of a still-gated run that this render did not release early, by the first check that held them."
+        yield "# TYPE pytest_trace_exporter_jobs_held gauge"
+        for reason in EARLY_RELEASE_HOLD_REASONS:
+            yield (
+                f"pytest_trace_exporter_jobs_held"
+                f"{metric_labels({'reason': reason})} {jobs_held.get(reason, 0)}"
+            )
     yield "# HELP pytest_trace_exporter_traces_deferred Window traces not yet fetched this render (picked up on a later render)."
     yield "# TYPE pytest_trace_exporter_traces_deferred gauge"
     yield f"pytest_trace_exporter_traces_deferred {enumeration_deferred}"
@@ -5290,14 +5343,57 @@ def _mem_soft_limit_bytes() -> int:
     )
 
 
-def _relieve_memory_pressure() -> None:
-    """Before a render, if RSS is over the soft limit, drop the reclaimable
-    trace caches so the render reuses freed heap instead of stacking new
-    allocations on a near-full process and tipping into the hard cgroup limit
-    (an OOM-kill).
+def _malloc_trim() -> None:
+    """Hand freed heap back to the OS (glibc ``malloc_trim``); no-op elsewhere.
 
-    Both the raw-trace cache and the (now larger) shaped-window cache are
-    reclaimable; Tempo is the durable source, so a dropped entry is just
+    Clearing a cache frees Python objects, but glibc keeps the pages, so RSS does
+    not fall and the next render would see the same over-limit RSS again.
+    """
+    try:
+        import ctypes
+
+        ctypes.CDLL(None).malloc_trim(0)
+    except (OSError, AttributeError, ValueError):
+        pass
+
+
+def _drop_trace_cache() -> int:
+    global _trace_cache_bytes
+    with _trace_cache_lock:
+        dropped = len(_trace_cache)
+        _trace_cache.clear()
+        _trace_cache_sizes.clear()
+        _trace_cache_bytes = 0
+    return dropped
+
+
+def _drop_shaped_cache() -> int:
+    global _shaped_cache_bytes
+    with _shaped_cache_lock:
+        dropped = len(_shaped_cache)
+        _shaped_cache.clear()
+        _shaped_cache_sizes.clear()
+        _shaped_meta.clear()
+        _shaped_cache_bytes = 0
+    return dropped
+
+
+def _observe_memory_relief(cache: str) -> None:
+    with _render_profile_lock:
+        _memory_relief_total[cache] = _memory_relief_total.get(cache, 0) + 1
+
+
+def _relieve_memory_pressure() -> None:
+    """Before a render, if RSS is over the soft limit, drop reclaimable caches so
+    the render reuses freed heap instead of stacking new allocations on a
+    near-full process and tipping into the hard cgroup limit (an OOM-kill).
+
+    Escalates: the raw-trace cache first (multi-MB parsed traces, the bulk of
+    what is reclaimable), then — only if RSS is still over after returning the
+    freed heap to the OS — the shaped cache. The shaped cache is small and is
+    what lets a render skip Tempo: dropping it on every render (when RSS sat
+    above a stale soft limit) made every render re-fetch its whole window, with
+    zero cache hits. Tempo is the durable source, so a dropped entry is just
     re-fetched — bounded by the per-render fetch cap, and the run-settle gate
     means a run's roll-up still waits until its re-fetched shards are back.
     Best-effort — a pure safety valve under load, off when MEM_SOFT_MB <= 0.
@@ -5308,21 +5404,22 @@ def _relieve_memory_pressure() -> None:
     rss = _process_resident_bytes()
     if rss is None or rss < soft:
         return
-    global _trace_cache_bytes, _shaped_cache_bytes
-    with _trace_cache_lock:
-        dropped = len(_trace_cache)
-        _trace_cache.clear()
-        _trace_cache_sizes.clear()
-        _trace_cache_bytes = 0
-    with _shaped_cache_lock:
-        dropped += len(_shaped_cache)
-        _shaped_cache.clear()
-        _shaped_cache_sizes.clear()
-        _shaped_meta.clear()
-        _shaped_cache_bytes = 0
+    dropped = _drop_trace_cache()
+    _malloc_trim()
+    _observe_memory_relief("trace")
+    after = _process_resident_bytes()
+    dropped_shaped = 0
+    if after is None or after >= soft:
+        dropped_shaped = _drop_shaped_cache()
+        _malloc_trim()
+        _observe_memory_relief("shaped")
+        after = _process_resident_bytes()
+    mib = 1024 * 1024
     print(
-        f"[pytest-trace-exporter] RSS {rss // (1024 * 1024)}MiB over soft limit "
-        f"{soft // (1024 * 1024)}MiB; dropped {dropped} cached traces to cap growth",
+        f"[pytest-trace-exporter] RSS {rss // mib}MiB over soft limit "
+        f"{soft // mib}MiB; dropped {dropped} raw and {dropped_shaped} shaped "
+        f"cached traces; RSS now "
+        f"{'?' if after is None else after // mib}MiB",
         file=sys.stderr,
         flush=True,
     )
