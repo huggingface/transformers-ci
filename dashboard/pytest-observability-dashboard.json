@@ -43,7 +43,7 @@
       "url": "/d/pytest-test-health/test-health"
     }
   ],
-  "refresh": "1m",
+  "refresh": "10s",
   "panels": [
     {
       "datasource": {
@@ -334,7 +334,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000))",
+          "expr": "max by (pr) (label_replace(max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"$top_prs\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"$top_prs\"}[7d]))))), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"$top_prs\"})), \"src\", \"github\", \"\", \"\")) * 1000",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -343,7 +343,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(topk by (pr) (1, max by (pr, title) (max_over_time((timestamp(pytest_pr_info{pr=~\"[0-9]+\",title!=\"\"}))[7d:])))) and on (pr) (topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000)))",
+          "expr": "(topk by (pr) (1, max by (pr, title) (max_over_time((timestamp(pytest_pr_info{pr=~\"$top_prs\",title!=\"\"}))[7d:]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -352,7 +352,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(count by (pr) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[90d])))))) and on (pr) (topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000)))",
+          "expr": "count by (pr) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"$top_prs\"}[90d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"$top_prs\"}[90d])))) or max by (pr, run_id) (ci_github_run_info{pr=~\"$top_prs\"}))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -361,7 +361,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr=~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{pr=~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) and on (pr, run_id) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) == on (pr) group_left() max by (pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d]))))))) and on (pr) (topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000)))",
+          "expr": "(sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr=~\"$top_prs\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{pr=~\"$top_prs\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"$top_prs\"}[7d])))) and on (pr, run_id) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"$top_prs\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"$top_prs\"}[7d])))) == on (pr) group_left() max by (pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"$top_prs\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"$top_prs\"}[7d])))))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -370,7 +370,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(100 * sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr=~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{pr=~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) and on (pr, run_id) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) == on (pr) group_left() max by (pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))))) / sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{pr=~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{pr=~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) and on (pr, run_id) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) == on (pr) group_left() max by (pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d]))))))) and on (pr) (topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000)))",
+          "expr": "(100 * sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr=~\"$top_prs\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{pr=~\"$top_prs\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"$top_prs\"}[7d])))) and on (pr, run_id) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"$top_prs\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"$top_prs\"}[7d])))) == on (pr) group_left() max by (pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"$top_prs\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"$top_prs\"}[7d])))))) / sum by (pr) (max by (pr, run_id) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{pr=~\"$top_prs\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{pr=~\"$top_prs\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"$top_prs\"}[7d])))) and on (pr, run_id) (max by (pr, run_id) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"$top_prs\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"$top_prs\"}[7d])))) == on (pr) group_left() max by (pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr=~\"$top_prs\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"$top_prs\"}[7d])))))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -379,7 +379,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(floor((time() - max by (pr) (max without (instance) (last_over_time(pytest_pr_created_at_seconds{pr=~\"[0-9]+\"}[7d])))) / 86400)) and on (pr) (topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000)))",
+          "expr": "(floor((time() - max by (pr) (max without (instance) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$top_prs\"}[7d])))) / 86400))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -388,7 +388,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(max by (pr) (max without (instance) (last_over_time(pytest_pr_state{pr=~\"[0-9]+\"}[7d])))) and on (pr) (topk(10, max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d])))) * 1000)))",
+          "expr": "(max by (pr) (max without (instance) (last_over_time(pytest_pr_state{pr=~\"$top_prs\"}[7d]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "",
@@ -402,7 +402,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "",
-          "expr": "max by (pr) (last_over_time(pytest_run_active{pr=~\"[0-9]+\"}[5m]))"
+          "expr": "(max by (pr) ((max by (repository, run_id) (ci_github_run_status) < 3) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"$top_prs\"})) * 0 + 1) or max by (pr) (last_over_time(pytest_run_active{pr=~\"$top_prs\"}[5m]) unless on (run_id) ci_github_run_info{pr!=\"\"})"
         }
       ],
       "title": "Last 10 PRs",
@@ -825,7 +825,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (run_id, pr) (last_over_time(pytest_run_active{pr!~\"[0-9]+\"}[5m]))",
+          "expr": "(max by (run_id, pr) ((max by (repository, run_id) (ci_github_run_status) < 3) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr!~\"[0-9]*\"})) * 0 + 1) or max by (run_id, pr) (last_over_time(pytest_run_active{pr!~\"[0-9]+\"}[5m]) unless on (run_id) ci_github_run_info{pr!=\"\"})",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -834,7 +834,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) or max by (run_id, pr) (last_over_time(pytest_run_active_start_time_seconds{pr!~\"[0-9]+\"}[5m]))) * 1000",
+          "expr": "(topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d])))) or max by (run_id, pr) ((ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr!~\"[0-9]*\"}))) or max by (run_id, pr) (last_over_time(pytest_run_active_start_time_seconds{pr!~\"[0-9]+\"}[5m]))) * 1000",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -843,7 +843,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(count by (run_id, pr) (max without (instance) (last_over_time(pytest_run_job_member_info{pr!~\"[0-9]+\"}[7d])))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
+          "expr": "(count by (run_id, pr) (max without (instance) (last_over_time(pytest_run_job_member_info{pr!~\"[0-9]+\"}[7d])))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d])))) or max by (run_id, pr) ((ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr!~\"[0-9]*\"}))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -852,7 +852,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{pr!~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{pr!~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
+          "expr": "(max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{pr!~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{pr!~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d])))) or max by (run_id, pr) ((ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr!~\"[0-9]*\"}))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -861,7 +861,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(max by (run_id, pr, commit_message, html_url) (max without (instance) (last_over_time(pytest_run_info{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
+          "expr": "(max by (run_id, pr, commit_message, html_url) (max without (instance) (last_over_time(pytest_run_info{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d])))) or max by (run_id, pr) ((ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr!~\"[0-9]*\"}))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -870,7 +870,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_duration_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
+          "expr": "(max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_duration_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d])))) or max by (run_id, pr) ((ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr!~\"[0-9]*\"}))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -879,7 +879,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(100 * max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr!~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{pr!~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d])))) / max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{pr!~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{pr!~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
+          "expr": "(100 * max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{pr!~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{pr!~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d])))) / max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{pr!~\"[0-9]+\"}[7d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{pr!~\"[0-9]+\"}[7d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d])))) or max by (run_id, pr) ((ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr!~\"[0-9]*\"}))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -888,7 +888,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_wall_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
+          "expr": "(max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_wall_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d])))) or max by (run_id, pr) ((ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr!~\"[0-9]*\"}))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -897,7 +897,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(sum by (run_id, pr) (label_replace(group by (run_id, pr) (last_over_time(pytest_run_job_member_info{pr!~\"[0-9]+\",hardware=\"cpu\"}[7d])), \"hw\", \"cpu\", \"\", \"\") * 1 or label_replace(group by (run_id, pr) (last_over_time(pytest_run_job_member_info{pr!~\"[0-9]+\",hardware=~\"gpu|single-gpu\"}[7d])), \"hw\", \"gpu\", \"\", \"\") * 2 or label_replace(group by (run_id, pr) (last_over_time(pytest_run_job_member_info{pr!~\"[0-9]+\",hardware=\"multi-gpu\"}[7d])), \"hw\", \"xgpu\", \"\", \"\") * 4)) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d]))))) * 1000)",
+          "expr": "(sum by (run_id, pr) (label_replace(group by (run_id, pr) (last_over_time(pytest_run_job_member_info{pr!~\"[0-9]+\",hardware=\"cpu\"}[7d])), \"hw\", \"cpu\", \"\", \"\") * 1 or label_replace(group by (run_id, pr) (last_over_time(pytest_run_job_member_info{pr!~\"[0-9]+\",hardware=~\"gpu|single-gpu\"}[7d])), \"hw\", \"gpu\", \"\", \"\") * 2 or label_replace(group by (run_id, pr) (last_over_time(pytest_run_job_member_info{pr!~\"[0-9]+\",hardware=\"multi-gpu\"}[7d])), \"hw\", \"xgpu\", \"\", \"\") * 4)) and on (run_id, pr) (topk(10, max by (run_id, pr) (max without (instance) (last_over_time(pytest_run_start_time_seconds{pr!~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr!~\"[0-9]+\"}[7d])))) or max by (run_id, pr) ((ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr!~\"[0-9]*\"}))) * 1000)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -983,7 +983,40 @@
     "otel"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "top_prs",
+        "label": "Last 10 PRs",
+        "type": "query",
+        "hide": 2,
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "qryType": 3,
+          "query": "query_result(topk(10, max by (pr) (label_replace(max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d]))))), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"[0-9]+\"})), \"src\", \"github\", \"\", \"\"))))",
+          "refId": "Prometheus-top_prs-Variable-Query"
+        },
+        "definition": "query_result(topk(10, max by (pr) (label_replace(max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d]))))), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"[0-9]+\"})), \"src\", \"github\", \"\", \"\"))))",
+        "regex": "/pr=\"([0-9]+)\"/",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "skipUrlSync": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "sort": 0
+      }
+    ]
   },
   "time": {
     "from": "now-90d",
