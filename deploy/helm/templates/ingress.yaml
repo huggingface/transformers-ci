@@ -94,6 +94,17 @@ spec:
                 name: trace-exporter
                 port:
                   number: 8000
+          {{- if .Values.ciGithubStatus.enabled }}
+          # GitHub webhook deliveries. Exact: the service's /metrics and /healthz
+          # stay in-cluster. Every delivery is signature-checked before parsing.
+          - path: /webhook
+            pathType: Exact
+            backend:
+              service:
+                name: ci-github-status
+                port:
+                  number: {{ .Values.ciGithubStatus.port }}
+          {{- end }}
           - path: /
             pathType: Prefix
             backend:

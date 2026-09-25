@@ -103,11 +103,13 @@ env:
   # specific parametrized node-id like `test_x[float16]`.)
   VERIFY_RUNS: "5"
 
-permissions:
-  contents: read
+
+permissions: {}
 
 jobs:
   verify:
+    permissions:
+      contents: read
     name: verify ${{ inputs.model }} (${{ inputs.machine_type }})
     runs-on:
       group: '${{ inputs.machine_type }}'          # same runner groups / ARC scale sets as run-slow
@@ -289,7 +291,7 @@ jobs:
       # because the probe is on, cuda_delta_after_gc_bytes.
       - name: Upload memory probe
         if: ${{ always() && inputs.memory_probe }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: serge-memory-probe-${{ inputs.machine_type }}
           path: /transformers/reports/resource-metrics.jsonl
@@ -297,7 +299,7 @@ jobs:
 
       - name: Upload verify result
         if: ${{ always() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: serge-verify-result-${{ inputs.machine_type }}
           path: /transformers/reports/verify-result.json

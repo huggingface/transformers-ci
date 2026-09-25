@@ -2755,8 +2755,16 @@ class InstructionAddendumTest(unittest.TestCase):
     def test_retention_oom_gets_the_teardown_fix_not_a_shrug(self):
         text = itf.instruction_addendum(_oom_target(_OOM_RETENTION_TRACE))
         self.assertIn("RETAINED-MEMORY", text)
-        self.assertIn("cleanup(torch_device, gc_collect=True)", text)
-        self.assertIn("tearDown", text)
+        self.assertIn(
+            "class XIntegrationTest(MemoryCleanupMixin, unittest.TestCase):", text
+        )
+        self.assertIn(
+            "from ...test_memory_cleanup_mixin import MemoryCleanupMixin", text
+        )
+        # transformers#48839: the hand-written teardown the mixin replaced.
+        self.assertNotIn("def tearDown(self)", text)
+        # …and the expectations it rewrote to degenerate output alongside.
+        self.assertIn("do NOT edit expected values", text)
         # The coverage guard must survive the rewrite.
         self.assertIn("no shrinking the model", text)
         # …and it must not tell the agent this is probably unfixable.
@@ -3821,6 +3829,10 @@ class OomLoadGuidanceTest(unittest.TestCase):
         # The lazy idiom the maintainers asked for, not an eager loading setUpClass.
         self.assertIn("def get_model(cls):", text)
         self.assertIn("cls.model = None", text)
+        # On the mixin, which releases `cls.model` itself.
+        self.assertIn("MemoryCleanupMixin", text)
+        self.assertIn("super().setUpClass()", text)
+        self.assertNotIn("del cls.model", text)
         # The retention block's fix must not be what this group is told to do.
         self.assertNotIn("def tearDown(self)", text)
 
@@ -3839,7 +3851,7 @@ class OomLoadGuidanceTest(unittest.TestCase):
 
     def test_a_retention_group_keeps_its_teardown_guidance(self):
         text = itf.instruction_addendum(_oom_target(_OOM_RETENTION_TRACE))
-        self.assertIn("def tearDown(self)", text)
+        self.assertIn("MemoryCleanupMixin", text)
 
 
 class OomClusterGuidanceTest(unittest.TestCase):
@@ -4026,11 +4038,35 @@ class CulpritClusterGuidanceTest(unittest.TestCase):
 
     def test_it_points_at_evidence_the_agent_can_actually_read(self):
         """No git tool and `fetch_url` is huggingface.co-only, so the block must
-        not send the agent to `git show` or to github.com."""
+        not send the agent to `git show` or to github.com.
+
+        The evidence it points at changed on 2026-09-21 and the constraint did
+        not: serge fetches the culprit's pull request from relore and quotes it
+        in the task, so the block asks the agent to READ that instead of
+        reconstructing the commit's intent from what it left in the tree. The
+        old wording spelled out the constraint ("you have no git and cannot
+        fetch github.com") because it was about to send the agent hunting; there
+        is nothing to hunt now, so it only has to avoid naming the tools.
+        """
         text = itf.instruction_addendum(self._cluster())
-        self.assertIn("no git", text)
+        self.assertIn("quotes that pull request", text)
         self.assertNotIn("git show", text)
         self.assertNotIn("git log", text)
+        self.assertNotIn("github.com", text)
+
+    def test_it_does_not_ask_the_agent_to_reconstruct_the_culprits_intent(self):
+        """The deleted paragraph, asserted gone.
+
+        It told the agent to grep the PR number out of the group label and read
+        the comment block the commit left above the code it changed — a method
+        that ran on every cluster and is wrong often enough to be the failure
+        this whole block exists to prevent. relore answers it directly now. If
+        this assertion is ever satisfied again, the two halves have drifted:
+        serge's block (`relore_tool.culprit_thread_note`) is what replaced it.
+        """
+        text = itf.instruction_addendum(self._cluster())
+        self.assertNotIn("read what it left in the tree", text)
+        self.assertNotIn("cites itself in a comment", text)
 
 
 class ModularSourceParseTests(unittest.TestCase):
@@ -4561,3 +4597,74 @@ class UnverifiedBranchCommandTests(unittest.TestCase):
             )
         )
         self.assertNotIn("gh workflow run", body)
+
+
+class TestWindowConfiguration(unittest.TestCase):
+    """`--window` / `--min-days` are env-settable, because the nightly workflow
+    has no other way to pass them (it builds one fixed command line), and the
+    window is the only lever that can surface a bad-commit cluster when none is
+    in reach. A typo in either variable name is silent, so assert the wiring."""
+
+    def _args(self, env, argv=None):
+        with patch.dict(os.environ, env, clear=False):
+            return itf.build_parser().parse_args(argv or [])
+
+    def test_defaults_reproduce_the_previously_hardcoded_values(self):
+        """Unsetting both variables must not change a single dispatched group."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ITF_WINDOW", None)
+            os.environ.pop("ITF_MIN_DAYS", None)
+            args = itf.build_parser().parse_args([])
+        self.assertEqual(args.window, 7)
+        self.assertEqual(args.min_days, 5)
+
+    def test_env_sets_the_window(self):
+        args = self._args({"ITF_WINDOW": "21", "ITF_MIN_DAYS": "7"})
+        self.assertEqual(args.window, 21)
+        self.assertEqual(args.min_days, 7)
+
+    def test_the_flag_still_beats_the_env(self):
+        """The workflow sets the env; a human debugging locally passes the flag."""
+        args = self._args({"ITF_WINDOW": "21"}, ["--window", "10"])
+        self.assertEqual(args.window, 10)
+
+
+class TestLivenessArithmeticWarning(unittest.TestCase):
+    """A group must be red on >= --min-days of --window to exist at all, so a
+    --liveness-runs larger than the slack between them can never be satisfied:
+    the check silently never fires and settled groups get dispatched, each
+    costing a GPU reproduce. Now that the window is configurable this is a
+    reachable misconfiguration, so it must be reported."""
+
+    def _warn(self, window, min_days, liveness_runs, no_check=False):
+        argv = [
+            "--window",
+            str(window),
+            "--min-days",
+            str(min_days),
+            "--liveness-runs",
+            str(liveness_runs),
+        ]
+        if no_check:
+            argv.append("--no-liveness-check")
+        args = itf.build_parser().parse_args(argv)
+        slack = args.window - args.min_days
+        return (not args.no_liveness_check) and args.liveness_runs > slack
+
+    def test_the_default_pairing_is_fine(self):
+        self.assertFalse(self._warn(7, 5, 1))
+
+    def test_a_widened_window_is_fine(self):
+        self.assertFalse(self._warn(21, 7, 1))
+        self.assertFalse(self._warn(21, 7, 14))
+
+    def test_exceeding_the_slack_is_reported(self):
+        """21 - 7 = 14 runs of slack; 15 can never be satisfied."""
+        self.assertTrue(self._warn(21, 7, 15))
+
+    def test_no_slack_is_reported(self):
+        """window == min_days leaves zero slack, so even 1 run is unreachable."""
+        self.assertTrue(self._warn(7, 7, 1))
+
+    def test_opting_out_of_the_check_is_not_a_misconfiguration(self):
+        self.assertFalse(self._warn(7, 7, 1, no_check=True))

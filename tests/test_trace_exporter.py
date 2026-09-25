@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import gzip
 import json
+import time
 import urllib.parse
 from unittest.mock import patch
 
@@ -2299,6 +2300,13 @@ def test_streamed_payload_matches_full_render(monkeypatch, tmp_path) -> None:
         "pytest_trace_exporter_last_render_timestamp_seconds",
         "pytest_trace_exporter_traces_processed_total",
         "pytest_trace_exporter_process_resident_bytes",
+        "pytest_trace_exporter_renders_total",
+        "pytest_trace_exporter_render_phase_seconds",
+        "pytest_trace_exporter_render_traces",
+        "pytest_trace_exporter_payload_",
+        "pytest_trace_exporter_refresh_pause",
+        "pytest_trace_exporter_upstream_",
+        "pytest_trace_exporter_github_rate_limit",
     )
 
     def stable(text: str) -> list[str]:
@@ -3822,7 +3830,7 @@ def test_pr_badge_uses_prometheus_rollups_before_tempo(monkeypatch) -> None:
     monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
     captured: dict[str, str] = {}
 
-    def _query(url):
+    def _query(url, **_kwargs):
         captured["url"] = url
         labels = {
             "pr": "4321",
@@ -3869,7 +3877,7 @@ def test_pr_badge_prefers_prometheus_job_rollups_for_latest_run(monkeypatch) -> 
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
     monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
 
-    def _query(url):
+    def _query(url, **_kwargs):
         labels = {
             "pr": "45638",
             "provider": "github_actions",
@@ -3940,7 +3948,7 @@ def test_pr_badge_counts_each_hardware_of_a_job_separately(monkeypatch) -> None:
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
     monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
 
-    def _query(url):
+    def _query(url, **_kwargs):
         labels = {
             "ci_event": "pr-comment",
             "pr": "48171",
@@ -4117,7 +4125,7 @@ def test_pr_badge_scopes_the_prometheus_query_to_its_stream(monkeypatch) -> None
     badge pull every one of a PR's runs out of Prometheus to throw most away."""
     captured: list[str] = []
 
-    def _query(url):
+    def _query(url, **_kwargs):
         captured.append(url)
         return {"status": "success", "data": {"result": []}}
 
@@ -4718,3 +4726,485 @@ def test_window_render_drops_a_cached_internal_shape(repository_filter) -> None:
         info["repository"] for info, _, _ in trace_exporter._iter_window_shaped()
     ]
     assert surfaced == ["huggingface/transformers", "contributor/transformers"]
+
+
+# ---------------------------------------------------------------------------
+# Render profile: where a render's wall-clock goes, and what it waited on.
+# ---------------------------------------------------------------------------
+
+
+def _reset_render_profile() -> None:
+    trace_exporter._render_started = None
+    trace_exporter._render_phases.clear()
+    trace_exporter._render_counts.clear()
+    trace_exporter._last_render_phases.clear()
+    trace_exporter._last_render_counts.clear()
+    trace_exporter._render_phase_seconds_total.clear()
+    trace_exporter._renders_total = 0
+    trace_exporter._refresh_pauses_total.clear()
+    trace_exporter._refresh_pause_seconds_total.clear()
+    trace_exporter._upstream_requests_total.clear()
+    trace_exporter._upstream_request_seconds_total.clear()
+    trace_exporter._upstream_response_bytes_total.clear()
+    trace_exporter._github_rate_limit.clear()
+
+
+def _samples(text: str, name: str) -> dict[str, float]:
+    """``{label-string: value}`` for every sample of ``name`` in ``text``."""
+    found: dict[str, float] = {}
+    for line in text.splitlines():
+        if line.startswith(name + "{") or line.startswith(name + " "):
+            head, value = line.rsplit(" ", 1)
+            found[head[len(name) :]] = float(value)
+    return found
+
+
+def test_render_profile_describes_the_previous_completed_render(
+    monkeypatch, tmp_path
+) -> None:
+    # A payload cannot report its own write, so it carries the profile of the
+    # render before it. The first payload has none; the second has every phase,
+    # and its line count is the first payload's.
+    _reset_render_profile()
+    _reset_window_state()
+    payload_file = tmp_path / "payload.prom"
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PAYLOAD_FILE", str(payload_file))
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    trace = trace_exporter.tempo_trace_to_jaeger("trace-torch", payload)
+    monkeypatch.setattr(trace_exporter, "_iter_window_shaped", _shaped_iter(trace))
+
+    trace_exporter._refresh_cache_once()
+    first = payload_file.read_text(encoding="utf-8")
+    assert _samples(first, "pytest_trace_exporter_renders_total") == {"": 0.0}
+    assert "pytest_trace_exporter_render_phase_seconds{" not in first
+
+    trace_exporter._refresh_cache_once()
+    second = payload_file.read_text(encoding="utf-8")
+    assert _samples(second, "pytest_trace_exporter_renders_total") == {"": 1.0}
+    phases = _samples(second, "pytest_trace_exporter_render_phase_seconds")
+    for phase in (
+        "memory_relief",
+        "trace_fetch_shape",
+        "run_settle",
+        "extract_run_rollup",
+        "extract_run_active",
+        "payload_write",
+        "prune_run_store",
+        "other",
+    ):
+        assert f'{{phase="{phase}"}}' in phases, phase
+    assert all(seconds >= 0 for seconds in phases.values())
+    totals = _samples(second, "pytest_trace_exporter_render_phase_seconds_total")
+    assert totals == phases  # one completed render: the totals are that render
+    assert _samples(second, "pytest_trace_exporter_payload_lines") == {
+        "": float(len(first.splitlines()))
+    }
+    assert _samples(second, "pytest_trace_exporter_payload_bytes") == {
+        "": float(len(first))
+    }
+    _reset_render_profile()
+    _reset_window_state()
+
+
+def test_render_profile_counts_cache_hits_fetches_and_failures(monkeypatch) -> None:
+    # Cache misses are what make a render expensive, so each render reports how
+    # much of its window came from cache, from Tempo, or not at all.
+    _reset_render_profile()
+    _reset_window_state()
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    ids = ["trace-ok", "trace-broken"]
+
+    def opener(url, timeout=None):
+        if "/api/search" in url:
+            return _UrlResponse(json.dumps({"traces": [{"traceID": t} for t in ids]}))
+        if "trace-broken" in url:
+            raise OSError("tempo read timed out")
+        return _UrlResponse(json.dumps(payload))
+
+    with patch("transformersci.otel.trace_exporter.urlopen", side_effect=opener):
+        trace_exporter._begin_render()
+        list(trace_exporter._iter_window_shaped("http://tempo:3200"))
+        trace_exporter._finish_render()
+
+    text = "\n".join(trace_exporter._render_profile_lines())
+    assert _samples(text, "pytest_trace_exporter_render_traces") == {
+        '{source="window"}': 2.0,
+        '{source="cached"}': 0.0,
+        '{source="fetched"}': 2.0,
+        '{source="deferred"}': 0.0,
+        '{source="fetch_failed"}': 1.0,
+        '{source="job_refetch"}': 0.0,
+    }
+    assert '{phase="tempo_search"}' in _samples(
+        text, "pytest_trace_exporter_render_phase_seconds"
+    )
+    requests = _samples(text, "pytest_trace_exporter_upstream_requests_total")
+    assert requests == {
+        '{upstream="tempo",outcome="error"}': 1.0,
+        '{upstream="tempo",outcome="ok"}': 2.0,  # the search and one trace
+    }
+    _reset_render_profile()
+    _reset_window_state()
+
+
+def test_github_calls_record_wait_time_and_rate_limit() -> None:
+    # The status service needs a request budget; the exporter already spends
+    # one, so it reports what GitHub says is left — on a 403 as well.
+    _reset_render_profile()
+
+    class _GitHubResponse(FakeResponse):
+        headers = {
+            "X-RateLimit-Limit": "5000",
+            "X-RateLimit-Remaining": "4321",
+            "X-RateLimit-Reset": "1790000000",
+        }
+
+    with patch(
+        "transformersci.otel.trace_exporter.urlopen",
+        side_effect=[_GitHubResponse('{"ok": true}')],
+    ):
+        assert trace_exporter._github_api_get("https://api.github.example/x") == {
+            "ok": True
+        }
+
+    exhausted = trace_exporter.HTTPError(
+        "https://api.github.example/y",
+        403,
+        "rate limited",
+        {"X-RateLimit-Remaining": "0"},
+        None,
+    )
+    with patch("transformersci.otel.trace_exporter.urlopen", side_effect=[exhausted]):
+        with pytest.raises(trace_exporter.HTTPError):
+            trace_exporter._github_api_get("https://api.github.example/y")
+
+    text = "\n".join(trace_exporter._render_profile_lines())
+    assert _samples(text, "pytest_trace_exporter_github_rate_limit") == {"": 5000.0}
+    assert _samples(text, "pytest_trace_exporter_github_rate_limit_remaining") == {
+        "": 0.0
+    }
+    assert _samples(
+        text, "pytest_trace_exporter_github_rate_limit_reset_timestamp_seconds"
+    ) == {"": 1790000000.0}
+    assert _samples(text, "pytest_trace_exporter_upstream_requests_total") == {
+        '{upstream="github",outcome="error"}': 1.0,
+        '{upstream="github",outcome="ok"}': 1.0,
+    }
+    _reset_render_profile()
+
+
+def test_refresh_loop_reports_why_it_paused(monkeypatch) -> None:
+    # A failed or slow render takes the cooldown instead of the interval. That
+    # pause is invisible in render_duration_seconds but delays every update.
+    _reset_render_profile()
+
+    class _Stop(Exception):
+        pass
+
+    outcomes = iter([None, RuntimeError("tempo down")])
+
+    def _render() -> None:
+        outcome = next(outcomes)
+        if outcome is not None:
+            raise outcome
+
+    pauses: list[float] = []
+
+    def _sleep(seconds: float) -> None:
+        pauses.append(seconds)
+        if len(pauses) == 2:
+            raise _Stop
+
+    monkeypatch.setattr(trace_exporter, "_refresh_cache_once", _render)
+    monkeypatch.setattr(trace_exporter.time, "sleep", _sleep)
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_REFRESH_COOLDOWN_SECONDS", "60")
+    with pytest.raises(_Stop):
+        trace_exporter._refresh_loop(15.0)
+
+    assert pauses == [15.0, 60.0]
+    text = "\n".join(trace_exporter._render_profile_lines())
+    assert _samples(text, "pytest_trace_exporter_refresh_pauses_total") == {
+        '{reason="error"}': 1.0,
+        '{reason="interval"}': 1.0,
+    }
+    assert _samples(text, "pytest_trace_exporter_refresh_pause_seconds_total") == {
+        '{reason="error"}': 60.0,
+        '{reason="interval"}': 15.0,
+    }
+    _reset_render_profile()
+
+
+# ---------------------------------------------------------------------------
+# Finished PR jobs publish their results without waiting for the whole run.
+# ---------------------------------------------------------------------------
+
+_EARLY_RUN = "900:1"
+_EARLY_REPO = ("huggingface/transformers", "900")
+
+
+def _early_trace(trace_id: str, job: str, *, pr: str = "4321", failing: bool = False):
+    return make_trace(
+        trace_id=trace_id,
+        run_id=_EARLY_RUN,
+        job=job,
+        pr=pr,
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid=f"tests/test_{job}.py::TestX::test_one",
+                start_time=1_000_000,
+                duration=1_000_000,
+                status_code="ERROR" if failing else "UNSET",
+            )
+        ],
+    )
+
+
+def _early_setup(
+    *,
+    conclusion: str = "success",
+    status: str = "completed",
+    completed_at: float = 1_000.0,
+    fetched_at: float = 1_100.0,
+    settled: bool = False,
+    failing: bool = False,
+    pr: str = "4321",
+    attempt: str = "1",
+):
+    """A PR run with a finished check job and a pytest job still running."""
+    _reset_window_state()
+    trace_exporter._run_job_states.clear()
+    trace_exporter._job_refetch_due.clear()
+    traces = [
+        _early_trace(
+            "trace-check", "check_repository_consistency", pr=pr, failing=failing
+        ),
+        _early_trace("trace-torch", "tests_torch", pr=pr),
+    ]
+    extracted = trace_exporter._precompute_trace_rows(traces)
+    for trace_id in ("trace-check", "trace-torch"):
+        trace_exporter._shaped_meta[trace_id] = (settled, fetched_at)
+    trace_exporter._run_job_states[_EARLY_REPO] = (
+        time.monotonic(),
+        attempt,
+        (
+            trace_exporter.GitHubJobState(
+                "Check repository consistency",
+                status,
+                conclusion,
+                completed_at if status == "completed" else None,
+            ),
+            trace_exporter.GitHubJobState("tests_torch", "in_progress", "", None),
+        ),
+    )
+    return extracted
+
+
+def _released_jobs(released) -> set[str]:
+    return {str(info["test_job"]) for info, _rows in released}
+
+
+def test_finished_pr_job_is_released_while_its_run_is_still_going() -> None:
+    extracted = _early_setup()
+    released, runs = trace_exporter.completed_job_results_extracted(extracted, set())
+    assert _released_jobs(released) == {"check_repository_consistency"}
+    assert runs == {_EARLY_RUN}
+
+    lines = trace_exporter.extract_run_rollup_metrics(
+        _extracted=released, _job_only_runs=runs
+    )
+    samples = [line for line in lines if not line.startswith("#")]
+    assert any(
+        line.startswith("pytest_run_job_total_tests{")
+        and 'test_job="check_repository_consistency"' in line
+        for line in samples
+    )
+    assert any(line.startswith("pytest_run_job_member_info{") for line in samples)
+    # The run itself is not finished: nothing run-level, no job count, and the
+    # still-running job is absent rather than published as a partial.
+    assert not any(
+        line.startswith(
+            (
+                "pytest_run_start_time_seconds",
+                "pytest_run_total_tests",
+                "pytest_run_job_count",
+            )
+        )
+        for line in samples
+    )
+    assert not any('test_job="tests_torch"' in line for line in samples)
+    _reset_window_state()
+
+
+def test_run_the_gate_released_is_left_to_the_gate() -> None:
+    extracted = _early_setup()
+    released, runs = trace_exporter.completed_job_results_extracted(
+        extracted, {_EARLY_RUN}
+    )
+    assert released == [] and runs == set()
+    _reset_window_state()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "why"),
+    [
+        ({"status": "in_progress"}, "GitHub says the job is still running"),
+        ({"conclusion": "cancelled"}, "cancelled jobs wait for the run"),
+        ({"conclusion": "skipped"}, "skipped jobs wait for the run"),
+        (
+            {"conclusion": "failure"},
+            "GitHub failed it but the traces show no failure yet",
+        ),
+        ({"failing": True}, "the traces fail a job GitHub passed"),
+        ({"pr": "main"}, "branch runs keep the whole-run gate"),
+        ({"attempt": "2"}, "the listing is for another attempt"),
+    ],
+)
+def test_finished_job_is_held_when(kwargs, why) -> None:
+    extracted = _early_setup(**kwargs)
+    released, _runs = trace_exporter.completed_job_results_extracted(extracted, set())
+    assert released == [], why
+    _reset_window_state()
+
+
+def test_failed_job_is_released_when_github_and_traces_agree() -> None:
+    extracted = _early_setup(conclusion="failure", failing=True)
+    released, _runs = trace_exporter.completed_job_results_extracted(extracted, set())
+    assert _released_jobs(released) == {"check_repository_consistency"}
+    _reset_window_state()
+
+
+def test_job_read_before_it_finished_is_queued_for_a_reread() -> None:
+    # The copy predates the job's end (plus the grace), so it may miss the
+    # final spans: hold the job and ask the next render to read it first.
+    extracted = _early_setup(completed_at=1_000.0, fetched_at=1_010.0)
+    released, _runs = trace_exporter.completed_job_results_extracted(extracted, set())
+    assert released == []
+    grace = trace_exporter.DEFAULT_JOB_RELEASE_GRACE_SECONDS
+    assert trace_exporter._job_refetch_due == {"trace-check": 1_000.0 + grace}
+
+    # A settled trace is final by definition and is not re-read.
+    extracted = _early_setup(completed_at=1_000.0, fetched_at=1_010.0, settled=True)
+    released, _runs = trace_exporter.completed_job_results_extracted(extracted, set())
+    assert _released_jobs(released) == {"check_repository_consistency"}
+    assert trace_exporter._job_refetch_due == {}
+    _reset_window_state()
+
+
+def test_early_job_results_can_be_switched_off(monkeypatch) -> None:
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_EARLY_JOB_RESULTS", "0")
+    extracted = _early_setup()
+    assert trace_exporter.completed_job_results_extracted(extracted, set()) == (
+        [],
+        set(),
+    )
+    _reset_window_state()
+
+
+def test_window_reads_a_finished_jobs_trace_ahead_of_the_cadence(monkeypatch) -> None:
+    # Fetched 10s ago: well inside the 300s re-fetch interval, so ordinarily it
+    # would be served from cache. Its job finished after that read, so it is
+    # read now, first in line.
+    _reset_window_state()
+    payload = make_otlp_trace(
+        nodeid="tests/test_torch.py::TestTorch::test_one",
+        start_nano=1_000_000_000,
+        end_nano=2_000_000_000,
+        status_code="STATUS_CODE_OK",
+    )
+    fetched = []
+
+    def opener(url, timeout=None):
+        if "/api/search" in url:
+            return _UrlResponse(
+                json.dumps({"traces": [{"traceID": "trace-a"}, {"traceID": "trace-b"}]})
+            )
+        fetched.append(url.rsplit("/", 1)[-1])
+        return _UrlResponse(json.dumps(payload))
+
+    with patch("transformersci.otel.trace_exporter.urlopen", side_effect=opener):
+        list(trace_exporter._iter_window_shaped("http://tempo:3200"))
+        fetched.clear()
+        now = time.time()
+        for trace_id in ("trace-a", "trace-b"):
+            trace_exporter._shaped_meta[trace_id] = (False, now - 10)
+        trace_exporter._job_refetch_due["trace-b"] = now - 5
+        list(trace_exporter._iter_window_shaped("http://tempo:3200"))
+
+    assert fetched == ["trace-b"]
+    trace_exporter._job_refetch_due.clear()
+    _reset_window_state()
+
+
+def test_github_listing_records_job_states_only_when_complete(monkeypatch) -> None:
+    trace_exporter._run_job_states.clear()
+
+    def api(pages: int):
+        def _get(url, timeout=5.0):
+            if "/jobs" not in url:
+                return {"status": "in_progress"}
+            page = int(url.rsplit("page=", 1)[-1])
+            if page > pages:
+                return {"jobs": []}
+            return {
+                "jobs": [
+                    {
+                        "name": "PR CI / Check code quality",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "completed_at": "2026-09-24T07:30:00Z",
+                    }
+                ]
+                * (100 if page < pages else 3)
+            }
+
+        return _get
+
+    monkeypatch.setattr(trace_exporter, "_github_api_get", api(2))
+    trace_exporter.fetch_github_run_activity("huggingface/transformers", "900", "1")
+    _cached_at, attempt, states = trace_exporter._run_job_states[_EARLY_REPO]
+    assert attempt == "1" and len(states) == 103
+    assert states[0].name == "Check code quality"
+    assert states[0].completed_at == trace_exporter.parse_github_timestamp(
+        "2026-09-24T07:30:00Z"
+    )
+
+    # Past the page cap the listing is incomplete: a sibling on a later page
+    # could still be running, so nothing is recorded.
+    trace_exporter._run_job_states.clear()
+    monkeypatch.setattr(
+        trace_exporter,
+        "_github_api_get",
+        api(trace_exporter.DEFAULT_ACTIVE_JOBS_PAGES + 1),
+    )
+    trace_exporter.fetch_github_run_activity("huggingface/transformers", "900", "1")
+    assert _EARLY_REPO not in trace_exporter._run_job_states
+
+
+def test_render_publishes_a_finished_job_before_its_run(monkeypatch) -> None:
+    extracted = _early_setup()
+    shaped = [(info, rows, True) for info, rows in extracted]
+    monkeypatch.setattr(
+        trace_exporter, "_iter_window_shaped", lambda *a, **k: iter(list(shaped))
+    )
+    out = trace_exporter._render_metrics_uncached()
+    assert "pytest_trace_exporter_jobs_released_early 1" in out
+    assert (
+        'pytest_run_job_total_tests{ci_event="none",hardware="cpu",pr="4321",'
+        'provider="github_actions",run_id="900:1",service_name="transformers-tests",'
+        'test_job="check_repository_consistency"} 1'
+    ) in out
+    assert "pytest_run_total_tests{" not in out
+    trace_exporter._run_job_states.clear()
+    trace_exporter._job_refetch_due.clear()
+    _reset_window_state()

@@ -48,6 +48,7 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -86,6 +87,22 @@ RELOAD_COMMANDS = {
         ["wget", "-q", "-O-", "--post-data=", "http://127.0.0.1:9090/-/reload"],
     ),
 }
+
+# The file each reload reads, as (ConfigMap, key, path in the container). A
+# reload re-reads whatever is mounted NOW, and kubelet syncs an updated ConfigMap
+# volume up to ~a minute after `helm upgrade`: on 2026-09-24 (rev 209) the reload
+# fired first, "succeeded" on the old file, and the new ci-github-status scrape
+# job stayed unloaded. So the reload waits until the mounted file is the one Helm
+# just applied, and falls back to a restart if kubelet never catches up.
+RELOAD_SYNC_FILES = {
+    ("StatefulSet", "prometheus"): (
+        "prometheus-config",
+        "prometheus.yml",
+        "/etc/prometheus/prometheus.yml",
+    ),
+}
+RELOAD_SYNC_TIMEOUT_SECONDS = 150.0
+RELOAD_SYNC_POLL_SECONDS = 3.0
 
 # Restart order, dependencies before the things that consume them. The data path
 # is otelcol -> tempo -> trace-exporter -> prometheus -> grafana, so the trace
@@ -1028,6 +1045,46 @@ def converge(plan: Plan, args: argparse.Namespace) -> bool:
     return True
 
 
+def wait_for_mounted_config(
+    target: tuple, pod: str, container: str, args: argparse.Namespace
+) -> bool:
+    """Poll until ``pod`` mounts the ConfigMap content Helm just applied."""
+    spec = RELOAD_SYNC_FILES.get(target)
+    if spec is None:
+        return True
+    configmap, key, path = spec
+    escaped = key.replace(".", "\\.")
+    wanted = try_output(
+        [
+            "kubectl",
+            "get",
+            "configmap",
+            configmap,
+            "-n",
+            args.namespace,
+            "-o",
+            f"jsonpath={{.data.{escaped}}}",
+        ]
+    )
+    if wanted is None:
+        return False
+    deadline = time.monotonic() + RELOAD_SYNC_TIMEOUT_SECONDS
+    while True:
+        mounted = try_output(
+            ["kubectl", "exec", "-n", args.namespace, pod, "-c", container, "--"]
+            + ["cat", path]
+        )
+        if mounted is not None and mounted.rstrip("\n") == wanted.rstrip("\n"):
+            return True
+        if time.monotonic() >= deadline:
+            note(
+                f"  {pod}: {path} still differs from ConfigMap/{configmap} after "
+                f"{RELOAD_SYNC_TIMEOUT_SECONDS:.0f}s"
+            )
+            return False
+        time.sleep(RELOAD_SYNC_POLL_SECONDS)
+
+
 def reload_workload(target: tuple, args: argparse.Namespace) -> bool:
     container, command = RELOAD_COMMANDS[target]
     pods = try_output(
@@ -1051,6 +1108,8 @@ def reload_workload(target: tuple, args: argparse.Namespace) -> bool:
     if not matches:
         return False
     for pod in matches:
+        if not wait_for_mounted_config(target, pod, container, args):
+            return False
         result = run(
             ["kubectl", "exec", "-n", args.namespace, pod, "-c", container, "--"]
             + command,

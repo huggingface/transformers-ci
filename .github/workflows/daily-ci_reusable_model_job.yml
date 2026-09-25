@@ -73,6 +73,8 @@ permissions:
 
 jobs:
   run_models_gpu:
+    permissions:
+      contents: read
     name: " "
     strategy:
       max-parallel: 8

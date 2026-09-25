@@ -1,0 +1,170 @@
+{{- if .Values.ciGithubStatus.enabled }}
+#------------------------------------------------------------------------------
+# ci-github-status: live run/job status from GitHub webhooks
+#
+# A separate process from trace-exporter on purpose, so a slow render or its
+# cooldown can never hold back status. One replica and a Recreate rollout: the
+# SQLite file on the PVC must never have two writers. Only POST /webhook is
+# routed publicly (see ingress.yaml); /metrics is scraped in-cluster.
+#------------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ci-github-status
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ci-github-status
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "transformers-ci.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ci-github-status
+  template:
+    metadata:
+      labels:
+        {{- include "transformers-ci.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ci-github-status
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.ciGithubStatus.port }}"
+        rollout/source-revision: {{ .Values.ciGithubStatus.sourceRevision | quote }}
+    spec:
+      initContainers:
+        - name: clone-src
+          image: alpine/git:latest
+          command:
+            - sh
+            - -c
+            - |
+              git clone --depth 1 https://github.com/huggingface/transformers-ci.git /app/src
+              revision={{ .Values.ciGithubStatus.sourceRevision | quote }}
+              if [ -n "${revision}" ]; then
+                git -C /app/src fetch --depth 1 origin "${revision}" || \
+                  git -C /app/src fetch --depth 1 origin "refs/heads/${revision}"
+                git -C /app/src checkout --detach FETCH_HEAD
+              fi
+          volumeMounts:
+            - name: src
+              mountPath: /app/src
+          resources:
+            limits:
+              memory: 128Mi
+              cpu: 100m
+      containers:
+        - name: ci-github-status
+          image: "{{ .Values.ciGithubStatus.image.repository }}:{{ .Values.ciGithubStatus.image.tag }}"
+          imagePullPolicy: {{ .Values.ciGithubStatus.image.pullPolicy }}
+          command:
+            - python
+            - -m
+            - transformersci.status.cli
+            - serve
+            - --db
+            - /data/status.db
+            - --port
+            - "{{ .Values.ciGithubStatus.port }}"
+            {{- range .Values.ciGithubStatus.repositories }}
+            - --repository
+            - {{ . | quote }}
+            {{- end }}
+            {{- range .Values.ciGithubStatus.workflows }}
+            - --workflow
+            - {{ . | quote }}
+            {{- end }}
+            - --publish-completed
+            - {{ .Values.ciGithubStatus.publishCompleted | quote }}
+            - --retention
+            - {{ .Values.ciGithubStatus.retention | quote }}
+            - --reconcile-interval
+            - {{ .Values.ciGithubStatus.reconcile.interval | quote }}
+            - --reconcile-requests
+            - "{{ .Values.ciGithubStatus.reconcile.requestsPerCycle }}"
+          env:
+            - name: PYTHONPATH
+              value: /app/src/src
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            # Required: the service refuses to start without it.
+            - name: GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.ciGithubStatus.secretKeys.webhookSecret }}
+            # Optional: without it reconciliation is off, and /metrics says so.
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.ciGithubStatus.secretKeys.githubToken }}
+                  optional: true
+          ports:
+            - name: http
+              containerPort: {{ .Values.ciGithubStatus.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.ciGithubStatus.resources | nindent 12 }}
+          volumeMounts:
+            - name: src
+              mountPath: /app/src
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.ciGithubStatus.port }}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.ciGithubStatus.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: src
+          emptyDir: {}
+        - name: data
+          persistentVolumeClaim:
+            claimName: ci-github-status
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ci-github-status
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ci-github-status
+  annotations:
+    # Rollback disables the service; the state is kept for diagnosis.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.ciGithubStatus.storage.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.ciGithubStatus.storage.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ci-github-status
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ci-github-status
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.ciGithubStatus.port }}
+      targetPort: {{ .Values.ciGithubStatus.port }}
+      protocol: TCP
+  selector:
+    {{- include "transformers-ci.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ci-github-status
+{{- end }}

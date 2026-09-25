@@ -434,7 +434,7 @@ def oom_shape(trace: str) -> tuple[str, dict[str, float]]:
         most of the card. The test's own working set is not the problem — the
         card was already full when it started, because earlier tests in the same
         pytest process never released their models. That IS fixable by a source
-        patch (a ``tearDown`` that frees), and the fix is in the test file.
+        patch (``MemoryCleanupMixin`` on the test class), and the fix is in the test file.
 
     ``OOM_CAPACITY``
         One allocation alone approaches the whole card. No amount of freeing
@@ -4052,20 +4052,26 @@ _CRASH_GUIDANCE = (
 # bug it was written for, and nothing in the trunk said not to: transformers
 # #48535 re-guarded the `update_post_processor()` call from #47988 with a
 # condition the base class already applies, i.e. made it dead code, and OLMo
-# started appending EOS to every prompt again. The agent has no git and cannot
-# fetch github.com, so this block points it at the evidence it CAN read.
+# started appending EOS to every prompt again.
+#
+# This block used to spend a paragraph teaching the agent to reconstruct what the
+# culprit was FOR out of what it left in the tree — grep the PR number, read the
+# comment block above the changed code, hope it cites itself. serge now fetches
+# the culprit's pull request from relore and quotes it in the task, discussion
+# included, so the paragraph is gone: on #47988 that thread carries @ydshieh's
+# own rationale for merging it, which is the thing #48535 did not know. The
+# OBLIGATION stays here, because it is ours; the method is serge's, and serge
+# also says what to do when the fetch fails (`relore_tool.culprit_thread_note`).
 _CULPRIT_GUIDANCE = (
     "── This group is attributed to one commit (a REGRESSION cluster) ──\n"
     "CI's bisect pinned these failures to the single commit named in the group "
     "label above. That commit is almost always a FIX for something else, and it is "
     "still load-bearing: making this group green by undoing it trades one set of "
     "failures for another that no daily run will attribute to you.\n"
-    "  - **Establish what the culprit was for, before you touch it.** You have no "
-    "git and cannot fetch github.com, so read what it left in the tree: the "
-    "comment block it added above the code it changed (these usually name the PR "
-    "and the symptom outright), the test it added or updated, the docstrings "
-    "around it. `grep` the PR number from the group label — a fix that mattered "
-    "normally cites itself in a comment.\n"
+    "  - **Establish what the culprit was for, before you touch it.** This task "
+    "quotes that pull request — the argument, not just the diff — whenever it "
+    "could be fetched. Read it before the code it changed, and do not "
+    "reconstruct its intent from the diff alone.\n"
     "  - **Your patch must keep that fixed, and must say how in `body`**: name the "
     "behaviour the culprit protected and why your change preserves it. If you "
     "cannot establish what it protected, you cannot know whether you are breaking "
@@ -4126,7 +4132,10 @@ _OOM_GUIDANCE = (
 # Reached when at least one test in the group died asking for a trivial amount on
 # a card PyTorch already filled (see `oom_shape`). That is a retained-memory bug
 # in the test file, and it has one canonical fix in this repo — so the guidance
-# names it instead of steering the agent away from a patch.
+# names it instead of steering the agent away from a patch. That fix is
+# `MemoryCleanupMixin` since transformers#48681 (2026-09-11); the bare
+# `tearDown` + `cleanup` this block used to teach is what transformers#48839
+# shipped four days later, so keep this in step with `docs/source/en/testing.md`.
 _OOM_RETENTION_GUIDANCE = (
     "── This group's failure mode: `OOM`, and at least one test is a "
     "RETAINED-MEMORY bug, not a capacity limit ──\n"
@@ -4136,17 +4145,28 @@ _OOM_RETENTION_GUIDANCE = (
     "because earlier tests in the SAME pytest process never released their models. "
     "Every test in a class shares one process, so one un-freed model poisons the "
     "rest of the file. This IS fixable, in the test file:\n"
-    "  - Give the failing test's class a `tearDown` that frees the device, using "
-    "this repo's idiom:\n"
-    "        from transformers.testing_utils import cleanup\n"
-    "        def tearDown(self):\n"
-    "            cleanup(torch_device, gc_collect=True)\n"
-    "    Prefer the class-wide `tearDown` — the goal is that no test in the file "
-    "can leak into the next. If the class already has one, the retention is inside "
-    "a single test instead: find a model held in a local that is never dropped "
+    "  - Mix this repo's `MemoryCleanupMixin` into the failing test's class, "
+    "FIRST in the bases (the path is relative to the test file):\n"
+    "        from ...test_memory_cleanup_mixin import MemoryCleanupMixin\n"
+    "        class XIntegrationTest(MemoryCleanupMixin, unittest.TestCase):\n"
+    "    It runs `cleanup(torch_device, gc_collect=True)` around every test, runs "
+    "tests under `torch.no_grad()`, and deletes what a test or `setUpClass` put on "
+    "`self`/the class, `@cached_property` caches included — which a bare `tearDown` "
+    "calling `cleanup` cannot free, since pytest keeps test instances alive. Do NOT "
+    "hand-write that `tearDown` instead. Delete any `tearDown`/`tearDownClass` the "
+    "mixin makes redundant; an overridden `setUp` must call `super().setUp()`; a "
+    "class that calls `backward()` sets `run_under_no_grad = False`. The mixin "
+    "keeps class-BODY attributes, so a model parked on one (`model = None` in the "
+    "body, filled later) is never released — move it into `setUpClass` after "
+    "`super().setUpClass()`. If the class already uses the mixin, the retention is "
+    "inside a single test: find a model held in a local that is never dropped "
     "before the next `from_pretrained`, and `del` it before re-loading.\n"
     "  - Do NOT lower coverage to fit memory — no shrinking the model, no cutting "
     "sequence length, no `skip`/`require_*` decorators, no lowered dtype.\n"
+    "  - Freeing memory does not change what a model outputs, so do NOT edit "
+    "expected values in this patch. If the test, once it fits, fails its "
+    "assertion, that is a separate bug: report the new output in `body` and leave "
+    "the expectations alone.\n"
     "  - Only the tests marked `retained memory (fixable)` are your target. "
     "`over capacity` ones ask for nearly the whole card in one allocation, so "
     "freeing cannot help them; `unclear` ones request too much to blame retention. "
@@ -4186,20 +4206,23 @@ _OOM_LOAD_GUIDANCE = (
     "`from_pretrained` in every method pays for the whole checkpoint each time, "
     "and the first copy can still be alive when the second is materialized. Use "
     "this repo's idiom — a lazy classmethod, NOT an eager `setUpClass` that loads "
-    "(maintainers have asked for this shape in review):\n"
-    "        @classmethod\n"
-    "        def setUpClass(cls):\n"
-    "            cls.model = None\n"
-    "        @classmethod\n"
-    "        def get_model(cls):\n"
-    "            if cls.model is None:\n"
-    '                cls.model = M.from_pretrained(cls.model_id, dtype=..., device_map="auto")\n'
-    "            return cls.model\n"
-    "        @classmethod\n"
-    "        def tearDownClass(cls):\n"
-    "            del cls.model\n"
-    "            cleanup(torch_device, gc_collect=True)\n"
-    "    `tests/models/qwen3_omni_moe/test_modeling_qwen3_omni_moe.py` is the "
+    "(maintainers have asked for this shape in review), on a class that mixes in "
+    "`MemoryCleanupMixin`:\n"
+    "        class XIntegrationTest(MemoryCleanupMixin, unittest.TestCase):\n"
+    "            @classmethod\n"
+    "            def setUpClass(cls):\n"
+    "                super().setUpClass()\n"
+    "                cls.model = None\n"
+    "            @classmethod\n"
+    "            def get_model(cls):\n"
+    "                if cls.model is None:\n"
+    '                    cls.model = M.from_pretrained(cls.model_id, dtype=..., device_map="auto")\n'
+    "                return cls.model\n"
+    "    The mixin drops `cls.model` and frees the device after the class, so write "
+    "no `tearDownClass` for it. Set `cls.model = None` in `setUpClass`, never in "
+    "the class body: the mixin keeps class-body attributes, so a model parked on "
+    "one is never released. "
+    "`tests/models/qwen3_omni_moe/test_modeling_qwen3_omni_moe.py` is the "
     "reference.\n"
     "  - Keep `dtype` at the checkpoint's native precision. Do NOT downcast to "
     "fit: that changes what the test measures.\n"
@@ -4786,21 +4809,37 @@ def _dispatch_targets_bounded(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI. Split out of :func:`main` so the env-var defaults can be
+    asserted without running a triage — several of them (``ITF_WINDOW``,
+    ``ITF_MIN_DAYS``, ``ITF_MAX_GROUPS``) are the only way the nightly
+    workflow can set the flag at all, so a typo in one is silent.
+    """
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument(
         "--window",
         type=int,
-        default=7,
-        help="number of recent daily CI reports to read",
+        default=int(os.environ.get("ITF_WINDOW", "7")),
+        help="number of recent daily CI reports to read. Widening this is the "
+        "only lever that surfaces a bad-commit CLUSTER when none is in reach: "
+        "attribution is written the day a failure FIRST appears (see "
+        "--attr-window), so a cluster needs a failure that is both recently "
+        "bisected and STILL failing, and a 7-day window often holds neither. "
+        "Measured 2026-09-24: window 7 found 0 attributed groups, 14 found only "
+        "a settled one, 21 found a live cluster ranked first. It changes every "
+        "group, not just clusters (env: ITF_WINDOW)",
     )
     p.add_argument(
         "--min-days",
         type=int,
-        default=5,
-        help="keep failures seen on >= this many days",
+        default=int(os.environ.get("ITF_MIN_DAYS", "5")),
+        help="keep failures seen on >= this many days. Scale it with --window or "
+        "'persistent' silently weakens: 5-of-7 is a real bar, 5-of-21 is not "
+        "(2026-09-24: 516 kept at 21/5 against 450 at 21/7). Must also stay at "
+        "least --liveness-runs below --window, or the liveness check can never "
+        "fire (env: ITF_MIN_DAYS)",
     )
     p.add_argument(
         "--attr-window",
@@ -5037,9 +5076,31 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="compute + print everything but POST nothing to Serge",
     )
-    args = p.parse_args(argv)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     assignees = args.assignee or _csv_env("ITF_TRIAGE_ASSIGNEES")
     labels = args.label or _csv_env("ITF_TRIAGE_LABELS")
+
+    # --window and --min-days are settable per deployment, and the liveness check
+    # only ever sees a group that survived them: a group must be red on
+    # >= min_days of the window to exist at all. So if liveness_runs exceeds the
+    # slack between them, no group can ever be quiet for that many runs and still
+    # be here, and the gate silently never fires — settled groups get dispatched
+    # and burn a GPU reproduce each. Loud, not fatal: a wrong window should not
+    # cost the night's run.
+    slack = args.window - args.min_days
+    if not args.no_liveness_check and args.liveness_runs > slack:
+        print(
+            f"      warning: --liveness-runs {args.liveness_runs} exceeds --window "
+            f"minus --min-days ({args.window} - {args.min_days} = {slack}); the "
+            "liveness check can never fire and settled groups will be dispatched. "
+            f"Lower --liveness-runs to {max(slack, 0)} or widen the window.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     print(f"[1/4] Fetching last {args.window} daily CI reports…", flush=True)
     daily = fetch_last_n(args.window, cache_dir=args.cache_dir)
