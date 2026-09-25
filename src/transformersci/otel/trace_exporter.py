@@ -1878,6 +1878,9 @@ def hardware_display(raw: str) -> str:
     return _HARDWARE_DISPLAY.get((raw or "").lower(), raw or "")
 
 
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
 def extract_trace_rows(
     trace: dict,
 ) -> tuple[dict[str, str | int], list[dict[str, str | float]]]:
@@ -1906,6 +1909,7 @@ def extract_trace_rows(
     process_pr_url = ""
     process_repository = ""
     process_commit_sha = ""
+    process_service_version = ""
     process_ci_event = ""
     process_hardware = ""
     service_name = ""
@@ -1961,6 +1965,9 @@ def extract_trace_rows(
         # commit message from GitHub for main-branch (push) runs.
         process_commit_sha = process_tags.get(
             "vcs.ref.head.revision", process_commit_sha
+        )
+        process_service_version = process_tags.get(
+            "service.version", process_service_version
         )
         # CI event / run source (e.g. "daily", "merge"). Push-to-main merges and
         # scheduled daily runs both collapse to pr="main" (no vcs.change.id), so
@@ -2045,6 +2052,15 @@ def extract_trace_rows(
                 except (TypeError, ValueError):
                     pass
         rows.append(row)
+
+    # A PR-comment run (``run-slow``) is an issue_comment workflow, so GitHub runs
+    # it on the default branch: GITHUB_SHA, hence vcs.ref.head.revision, is main's
+    # head at that moment, not what was tested. The PR's name then showed a merged
+    # stranger's commit ("[serge] Fix ... (#49044)" on PR 49084). service.version is
+    # the commit the job checked out - GitHub's merge of the PR head into main, the
+    # same shape a PR CI run reports - so it names the code under test.
+    if process_ci_event == "pr-comment" and _FULL_SHA.match(process_service_version):
+        process_commit_sha = process_service_version
 
     if not process_repository and process_pr_url:
         process_repository = repository_from_pr_url(process_pr_url)

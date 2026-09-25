@@ -5424,3 +5424,57 @@ def test_render_publishes_a_finished_job_before_its_run(monkeypatch) -> None:
     trace_exporter._run_job_states.clear()
     trace_exporter._job_refetch_due.clear()
     _reset_window_state()
+
+
+MAIN_HEAD = "6b14ee96cad3470b1bd8227460050985ba834c3d"
+PR_MERGE = "ea874a1d42bcc9679637cfb4223cc002ab9baa93"
+
+
+def _comment_trace(*, ci_event: str, service_version: str) -> dict:
+    trace = make_trace(
+        trace_id="trace-comment",
+        run_id="36169105839:1",
+        job="run_models_gpu",
+        pr="49084",
+        commit_sha=MAIN_HEAD,
+        ci_event=ci_event,
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/t.py::T::test_a",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    if service_version:
+        trace["processes"]["pytest-process"]["tags"].append(
+            make_tag("service.version", service_version)
+        )
+    return trace
+
+
+def test_pr_comment_run_reports_the_commit_it_tested() -> None:
+    # issue_comment runs on the default branch, so vcs.ref.head.revision is main's
+    # head; service.version is the PR merge commit the job checked out.
+    info, _rows = trace_exporter.extract_trace_rows(
+        _comment_trace(ci_event="pr-comment", service_version=PR_MERGE)
+    )
+    assert info["commit_sha"] == PR_MERGE
+
+
+@pytest.mark.parametrize(
+    ("ci_event", "service_version"),
+    [
+        ("pr-comment", ""),  # no service.version: keep what the runner reported
+        ("pr-comment", "1.0.0"),  # a package version, not a commit
+        ("pr-comment", PR_MERGE[:12]),  # an abbreviated sha is not trusted
+        ("none", PR_MERGE),  # PR CI / push runs keep vcs.ref.head.revision
+        ("daily", PR_MERGE),
+    ],
+)
+def test_other_runs_keep_the_reported_head_revision(ci_event, service_version) -> None:
+    info, _rows = trace_exporter.extract_trace_rows(
+        _comment_trace(ci_event=ci_event, service_version=service_version)
+    )
+    assert info["commit_sha"] == MAIN_HEAD
