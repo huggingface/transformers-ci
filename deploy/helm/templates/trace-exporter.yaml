@@ -96,6 +96,10 @@ spec:
               value: "{{ .Values.traceExporter.config.traceCacheMax }}"
             - name: PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX_BYTES
               value: "{{ .Values.traceExporter.config.traceCacheMaxBytes }}"
+            {{- with .Values.traceExporter.config.shapedCacheMaxBytes }}
+            - name: PYTEST_TRACE_EXPORTER_SHAPED_CACHE_MAX_BYTES
+              value: "{{ . | int64 }}"
+            {{- end }}
             - name: PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS
               value: "{{ .Values.traceExporter.config.traceSettleSeconds }}"
             - name: PYTEST_TRACE_EXPORTER_TRACE_REFETCH_SECONDS
