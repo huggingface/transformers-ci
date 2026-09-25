@@ -96,6 +96,10 @@ spec:
               value: "{{ .Values.traceExporter.config.traceCacheMax }}"
             - name: PYTEST_TRACE_EXPORTER_TRACE_CACHE_MAX_BYTES
               value: "{{ .Values.traceExporter.config.traceCacheMaxBytes }}"
+            {{- with .Values.traceExporter.config.shapedCacheMaxBytes }}
+            - name: PYTEST_TRACE_EXPORTER_SHAPED_CACHE_MAX_BYTES
+              value: "{{ . | int64 }}"
+            {{- end }}
             - name: PYTEST_TRACE_EXPORTER_TRACE_SETTLE_SECONDS
               value: "{{ .Values.traceExporter.config.traceSettleSeconds }}"
             - name: PYTEST_TRACE_EXPORTER_TRACE_REFETCH_SECONDS
@@ -148,14 +152,14 @@ spec:
             {{- end }}
           livenessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: {{ .Values.traceExporter.config.port }}
             initialDelaySeconds: 60
             timeoutSeconds: 10
             periodSeconds: 30
           readinessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: {{ .Values.traceExporter.config.port }}
             initialDelaySeconds: 30
             timeoutSeconds: 10
@@ -191,6 +195,11 @@ kind: Service
 metadata:
   name: trace-exporter
   namespace: {{ include "transformers-ci.namespace" . }}
+  annotations:
+    # The ALB routes /run, /failure, /badge and /summary here. Without this, the
+    # target group inherits the Grafana ingress's /api/health check, which this
+    # server answers 404.
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
   labels:
     {{- include "transformers-ci.labels" . | nindent 4 }}
     app.kubernetes.io/component: trace-exporter

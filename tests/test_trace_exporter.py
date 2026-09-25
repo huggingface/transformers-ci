@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import gzip
 import json
+import os
 import time
 import urllib.parse
 from unittest.mock import patch
@@ -658,6 +659,135 @@ def test_persist_run_rows_merges_shards_across_renders(tmp_path) -> None:
     # re-persisting an already-seen shard does not duplicate
     trace_exporter.persist_run_rows("7:1", shard1, directory=d)
     assert len(trace_exporter.load_run_rows("7:1", directory=d)) == 2
+
+
+def test_persist_run_rows_skips_a_rewrite_that_changes_nothing(tmp_path) -> None:
+    # An in-flight trace is re-read every few minutes and usually brings back the
+    # rows the store already has: the multi-MB gzip must not be rewritten then.
+    d = str(tmp_path)
+    rows = [
+        {
+            "test_nodeid": "a",
+            "test_job": "j",
+            "status_code": "OK",
+            "duration_seconds": 1.0,
+            "trace_id": "t1",
+            "pr": "1",
+        }
+    ]
+    trace_exporter.persist_run_rows("8:1", rows, directory=d)
+    path = trace_exporter._run_store_path(d, "8:1")
+    os.utime(path, (1, 1))
+    trace_exporter.persist_run_rows("8:1", [dict(r) for r in rows], directory=d)
+    assert os.stat(path).st_mtime == 1  # untouched
+
+    # After a restart the store is the only copy of the counts: an unchanged
+    # merge still seeds them.
+    with trace_exporter._run_store_counts_lock:
+        trace_exporter._run_store_counts.pop("8:1", None)
+    trace_exporter.persist_run_rows("8:1", rows, directory=d)
+    assert os.stat(path).st_mtime == 1
+    assert (
+        trace_exporter._run_store_counts_snapshot()["8:1"][("j", "cpu")]["total"] == 1
+    )
+
+    # A changed row (the test now failed) is written.
+    changed = [dict(rows[0], status_code="ERROR")]
+    trace_exporter.persist_run_rows("8:1", changed, directory=d)
+    assert os.stat(path).st_mtime != 1
+    assert trace_exporter.load_run_rows("8:1", directory=d)[0]["status_code"] == (
+        "ERROR"
+    )
+
+
+def test_prefetch_concurrently_calls_each_lookup_once_and_never_raises() -> None:
+    import threading
+
+    seen: list[tuple[str, str]] = []
+    threads: set[str] = set()
+    lock = threading.Lock()
+
+    def fetch(repo: str, pr: str) -> None:
+        with lock:
+            seen.append((repo, pr))
+            threads.add(threading.current_thread().name)
+        if pr == "2":
+            raise RuntimeError("GitHub is down")
+
+    calls = [("o/r", "1"), ("o/r", "2"), ("o/r", "1"), ("o/r", "3")]
+    trace_exporter._prefetch_concurrently(fetch, calls)
+    assert sorted(seen) == [("o/r", "1"), ("o/r", "2"), ("o/r", "3")]
+    assert all(name.startswith("github-prefetch") for name in threads)
+    trace_exporter._prefetch_concurrently(fetch, [])  # nothing to do
+
+
+def test_average_metrics_ignore_passing_rows() -> None:
+    def row(nodeid: str, status: str) -> dict:
+        module, cls, func = nodeid.split("::")
+        return {
+            "service_name": "s",
+            "test_job": "j",
+            "pr": "1",
+            "provider": "p",
+            "test_nodeid": nodeid,
+            "status_code": status,
+            "duration_seconds": 1.0,
+            "test_class": cls,
+            "test_function": func,
+            "test_module": module,
+            "exception_type": "AssertionError",
+        }
+
+    extracted = [
+        (
+            {"trace_id": "t1", "run_id": "1:1", "latest_start_time": 10},
+            [row("m.py::A::test_ok", "OK"), row("m.py::A::test_bad", "ERROR")],
+        ),
+        (
+            {"trace_id": "t2", "run_id": "2:1", "latest_start_time": 20},
+            [row("m.py::A::test_bad", "ERROR"), row("m.py::A::test_ok", "OK")],
+        ),
+    ]
+    lines = [
+        line
+        for line in trace_exporter.extract_average_metrics([], _extracted=extracted)
+        if not line.startswith("#")
+    ]
+    assert len(lines) == 1
+    assert 'test_nodeid="m.py::A::test_bad"' in lines[0]
+    assert 'trace_id="t2"' in lines[0] and 'run_id="2:1"' in lines[0]
+    assert 'test_class="A"' in lines[0]
+
+
+def test_shaped_rows_share_repeated_strings() -> None:
+    def trace(trace_id: str) -> dict:
+        return make_trace(
+            trace_id=trace_id,
+            run_id="run-intern",
+            job="tests_torch",
+            spans=[
+                make_test_span(
+                    process_id="pytest-process",
+                    nodeid="tests/test_torch.py::TestTorch::test_pass",
+                    start_time=1_000_000,
+                    duration=2_000_000,
+                )
+            ],
+        )
+
+    _info, rows = trace_exporter.extract_trace_rows(trace("trace-intern"))
+    other = trace_exporter.extract_trace_rows(trace("trace-intern-2"))[1]
+    assert rows and other
+    assert rows[0]["test_module"] is other[0]["test_module"]
+    assert rows[0]["run_id"] is other[0]["run_id"]
+
+
+def test_shaped_entry_bytes_uses_the_shaped_factor() -> None:
+    entry = ({"trace_id": "t"}, [{"k": "v" * 100} for _ in range(20)])
+    serialized = len(json.dumps(entry, ensure_ascii=False, separators=(",", ":")))
+    assert trace_exporter._shaped_entry_bytes(entry) == int(
+        serialized * trace_exporter._SHAPED_RAM_OVERHEAD
+    )
 
 
 def test_persist_settled_runs_groups_by_run(tmp_path) -> None:
@@ -2355,6 +2485,85 @@ def test_memory_guard_drops_cache_over_soft_limit(monkeypatch) -> None:
     trace_exporter._relieve_memory_pressure()
     assert len(trace_exporter._trace_cache) == 0
     assert trace_exporter._trace_cache_bytes == 0
+
+
+def _seed_caches() -> None:
+    trace_exporter._drop_trace_cache()
+    trace_exporter._drop_shaped_cache()
+    trace_exporter._trace_cache["t0"] = {"traceID": "t0"}
+    trace_exporter._trace_cache_sizes["t0"] = 100
+    trace_exporter._trace_cache_bytes = 100
+    trace_exporter._store_shaped("s0", ({"trace_id": "s0"}, []), True, 1.0)
+
+
+def test_memory_guard_keeps_shaped_cache_when_trim_is_enough(monkeypatch) -> None:
+    # Over the limit, but dropping the raw traces brings RSS back under it: the
+    # shaped cache (what lets a render skip Tempo) must survive. Dropping it on
+    # every render was the zero-cache-hit spiral.
+    _seed_caches()
+    trace_exporter._memory_relief_total.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_MEM_SOFT_MB", "500")
+    rss = iter([600, 400])
+    monkeypatch.setattr(
+        trace_exporter, "_process_resident_bytes", lambda: next(rss) * 1024 * 1024
+    )
+    trimmed = []
+    monkeypatch.setattr(trace_exporter, "_malloc_trim", lambda: trimmed.append(1))
+    trace_exporter._relieve_memory_pressure()
+    assert len(trace_exporter._trace_cache) == 0
+    assert "s0" in trace_exporter._shaped_cache
+    assert trimmed == [1]
+    assert trace_exporter._memory_relief_total == {"trace": 1}
+    assert (
+        'pytest_trace_exporter_memory_relief_total{cache="trace"} 1'
+        in trace_exporter._render_profile_lines()
+    )
+    trace_exporter._drop_shaped_cache()
+
+
+def test_memory_guard_escalates_to_shaped_cache(monkeypatch) -> None:
+    # Still over the limit after the raw traces are gone and the heap trimmed:
+    # the shaped cache goes too.
+    _seed_caches()
+    trace_exporter._memory_relief_total.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_MEM_SOFT_MB", "500")
+    rss = iter([600, 590, 450])
+    monkeypatch.setattr(
+        trace_exporter, "_process_resident_bytes", lambda: next(rss) * 1024 * 1024
+    )
+    monkeypatch.setattr(trace_exporter, "_malloc_trim", lambda: None)
+    trace_exporter._relieve_memory_pressure()
+    assert len(trace_exporter._trace_cache) == 0
+    assert len(trace_exporter._shaped_cache) == 0
+    assert trace_exporter._shaped_meta == {}
+    assert trace_exporter._memory_relief_total == {"trace": 1, "shaped": 1}
+
+
+def test_malloc_trim_is_safe_everywhere() -> None:
+    trace_exporter._malloc_trim()  # glibc only; must never raise elsewhere
+
+
+def test_healthz_is_cheap_and_does_not_serve_the_payload(tmp_path, monkeypatch) -> None:
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.request import urlopen
+
+    payload = tmp_path / "payload.prom"
+    payload.write_text("pytest_trace_exporter_up 1\n" * 1000, encoding="utf-8")
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PAYLOAD_FILE", str(payload))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with urlopen(f"{base}/healthz", timeout=5) as response:
+            assert response.status == 200
+            assert response.read() == b"ok\n"
+        with urlopen(f"{base}/metrics", timeout=5) as response:
+            assert len(response.read()) == payload.stat().st_size
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_limit_malloc_arenas_is_safe_everywhere(monkeypatch) -> None:
@@ -5056,24 +5265,30 @@ def test_run_the_gate_released_is_left_to_the_gate() -> None:
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "why"),
+    ("kwargs", "why", "reason"),
     [
-        ({"status": "in_progress"}, "GitHub says the job is still running"),
-        ({"conclusion": "cancelled"}, "cancelled jobs wait for the run"),
-        ({"conclusion": "skipped"}, "skipped jobs wait for the run"),
+        ({"status": "in_progress"}, "GitHub says the job is still running", "active"),
+        ({"conclusion": "cancelled"}, "cancelled jobs wait for the run", "conclusion"),
+        ({"conclusion": "skipped"}, "skipped jobs wait for the run", "conclusion"),
         (
             {"conclusion": "failure"},
             "GitHub failed it but the traces show no failure yet",
+            "disagree",
         ),
-        ({"failing": True}, "the traces fail a job GitHub passed"),
-        ({"pr": "main"}, "branch runs keep the whole-run gate"),
-        ({"attempt": "2"}, "the listing is for another attempt"),
+        ({"failing": True}, "the traces fail a job GitHub passed", "disagree"),
+        ({"pr": "main"}, "branch runs keep the whole-run gate", None),
+        ({"attempt": "2"}, "the listing is for another attempt", "no_listing"),
     ],
 )
-def test_finished_job_is_held_when(kwargs, why) -> None:
+def test_finished_job_is_held_when(kwargs, why, reason) -> None:
     extracted = _early_setup(**kwargs)
     released, _runs = trace_exporter.completed_job_results_extracted(extracted, set())
     assert released == [], why
+    held = trace_exporter._last_jobs_held
+    if reason is None:  # never a candidate, so never counted as held
+        assert sum(held.values()) == 0
+    else:
+        assert held[reason] >= 1, (why, held)
     _reset_window_state()
 
 
@@ -5090,6 +5305,7 @@ def test_job_read_before_it_finished_is_queued_for_a_reread() -> None:
     extracted = _early_setup(completed_at=1_000.0, fetched_at=1_010.0)
     released, _runs = trace_exporter.completed_job_results_extracted(extracted, set())
     assert released == []
+    assert trace_exporter._last_jobs_held["stale_read"] == 1
     grace = trace_exporter.DEFAULT_JOB_RELEASE_GRACE_SECONDS
     assert trace_exporter._job_refetch_due == {"trace-check": 1_000.0 + grace}
 
@@ -5208,3 +5424,57 @@ def test_render_publishes_a_finished_job_before_its_run(monkeypatch) -> None:
     trace_exporter._run_job_states.clear()
     trace_exporter._job_refetch_due.clear()
     _reset_window_state()
+
+
+MAIN_HEAD = "6b14ee96cad3470b1bd8227460050985ba834c3d"
+PR_MERGE = "ea874a1d42bcc9679637cfb4223cc002ab9baa93"
+
+
+def _comment_trace(*, ci_event: str, service_version: str) -> dict:
+    trace = make_trace(
+        trace_id="trace-comment",
+        run_id="36169105839:1",
+        job="run_models_gpu",
+        pr="49084",
+        commit_sha=MAIN_HEAD,
+        ci_event=ci_event,
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/t.py::T::test_a",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    if service_version:
+        trace["processes"]["pytest-process"]["tags"].append(
+            make_tag("service.version", service_version)
+        )
+    return trace
+
+
+def test_pr_comment_run_reports_the_commit_it_tested() -> None:
+    # issue_comment runs on the default branch, so vcs.ref.head.revision is main's
+    # head; service.version is the PR merge commit the job checked out.
+    info, _rows = trace_exporter.extract_trace_rows(
+        _comment_trace(ci_event="pr-comment", service_version=PR_MERGE)
+    )
+    assert info["commit_sha"] == PR_MERGE
+
+
+@pytest.mark.parametrize(
+    ("ci_event", "service_version"),
+    [
+        ("pr-comment", ""),  # no service.version: keep what the runner reported
+        ("pr-comment", "1.0.0"),  # a package version, not a commit
+        ("pr-comment", PR_MERGE[:12]),  # an abbreviated sha is not trusted
+        ("none", PR_MERGE),  # PR CI / push runs keep vcs.ref.head.revision
+        ("daily", PR_MERGE),
+    ],
+)
+def test_other_runs_keep_the_reported_head_revision(ci_event, service_version) -> None:
+    info, _rows = trace_exporter.extract_trace_rows(
+        _comment_trace(ci_event=ci_event, service_version=service_version)
+    )
+    assert info["commit_sha"] == MAIN_HEAD

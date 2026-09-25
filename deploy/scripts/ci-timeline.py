@@ -38,6 +38,8 @@ import os
 import statistics
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -66,13 +68,25 @@ def _github_token() -> str | None:
         return None
 
 
-def _github(path: str, token: str | None) -> dict:
+def _github(path: str, token: str | None, attempts: int = 4) -> dict:
     request = urllib.request.Request(f"{GITHUB_API}{path}")
     request.add_header("Accept", "application/vnd.github+json")
     if token:
         request.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)
+    # A 103-job listing page occasionally 502s; one bad page used to throw away a
+    # ten-minute collection. Retry server errors and timeouts, not 4xx.
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            if error.code < 500 or attempt == attempts - 1:
+                raise
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == attempts - 1:
+                raise
+        time.sleep(2 * (attempt + 1))
+    raise AssertionError("unreachable")
 
 
 def _ts(value: str | None) -> float | None:
@@ -134,16 +148,27 @@ def _first_span(
 def collect(args: argparse.Namespace) -> list[dict]:
     token = _github_token()
     jobs = dict(item.split("=", 1) for item in args.job or DEFAULT_JOBS)
-    query = urllib.parse.urlencode(
-        {
-            "per_page": min(args.runs * 2, 100),
-            "event": args.event,
-            "status": "completed",
-        }
-    )
-    runs = _github(
-        f"/repos/{args.repo}/actions/workflows/{args.workflow}/runs?{query}", token
-    )["workflow_runs"][: args.runs]
+    # Newest first, completed ones kept client-side. The API's own
+    # status=completed filter goes through a search index and can answer with
+    # runs weeks old (2026-09-25: the "latest" 30 were from Sep 4-6).
+    runs: list[dict] = []
+    for page in range(1, 11):
+        query = urllib.parse.urlencode(
+            {"per_page": 100, "event": args.event, "page": page}
+        )
+        batch = _github(
+            f"/repos/{args.repo}/actions/workflows/{args.workflow}/runs?{query}", token
+        )["workflow_runs"]
+        runs.extend(r for r in batch if r.get("status") == "completed")
+        if len(runs) >= args.runs or len(batch) < 100:
+            break
+    runs = runs[: args.runs]
+    if runs:
+        print(
+            f"sample: {len(runs)} completed runs created "
+            f"{runs[-1]['created_at']} .. {runs[0]['created_at']}",
+            file=sys.stderr,
+        )
 
     records: list[dict] = []
     for run in runs:

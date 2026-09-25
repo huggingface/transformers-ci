@@ -322,6 +322,16 @@ def render_reconcile(snapshot: dict | None) -> str:
             "Until when GitHub asked the reconciler to stop (0 = never).",
         ),
         (
+            "etag_cache_entries",
+            snapshot.get("etag_cache", (0, 0))[0],
+            "GitHub responses the ETag cache holds.",
+        ),
+        (
+            "etag_cache_bytes",
+            snapshot.get("etag_cache", (0, 0))[1],
+            "Raw JSON bytes the ETag cache holds (bounded; parsed is ~2.3-3.3x).",
+        ),
+        (
             "stale",
             snapshot["stale"],
             "1 when status has not been reconciled against GitHub within the window.",
@@ -355,6 +365,15 @@ def render_reconcile(snapshot: dict | None) -> str:
 def _service_lines(service: dict[str, float | int | dict[str, int]]) -> list[str]:
     deliveries = service.get("deliveries") or {}
     assert isinstance(deliveries, dict)
+    events = service.get("events") or {}
+    assert isinstance(events, dict)
+    event_lines = [
+        "# HELP ci_github_status_events_total Signature-verified GitHub webhook events by event and action, since start.",
+        "# TYPE ci_github_status_events_total counter",
+    ] + [
+        f'ci_github_status_events_total{{event="{name}",action="{action}"}} {count}'
+        for (name, action), count in sorted(events.items())
+    ]
     lines = [
         "# HELP ci_github_status_deliveries_total Webhook deliveries by outcome since start.",
         "# TYPE ci_github_status_deliveries_total counter",
@@ -393,4 +412,4 @@ def _service_lines(service: dict[str, float | int | dict[str, int]]) -> list[str
             if isinstance(value, float)
             else f"ci_github_status_{name} {value}"
         )
-    return lines
+    return lines + event_lines

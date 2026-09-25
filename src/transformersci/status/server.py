@@ -39,6 +39,23 @@ from .webhook import Filters, Ignored, Rejected, parse_delivery, verify_signatur
 # near the cap is not a CI event and is refused before it is read.
 MAX_BODY_BYTES = 5 * 1024 * 1024
 
+# Label values for ci_github_status_events_total. Anything else is counted as
+# "other": the header and the action come from the request, and a label value
+# must never be something a caller can mint at will.
+KNOWN_EVENTS = frozenset({"workflow_run", "workflow_job", "ping"})
+KNOWN_ACTIONS = frozenset(
+    {"requested", "queued", "waiting", "in_progress", "completed"}
+)
+
+
+def event_labels(event: str, payload: object) -> tuple[str, str]:
+    """(event, action) for a verified delivery, clamped to known values."""
+    name = event if event in KNOWN_EVENTS else "other"
+    action = payload.get("action") if isinstance(payload, dict) else None
+    if name == "ping":
+        return name, "none"
+    return name, action if action in KNOWN_ACTIONS else "other"
+
 
 @dataclass
 class Service:
@@ -47,6 +64,8 @@ class Service:
     filters: Filters
     completed_window_seconds: float
     deliveries: dict[str, int] = field(default_factory=dict)
+    # Signature-verified deliveries by (event, action), whatever happened next.
+    events: dict[tuple[str, str], int] = field(default_factory=dict)
     processing_seconds: float = 0.0
     last_delivery_at: float = 0.0
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -68,11 +87,19 @@ class Service:
         if not verify_signature(self.secret, body, signature):
             self._count("rejected", started)
             return 401, "invalid signature"
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            payload = None
+        key = event_labels(event, payload)
+        with self.lock:
+            self.events[key] = self.events.get(key, 0) + 1
         if event == "ping":
             self._count("ignored", started)
             return 200, "pong"
         try:
-            payload = json.loads(body)
+            if payload is None:
+                raise Rejected("body is not JSON")
             update = parse_delivery(event, payload, self.filters)
         except Ignored as reason:
             self._count("ignored", started)
@@ -100,6 +127,7 @@ class Service:
         with self.lock:
             service = {
                 "deliveries": dict(self.deliveries),
+                "events": dict(self.events),
                 "processing_seconds_total": self.processing_seconds,
                 "last_delivery_timestamp_seconds": self.last_delivery_at,
             }

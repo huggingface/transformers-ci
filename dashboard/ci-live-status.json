@@ -885,7 +885,7 @@
       "id": 11,
       "type": "table",
       "title": "Jobs by test job \u2014 status from GitHub, tests from traces",
-      "description": "Shards are GitHub jobs sharing a test_job. Pass/Fail come from the trace pipeline; empty = awaiting test details. A failed/cancelled job with passing tests means a later step failed \u2014 the two are shown separately on purpose.",
+      "description": "Each test job of the run, with its status from GitHub and its test counts from traces. A job can pass its tests and still fail or be cancelled at a later step, so the two are shown separately.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -982,7 +982,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_passed_tests[30m])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "expr": "max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_passed_tests[6h])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
           "format": "table",
           "instant": true,
           "range": false,
@@ -995,7 +995,20 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests[30m])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "expr": "max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests[6h])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Details",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "((count by (test_job, run_id) (((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"})))) * 0 + 2) and on (test_job, run_id) max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests[6h])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))) or ((count by (test_job, run_id) (((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"})))) * 0 + 1) and on (test_job, run_id) count by (test_job, run_id) ((ci_github_job_status < 3) * on (repository, run_id, job_id) group_left(test_job) ((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))) or (count by (test_job, run_id) (((label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")) and on (repository, run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"})))) * 0)",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1022,7 +1035,8 @@
               "Value #Failed": "Failed jobs",
               "Value #Cancelled": "Cancelled",
               "Value #Pass": "Tests passed",
-              "Value #Fail": "Tests failed"
+              "Value #Fail": "Tests failed",
+              "Value #Details": "Test details"
             },
             "indexByName": {
               "test_job": 0,
@@ -1032,8 +1046,9 @@
               "Value #Done": 4,
               "Value #Failed": 5,
               "Value #Cancelled": 6,
-              "Value #Pass": 7,
-              "Value #Fail": 8
+              "Value #Pass": 8,
+              "Value #Fail": 9,
+              "Value #Details": 7
             }
           }
         }
@@ -1051,18 +1066,6 @@
           "noValue": ""
         },
         "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Tests passed"
-            },
-            "properties": [
-              {
-                "id": "noValue",
-                "value": "Awaiting test details"
-              }
-            ]
-          },
           {
             "matcher": {
               "id": "byName",
@@ -1179,6 +1182,49 @@
               {
                 "id": "custom.hidden",
                 "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Test details"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "No test details",
+                        "color": "text",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "Awaiting test details",
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "2": {
+                        "text": "Tests reported",
+                        "color": "green",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 190
               }
             ]
           }

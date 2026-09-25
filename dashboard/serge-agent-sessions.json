@@ -96,7 +96,7 @@
       "id": 3,
       "type": "stat",
       "title": "Finished on their own terms",
-      "description": "Share of sessions that ended because the model returned an answer while it still had tools and budget, rather than because a guard cut it off. A low number means the patches being published are written by starved final turns.",
+      "description": "Share of sessions that ended because the model gave its answer, rather than a guard cutting it off.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -238,7 +238,7 @@
       "id": 5,
       "type": "stat",
       "title": "Budget spent re-opening files",
-      "description": "Share of all tool calls that re-opened a path the session had already opened. Each one costs a full turn \u2014 the whole conversation is resent, not just the file \u2014 so this is the cheapest waste to remove.",
+      "description": "Share of tool calls that re-opened a file the session had already opened.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -522,7 +522,7 @@
       "id": 20,
       "type": "table",
       "title": "Sessions",
-      "description": "One row per finished serge job. `Stopped by` is the column to read first: `answered` is the only value meaning the model decided it was done \u2014 every other value is a guard cutting the session off and forcing an answer out of whatever budget was left.\n\n`Path re-opens` counts tool calls that opened a file the session had already opened (per path, visits-1). It is not the same as `Verbatim repeats`, which the tool-repeat guard counts: re-reading a different line range of the same file is a re-open but not a verbatim repeat, and it is the re-opens that dominate.\n\nA repo not on the scrape's public allow-list reads as `other` \u2014 the counters are complete, only the name is withheld.",
+      "description": "One row per finished serge job. Stopped by `answered` means the model finished on its own; any other value is a guard that cut it off.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

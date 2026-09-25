@@ -314,7 +314,7 @@
       "transparent": true,
       "options": {
         "mode": "html",
-        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+'&from=${__from}&to=${__to}';location.replace(u);</script>\"></iframe>"
+        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>"
       }
     },
     {
@@ -391,6 +391,22 @@
                   "mode": "basic",
                   "type": "color-background"
                 }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "special",
+                    "options": {
+                      "match": "null+nan",
+                      "result": {
+                        "text": "",
+                        "color": "transparent",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
               }
             ]
           },
@@ -467,6 +483,54 @@
                 "value": 80
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "image"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 46
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PC9zdmc+",
+                        "index": 0
+                      },
+                      "2": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iI2Y4NTE0OSIvPjxwYXRoIGQ9Ik01LjQgNS40bDUuMiA1LjJNMTAuNiA1LjRsLTUuMiA1LjIiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjgiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==",
+                        "index": 1
+                      },
+                      "3": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iIzZlNzY4MSIvPjxwYXRoIGQ9Ik00LjUgOGg3IiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMS44IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48L3N2Zz4=",
+                        "index": 2
+                      },
+                      "4": {
+                        "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNyIgZmlsbD0iIzNmYjk1MCIvPjxwYXRoIGQ9Ik00LjUgOC4zbDIuMSAyLjEgNC45LTUuMSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjEuOCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
           }
         ]
       },
@@ -490,8 +554,12 @@
         "showHeader": true,
         "sortBy": [
           {
-            "desc": true,
-            "displayName": "Fail"
+            "displayName": "Status",
+            "desc": false
+          },
+          {
+            "displayName": "Fail",
+            "desc": true
           }
         ]
       },
@@ -504,7 +572,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_member_info{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])) * on (run_id) group_left() max by (run_id)(max without (instance) (last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])))) * 1000"
+          "expr": "(max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_member_info{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])) * on (run_id) group_left() max by (run_id)(max without (instance) (last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])))) * 1000) or label_replace(label_replace((min by (test_job) (ci_github_job_started_timestamp_seconds{run_id=~\"$run_id\"} * on (repository, run_id, job_id) group_left(test_job) ci_github_job_info{run_id=~\"$run_id\"}) * 1000), \"hardware\", \"cpu\", \"\", \"\"), \"hardware\", \"gpu\", \"test_job\", \"(?i).*gpu.*\")"
         },
         {
           "refId": "Duration",
@@ -541,6 +609,19 @@
           "range": false,
           "legendFormat": "__auto",
           "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_wall_seconds{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])))"
+        },
+        {
+          "refId": "Status",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "label_replace(label_replace(((max by (test_job) ((ci_github_job_status{run_id=~\"$run_id\"} < 3) * on (repository, run_id, job_id) group_left(test_job) ci_github_job_info{run_id=~\"$run_id\"}) * 0 + 1) or (max by (test_job) ((ci_github_job_conclusion_info{conclusion=~\"failure|timed_out|startup_failure\",run_id=~\"$run_id\"}) * on (repository, run_id, job_id) group_left(test_job) ci_github_job_info{run_id=~\"$run_id\"}) * 2) or (max by (test_job) ((ci_github_job_conclusion_info{conclusion=\"success\",run_id=~\"$run_id\"}) * on (repository, run_id, job_id) group_left(test_job) ci_github_job_info{run_id=~\"$run_id\"}) * 4) or (max by (test_job) ((ci_github_job_conclusion_info{conclusion!~\"success|failure|timed_out|startup_failure\",run_id=~\"$run_id\"}) * on (repository, run_id, job_id) group_left(test_job) ci_github_job_info{run_id=~\"$run_id\"}) * 3)), \"hardware\", \"cpu\", \"\", \"\"), \"hardware\", \"gpu\", \"test_job\", \"(?i).*gpu.*\") or (((max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]))) >= bool 1) * 2) > 0) or ((max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_passed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]))) >= bool 0) * 4)"
         }
       ],
       "title": "Jobs",
@@ -556,13 +637,14 @@
               "Time": true
             },
             "indexByName": {
-              "test_job": 0,
-              "hardware": 1,
-              "Value #Started": 2,
-              "Value #Duration": 3,
-              "Value #Wall": 4,
-              "Value #Pass": 5,
-              "Value #Fail": 6
+              "test_job": 1,
+              "hardware": 2,
+              "Value #Started": 3,
+              "Value #Duration": 4,
+              "Value #Wall": 5,
+              "Value #Pass": 6,
+              "Value #Fail": 7,
+              "Value #Status": 0
             },
             "renameByName": {
               "test_job": "Job",
@@ -571,19 +653,21 @@
               "Value #Pass": "Pass",
               "Value #Fail": "Fail",
               "Value #Wall": "Wall",
-              "hardware": "Hardware"
+              "hardware": "Hardware",
+              "Value #Status": "Status"
             }
           }
         }
       ],
-      "type": "table"
+      "type": "table",
+      "description": "Status from GitHub while the run is recent (jobs appear before any telemetry; grey = cancelled or skipped); test counts from the trace pipeline."
     },
     {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Whether this workflow run is still queued or in progress, straight from the GitHub Actions API. While it says Running, the counters on this page are a partial snapshot of the run so far \u2014 the exporter publishes the roll-up once and Prometheus keeps showing that value, so a run can read 100% green long before its failures land.",
+      "description": "From GitHub while the run is recent, else from the trace pipeline. This page does not auto-refresh (it would reload the test list below); 'Watch live' opens the auto-refreshing view of this run.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -638,7 +722,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max (last_over_time(pytest_run_active{run_id=~\"$run_id\"}[5m])) or vector(0)",
+          "expr": "(max(ci_github_run_status{run_id=~\"$run_id\"} < 3) * 0 + 1) or (max(ci_github_run_status{run_id=~\"$run_id\"} == 3) * 0) or (max (last_over_time(pytest_run_active{run_id=~\"$run_id\"}[5m])) or vector(0))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -661,7 +745,14 @@
           }
         }
       ],
-      "type": "table"
+      "type": "table",
+      "links": [
+        {
+          "title": "Watch live (auto-refresh)",
+          "url": "/d/ci-live-status/live-ci-status?orgId=1&var-run=${run_id}",
+          "targetBlank": false
+        }
+      ]
     }
   ],
   "schemaVersion": 41,
@@ -929,5 +1020,6 @@
   "version": 1,
   "timepicker": {
     "hidden": true
-  }
+  },
+  "refresh": "10s"
 }

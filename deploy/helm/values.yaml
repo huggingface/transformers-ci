@@ -198,6 +198,12 @@ traceExporter:
     # in-flight traces are small — so this halves in-progress test-count lag
     # (15 min → 5 min) without render risk. Still above render, below lookback/2.
     traceRefetchSeconds: 300
+    # Byte budget of the shaped-trace cache (unset = the exporter's 384 MiB
+    # default). Each render serves the window from this cache and re-reads from
+    # Tempo only what it lacks, so a budget smaller than the window's shapes
+    # makes the LRU evict most of it every render. A tests_torch shard alone is
+    # ~38 MiB of budget.
+    # shapedCacheMaxBytes: 1610612736
     # Soft RSS ceiling. Sized to ~85% of the 2Gi container limit (was 560, sized
     # for the retired 640MiB docker box, which forced premature cache drops).
     memSoftMb: 1740

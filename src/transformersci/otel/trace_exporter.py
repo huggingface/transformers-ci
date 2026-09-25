@@ -137,6 +137,11 @@ DEFAULT_ACTIVE_BRANCH_RUNS = 5
 DEFAULT_MAIN_DURATION_STORE_MAX_FILES = 25
 DEFAULT_MAIN_DURATION_STORE_MAX_SERIES = 500
 DEFAULT_MAIN_DURATION_STORE_MAX_AGE_SECONDS = 8 * 86400.0
+# How long a scan of the run store's main-branch rows is reused. It reads up to
+# MAX_FILES gzip files and feeds only the "slowest on main" panel, whose inputs
+# change a few times an hour; tied to the 60s cooldown, it missed on every
+# render once renders were more than a minute apart.
+DEFAULT_MAIN_DURATION_STORE_CACHE_SECONDS = 900.0
 # The Actions jobs listing for a big reusable-workflow run (~90 jobs) routinely
 # takes 8-10s to respond — well past the 5s default used for the small PR-info
 # calls — so the run-activity calls get their own, longer timeout. Too short and
@@ -1257,12 +1262,19 @@ def _max_new_fetch_per_render() -> int:
     )
 
 
+# In-RAM bytes of a shaped entry per byte of its compact JSON. Measured with
+# tracemalloc on five prod traces (24 to 17,933 rows, interned strings):
+# 1.20-1.38. The raw-trace factor (4) made the shaped budget hold a third of
+# what it was sized for: a 17,933-row shard took 11.6 MiB but was charged 38.
+_SHAPED_RAM_OVERHEAD = 1.5
+
+
 def _shaped_entry_bytes(entry: ShapedEntry) -> int:
     """Approximate resident bytes of a shaped (trace_info, rows) tuple.
 
-    Mirrors :func:`_trace_cache_entry_bytes`: a cheap serialized-size proxy
-    scaled by the parsed-object overhead factor, so the byte budget reflects the
-    in-RAM footprint rather than the compact JSON size.
+    Like :func:`_trace_cache_entry_bytes`, a cheap serialized-size proxy scaled
+    to the in-RAM footprint, with the factor measured for shaped rows (see
+    :data:`_SHAPED_RAM_OVERHEAD`) rather than for raw parsed traces.
     """
     try:
         serialized = len(
@@ -1270,7 +1282,7 @@ def _shaped_entry_bytes(entry: ShapedEntry) -> int:
         )
     except (TypeError, ValueError):
         return 0
-    return serialized * _TRACE_RAM_OVERHEAD
+    return int(serialized * _SHAPED_RAM_OVERHEAD)
 
 
 def _store_shaped(
@@ -1685,6 +1697,47 @@ _pr_info_cache_lock = threading.Lock()
 _cached_pr_info: dict[tuple[str, str], tuple[float, dict[str, str]]] = {}
 
 
+# GitHub lookups a render needs (run activity, PR metadata) are independent
+# round-trips of ~0.5s each; made one after another they cost ~10s per render.
+DEFAULT_GITHUB_PREFETCH_CONCURRENCY = 8
+
+
+def _prefetch_concurrently(
+    fetch: Callable[..., object], calls: list[tuple[str, ...]]
+) -> None:
+    """Warm a cached GitHub fetcher for every call at once.
+
+    The caller then walks its own loop unchanged and every lookup is a cache
+    hit. Errors are the fetcher's to handle (both cached fetchers degrade to a
+    fallback); anything else is swallowed so a prefetch can never fail a
+    render — the serial loop simply fetches what is still missing.
+    """
+    calls = list(dict.fromkeys(calls))
+    workers = min(
+        len(calls),
+        max(
+            1,
+            env_int(
+                "PYTEST_TRACE_EXPORTER_GITHUB_PREFETCH_CONCURRENCY",
+                DEFAULT_GITHUB_PREFETCH_CONCURRENCY,
+            ),
+        ),
+    )
+    if workers <= 1:
+        return
+
+    def _one(args: tuple[str, ...]) -> None:
+        try:
+            fetch(*args)
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="github-prefetch"
+    ) as pool:
+        list(pool.map(_one, calls))
+
+
 def fetch_github_pr_info_cached(repository: str, pr: str) -> dict[str, str]:
     key = (repository, pr)
     ttl = github_cache_ttl_seconds()
@@ -1825,6 +1878,9 @@ def hardware_display(raw: str) -> str:
     return _HARDWARE_DISPLAY.get((raw or "").lower(), raw or "")
 
 
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
 def extract_trace_rows(
     trace: dict,
 ) -> tuple[dict[str, str | int], list[dict[str, str | float]]]:
@@ -1853,6 +1909,7 @@ def extract_trace_rows(
     process_pr_url = ""
     process_repository = ""
     process_commit_sha = ""
+    process_service_version = ""
     process_ci_event = ""
     process_hardware = ""
     service_name = ""
@@ -1909,6 +1966,9 @@ def extract_trace_rows(
         process_commit_sha = process_tags.get(
             "vcs.ref.head.revision", process_commit_sha
         )
+        process_service_version = process_tags.get(
+            "service.version", process_service_version
+        )
         # CI event / run source (e.g. "daily", "merge"). Push-to-main merges and
         # scheduled daily runs both collapse to pr="main" (no vcs.change.id), so
         # this is the only attribute that tells them apart. Stamped by the daily
@@ -1948,30 +2008,34 @@ def extract_trace_rows(
         # GPU jobs running a plugin new enough to set it, so the key is added
         # only when the span carries it and every consumer must use .get() —
         # an absent value is "unknown", NOT zero.
+        # Every string but the node id repeats across the rows (one trace's run,
+        # job, PR; a module's class and function names across its tests), and
+        # the shaped cache keeps these rows for the whole window. Interning makes
+        # each distinct value one object instead of one per row.
         row: dict[str, str | float] = {
             "duration_seconds": (
                 float(span_tags["pytest.worker_duration_seconds"])
                 if "pytest.worker_duration_seconds" in span_tags
                 else int(span.get("duration", 0)) / 1_000_000
             ),
-            "exception_type": exc_type,
+            "exception_type": _intern(exc_type),
             # The capped stacktrace is consumed here for test_line only; no
             # metric emits it, so it is deliberately not retained in the row
             # (it would otherwise bloat the kept rows under high failure
             # volume — the exporter must stay under ~1G at high volume).
-            "pr": process_pr or "none",
-            "provider": process_provider or "unknown",
-            "run_id": process_run_id or trace_id,
-            "service_name": service_name or "unknown",
-            "status_code": span_tags.get("otel.status_code", "UNSET"),
-            "hardware": process_hardware or hardware_from_job(process_job),
-            "test_class": node_parts["test_class"],
-            "test_function": node_parts["test_function"],
-            "test_line": extract_test_line(exc_stacktrace, nodeid),
-            "test_job": process_job or "unknown",
-            "test_module": node_parts["test_module"],
+            "pr": _intern(process_pr or "none"),
+            "provider": _intern(process_provider or "unknown"),
+            "run_id": _intern(process_run_id or trace_id),
+            "service_name": _intern(service_name or "unknown"),
+            "status_code": _intern(span_tags.get("otel.status_code", "UNSET")),
+            "hardware": _intern(process_hardware or hardware_from_job(process_job)),
+            "test_class": _intern(node_parts["test_class"]),
+            "test_function": _intern(node_parts["test_function"]),
+            "test_line": _intern(extract_test_line(exc_stacktrace, nodeid)),
+            "test_job": _intern(process_job or "unknown"),
+            "test_module": _intern(node_parts["test_module"]),
             "test_nodeid": nodeid,
-            "trace_id": trace_id,
+            "trace_id": _intern(trace_id),
         }
         for tag, field in (
             ("pytest.cuda_delta_bytes", "cuda_delta_bytes"),
@@ -1988,6 +2052,15 @@ def extract_trace_rows(
                 except (TypeError, ValueError):
                     pass
         rows.append(row)
+
+    # A PR-comment run (``run-slow``) is an issue_comment workflow, so GitHub runs
+    # it on the default branch: GITHUB_SHA, hence vcs.ref.head.revision, is main's
+    # head at that moment, not what was tested. The PR's name then showed a merged
+    # stranger's commit ("[serge] Fix ... (#49044)" on PR 49084). service.version is
+    # the commit the job checked out - GitHub's merge of the PR head into main, the
+    # same shape a PR CI run reports - so it names the code under test.
+    if process_ci_event == "pr-comment" and _FULL_SHA.match(process_service_version):
+        process_commit_sha = process_service_version
 
     if not process_repository and process_pr_url:
         process_repository = repository_from_pr_url(process_pr_url)
@@ -2011,6 +2084,11 @@ def extract_trace_rows(
         "test_job": process_job or "unknown",
         "trace_id": trace_id,
     }, rows
+
+
+def _intern(value: object) -> object:
+    """``sys.intern`` for strings; anything else (a missing tag) passes through."""
+    return sys.intern(value) if type(value) is str else value
 
 
 def _precompute_trace_rows(
@@ -2189,6 +2267,15 @@ def extract_pr_info_metrics(
         if existing is None or trace_score >= existing[0]:
             best_by_pr[key] = (trace_score, candidate)
 
+    if _metadata_fetcher is None:
+        _prefetch_concurrently(
+            metadata_fetcher,
+            [
+                (candidate["repository"], candidate["pr"])
+                for _score, candidate in best_by_pr.values()
+                if candidate["repository"]
+            ],
+        )
     for (_service_name, _pr), (_score, candidate) in sorted(best_by_pr.items()):
         pr = candidate["pr"]
         repository = candidate["repository"]
@@ -2611,6 +2698,19 @@ def extract_run_active_metrics(
     )
     polled_keys = {key for key in latest_by_key if key[0] == "pr"}
     polled_keys.update(branch_keys[: active_branch_runs()])
+
+    if _activity_fetcher is None:
+        calls: list[tuple[str, ...]] = []
+        for key, info in latest_by_key.items():
+            if key not in polled_keys or not info["repository"]:
+                continue
+            latest_start = int(info["latest_start"])
+            if latest_start and (now_seconds * 1_000_000 - latest_start) > lookback_us:
+                continue
+            run_db_id, run_attempt = split_run_id(str(info["run_id"]))
+            if run_db_id:
+                calls.append((str(info["repository"]), run_db_id, run_attempt))
+        _prefetch_concurrently(fetcher, calls)
 
     run_lines: list[str] = []
     start_lines: list[str] = []
@@ -3644,6 +3744,25 @@ def _early_job_results_enabled() -> bool:
 _job_refetch_due: dict[str, float] = {}
 _job_refetch_due_lock = threading.Lock()
 
+# Why the last render held back each PR job it could have released early, one
+# count per (run, test_job). Rebuilt by completed_job_results_extracted, read by
+# the payload. Reasons, in the order they are checked:
+#   no_listing   — no complete GitHub jobs listing for the run's attempt yet
+#   unmatched    — no GitHub job name maps to this test_job
+#   active       — a matching GitHub job is still queued or running
+#   conclusion   — a matching job ended neither success nor failure
+#   stale_read   — a trace was last read before completion + grace (re-read queued)
+#   disagree     — the traces' failure state disagrees with GitHub's conclusion
+EARLY_RELEASE_HOLD_REASONS = (
+    "no_listing",
+    "unmatched",
+    "active",
+    "conclusion",
+    "stale_read",
+    "disagree",
+)
+_last_jobs_held: dict[str, int] = {}
+
 
 def completed_job_results_extracted(
     window_extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]],
@@ -3716,11 +3835,13 @@ def completed_job_results_extracted(
     released: list[tuple[dict[str, str | int], list[dict[str, str | float]]]] = []
     released_run_ids: set[str] = set()
     due: dict[str, float] = {}
+    held = dict.fromkeys(EARLY_RELEASE_HOLD_REASONS, 0)
     for run_id, jobs in by_run.items():
         run_db_id, attempt = split_run_id(run_id)
         with _run_activity_cache_lock:
             listing = _run_job_states.get((repo_by_run.get(run_id, ""), run_db_id))
         if listing is None or listing[1] != attempt:
+            held["no_listing"] += len(jobs)
             continue
         forms = _job_name_forms(set(jobs))
         github_jobs: dict[str, list[GitHubJobState]] = {}
@@ -3731,13 +3852,18 @@ def completed_job_results_extracted(
 
         for test_job, entries in jobs.items():
             states = github_jobs.get(test_job)
-            if not states or any(
+            if not states:
+                held["unmatched"] += 1
+                continue
+            if any(
                 st.status in GITHUB_ACTIVE_STATUSES or st.completed_at is None
                 for st in states
             ):
+                held["active"] += 1
                 continue
             conclusions = {st.conclusion for st in states}
             if not conclusions <= {"success", "failure"}:
+                held["conclusion"] += 1
                 continue
             not_before = max(float(st.completed_at or 0) for st in states) + grace
             stale: list[str] = []
@@ -3750,6 +3876,7 @@ def completed_job_results_extracted(
             if stale:
                 for trace_id in stale:
                     due[trace_id] = not_before
+                held["stale_read"] += 1
                 continue
             failed = sum(
                 max(
@@ -3759,6 +3886,7 @@ def completed_job_results_extracted(
                 for info, rows in entries
             )
             if (failed > 0) != ("failure" in conclusions):
+                held["disagree"] += 1
                 continue
             released.extend(entries)
             released_run_ids.add(run_id)
@@ -3766,6 +3894,8 @@ def completed_job_results_extracted(
     with _job_refetch_due_lock:
         _job_refetch_due.clear()
         _job_refetch_due.update(due)
+        _last_jobs_held.clear()
+        _last_jobs_held.update(held)
     return released, released_run_ids
 
 
@@ -3800,6 +3930,12 @@ def extract_average_metrics(
         # job?" — the question the dashboard's Sticky Failures panels ask.
         run_id = str(trace_info.get("run_id", "") or "unknown")
         for row in rows:
+            # Only failing tests produce a line, so passing rows (the ~1M-row
+            # majority of a busy window) are skipped before any key is built.
+            # test_class/function/module derive from the nodeid, so taking them
+            # from the first failing row equals taking them from the first row.
+            if str(row["status_code"]) != "ERROR":
+                continue
             key = (
                 str(row["service_name"]),
                 str(row["test_job"]),
@@ -3809,7 +3945,6 @@ def extract_average_metrics(
             )
             if key not in aggregates:
                 aggregates[key] = {
-                    "durations": [],
                     "failure_count": 0,
                     "last_failure_start_time": 0,
                     "last_failure_trace_id": "",
@@ -3819,16 +3954,14 @@ def extract_average_metrics(
                     "test_function": str(row["test_function"]),
                     "test_module": str(row["test_module"]),
                 }
-            aggregates[key]["durations"].append(float(row["duration_seconds"]))
-            if str(row["status_code"]) == "ERROR":
-                aggregates[key]["failure_count"] += 1
-                if trace_start >= aggregates[key]["last_failure_start_time"]:
-                    aggregates[key]["last_failure_start_time"] = trace_start
-                    aggregates[key]["last_failure_trace_id"] = trace_id
-                    aggregates[key]["last_failure_run_id"] = run_id
-                    aggregates[key]["last_failure_exception_type"] = (
-                        str(row.get("exception_type", "")) or "unknown"
-                    )
+            aggregates[key]["failure_count"] += 1
+            if trace_start >= aggregates[key]["last_failure_start_time"]:
+                aggregates[key]["last_failure_start_time"] = trace_start
+                aggregates[key]["last_failure_trace_id"] = trace_id
+                aggregates[key]["last_failure_run_id"] = run_id
+                aggregates[key]["last_failure_exception_type"] = (
+                    str(row.get("exception_type", "")) or "unknown"
+                )
 
     for (service_name, test_job, pr, provider, test_nodeid), aggregate in sorted(
         aggregates.items()
@@ -4052,6 +4185,8 @@ _render_phase_seconds_total: dict[str, float] = {}
 _renders_total = 0
 _refresh_pause_seconds_total: dict[str, float] = {}
 _refresh_pauses_total: dict[str, int] = {}
+# Soft-limit cache drops, by cache (trace = raw traces, shaped = shaped window).
+_memory_relief_total: dict[str, int] = {}
 
 # Outbound calls, from every thread (render, fetch pool, HTTP handlers).
 _upstream_requests_total: dict[tuple[str, str], int] = {}
@@ -4168,6 +4303,7 @@ def _render_profile_lines() -> list[str]:
         renders = _renders_total
         pauses = sorted(_refresh_pauses_total.items())
         pause_seconds = sorted(_refresh_pause_seconds_total.items())
+        relief = sorted(_memory_relief_total.items())
         upstream_requests = sorted(_upstream_requests_total.items())
         upstream_seconds = sorted(_upstream_request_seconds_total.items())
         upstream_bytes = sorted(_upstream_response_bytes_total.items())
@@ -4247,6 +4383,16 @@ def _render_profile_lines() -> list[str]:
             lines.append(
                 f"pytest_trace_exporter_refresh_pause_seconds_total"
                 f"{metric_labels({'reason': reason})} {seconds:.3f}"
+            )
+    if relief:
+        lines.append(
+            "# HELP pytest_trace_exporter_memory_relief_total Cache drops because RSS was over the soft limit, by cache."
+        )
+        lines.append("# TYPE pytest_trace_exporter_memory_relief_total counter")
+        for cache, value in relief:
+            lines.append(
+                f"pytest_trace_exporter_memory_relief_total"
+                f"{metric_labels({'cache': cache})} {value}"
             )
     if upstream_requests:
         lines.append(
@@ -4454,26 +4600,21 @@ def _iter_metric_lines() -> Iterator[str]:
         early_extracted, early_runs = completed_job_results_extracted(
             extracted, {str(info.get("run_id", "")) for info, _ in rollup_extracted}
         )
-    # Persist per-run rows incrementally for the /run drill-down: any run that
-    # gained a trace this render gets its current-window rows merged into the
-    # store. Because persist_run_rows UNIONs (it never overwrites the whole run),
-    # a long/large run accumulates ALL its shards across renders as they rotate
-    # through the lookback window — even though no single render's window ever
-    # holds them all. Bounded to runs with new activity so steady state is cheap.
-    runs_with_new = {
-        str(info.get("run_id", ""))
-        for info, _ in extracted
+    # Persist per-run rows incrementally for the /run drill-down: the traces
+    # fetched this render are merged into their run's store file. Because
+    # persist_run_rows UNIONs (it never overwrites the whole run), a long/large
+    # run accumulates ALL its shards across renders as they rotate through the
+    # lookback window — even though no single render's window ever holds them
+    # all. Only fetched traces can bring rows the store lacks: every other trace
+    # in the window is served from cache, and was merged when it was fetched.
+    new_traces = [
+        (info, rows)
+        for info, rows in extracted
         if str(info.get("trace_id", "")) in current_new_ids
-    }
-    if runs_with_new:
+    ]
+    if new_traces:
         with _render_phase("persist_run_store"):
-            persist_settled_runs(
-                [
-                    (info, rows)
-                    for info, rows in extracted
-                    if str(info.get("run_id", "")) in runs_with_new
-                ]
-            )
+            persist_settled_runs(new_traces)
 
     # Per-test is emitted only for traces newly seen this render plus the
     # previous render's new ids (the one-render carryover), so the same
@@ -4505,6 +4646,16 @@ def _iter_metric_lines() -> Iterator[str]:
         for info, _rows in early_extracted
     }
     yield f"pytest_trace_exporter_jobs_released_early {len(released_jobs)}"
+    with _job_refetch_due_lock:
+        jobs_held = dict(_last_jobs_held)
+    if jobs_held:
+        yield "# HELP pytest_trace_exporter_jobs_held PR jobs of a still-gated run that this render did not release early, by the first check that held them."
+        yield "# TYPE pytest_trace_exporter_jobs_held gauge"
+        for reason in EARLY_RELEASE_HOLD_REASONS:
+            yield (
+                f"pytest_trace_exporter_jobs_held"
+                f"{metric_labels({'reason': reason})} {jobs_held.get(reason, 0)}"
+            )
     yield "# HELP pytest_trace_exporter_traces_deferred Window traces not yet fetched this render (picked up on a later render)."
     yield "# TYPE pytest_trace_exporter_traces_deferred gauge"
     yield f"pytest_trace_exporter_traces_deferred {enumeration_deferred}"
@@ -5290,14 +5441,57 @@ def _mem_soft_limit_bytes() -> int:
     )
 
 
-def _relieve_memory_pressure() -> None:
-    """Before a render, if RSS is over the soft limit, drop the reclaimable
-    trace caches so the render reuses freed heap instead of stacking new
-    allocations on a near-full process and tipping into the hard cgroup limit
-    (an OOM-kill).
+def _malloc_trim() -> None:
+    """Hand freed heap back to the OS (glibc ``malloc_trim``); no-op elsewhere.
 
-    Both the raw-trace cache and the (now larger) shaped-window cache are
-    reclaimable; Tempo is the durable source, so a dropped entry is just
+    Clearing a cache frees Python objects, but glibc keeps the pages, so RSS does
+    not fall and the next render would see the same over-limit RSS again.
+    """
+    try:
+        import ctypes
+
+        ctypes.CDLL(None).malloc_trim(0)
+    except (OSError, AttributeError, ValueError):
+        pass
+
+
+def _drop_trace_cache() -> int:
+    global _trace_cache_bytes
+    with _trace_cache_lock:
+        dropped = len(_trace_cache)
+        _trace_cache.clear()
+        _trace_cache_sizes.clear()
+        _trace_cache_bytes = 0
+    return dropped
+
+
+def _drop_shaped_cache() -> int:
+    global _shaped_cache_bytes
+    with _shaped_cache_lock:
+        dropped = len(_shaped_cache)
+        _shaped_cache.clear()
+        _shaped_cache_sizes.clear()
+        _shaped_meta.clear()
+        _shaped_cache_bytes = 0
+    return dropped
+
+
+def _observe_memory_relief(cache: str) -> None:
+    with _render_profile_lock:
+        _memory_relief_total[cache] = _memory_relief_total.get(cache, 0) + 1
+
+
+def _relieve_memory_pressure() -> None:
+    """Before a render, if RSS is over the soft limit, drop reclaimable caches so
+    the render reuses freed heap instead of stacking new allocations on a
+    near-full process and tipping into the hard cgroup limit (an OOM-kill).
+
+    Escalates: the raw-trace cache first (multi-MB parsed traces, the bulk of
+    what is reclaimable), then — only if RSS is still over after returning the
+    freed heap to the OS — the shaped cache. The shaped cache is small and is
+    what lets a render skip Tempo: dropping it on every render (when RSS sat
+    above a stale soft limit) made every render re-fetch its whole window, with
+    zero cache hits. Tempo is the durable source, so a dropped entry is just
     re-fetched — bounded by the per-render fetch cap, and the run-settle gate
     means a run's roll-up still waits until its re-fetched shards are back.
     Best-effort — a pure safety valve under load, off when MEM_SOFT_MB <= 0.
@@ -5308,21 +5502,22 @@ def _relieve_memory_pressure() -> None:
     rss = _process_resident_bytes()
     if rss is None or rss < soft:
         return
-    global _trace_cache_bytes, _shaped_cache_bytes
-    with _trace_cache_lock:
-        dropped = len(_trace_cache)
-        _trace_cache.clear()
-        _trace_cache_sizes.clear()
-        _trace_cache_bytes = 0
-    with _shaped_cache_lock:
-        dropped += len(_shaped_cache)
-        _shaped_cache.clear()
-        _shaped_cache_sizes.clear()
-        _shaped_meta.clear()
-        _shaped_cache_bytes = 0
+    dropped = _drop_trace_cache()
+    _malloc_trim()
+    _observe_memory_relief("trace")
+    after = _process_resident_bytes()
+    dropped_shaped = 0
+    if after is None or after >= soft:
+        dropped_shaped = _drop_shaped_cache()
+        _malloc_trim()
+        _observe_memory_relief("shaped")
+        after = _process_resident_bytes()
+    mib = 1024 * 1024
     print(
-        f"[pytest-trace-exporter] RSS {rss // (1024 * 1024)}MiB over soft limit "
-        f"{soft // (1024 * 1024)}MiB; dropped {dropped} cached traces to cap growth",
+        f"[pytest-trace-exporter] RSS {rss // mib}MiB over soft limit "
+        f"{soft // mib}MiB; dropped {dropped} raw and {dropped_shaped} shaped "
+        f"cached traces; RSS now "
+        f"{'?' if after is None else after // mib}MiB",
         file=sys.stderr,
         flush=True,
     )
@@ -5421,7 +5616,11 @@ def iter_recent_main_run_store_rows(
     now = time.time() if now is None else now
     with _main_run_store_rows_lock:
         cached_at, cached_rows = _main_run_store_rows_cache
-        if now - cached_at < DEFAULT_REFRESH_COOLDOWN_SECONDS:
+        ttl = env_int(
+            "PYTEST_TRACE_EXPORTER_MAIN_DURATION_STORE_CACHE_SECONDS",
+            int(DEFAULT_MAIN_DURATION_STORE_CACHE_SECONDS),
+        )
+        if now - cached_at < ttl:
             return list(cached_rows)
     max_files = env_int(
         "PYTEST_TRACE_EXPORTER_MAIN_DURATION_STORE_MAX_FILES",
@@ -5526,17 +5725,35 @@ def persist_run_rows(
         existing_rows = existing.get("rows")
         for r in existing_rows if isinstance(existing_rows, list) else []:
             merged[(str(r.get("trace_id", "")), str(r.get("test_nodeid", "")))] = r
+        # A re-read of an in-flight trace usually brings back rows the store
+        # already has; only rewrite the (multi-MB, gzipped) file when the union
+        # actually changed.
+        changed = not existing
         for r in rows:
             slim_row = {k: r.get(k) for k in _RUN_STORE_FIELDS}
-            merged[(str(r.get("trace_id", "")), str(r.get("test_nodeid", "")))] = (
-                slim_row
-            )
+            key = (str(r.get("trace_id", "")), str(r.get("test_nodeid", "")))
+            if merged.get(key) != slim_row:
+                merged[key] = slim_row
+                changed = True
         merged_failed: dict[str, dict[str, str]] = {}
         existing_failed = existing.get("failed_traces")
         if isinstance(existing_failed, dict):
             merged_failed.update(existing_failed)
         if failed_traces:
-            merged_failed.update(failed_traces)
+            for trace_id, failed in failed_traces.items():
+                if merged_failed.get(trace_id) != failed:
+                    merged_failed[trace_id] = failed
+                    changed = True
+        if not changed:
+            # Still (re)seed the counts after a restart, when the store is the
+            # only copy of them; otherwise they are already current.
+            with _run_store_counts_lock:
+                known = run_id in _run_store_counts
+            if not known:
+                _update_run_store_counts(
+                    run_id, iter(merged.values()), failed_traces=merged_failed
+                )
+            return
         payload = json.dumps(
             {
                 "run_id": run_id,
@@ -5946,6 +6163,14 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/run":
             self._request_route = "/run"
             self._serve_run(parse_qs(parsed.query))
+            return
+        if parsed.path == "/healthz":
+            # For the kubelet probes and the ALB target health check. They used
+            # to GET "/", which streams the whole multi-MB payload, 8+ times a
+            # minute, and hang up after the first bytes (a ConnectionResetError
+            # traceback each time).
+            self._request_route = "/healthz"
+            self._send(200, "text/plain; charset=utf-8", b"ok\n")
             return
         if parsed.path in {"/metrics", "/"}:
             self._request_route = "/metrics"

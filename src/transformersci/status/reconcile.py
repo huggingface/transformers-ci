@@ -43,6 +43,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -89,6 +90,14 @@ class Response:
     headers: dict[str, str]
 
 
+# Bound on the raw JSON bytes the ETag cache keeps (parsed, about 2.3-3.3x that).
+# The working set is one discovery listing per workflow plus the unsettled runs'
+# attempt and jobs pages, a few MB at peak. Unbounded, it kept every page ever
+# fetched: discovery's 10-minute watermark bucket mints a new listing URL 144 times
+# a day, and every run adds its jobs pages, so the pod hit its 256Mi limit in ~24h.
+ETAG_CACHE_BYTES = 16 * 1024 * 1024
+
+
 class GitHubClient:
     """Minimal authenticated GET with ETag reuse and rate-limit bookkeeping."""
 
@@ -101,10 +110,13 @@ class GitHubClient:
         opener: Callable[..., object] = urllib.request.urlopen,
         retries: int = 2,
         sleep: Callable[[float], None] = time.sleep,
+        etag_cache_bytes: int = ETAG_CACHE_BYTES,
     ) -> None:
         self._token, self._api, self._timeout, self._open = token, api, timeout, opener
         self._retries, self._sleep = retries, sleep
-        self._etags: dict[str, tuple[str, object]] = {}
+        # url -> (etag, parsed body, raw size), least recently used first
+        self._etags: OrderedDict[str, tuple[str, object, int]] = OrderedDict()
+        self._etag_bytes, self._etag_cache_bytes = 0, etag_cache_bytes
         self.rate: dict[str, float] = {}
         self.requests: dict[str, int] = {}
 
@@ -149,11 +161,13 @@ class GitHubClient:
             request.add_header("Authorization", f"Bearer {self._token}")
         cached = self._etags.get(url)
         if cached:
+            self._etags.move_to_end(url)
             request.add_header("If-None-Match", cached[0])
         try:
             with self._open(request, timeout=self._timeout) as response:
                 headers = {k.lower(): v for k, v in response.headers.items()}
-                body = json.loads(response.read())
+                raw = response.read()
+                body = json.loads(raw)
         except urllib.error.HTTPError as error:
             headers = {k.lower(): v for k, v in (error.headers or {}).items()}
             self._record_rate(headers)
@@ -173,8 +187,25 @@ class GitHubClient:
         self._record_rate(headers)
         self._count("ok")
         if headers.get("etag"):
-            self._etags[url] = (headers["etag"], body)
+            self._remember(url, headers["etag"], body, len(raw))
         return body
+
+    def _remember(self, url: str, etag: str, body: object, size: int) -> None:
+        old = self._etags.pop(url, None)
+        if old:
+            self._etag_bytes -= old[2]
+        if size > self._etag_cache_bytes:
+            return
+        self._etags[url] = (etag, body, size)
+        self._etag_bytes += size
+        while self._etag_bytes > self._etag_cache_bytes:
+            _url, (_etag, _body, evicted) = self._etags.popitem(last=False)
+            self._etag_bytes -= evicted
+
+    @property
+    def etag_cache(self) -> tuple[int, int]:
+        """(entries, raw bytes) held by the ETag cache."""
+        return len(self._etags), self._etag_bytes
 
 
 def _resume_at(headers: dict[str, str]) -> float:
@@ -508,6 +539,7 @@ class Reconciler:
             "discovery_truncated": stats.discovery_truncated,
             "run_errors": stats.run_errors,
             "paused_until": stats.paused_until,
+            "etag_cache": self.client.etag_cache,
             "stale": 1 if now - reference > self.settings.stale_after_seconds else 0,
         }
 
