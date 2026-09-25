@@ -294,6 +294,46 @@ def test_unchanged_listings_are_served_by_etag(tmp_path) -> None:
     assert reconciler.client.requests["not_modified"] == 1
 
 
+def test_the_etag_cache_is_bounded_least_recently_used_first() -> None:
+    body = {"items": ["x" * 80]}
+    size = len(json.dumps(body).encode())
+
+    def etagged(_params, headers):
+        if headers.get("If-none-match") == '"v1"':
+            return (304, {}, {"ETag": '"v1"'})
+        return (200, body, {"ETag": '"v1"'})
+
+    big = (200, {"items": ["y" * 500]}, {"ETag": '"v1"'})
+    fake = FakeGitHub({"/a": etagged, "/b": etagged, "/c": etagged, "/big": big})
+    client = GitHubClient("token", opener=fake, etag_cache_bytes=2 * size + 1)
+
+    client.get("/a")
+    client.get("/b")
+    assert client.etag_cache == (2, 2 * size)
+    client.get("/a")  # a 304: served from the cache, and now the newest entry
+    assert client.requests["not_modified"] == 1
+    client.get("/c")  # evicts /b, the least recently used
+    assert client.etag_cache == (2, 2 * size)
+    client.get("/a")
+    assert client.requests["not_modified"] == 2
+    client.get("/b")  # evicted, so a full request again
+    assert client.requests["not_modified"] == 2
+    client.get("/big")  # larger than the whole budget: served, never cached
+    assert client.etag_cache == (2, 2 * size)
+    assert "If-none-match" not in dict(fake.calls[-1][2])
+
+
+def test_the_etag_cache_size_is_exported(tmp_path) -> None:
+    listing = (200, {"total_count": 0, "workflow_runs": []}, {"ETag": '"v1"'})
+    _store, reconciler, _fake = setup(tmp_path, {RUNS: listing})
+    reconciler.run_once(now=NOW)
+    entries, size = reconciler.client.etag_cache
+    assert entries == 1 and size > 0
+    text = metrics.render_reconcile(reconciler.snapshot(now=NOW))
+    assert f"ci_github_status_etag_cache_entries {entries}" in text
+    assert f"ci_github_status_etag_cache_bytes {size}" in text
+
+
 def test_the_api_settles_a_disputed_conclusion(tmp_path) -> None:
     store, reconciler, _fake = setup(
         tmp_path,
