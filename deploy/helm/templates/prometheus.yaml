@@ -232,6 +232,28 @@ data:
             regex: ([^:]+)(?::\d+)?;(\d+)
             replacement: $1:$2
 
+      {{- if .Values.otelcol.liveCounts.enabled }}
+
+      # Live test counts (ci_live_*), counted by each collector replica as spans
+      # arrive. Per pod on purpose: each replica holds only its own share, so
+      # queries sum across instances. 5s like ci-github-status, which these join.
+      - job_name: 'otelcol-live'
+        scrape_interval: 5s
+        scrape_timeout: 4s
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - {{ include "transformers-ci.namespace" . }}
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+            action: keep
+            regex: otelcol
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            action: keep
+            regex: {{ .Values.otelcol.liveCounts.port | quote }}
+      {{- end }}
+
 {{- if .Values.sergeScrape.enabled }}
       # serge's own per-job agent-loop metrics. serge is a different release in
       # a different namespace, and this is the durable side of its numbers: its
