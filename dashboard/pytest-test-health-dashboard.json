@@ -51,7 +51,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Rolling 24-hour failed-test count on main divided by the number of distinct main commit SHAs seen in the same 24-hour window, split by GPU hardware. This normalizes busy days against quiet days so the trend tracks main stability rather than CI volume.",
+      "description": "Failed GPU tests on main per commit, over a rolling 24 hours, by hardware.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -386,7 +386,7 @@
         }
       ],
       "type": "table",
-      "description": "Tests that failed in MORE THAN ONE run of a CPU job on main. 'Fails' = how many distinct runs of that job the test failed in within the dashboard time range, so the range IS the window -- widen it to catch slower flakes, narrow it to see only what is breaking now. Counts distinct run_id values, NOT traces: one run_models_gpu run emits ~19 per-model traces, and a test that failed twice within one run (retry, or two shards) counts that run once. Single failures are excluded. 'Last Failed' is the start of the most recent failing run -- read it together with Fails: high Fails + a recent Last Failed is an active breakage, high Fails + an old Last Failed is a chronic flake that has gone quiet, or history already fixed inside the range. Rows are ranked on Fails with the most recent failure breaking ties. There is deliberately NO failure-rate column: it would need the number of runs in which each test actually RAN, and that is not measurable here -- pytest_test_run_count is retired, and per-job run counts are not a usable substitute because runs are not homogeneous (tests_torch: 35% of runs executed under half its median suite; run_models_gpu mixes daily/nightly full runs of ~160k tests with push runs of ~10k). Dividing by those would understate the rate by ~1.5x and more."
+      "description": "CPU tests on main that failed in more than one run within the time range. Fails counts the runs, and Last Failed shows whether it is still happening."
     },
     {
       "datasource": {
@@ -632,7 +632,7 @@
         }
       ],
       "type": "table",
-      "description": "Tests that failed in MORE THAN ONE run of a GPU job on main, top 25 by Fails. 'Fails' = how many distinct runs of that job the test failed in within the dashboard time range, so the range IS the window -- widen it to catch slower flakes, narrow it to see only what is breaking now. Counts distinct run_id values, NOT traces: one run_models_gpu run emits ~19 per-model traces, and a test that failed twice within one run (retry, or two shards) counts that run once. Single failures are excluded. 'Last Failed' is the start of the most recent failing run -- read it together with Fails: high Fails + a recent Last Failed is an active breakage, high Fails + an old Last Failed is a chronic flake that has gone quiet, or history already fixed inside the range. Rows are ranked on Fails with the most recent failure breaking ties. There is deliberately NO failure-rate column: it would need the number of runs in which each test actually RAN, and that is not measurable here -- pytest_test_run_count is retired, and per-job run counts are not a usable substitute because runs are not homogeneous (tests_torch: 35% of runs executed under half its median suite; run_models_gpu mixes daily/nightly full runs of ~160k tests with push runs of ~10k). Dividing by those would understate the rate by ~1.5x and more. Ranking on Fails rather than a rate is also what keeps the retired `nightly` ci_event (dead since 2026-08-25, 22 runs) from monopolising the panel: at 22/22 it would be a permanent 100% rate."
+      "description": "GPU tests on main that failed in more than one run within the time range, top 25. Fails counts the runs, and Last Failed shows whether it is still happening."
     },
     {
       "datasource": {
@@ -887,7 +887,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Tests that finished still holding device memory, worst first. This is memory handed to the NEXT test in the same pytest process, so a multi-GB entry here is what makes later tests in the same file fail asking for a few MiB. Queried directly rather than via a recording rule: the metric only exists for GPU tests whose run reported it, so the series count is small.",
+      "description": "GPU tests that finished still holding device memory, worst first. That memory is handed to the next test in the same process.",
       "fieldConfig": {
         "defaults": {
           "color": {

@@ -54,7 +54,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Daily average failed-test count per scheduled run on main, split by hardware. Each run is first reduced to one failed-test count per hardware, then runs in the day are averaged so busier days do not dominate the trend.",
+      "description": "Average failed-test count per scheduled run on main, by hardware.",
       "fieldConfig": {
         "defaults": {
           "color": {

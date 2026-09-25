@@ -885,7 +885,7 @@
       "id": 11,
       "type": "table",
       "title": "Jobs by test job \u2014 status from GitHub, tests from traces",
-      "description": "Shards are GitHub jobs sharing a test_job. Test details: 'Awaiting' while a shard is still queued or running and no test series exists yet; 'No test details' once every shard is done and none reported (skipped, cancelled, or a job that emits no telemetry); 'Tests reported' when the trace pipeline has counts. A failed/cancelled job with passing tests means a later step failed \u2014 the two are shown separately on purpose.",
+      "description": "Each test job of the run, with its status from GitHub and its test counts from traces. A job can pass its tests and still fail or be cancelled at a later step, so the two are shown separately.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

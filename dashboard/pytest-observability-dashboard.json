@@ -466,7 +466,7 @@
       ],
       "type": "table",
       "timeFrom": "7d",
-      "description": "The 10 most recent PRs to run CI. Bounded to the last 7d, not the dashboard time range: the selector matches every PR in the window, so at the 90d default it scanned 1,311 PRs and shipped ~6,700 frames to the browser to render 10 rows -- 12s of Prometheus work every 60s refresh, which is slower than the refresh itself. The detail columns are also joined against the top 10 rather than fetched for every PR in the window. `Runs` alone still counts over 90d -- it is the PR's total run count and widening just that target costs nothing once the join has collapsed the output. `Failures`/`Rate` stay on the 7d window: widening them costs 2.4x (8.7s vs 3.6s) and would undo the fix."
+      "description": "The 10 PRs with the most recent CI activity in the last 7 days. The spinner shows a run GitHub reports as queued or in progress."
     },
     {
       "datasource": {
@@ -973,7 +973,7 @@
       ],
       "type": "table",
       "timeFrom": "7d",
-      "description": "The 10 most recent branch runs (no PR). Bounded to the last 7d, not the dashboard time range: the selector matches every branch run in the window, so at the 90d default it scanned 1,311 PRs and shipped ~6,700 frames to the browser to render 10 rows -- 12s of Prometheus work every 60s refresh, which is slower than the refresh itself. The detail columns are also joined against the top 10 rather than fetched for every branch run in the window."
+      "description": "The 10 most recent runs on branches without a PR, such as main, in the last 7 days. The spinner shows a run GitHub reports as queued or in progress."
     }
   ],
   "schemaVersion": 41,

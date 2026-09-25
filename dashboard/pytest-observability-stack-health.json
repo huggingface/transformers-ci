@@ -293,7 +293,7 @@
    "id": 203,
    "type": "stat",
    "title": "Spans accepted \u2212 filtered \u2212 sent (24h)",
-   "description": "Spans the collector accepted but neither dropped on purpose nor shipped to Tempo, over 24h: receiver_accepted \u2212 processor_filter_spans_filtered \u2212 exporter_sent. The filter term is the repository-privacy deny rule (internal huggingface/* clones), whose drops are by design \u2014 without it this stat reads red every time a private clone exports. A large positive delta is real buffering/loss: cross-check exporter_send_failed_spans, exporter_queue_size and tempo_discarded_spans_total.",
+   "description": "Spans the collector accepted but neither filtered on purpose nor sent to Tempo, over 24h. Anything well above zero is spans lost or stuck in the queue.",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -559,7 +559,7 @@
    "id": 213,
    "type": "timeseries",
    "title": "End-to-end span reconciliation (collector)",
-   "description": "Collector spans accepted/s (in) vs sent/s (out to Tempo), plus the spans the repository-privacy filter drops on purpose. accepted = sent + filtered; a gap beyond filtered/s is real-time span loss/backpressure.",
+   "description": "Spans per second into the collector, out to Tempo, and dropped by the privacy filter. A gap beyond the filtered rate is span loss.",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -685,7 +685,7 @@
    ],
    "title": "Tempo memory (RSS) vs 16 GiB limit",
    "type": "timeseries",
-   "description": "Tempo resident memory vs its 16 GiB cgroup limit (raised 8\u219216 GiB on 2026-06-25 after the span-id collision fix made shard traces ~16x bigger). OOMKills here silently drop acked-but-unflushed spans. GOMEMLIMIT (13600 MiB) makes GC aggressive near the soft cap."
+   "description": "Tempo's resident memory against its 16 GiB limit. An OOMKill here loses spans that were accepted but not yet flushed."
   },
   {
    "datasource": {
@@ -932,7 +932,7 @@
     "type": "prometheus",
     "uid": "prometheus"
    },
-   "description": "Traces that could not be read back from Tempo. A `too_large` fetch means the trace exceeded Tempo's read-path gRPC message limit (server.grpc_server_max_send_msg_size) and was dropped WHOLE \u2014 its job silently disappears from the run store and the run/job roll-ups (this is how tests_torch vanished from the Jobs table). `tempo: trace-by-id 5xx` is the same failure seen from Tempo's side.",
+   "description": "Traces the exporter could not read back from Tempo, by reason. A too_large trace is skipped whole, so its job is missing from the run.",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -1077,7 +1077,7 @@
    "id": 502,
    "type": "stat",
    "title": "Backup last schedule age",
-   "description": "Hours since Kubernetes last scheduled each backup CronJob. Catches suspended or unscheduled CronJobs. Reads \"not yet scheduled\" until the CronJob first fires, because Kubernetes leaves .status.lastScheduleTime unset before then.",
+   "description": "Hours since each backup CronJob was last scheduled.",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -1145,7 +1145,7 @@
    "id": 503,
    "type": "stat",
    "title": "Backup latest job problems",
-   "description": "Counts backup CronJobs whose latest job failed, is missing, or has an unknown state, plus exporter scrape errors. Sums the one-hot status gauge directly so a healthy stack reads 0 rather than empty; \"no exporter data\" means backup-status-exporter itself is not being scraped.",
+   "description": "Backup CronJobs whose latest job failed, is missing or is in an unknown state. 0 is healthy.",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -1348,7 +1348,7 @@
     "type": "prometheus",
     "uid": "prometheus-infra"
    },
-   "description": "Trace payload bytes ingested by Tempo's distributor, one bar per UTC calendar day (increase over a 1d step). Primary 'data received by the system' signal \u2014 watch daily volume against the Tempo storage budget. The current day's bar is partial and grows until UTC midnight.",
+   "description": "Trace data Tempo received per UTC day. Today's bar is partial.",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -1407,7 +1407,7 @@
     "type": "prometheus",
     "uid": "prometheus-infra"
    },
-   "description": "Metric samples appended to each Prometheus TSDB, one bar per UTC calendar day (increase over a 1d step). job=prometheus is CI data (90d retention), job=prometheus-infra is stack self-metrics (14d). Tracks the metric-side ingest load that drives TSDB disk growth. The current day's bar is partial and grows until UTC midnight.",
+   "description": "Metric samples each Prometheus stored per UTC day (prometheus holds CI data, prometheus-infra the stack's own metrics). Today's bar is partial.",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -1466,7 +1466,7 @@
     "type": "prometheus",
     "uid": "prometheus"
    },
-   "description": "Observed AWS CI runner executions, one bar per UTC calendar day. Counts each distinct pytest trace once, so a reusable workflow job with parallelism=8 contributes up to 8 runner executions. The current day's bar is partial and grows until UTC midnight.",
+   "description": "AWS CI runner executions per UTC day, one per pytest trace. Today's bar is partial.",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -1628,7 +1628,7 @@
    ],
    "title": "PVC on-disk usage vs limit",
    "type": "timeseries",
-   "description": "On-disk usage of the Tempo and Prometheus PVCs vs their provisioned limits, to follow the 90d-retention fill. Tempo = sum(tempodb_backend_bytes_total) (350 GiB PVC, 90d block_retention). Prometheus = TSDB block bytes (100 GiB PVC, 90d retention; excludes the small WAL/head). kubelet_volume_stats_* is not scraped here, so these are app-level on-disk sizes, not filesystem df. The run-store PVC (30 GiB) has no size metric yet."
+   "description": "Disk used by Tempo and Prometheus against their volume sizes."
   },
   {
    "id": 303,
@@ -2459,7 +2459,7 @@
    "id": 516,
    "type": "stat",
    "title": "GitHub events / min",
-   "description": "Signature-verified workflow_run + workflow_job webhook events per minute (5m average), whatever the service then did with them. Zero while CI is busy means GitHub stopped delivering; zero when the repository is quiet is normal.",
+   "description": "GitHub webhook events received per minute. Zero while CI is busy means GitHub stopped delivering.",
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -2521,7 +2521,7 @@
    "id": 517,
    "type": "timeseries",
    "title": "GitHub events per minute, by event and action",
-   "description": "workflow_job queued / in_progress / completed and workflow_run requested / in_progress / completed, per minute (5m rate). Includes events for workflows the service does not follow; only signature-verified deliveries count.",
+   "description": "GitHub webhook events per minute, by event and action.",
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"

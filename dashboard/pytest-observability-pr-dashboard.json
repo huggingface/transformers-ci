@@ -54,7 +54,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Jobs of the PR's newest run. Status comes from GitHub (ci-github-status) while the run is recent \u2014 queued/running jobs appear before any test telemetry \u2014 and from the trace pipeline otherwise. Grey = cancelled or skipped. Test counts come from the trace pipeline.",
+      "description": "Jobs of the PR's newest run. Status comes from GitHub, test counts from traces; grey means cancelled or skipped.",
       "fieldConfig": {
         "defaults": {
           "color": {
