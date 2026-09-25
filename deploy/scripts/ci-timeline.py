@@ -38,6 +38,8 @@ import os
 import statistics
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -66,13 +68,25 @@ def _github_token() -> str | None:
         return None
 
 
-def _github(path: str, token: str | None) -> dict:
+def _github(path: str, token: str | None, attempts: int = 4) -> dict:
     request = urllib.request.Request(f"{GITHUB_API}{path}")
     request.add_header("Accept", "application/vnd.github+json")
     if token:
         request.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)
+    # A 103-job listing page occasionally 502s; one bad page used to throw away a
+    # ten-minute collection. Retry server errors and timeouts, not 4xx.
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            if error.code < 500 or attempt == attempts - 1:
+                raise
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == attempts - 1:
+                raise
+        time.sleep(2 * (attempt + 1))
+    raise AssertionError("unreachable")
 
 
 def _ts(value: str | None) -> float | None:
