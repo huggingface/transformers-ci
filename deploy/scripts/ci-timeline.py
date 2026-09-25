@@ -148,16 +148,27 @@ def _first_span(
 def collect(args: argparse.Namespace) -> list[dict]:
     token = _github_token()
     jobs = dict(item.split("=", 1) for item in args.job or DEFAULT_JOBS)
-    query = urllib.parse.urlencode(
-        {
-            "per_page": min(args.runs * 2, 100),
-            "event": args.event,
-            "status": "completed",
-        }
-    )
-    runs = _github(
-        f"/repos/{args.repo}/actions/workflows/{args.workflow}/runs?{query}", token
-    )["workflow_runs"][: args.runs]
+    # Newest first, completed ones kept client-side. The API's own
+    # status=completed filter goes through a search index and can answer with
+    # runs weeks old (2026-09-25: the "latest" 30 were from Sep 4-6).
+    runs: list[dict] = []
+    for page in range(1, 11):
+        query = urllib.parse.urlencode(
+            {"per_page": 100, "event": args.event, "page": page}
+        )
+        batch = _github(
+            f"/repos/{args.repo}/actions/workflows/{args.workflow}/runs?{query}", token
+        )["workflow_runs"]
+        runs.extend(r for r in batch if r.get("status") == "completed")
+        if len(runs) >= args.runs or len(batch) < 100:
+            break
+    runs = runs[: args.runs]
+    if runs:
+        print(
+            f"sample: {len(runs)} completed runs created "
+            f"{runs[-1]['created_at']} .. {runs[0]['created_at']}",
+            file=sys.stderr,
+        )
 
     records: list[dict] = []
     for run in runs:
