@@ -412,7 +412,7 @@
       "transparent": true,
       "options": {
         "mode": "html",
-        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&job='+encodeURIComponent('${job}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+(function(){var q=new URLSearchParams(parent.location.search),f=q.get('from'),t=q.get('to');return /^[0-9]+$/.test(f||'')&&/^[0-9]+$/.test(t||'')?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>"
+        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&job='+encodeURIComponent('${job}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>"
       }
     },
     {
@@ -895,31 +895,32 @@
         "type": "query"
       },
       {
-        "allValue": ".*",
+        "allValue": null,
         "current": {
-          "selected": true,
-          "text": "All",
-          "value": "$__all"
+          "selected": false,
+          "text": "",
+          "value": ""
         },
         "datasource": {
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\"}, pr)",
-        "includeAll": true,
+        "definition": "query_result(max by (pr) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",run_id=~\"$run_id\",test_job=~\"$job\"}[$__range])) or max by (pr) (last_over_time(ci_github_run_info{run_id=~\"$run_id\"}[$__range])))",
+        "includeAll": false,
         "label": "PR",
         "multi": false,
         "name": "pr",
         "hide": 2,
         "options": [],
         "query": {
-          "qryType": 1,
-          "query": "label_values(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\"}, pr)",
+          "qryType": 3,
+          "query": "query_result(max by (pr) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",run_id=~\"$run_id\",test_job=~\"$job\"}[$__range])) or max by (pr) (last_over_time(ci_github_run_info{run_id=~\"$run_id\"}[$__range])))",
           "refId": "Prometheus-pr-Variable-Query"
         },
         "refresh": 2,
         "sort": 1,
-        "type": "query"
+        "type": "query",
+        "regex": "/pr=\"([^\"]+)\"/"
       },
       {
         "current": {
