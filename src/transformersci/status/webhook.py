@@ -147,6 +147,7 @@ def parse_workflow_run(payload: dict, filters: Filters) -> RunUpdate:
         started_at=parse_timestamp(run.get("run_started_at")),
         updated_at=parse_timestamp(run.get("updated_at")),
         html_url=_text(run.get("html_url")),
+        display_title=_text(run.get("display_title")),
     )
 
 

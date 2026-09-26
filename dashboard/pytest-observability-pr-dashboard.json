@@ -953,7 +953,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(topk(1, max by (repository) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+        "definition": "query_result(topk(1, max by (repository) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) or max_over_time((timestamp(ci_github_run_info{pr=~\"$pr\"}))[7d:]))))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -962,7 +962,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(topk(1, max by (repository) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+          "query": "query_result(topk(1, max by (repository) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) or max_over_time((timestamp(ci_github_run_info{pr=~\"$pr\"}))[7d:]))))",
           "refId": "Prometheus-pr_repository-Variable-Query"
         },
         "regex": "/repository=\"([^\"]*)\"/",
@@ -1009,7 +1009,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(topk(1, max by (title) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\",title!=\"\"}))[7d:]))))",
+        "definition": "query_result(topk(1, max by (title) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\",title!=\"\"}))[7d:]) or max_over_time((timestamp(ci_github_run_title_info{pr=~\"$pr\",title!=\"\"}))[7d:]))))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -1018,7 +1018,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(topk(1, max by (title) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\",title!=\"\"}))[7d:]))))",
+          "query": "query_result(topk(1, max by (title) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\",title!=\"\"}))[7d:]) or max_over_time((timestamp(ci_github_run_title_info{pr=~\"$pr\",title!=\"\"}))[7d:]))))",
           "refId": "Prometheus-pr_title-Variable-Query"
         },
         "regex": "/title=\"([^\"]*)\"/",
@@ -1289,7 +1289,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(label_replace(group by (pr) (pytest_run_start_time_seconds{pr=~\"$pr\"}), \"v\", \"PR #$1\", \"pr\", \"([0-9]+)\"), \"v\", \"Main branch\", \"pr\", \"main\"))",
+        "definition": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d]) or last_over_time(ci_github_run_info{pr=~\"$pr\"}[7d])), \"v\", \"PR #$1\", \"pr\", \"([0-9]+)\"), \"v\", \"Main branch\", \"pr\", \"main\"))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -1297,7 +1297,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d])), \"v\", \"PR #$1\", \"pr\", \"([0-9]+)\"), \"v\", \"Main branch\", \"pr\", \"main\"))",
+          "query": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d]) or last_over_time(ci_github_run_info{pr=~\"$pr\"}[7d])), \"v\", \"PR #$1\", \"pr\", \"([0-9]+)\"), \"v\", \"Main branch\", \"pr\", \"main\"))",
           "refId": "Prometheus-branch_label-Variable-Query"
         },
         "regex": "/v=\"([^\"]+)\"/",
@@ -1316,7 +1316,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(label_replace(group by (pr) (pytest_run_start_time_seconds{pr=~\"$pr\"}), \"u\", \"https://github.com/${pr_repository:raw}/pull/$1\", \"pr\", \"([0-9]+)\"), \"u\", \"https://github.com/${pr_repository:raw}/tree/main\", \"pr\", \"main\"))",
+        "definition": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d]) or last_over_time(ci_github_run_info{pr=~\"$pr\"}[7d])), \"u\", \"https://github.com/${pr_repository:raw}/pull/$1\", \"pr\", \"([0-9]+)\"), \"u\", \"https://github.com/${pr_repository:raw}/tree/main\", \"pr\", \"main\"))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -1324,7 +1324,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d])), \"u\", \"https://github.com/${pr_repository:raw}/pull/$1\", \"pr\", \"([0-9]+)\"), \"u\", \"https://github.com/${pr_repository:raw}/tree/main\", \"pr\", \"main\"))",
+          "query": "query_result(label_replace(label_replace(group by (pr) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d]) or last_over_time(ci_github_run_info{pr=~\"$pr\"}[7d])), \"u\", \"https://github.com/${pr_repository:raw}/pull/$1\", \"pr\", \"([0-9]+)\"), \"u\", \"https://github.com/${pr_repository:raw}/tree/main\", \"pr\", \"main\"))",
           "refId": "Prometheus-branch_url-Variable-Query"
         },
         "regex": "/u=\"([^\"]+)\"/",
@@ -1343,7 +1343,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(group by (pr) (pytest_pr_info{pr=~\"$pr\"}), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
+        "definition": "query_result(label_replace(topk(1, max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) or max_over_time((timestamp(ci_github_run_title_info{pr=~\"$pr\",title!=\"\"}))[7d:]))), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -1351,7 +1351,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(topk(1, max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
+          "query": "query_result(label_replace(topk(1, max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]) or max_over_time((timestamp(ci_github_run_title_info{pr=~\"$pr\",title!=\"\"}))[7d:]))), \"t\", \" ${pr_title:raw}\", \"pr\", \".*\"))",
           "refId": "Prometheus-pr_title_section-Variable-Query"
         },
         "regex": "/t=\"([^\"]+)\"/",
