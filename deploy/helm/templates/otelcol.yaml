@@ -61,6 +61,62 @@ processors:
       span:
         - 'IsMatch(resource.attributes["vcs.repository.name"], "^({{ join "|" .Values.otelcol.repositoryFilter.internalOwners }})/"){{ range .Values.otelcol.repositoryFilter.publicRepositories }} and resource.attributes["vcs.repository.name"] != "{{ . }}"{{ end }}'
 {{- end }}
+{{- if .Values.otelcol.liveCounts.enabled }}
+  # Live test counts branch (fed by forward/live, so after the privacy filter;
+  # the fan-out clones each batch for it, so Tempo's data is untouched).
+  filter/live_test_spans:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["pytest.span_type"] != "test"'
+  # Shape spans for spanmetrics, which keys series on service.name + span name +
+  # dimensions (span attributes only) and holds them per resource:
+  # - the span name is the test node id, so replace it or it is one series per test;
+  # - the resource becomes just the run (plus the service.name spanmetrics
+  #   requires, or it skips the span), so each run is one entry in the connector's
+  #   resource cache and old runs are evicted from it. Without that every run's
+  #   series is re-exported until the pod restarts (0.96 has no metrics_expiration).
+  transform/live_keys:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - set(attributes["test_job"], resource.attributes["transformers.test.job"])
+          - set(attributes["hardware"], resource.attributes["transformers.test.hardware"])
+          # Same fallback as the exporter's hardware_from_job(), so live and final
+          # series join on identical labels.
+          - set(attributes["hardware"], "gpu") where attributes["hardware"] == nil and IsMatch(attributes["test_job"], "gpu")
+          - set(attributes["hardware"], "cpu") where attributes["hardware"] == nil
+          - set(name, "test")
+      - context: resource
+        statements:
+          - set(attributes["run_id"], attributes["transformers.test.run.id"])
+          - keep_keys(attributes, ["run_id"])
+          - set(attributes["service.name"], "otelcol-live")
+{{- end }}
+
+{{- if .Values.otelcol.liveCounts.enabled }}
+
+connectors:
+  forward/live: {}
+  # ci_live_calls_total{run_id, test_job, hardware, status_code}: a cumulative
+  # count of the test spans this replica received. Not the `count` connector: in
+  # 0.96 its deltas are replaced, not summed, by the prometheus exporter, which
+  # undercounted a 196k-test run by a third.
+  spanmetrics:
+    namespace: ci_live
+    histogram:
+      disable: true
+    exclude_dimensions: ['span.kind', 'span.name', 'service.name']
+    dimensions:
+      - name: test_job
+      - name: hardware
+    # Runs held (and re-exported every flush), least recently updated evicted
+    # first. An active run evicted by newer ones restarts from 0, so keep this well
+    # above the runs in flight at once (peak 11 PR CI runs on 2026-09-24).
+    resource_metrics_cache_size: {{ .Values.otelcol.liveCounts.runsHeld }}
+    metrics_flush_interval: 5s
+{{- end }}
 
 exporters:
   otlp/tempo:
@@ -93,6 +149,15 @@ exporters:
       # valve against unbounded buffering is memory_limiter, which backpressures the
       # receiver (a visible runner-side export failure) rather than dropping silently.
       max_elapsed_time: 0
+{{- if .Values.otelcol.liveCounts.enabled }}
+  prometheus/live:
+    endpoint: 0.0.0.0:{{ .Values.otelcol.liveCounts.port }}
+    # Evicted runs stop being updated; drop them from /metrics after this.
+    metric_expiration: {{ .Values.otelcol.liveCounts.metricExpiration }}
+    # run_id lives on the resource (see transform/live_keys): make it a label.
+    resource_to_telemetry_conversion:
+      enabled: true
+{{- end }}
 
 service:
   telemetry:
@@ -107,7 +172,16 @@ service:
       # between them: after the limiter (so shedding still happens first) and
       # before the batcher (so rejected spans never occupy queue or disk).
       processors: [memory_limiter, {{ if .Values.otelcol.repositoryFilter.internalOwners }}filter/repository_privacy, {{ end }}batch]
-      exporters: [otlp/tempo]
+      exporters: [otlp/tempo{{ if .Values.otelcol.liveCounts.enabled }}, forward/live{{ end }}]
+{{- if .Values.otelcol.liveCounts.enabled }}
+    traces/live:
+      receivers: [forward/live]
+      processors: [filter/live_test_spans, transform/live_keys]
+      exporters: [spanmetrics]
+    metrics/live:
+      receivers: [spanmetrics]
+      exporters: [prometheus/live]
+{{- end }}
 {{- end }}
 
 ---
@@ -164,6 +238,11 @@ spec:
             - name: metrics
               containerPort: 8889
               protocol: TCP
+            {{- if .Values.otelcol.liveCounts.enabled }}
+            - name: live-metrics
+              containerPort: {{ .Values.otelcol.liveCounts.port }}
+              protocol: TCP
+            {{- end }}
           resources:
             {{- toYaml .Values.otelcol.resources | nindent 12 }}
           env:

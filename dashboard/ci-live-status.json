@@ -885,7 +885,7 @@
       "id": 11,
       "type": "table",
       "title": "Jobs by test job \u2014 status from GitHub, tests from traces",
-      "description": "Each test job of the run, with its status from GitHub and its test counts from traces. A job can pass its tests and still fail or be cancelled at a later step, so the two are shown separately.",
+      "description": "Each test job of the run, with its status from GitHub and its test counts from traces (failures stream in while the run is in flight). A job can pass its tests and still fail or be cancelled at a later step, so the two are shown separately.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -995,7 +995,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests[6h])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "expr": "max by (test_job, run_id) (label_replace(max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests[6h])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"})))), \"src\", \"final\", \"\", \"\") or label_replace(sum by (test_job, run_id) (last_over_time(ci_live_calls_total{status_code=\"STATUS_CODE_ERROR\"}[6h]) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"})))), \"src\", \"live\", \"\", \"\"))",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1019,6 +1019,24 @@
         {
           "id": "merge",
           "options": {}
+        },
+        {
+          "id": "filterByValue",
+          "options": {
+            "type": "exclude",
+            "match": "any",
+            "filters": [
+              {
+                "fieldName": "test_job",
+                "config": {
+                  "id": "regex",
+                  "options": {
+                    "value": "^(pr_ci_status|collect_and_aggregate_tests?_results|setup_generate_shard_matrix|quality_gate|test_preparation)$"
+                  }
+                }
+              }
+            ]
+          }
         },
         {
           "id": "organize",

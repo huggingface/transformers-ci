@@ -87,6 +87,21 @@ otelcol:
     publicRepositories:
       - huggingface/transformers
 
+  # Live test counts: count test spans as they pass through the collector, after
+  # the privacy filter and before Tempo, and expose them for a 5s scrape. The
+  # exporter's pytest_run_job_* stay the final numbers; these only fill the
+  # minutes before it renders a run. Each replica counts only the spans it
+  # received, so queries must sum across pods. Off by default: turning it on
+  # changes the collector config, which restarts otelcol (see the rotated trace
+  # token risk in the playbook before doing that).
+  liveCounts:
+    enabled: false
+    port: 8890
+    # Runs each replica keeps counting; the least recently updated is dropped.
+    runsHeld: 100
+    # How long a dropped run's last value stays on /metrics.
+    metricExpiration: 2h
+
   receivers:
     otlp:
       grpc:
