@@ -1021,6 +1021,24 @@
           "options": {}
         },
         {
+          "id": "filterByValue",
+          "options": {
+            "type": "exclude",
+            "match": "any",
+            "filters": [
+              {
+                "fieldName": "test_job",
+                "config": {
+                  "id": "regex",
+                  "options": {
+                    "value": "^(pr_ci_status|collect_and_aggregate_tests?_results|setup_generate_shard_matrix|quality_gate|test_preparation)$"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
           "id": "organize",
           "options": {
             "excludeByName": {
