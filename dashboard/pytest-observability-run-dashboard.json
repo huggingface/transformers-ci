@@ -101,7 +101,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "(sum(max without (instance) (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))))",
+          "expr": "max(label_replace((sum(max without (instance) (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])))), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{run_id=~\"$run_id\"}[1d])), \"src\", \"live\", \"\", \"\"))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -109,7 +109,8 @@
         }
       ],
       "title": "Total Tests",
-      "type": "stat"
+      "type": "stat",
+      "description": "Tests run so far: streamed from the collector while the run is in flight, then the trace exporter's final count."
     },
     {
       "datasource": {
@@ -163,7 +164,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "(sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]))) or vector(0))",
+          "expr": "max(label_replace((sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]))) or vector(0)), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{run_id=~\"$run_id\",status_code=\"STATUS_CODE_ERROR\"}[1d])), \"src\", \"live\", \"\", \"\"))",
           "instant": true,
           "legendFormat": "__auto",
           "range": false,
@@ -171,7 +172,8 @@
         }
       ],
       "title": "Failed Tests",
-      "type": "stat"
+      "type": "stat",
+      "description": "Failed tests so far: streamed from the collector while the run is in flight, then the trace exporter's final count."
     },
     {
       "datasource": {
@@ -599,7 +601,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])))"
+          "expr": "max by (test_job, hardware) (label_replace(max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]))), \"src\", \"final\", \"\", \"\") or label_replace(sum by (test_job, hardware) (last_over_time(ci_live_calls_total{run_id=~\"$run_id\",hardware=~\"$hardware\",status_code=\"STATUS_CODE_ERROR\"}[1d])), \"src\", \"live\", \"\", \"\"))"
         },
         {
           "refId": "Wall",
@@ -660,7 +662,7 @@
         }
       ],
       "type": "table",
-      "description": "Status from GitHub while the run is recent (jobs appear before any telemetry; grey = cancelled or skipped); test counts from the trace pipeline."
+      "description": "Status from GitHub while the run is recent (jobs appear before any telemetry; grey = cancelled or skipped); test counts from traces, with failures streamed from the collector while the run is in flight."
     },
     {
       "datasource": {
