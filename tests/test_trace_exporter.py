@@ -714,6 +714,20 @@ def test_render_run_html_group_links_keep_the_query() -> None:
     assert "Group by:" not in trace_exporter.render_run_html("123:1", _grouping_rows())
 
 
+def test_render_run_html_failing_rows_toggle_their_traceback() -> None:
+    rows = _grouping_rows()
+    for group in ("", "test"):
+        out = trace_exporter.render_run_html("123:1", rows, group=group)
+        # Each failing row carries a lazy /failure frame source for its own test;
+        # passing rows get no toggle. The script ships once per page.
+        assert out.count("<button class='tb'") == 4
+        assert (
+            'data-src="/failure?trace_id=tr-gen&amp;test_nodeid=tests%2Fmodels%2F'
+            'llama%2Ftest_modeling_llama.py%3A%3ALlamaModelTest%3A%3Atest_generate"'
+        ) in out
+        assert out.count("button.tb") >= 1 and out.count("<script>") == 1
+
+
 def test_persist_run_rows_keeps_exception_type_only_when_set(tmp_path) -> None:
     d = str(tmp_path)
     rows = [

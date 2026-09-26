@@ -6088,6 +6088,17 @@ def _run_row_html(row: dict[str, str | float], run_id: str) -> str:
     )
     st_cls = "err" if is_err else "ok"
     st_txt = "FAIL" if is_err else esc(st or "OK")
+    if is_err and trace_id:
+        # Loaded on click by _RUN_ERROR_TOGGLE_JS: an inline /failure frame under
+        # the row, so the list never fetches a trace nobody opened.
+        failure = (
+            f"/failure?trace_id={quote(trace_id, safe='')}"
+            f"&test_nodeid={quote(nodeid, safe='')}"
+        )
+        st_txt += (
+            f" <button class='tb' type='button' data-src=\"{esc(failure)}\">"
+            "error ▸</button>"
+        )
     return (
         f"<tr><td class='{st_cls}'>{st_txt}</td>"
         f"<td class='nodeid'><a target='_parent' href=\"{esc(href)}\">"
@@ -6097,6 +6108,21 @@ def _run_row_html(row: dict[str, str | float], run_id: str) -> str:
         f"<td class='dur'>{dur:.3f}s</td></tr>"
     )
 
+
+# Toggles a failing row's traceback: inserts (or removes) a row holding an
+# iframe of /failure for that test, sized to its content up to a cap.
+_RUN_ERROR_TOGGLE_JS = (
+    "<script>document.addEventListener('click',function(e){"
+    "var b=e.target.closest('button.tb');if(!b)return;"
+    "var tr=b.closest('tr'),n=tr.nextElementSibling;"
+    "if(n&&n.classList.contains('tbrow')){n.remove();b.textContent='error ▸';return;}"
+    "var r=document.createElement('tr');r.className='tbrow';"
+    'r.innerHTML=\'<td colspan="5"><iframe title="traceback"></iframe></td>\';'
+    "var f=r.querySelector('iframe');f.onload=function(){try{f.style.height="
+    "Math.min(600,f.contentDocument.documentElement.scrollHeight+4)+'px';}"
+    "catch(_){}};f.src=b.dataset.src;tr.after(r);b.textContent='error ▾';"
+    "});</script>"
+)
 
 _RUN_TABLE_HEAD = (
     "<table><thead><tr><th>Status</th><th>Test</th><th>Job</th>"
@@ -6268,6 +6294,12 @@ def render_run_html(
         "font-family:ui-monospace,Menlo,Consolas,monospace}"
         "summary .meta{font-family:system-ui,sans-serif}"
         "details table{margin:4px 0 8px 14px;width:calc(100% - 14px)}"
+        "button.tb{margin-left:6px;padding:0 6px;background:none;cursor:pointer;"
+        "border:1px solid #3a3d44;border-radius:3px;color:#8e9197;"
+        "font:11px system-ui,sans-serif}button.tb:hover{color:#d8d9da}"
+        "tr.tbrow td{padding:0 0 6px;white-space:normal}"
+        "tr.tbrow iframe{width:100%;height:120px;border:1px solid #24262b;"
+        "border-radius:4px;background:#0b0c0e}"
         ".groupby{margin:0 0 8px}.groupby a{margin-right:10px}"
         ".groupby b{margin-right:10px;color:#d8d9da}"
         "</style></head><body>",
@@ -6316,7 +6348,7 @@ def render_run_html(
             f"run <code>{esc(run_id)}</code></p>"
         )
         out.extend(groups)
-        out.append("</body></html>")
+        out.append(_RUN_ERROR_TOGGLE_JS + "</body></html>")
         return "".join(out)
 
     suffix = f" (showing top {len(shown)})" if total > len(shown) else ""
@@ -6326,7 +6358,7 @@ def render_run_html(
     )
     out.append(_RUN_TABLE_HEAD)
     out.extend(_run_row_html(row, run_id) for row in shown)
-    out.append("</tbody></table></body></html>")
+    out.append("</tbody></table>" + _RUN_ERROR_TOGGLE_JS + "</body></html>")
     return "".join(out)
 
 
