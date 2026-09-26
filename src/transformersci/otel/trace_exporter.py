@@ -5588,6 +5588,9 @@ _RUN_STORE_FIELDS = (
     "trace_id",
     "pr",
 )
+# Kept only when set (failing rows), so the store does not grow a key per passing
+# test: /run's grouped view summarises each group's exception types from it.
+_RUN_STORE_OPTIONAL_FIELDS = ("exception_type",)
 
 
 def _run_store_dir() -> str:
@@ -5731,6 +5734,7 @@ def persist_run_rows(
         changed = not existing
         for r in rows:
             slim_row = {k: r.get(k) for k in _RUN_STORE_FIELDS}
+            slim_row.update({k: r[k] for k in _RUN_STORE_OPTIONAL_FIELDS if r.get(k)})
             key = (str(r.get("trace_id", "")), str(r.get("test_nodeid", "")))
             if merged.get(key) != slim_row:
                 merged[key] = slim_row
@@ -6175,6 +6179,28 @@ def _render_run_groups(
     return out
 
 
+_RUN_GROUP_LABELS = (
+    ("none", "None"),
+    ("test", "Test"),
+    ("model", "Model"),
+    ("test_model", "Test + Model"),
+    ("job", "Job"),
+)
+
+
+def _render_group_links(query: dict[str, list[str]], current: str) -> str:
+    """The panel's own "Group by" selector: one link per mode, current in bold."""
+    base = {k: v[0] for k, v in query.items() if v and k != "group"}
+    links = []
+    for mode, label in _RUN_GROUP_LABELS:
+        if mode == current:
+            links.append(f"<b>{label}</b>")
+        else:
+            href = "?" + urlencode({**base, "group": mode})
+            links.append(f'<a href="{html.escape(href)}">{label}</a>')
+    return f"<p class='groupby meta'>Group by: {''.join(links)}</p>"
+
+
 def render_run_html(
     run_id: str,
     rows: list[dict[str, str | float]],
@@ -6184,6 +6210,7 @@ def render_run_html(
     limit: int = 200,
     hardware: str = "",
     group: str = "",
+    query: dict[str, list[str]] | None = None,
 ) -> str:
     """Render the per-run test table (sortable, links to the per-test page).
 
@@ -6191,6 +6218,9 @@ def render_run_html(
     dashboards. Links are origin-relative (the exporter is served under the
     Grafana host via ingress) and open in the parent frame. ``group`` (one of
     ``RUN_GROUP_MODES``) buckets the tests into collapsible groups instead.
+    ``query`` is the request's own query string: when given, the page renders
+    its own "Group by" links (same query, ``group`` swapped), so the choice
+    lives in the panel rather than in a dashboard variable.
     """
     esc = html.escape
     # Optional hardware filter (raw name, e.g. "single-gpu"). Sentinels from the
@@ -6238,6 +6268,8 @@ def render_run_html(
         "font-family:ui-monospace,Menlo,Consolas,monospace}"
         "summary .meta{font-family:system-ui,sans-serif}"
         "details table{margin:4px 0 8px 14px;width:calc(100% - 14px)}"
+        ".groupby{margin:0 0 8px}.groupby a{margin-right:10px}"
+        ".groupby b{margin-right:10px;color:#d8d9da}"
         "</style></head><body>",
     ]
     tempo_link = (
@@ -6272,6 +6304,9 @@ def render_run_html(
         out.append(f"<p class='meta'>{msg}</p>")
         out.append("</body></html>")
         return "".join(out)
+
+    if query is not None:
+        out.append(_render_group_links(query, group if grouped else "none"))
 
     if grouped:
         groups = _render_run_groups(rows, run_id, group, limit)
@@ -6459,6 +6494,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 limit=limit,
                 hardware=hardware,
                 group=group,
+                query=params,
             ).encode("utf-8"),
             cache_control=_public_cache_control_header(),
         )

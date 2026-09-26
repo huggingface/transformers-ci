@@ -699,6 +699,51 @@ def test_render_run_html_unknown_group_is_flat() -> None:
     assert "<details" not in trace_exporter.render_run_html("123:1", rows)
 
 
+def test_render_run_html_group_links_keep_the_query() -> None:
+    query = {"run_id": ["123:1"], "status": ["ERROR"], "group": ["test"]}
+    out = trace_exporter.render_run_html(
+        "123:1", _grouping_rows(), status="ERROR", group="test", query=query
+    )
+    # Current mode in bold, the others link to the same query with group swapped.
+    assert "<b>Test</b>" in out
+    assert 'href="?run_id=123%3A1&amp;status=ERROR&amp;group=model"' in out
+    assert 'href="?run_id=123%3A1&amp;status=ERROR&amp;group=none"' in out
+    # Flat view marks None as current; no query -> no selector.
+    flat = trace_exporter.render_run_html("123:1", _grouping_rows(), query={})
+    assert "<b>None</b>" in flat
+    assert "Group by:" not in trace_exporter.render_run_html("123:1", _grouping_rows())
+
+
+def test_persist_run_rows_keeps_exception_type_only_when_set(tmp_path) -> None:
+    d = str(tmp_path)
+    rows = [
+        {
+            "test_nodeid": "a",
+            "test_job": "j",
+            "status_code": "ERROR",
+            "exception_type": "TypeError",
+            "duration_seconds": 1.0,
+            "trace_id": "t",
+            "pr": "1",
+        },
+        {
+            "test_nodeid": "b",
+            "test_job": "j",
+            "status_code": "OK",
+            "exception_type": "",
+            "duration_seconds": 1.0,
+            "trace_id": "t",
+            "pr": "1",
+        },
+    ]
+    trace_exporter.persist_run_rows("8:1", rows, directory=d)
+    loaded = {
+        r["test_nodeid"]: r for r in trace_exporter.load_run_rows("8:1", directory=d)
+    }
+    assert loaded["a"]["exception_type"] == "TypeError"
+    assert "exception_type" not in loaded["b"]
+
+
 def test_gather_run_test_rows_from_membership(monkeypatch: pytest.MonkeyPatch) -> None:
     """A run in the in-memory membership map is reconstructed from the trace
     cache without any Tempo network call."""

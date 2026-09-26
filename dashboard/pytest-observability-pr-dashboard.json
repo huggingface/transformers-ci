@@ -50,6 +50,24 @@
       "type": "text"
     },
     {
+      "description": "Failing tests of the latest run, grouped by test name by default (switch with Group by, top of the panel), largest group first. Big groups start collapsed so the smaller, unrelated failures stay visible.",
+      "gridPos": {
+        "h": 24,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "id": 14,
+      "options": {
+        "content": "<iframe title=\"failing tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${latest_run_id}')+'&status=ERROR&limit=200'+'&group=test'+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>",
+        "mode": "html"
+      },
+      "pluginVersion": "12.0.0",
+      "title": "Failing Tests (latest run)",
+      "type": "text",
+      "transparent": true
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -306,7 +324,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 5
+        "y": 29
       },
       "id": 13,
       "links": [
@@ -451,24 +469,6 @@
         }
       ],
       "type": "table"
-    },
-    {
-      "description": "Failing tests of the latest run, grouped by the Group by variable, largest group first. Big groups start collapsed so the smaller, unrelated failures stay visible.",
-      "gridPos": {
-        "h": 24,
-        "w": 24,
-        "x": 0,
-        "y": 17
-      },
-      "id": 14,
-      "options": {
-        "content": "<iframe title=\"failing tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${latest_run_id}')+'&status=ERROR&limit=200'+'&group='+encodeURIComponent('${group_by}')+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>",
-        "mode": "html"
-      },
-      "pluginVersion": "12.0.0",
-      "title": "Failing Tests (latest run, by ${group_by:text})",
-      "type": "text",
-      "transparent": true
     },
     {
       "datasource": {
@@ -1431,47 +1431,6 @@
         "skipUrlSync": true,
         "sort": 0,
         "type": "query"
-      },
-      {
-        "current": {
-          "selected": true,
-          "text": "Test",
-          "value": "test"
-        },
-        "description": "Bucket the test list: by test name (one test failing across many models, e.g. a base-class typo), by model, or both. Largest group first.",
-        "includeAll": false,
-        "label": "Group by",
-        "multi": false,
-        "name": "group_by",
-        "options": [
-          {
-            "selected": false,
-            "text": "None",
-            "value": "none"
-          },
-          {
-            "selected": true,
-            "text": "Test",
-            "value": "test"
-          },
-          {
-            "selected": false,
-            "text": "Model",
-            "value": "model"
-          },
-          {
-            "selected": false,
-            "text": "Test + Model",
-            "value": "test_model"
-          },
-          {
-            "selected": false,
-            "text": "Job",
-            "value": "job"
-          }
-        ],
-        "query": "None : none,Test : test,Model : model,Test + Model : test_model,Job : job",
-        "type": "custom"
       }
     ]
   },
