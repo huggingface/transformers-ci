@@ -2616,6 +2616,15 @@ def fetch_github_run_activity_cached(
     return value
 
 
+# Run ids the last extract_run_active_metrics pass found queued or in progress on
+# GitHub. /run reads it to tell an in-flight run's page to keep polling itself.
+_active_run_ids: frozenset[str] = frozenset()
+
+
+def run_is_active(run_id: str) -> bool:
+    return run_id in _active_run_ids
+
+
 def extract_run_active_metrics(
     traces: list[dict] | None = None,
     *,
@@ -2715,6 +2724,7 @@ def extract_run_active_metrics(
     run_lines: list[str] = []
     start_lines: list[str] = []
     job_lines: list[str] = []
+    active_run_ids: set[str] = set()
     for key, info in sorted(latest_by_key.items()):
         if key not in polled_keys:
             continue
@@ -2748,6 +2758,7 @@ def extract_run_active_metrics(
             "service_name": str(info["service_name"]),
         }
         run_lines.append(f"pytest_run_active{metric_labels(base_labels)} 1")
+        active_run_ids.add(run_id)
         earliest = earliest_start_by_key.get(key, 0)
         if earliest:
             start_lines.append(
@@ -2797,6 +2808,8 @@ def extract_run_active_metrics(
         )
         lines.append("# TYPE pytest_run_job_active gauge")
         lines.extend(job_lines)
+    global _active_run_ids
+    _active_run_ids = frozenset(active_run_ids)
     return lines
 
 
@@ -5588,6 +5601,9 @@ _RUN_STORE_FIELDS = (
     "trace_id",
     "pr",
 )
+# Kept only when set (failing rows), so the store does not grow a key per passing
+# test: /run's grouped view summarises each group's exception types from it.
+_RUN_STORE_OPTIONAL_FIELDS = ("exception_type",)
 
 
 def _run_store_dir() -> str:
@@ -5731,6 +5747,7 @@ def persist_run_rows(
         changed = not existing
         for r in rows:
             slim_row = {k: r.get(k) for k in _RUN_STORE_FIELDS}
+            slim_row.update({k: r[k] for k in _RUN_STORE_OPTIONAL_FIELDS if r.get(k)})
             key = (str(r.get("trace_id", "")), str(r.get("test_nodeid", "")))
             if merged.get(key) != slim_row:
                 merged[key] = slim_row
@@ -5891,6 +5908,7 @@ _RUN_SEARCH_MAX_TRACES = 500
 # time. A big sharded run is dozens of multi-MB traces; the first view fetches
 # them concurrently, subsequent views serve from here.
 _RUN_ROWS_CACHE_TTL_SECONDS = 300.0
+_RUN_ROWS_ACTIVE_CACHE_TTL_SECONDS = 20.0
 _RUN_ROWS_CACHE_MAX = 32
 _run_rows_cache: "OrderedDict[str, tuple[float, list[dict[str, str | float]]]]" = (
     OrderedDict()
@@ -5958,7 +5976,14 @@ def gather_run_test_rows(
     now = time.time()
     with _run_rows_cache_lock:
         hit = _run_rows_cache.get(run_id)
-        if hit is not None and now - hit[0] < _RUN_ROWS_CACHE_TTL_SECONDS:
+        # An in-flight run's page polls itself, so its rows must not sit in
+        # this cache for the full TTL between polls.
+        ttl = (
+            _RUN_ROWS_ACTIVE_CACHE_TTL_SECONDS
+            if run_is_active(run_id)
+            else _RUN_ROWS_CACHE_TTL_SECONDS
+        )
+        if hit is not None and now - hit[0] < ttl:
             _run_rows_cache.move_to_end(run_id)
             return hit[1]
 
@@ -6008,6 +6033,263 @@ def _cache_run_rows(
             _run_rows_cache.popitem(last=False)
 
 
+# How /run can bucket a run's tests (the dashboards' "Group by" variable).
+# "none" (or anything unknown) keeps the flat table.
+RUN_GROUP_MODES = ("job", "test", "model", "test_model")
+
+# A group this size or smaller renders expanded: the big groups are the one
+# shared breakage a CI breaker wants to skip past, the small ones are the
+# unrelated failures they are looking for.
+_RUN_GROUP_OPEN_MAX = 5
+
+_PARAM_SUFFIX_RE = re.compile(r"\[.*\]$")
+
+
+def run_row_model(nodeid: str) -> str:
+    """Model a test belongs to, from its node id's path.
+
+    ``tests/models/bert/test_modeling_bert.py::...`` -> ``bert``. Tests outside
+    ``tests/models/`` fall back to their first directory under ``tests/``
+    (``generation``, ``utils``, ...) or, at the top level, the module stem.
+    """
+    path = nodeid.split("::", 1)[0]
+    parts = [p for p in path.split("/") if p]
+    if "tests" in parts:
+        parts = parts[parts.index("tests") + 1 :]
+    if len(parts) >= 3 and parts[0] == "models":
+        return parts[1]
+    if len(parts) >= 2:
+        return parts[0]
+    return os.path.splitext(parts[0])[0] if parts else ""
+
+
+def run_row_test_name(row: dict[str, str | float]) -> str:
+    """Test function name without its parametrization (``test_x[a-b]`` -> ``test_x``),
+    so one test failing across every parameter or model reads as one group."""
+    name = str(row.get("test_function", "") or "")
+    if not name:
+        name = str(row.get("test_nodeid", "")).rsplit("::", 1)[-1]
+    return _PARAM_SUFFIX_RE.sub("", name)
+
+
+def _run_group_key(row: dict[str, str | float], mode: str) -> str:
+    if mode == "job":
+        return str(row.get("test_job", ""))
+    if mode == "model":
+        return run_row_model(str(row.get("test_nodeid", "")))
+    if mode == "test":
+        return run_row_test_name(row)
+    # test_model
+    return (
+        f"{run_row_model(str(row.get('test_nodeid', '')))} · {run_row_test_name(row)}"
+    )
+
+
+def _run_row_html(row: dict[str, str | float], run_id: str) -> str:
+    esc = html.escape
+    nodeid = str(row.get("test_nodeid", ""))
+    trace_id = str(row.get("trace_id", ""))
+    pr = str(row.get("pr", ""))
+    st = str(row.get("status_code", ""))
+    is_err = st == "ERROR"
+    dur = float(row.get("duration_seconds", 0) or 0)
+    # The per-test page is no longer backed by per-run Prometheus series, so
+    # pass the run context it needs (run_id, pr, the numeric GitHub run id)
+    # as URL vars. gh_run_id is the leading digits of run_id ("12345:1" ->
+    # "12345") for the "Full logs" GitHub link.
+    gh_run_id = re.match(r"\d+", run_id)
+    # Origin-relative link to the per-test page; opens the parent Grafana frame.
+    href = (
+        f"/d/pytest-test/test?orgId=1"
+        f"&var-trace_id={quote(trace_id, safe='')}"
+        f"&var-test_nodeid={quote(nodeid, safe='')}"
+        f"&var-run_id={quote(run_id, safe='')}"
+        f"&var-pr={quote(pr, safe='')}"
+        f"&var-gh_run_id={gh_run_id.group(0) if gh_run_id else ''}"
+    )
+    st_cls = "err" if is_err else "ok"
+    st_txt = "FAIL" if is_err else esc(st or "OK")
+    if is_err and trace_id:
+        # Loaded on click by _RUN_ERROR_TOGGLE_JS: an inline /failure frame under
+        # the row, so the list never fetches a trace nobody opened.
+        failure = (
+            f"/failure?trace_id={quote(trace_id, safe='')}"
+            f"&test_nodeid={quote(nodeid, safe='')}"
+        )
+        st_txt += (
+            f" <button class='tb' type='button' data-src=\"{esc(failure)}\">"
+            "error ▸</button>"
+        )
+    return (
+        f"<tr><td class='{st_cls}'>{st_txt}</td>"
+        f"<td class='nodeid'><a target='_parent' href=\"{esc(href)}\">"
+        f"{esc(nodeid)}</a></td>"
+        f"<td>{esc(str(row.get('test_job', '')))}</td>"
+        f"<td>{esc(hardware_display(str(row.get('hardware', ''))))}</td>"
+        f"<td class='dur'>{dur:.3f}s</td></tr>"
+    )
+
+
+# Toggles a failing row's traceback: inserts (or removes) a row holding an
+# iframe of /failure for that test, sized to its content up to a cap.
+_RUN_ERROR_TOGGLE_JS = (
+    "<script>document.addEventListener('click',function(e){"
+    "var b=e.target.closest('button.tb');if(!b)return;"
+    "var tr=b.closest('tr'),n=tr.nextElementSibling;"
+    "if(n&&n.classList.contains('tbrow')){n.remove();b.textContent='error ▸';return;}"
+    "var r=document.createElement('tr');r.className='tbrow';"
+    'r.innerHTML=\'<td colspan="5"><iframe title="traceback"></iframe></td>\';'
+    "var f=r.querySelector('iframe');f.onload=function(){try{f.style.height="
+    "Math.min(600,f.contentDocument.documentElement.scrollHeight+4)+'px';}"
+    "catch(_){}};f.src=b.dataset.src;tr.after(r);b.textContent='error ▾';"
+    "});</script>"
+)
+
+# While the run is in flight (#runbody data-live="1") the page re-fetches itself
+# every 30s and swaps the body in place, keeping what the reader opened: groups
+# they expanded or collapsed (by data-key) and tracebacks they opened (by
+# data-src). Skips hidden tabs; stops once a fetched page says the run is done.
+_RUN_LIVE_POLL_JS = (
+    "<script>(function(){var cur=document.getElementById('runbody');"
+    "if(!cur||cur.dataset.live!=='1')return;var last=cur.innerHTML;"
+    "function tick(){if(document.hidden)return setTimeout(tick,30000);"
+    "fetch(location.href,{cache:'no-store'}).then(function(r){return r.text();})"
+    ".then(function(t){var nb=new DOMParser().parseFromString(t,'text/html')"
+    ".getElementById('runbody');if(!nb)return setTimeout(tick,30000);"
+    "if(nb.innerHTML!==last){last=nb.innerHTML;var st={},tb={};"
+    "cur.querySelectorAll('details[data-key]').forEach(function(d){"
+    "st[d.dataset.key]=d.open;});"
+    "cur.querySelectorAll('tr.tbrow').forEach(function(r){"
+    "var b=r.previousElementSibling&&r.previousElementSibling"
+    ".querySelector('button.tb');if(b)tb[b.dataset.src]=r;});"
+    "cur.innerHTML=nb.innerHTML;"
+    "cur.querySelectorAll('details[data-key]').forEach(function(d){"
+    "if(d.dataset.key in st)d.open=st[d.dataset.key];});"
+    "cur.querySelectorAll('button.tb').forEach(function(b){var r=tb[b.dataset.src];"
+    "if(r){b.closest('tr').after(r);b.textContent='error ▾';}});}"
+    "cur.dataset.live=nb.dataset.live;"
+    "if(nb.dataset.live==='1')setTimeout(tick,30000);})"
+    ".catch(function(){setTimeout(tick,30000);});}"
+    "setTimeout(tick,30000);})();</script>"
+)
+
+_RUN_TABLE_HEAD = (
+    "<table><thead><tr><th>Status</th><th>Test</th><th>Job</th>"
+    "<th>Hardware</th><th style='text-align:right'>Duration</th></tr></thead><tbody>"
+)
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def _render_run_groups(
+    rows: list[dict[str, str | float]], run_id: str, mode: str, limit: int
+) -> list[str]:
+    """Bucket rows by ``mode``, largest failing bucket first, one <details> each.
+
+    Every group is always listed (the counts are over all rows); ``limit`` caps
+    the rows rendered inside each group, not the number of groups — otherwise
+    one big shared breakage would use the whole budget and hide the rest.
+    """
+    esc = html.escape
+    groups: dict[str, list[dict[str, str | float]]] = {}
+    for row in rows:
+        groups.setdefault(_run_group_key(row, mode), []).append(row)
+
+    def failing(members: list[dict[str, str | float]]) -> int:
+        return sum(1 for r in members if str(r.get("status_code", "")) == "ERROR")
+
+    ordered = sorted(
+        groups.items(), key=lambda kv: (-failing(kv[1]), -len(kv[1]), kv[0])
+    )
+    # What each summary line counts besides the tests themselves: the spread
+    # across the other dimension is what tells a base-class typo (one test,
+    # every model) from a broken model (one model, every test).
+    spread = {
+        "test": ("model", lambda r: run_row_model(str(r.get("test_nodeid", "")))),
+        "model": ("job", lambda r: str(r.get("test_job", ""))),
+        "job": ("model", lambda r: run_row_model(str(r.get("test_nodeid", "")))),
+        "test_model": ("job", lambda r: str(r.get("test_job", ""))),
+    }[mode]
+    out = []
+    for key, members in ordered:
+        n_fail = failing(members)
+        members.sort(key=lambda r: str(r.get("test_nodeid", "")))
+        shown = members[: max(0, limit)] if limit else members
+        parts = [_plural(len(members), "test")]
+        if n_fail and n_fail != len(members):
+            parts.append(f"{n_fail} failing")
+        n_spread = len({spread[1](r) for r in members})
+        if n_spread > 1:
+            parts.append(_plural(n_spread, spread[0]))
+        exc: dict[str, int] = {}
+        for r in members:
+            t = str(r.get("exception_type", "") or "")
+            if t:
+                exc[t] = exc.get(t, 0) + 1
+        exc_txt = ", ".join(
+            f"{esc(t)} ×{c}" if c > 1 else esc(t)
+            for t, c in sorted(exc.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        )
+        if len(exc) > 3:
+            exc_txt += f", +{len(exc) - 3} more"
+        more = (
+            f"<p class='meta'>… {len(members) - len(shown)} more not shown "
+            f"(raise <b>Row limit</b>)</p>"
+            if len(shown) < len(members)
+            else ""
+        )
+        is_open = " open" if len(members) <= _RUN_GROUP_OPEN_MAX else ""
+        cls = "err" if n_fail else "ok"
+        out.append(
+            f"<details{is_open} data-key=\"{esc(key)}\"><summary><span class='{cls}'>"
+            f"{esc(key) or '(unknown)'}</span> "
+            f"<span class='meta'>— {' · '.join(parts)}"
+            f"{' · ' + exc_txt if exc_txt else ''}</span></summary>"
+            + _RUN_TABLE_HEAD
+            + "".join(_run_row_html(r, run_id) for r in shown)
+            + f"</tbody></table>{more}</details>"
+        )
+    return out
+
+
+_RUN_GROUP_LABELS = (
+    ("none", "None"),
+    ("test", "Test"),
+    ("model", "Model"),
+    ("test_model", "Test + Model"),
+    ("job", "Job"),
+)
+
+
+_RUN_STATUS_LABELS = (("ERROR", "Errors"), (".+", "All"))
+
+
+def _render_run_toolbar(query: dict[str, list[str]], status: str, group: str) -> str:
+    """The panel's own Show / Group by selectors: each option links to the same
+    query with that one parameter swapped; the current option is the selected (filled) button."""
+    base = {k: v[0] for k, v in query.items() if v}
+
+    def options(param: str, current: str, labels: tuple[tuple[str, str], ...]) -> str:
+        links = []
+        for value, label in labels:
+            if value == current:
+                links.append(f"<b class='btn on' aria-current='true'>{label}</b>")
+            else:
+                href = "?" + urlencode({**base, param: value})
+                links.append(f'<a class="btn" href="{html.escape(href)}">{label}</a>')
+        return f"<span class='seg'>{''.join(links)}</span>"
+
+    return (
+        "<div class='toolbar'><span class='tl'>Show</span>"
+        + options("status", status, _RUN_STATUS_LABELS)
+        + "<span class='tl'>Group by</span>"
+        + options("group", group, _RUN_GROUP_LABELS)
+        + "</div>"
+    )
+
+
 def render_run_html(
     run_id: str,
     rows: list[dict[str, str | float]],
@@ -6016,12 +6298,20 @@ def render_run_html(
     status: str = "",
     limit: int = 200,
     hardware: str = "",
+    group: str = "",
+    query: dict[str, list[str]] | None = None,
+    live: bool = False,
 ) -> str:
     """Render the per-run test table (sortable, links to the per-test page).
 
-    Self-contained dark HTML, embedded via ``<iframe>`` in the Run/Job
+    Self-contained dark HTML, embedded via ``<iframe>`` in the Run/Job/PR
     dashboards. Links are origin-relative (the exporter is served under the
-    Grafana host via ingress) and open in the parent frame.
+    Grafana host via ingress) and open in the parent frame. ``group`` (one of
+    ``RUN_GROUP_MODES``) buckets the tests into collapsible groups instead.
+    ``query`` is the request's own query string: when given, the page renders
+    its own "Group by" links (same query, ``group`` swapped), so the choice
+    lives in the panel rather than in a dashboard variable. ``live`` (the run
+    is still in flight) makes the page poll itself and update in place.
     """
     esc = html.escape
     # Optional hardware filter (raw name, e.g. "single-gpu"). Sentinels from the
@@ -6043,7 +6333,8 @@ def render_run_html(
     )
     rows.sort(key=lambda r: float(r.get("duration_seconds", 0) or 0), reverse=True)
     total = len(rows)
-    shown = rows[: max(0, limit)] if limit else rows
+    grouped = group in RUN_GROUP_MODES
+    shown = rows if grouped else (rows[: max(0, limit)] if limit else rows)
     show_label = "Failing" if status == "ERROR" else esc(status)
 
     out = [
@@ -6063,8 +6354,45 @@ def render_run_html(
         "a{color:#6ab0ff;text-decoration:none}a:hover{text-decoration:underline}"
         ".ok{color:#73bf69}.err{color:#ff8a80;font-weight:600}"
         ".meta{margin:0 0 8px;color:#8e9197}"
+        "details{border-bottom:1px solid #24262b;padding:4px 0}"
+        "summary{cursor:pointer;padding:3px 0;"
+        "font-family:ui-monospace,Menlo,Consolas,monospace}"
+        "summary .meta{font-family:system-ui,sans-serif}"
+        "details table{margin:4px 0 8px 14px;width:calc(100% - 14px)}"
+        "button.tb{margin-left:6px;padding:0 6px;background:none;cursor:pointer;"
+        "border:1px solid #3a3d44;border-radius:3px;color:#8e9197;"
+        "font:11px system-ui,sans-serif}button.tb:hover{color:#d8d9da}"
+        "tr.tbrow td{padding:0 0 6px;white-space:normal}"
+        "tr.tbrow iframe{width:100%;height:120px;border:1px solid #24262b;"
+        "border-radius:4px;background:#0b0c0e}"
+        # Grafana's outline secondary button (measured off the dashboards' own
+        # "Back to Overview"), joined into a radio-style group; the selected
+        # option takes Grafana's primary-button blue.
+        ".toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;"
+        "margin:0 0 10px}"
+        ".toolbar .tl{color:#8e9197;font:500 12px Inter,Helvetica,Arial,sans-serif;"
+        "margin-left:8px}.toolbar .tl:first-child{margin-left:0}"
+        ".seg{display:inline-flex}"
+        ".btn{display:inline-block;height:24px;padding:0 8px;"
+        "box-sizing:border-box;border:1px solid rgba(204,204,220,.3);"
+        "background:transparent;color:#ccccdc;text-decoration:none;"
+        "font:500 12px/22px Inter,Helvetica,Arial,sans-serif;white-space:nowrap}"
+        ".seg .btn+.btn{margin-left:-1px}"
+        ".seg .btn:first-child{border-radius:2px 0 0 2px}"
+        ".seg .btn:last-child{border-radius:0 2px 2px 0}"
+        "a.btn:hover{background:rgba(204,204,220,.08);"
+        "border-color:rgba(153,153,165,.3);text-decoration:none}"
+        ".btn.on{position:relative;z-index:1;background:#3d71d9;color:#fff;"
+        "border-color:#3d71d9}"
+        ".live{color:#73bf69;animation:livepulse 2s ease-in-out infinite}"
+        ".live .dot{display:inline-block;animation:livedot 1s ease-in-out infinite}"
+        "@keyframes livepulse{50%{opacity:.55}}"
+        "@keyframes livedot{50%{opacity:.2;transform:scale(.7)}}"
+        "@media (prefers-reduced-motion:reduce){.live,.live .dot{animation:none}}"
         "</style></head><body>",
+        f"<div id='runbody' data-live='{1 if live else 0}'>",
     ]
+    tail = "</div>" + _RUN_ERROR_TOGGLE_JS + _RUN_LIVE_POLL_JS + "</body></html>"
     tempo_link = (
         f" <a target='_parent' href=\"/explore?schemaVersion=1&orgId=1&"
         f"panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:"
@@ -6074,15 +6402,30 @@ def render_run_html(
         if run_id
         else ""
     )
+    live_note = (
+        "<span class='live'><span class='dot'>●</span> live, updates every 30s</span> · "
+        if live
+        else ""
+    )
+    if query is not None:
+        out.append(
+            _render_run_toolbar(
+                query,
+                "ERROR" if status == "ERROR" else ".+",
+                group if grouped else "none",
+            )
+        )
+
     if not rows:
         if status_active and job_rows:
             # Tests ran, but the Show filter hid them all (e.g. Failing on a
             # green job). Point the user at the filter rather than implying the
             # run has no data.
+            where = "" if query is None else " above"
             msg = (
                 f"No <b>{show_label}</b> tests in this view — "
-                f"{len(job_rows)} test{'s' if len(job_rows) != 1 else ''} ran. "
-                f"Set <b>Show</b> to <b>All</b> to list them."
+                f"{len(job_rows):,} test{'s' if len(job_rows) != 1 else ''} ran. "
+                f"Set <b>Show</b> to <b>All</b>{where} to list them."
             )
         elif job:
             msg = (
@@ -6095,50 +6438,29 @@ def render_run_html(
                 + tempo_link
             )
         out.append(f"<p class='meta'>{msg}</p>")
-        out.append("</body></html>")
+        out.append(tail)
+        return "".join(out)
+
+    if grouped:
+        groups = _render_run_groups(rows, run_id, group, limit)
+        out.append(
+            f"<p class='meta'>{_plural(total, 'test')} in "
+            f"{_plural(len(groups), 'group')}, largest first · {live_note}"
+            f"run <code>{esc(run_id)}</code></p>"
+        )
+        out.extend(groups)
+        out.append(tail)
         return "".join(out)
 
     suffix = f" (showing top {len(shown)})" if total > len(shown) else ""
     out.append(
         f"<p class='meta'>{total} test{'s' if total != 1 else ''}{suffix} · "
+        f"{live_note}"
         f"run <code>{esc(run_id)}</code></p>"
     )
-    out.append(
-        "<table><thead><tr><th>Status</th><th>Test</th><th>Job</th>"
-        "<th>Hardware</th><th style='text-align:right'>Duration</th></tr></thead><tbody>"
-    )
-    for row in shown:
-        nodeid = str(row.get("test_nodeid", ""))
-        trace_id = str(row.get("trace_id", ""))
-        pr = str(row.get("pr", ""))
-        st = str(row.get("status_code", ""))
-        is_err = st == "ERROR"
-        dur = float(row.get("duration_seconds", 0) or 0)
-        # The per-test page is no longer backed by per-run Prometheus series, so
-        # pass the run context it needs (run_id, pr, the numeric GitHub run id)
-        # as URL vars. gh_run_id is the leading digits of run_id ("12345:1" ->
-        # "12345") for the "Full logs" GitHub link.
-        gh_run_id = re.match(r"\d+", run_id)
-        # Origin-relative link to the per-test page; opens the parent Grafana frame.
-        href = (
-            f"/d/pytest-test/test?orgId=1"
-            f"&var-trace_id={quote(trace_id, safe='')}"
-            f"&var-test_nodeid={quote(nodeid, safe='')}"
-            f"&var-run_id={quote(run_id, safe='')}"
-            f"&var-pr={quote(pr, safe='')}"
-            f"&var-gh_run_id={gh_run_id.group(0) if gh_run_id else ''}"
-        )
-        st_cls = "err" if is_err else "ok"
-        st_txt = "FAIL" if is_err else esc(st or "OK")
-        out.append(
-            f"<tr><td class='{st_cls}'>{st_txt}</td>"
-            f"<td class='nodeid'><a target='_parent' href=\"{esc(href)}\">"
-            f"{esc(nodeid)}</a></td>"
-            f"<td>{esc(str(row.get('test_job', '')))}</td>"
-            f"<td>{esc(hardware_display(str(row.get('hardware', ''))))}</td>"
-            f"<td class='dur'>{dur:.3f}s</td></tr>"
-        )
-    out.append("</tbody></table></body></html>")
+    out.append(_RUN_TABLE_HEAD)
+    out.extend(_run_row_html(row, run_id) for row in shown)
+    out.append("</tbody></table>" + tail)
     return "".join(out)
 
 
@@ -6278,6 +6600,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         job = (params.get("job") or [""])[0].strip()
         status = (params.get("status") or [""])[0].strip()
         hardware = (params.get("hardware") or [""])[0].strip()
+        group = (params.get("group") or [""])[0].strip()
         try:
             limit = int((params.get("limit") or ["200"])[0])
         except ValueError:
@@ -6298,7 +6621,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
             200,
             "text/html; charset=utf-8",
             render_run_html(
-                run_id, rows, job=job, status=status, limit=limit, hardware=hardware
+                run_id,
+                rows,
+                job=job,
+                status=status,
+                limit=limit,
+                hardware=hardware,
+                group=group,
+                query=params,
+                live=run_is_active(run_id),
             ).encode("utf-8"),
             cache_control=_public_cache_control_header(),
         )

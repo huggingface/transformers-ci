@@ -573,6 +573,248 @@ def test_render_run_html_hardware_column_and_filter() -> None:
     assert "test_x" in both and "test_y" in both
 
 
+def _grouping_rows() -> list[dict[str, str | float]]:
+    # One base-class typo breaking test_forward across three models, plus one
+    # unrelated failure (llama's test_generate) that should not get lost.
+    rows: list[dict[str, str | float]] = []
+    for model in ("bert", "gpt2", "llama"):
+        rows.append(
+            {
+                "test_nodeid": f"tests/models/{model}/test_modeling_{model}.py"
+                f"::{model.title()}ModelTest::test_forward[fp16]",
+                "test_function": "test_forward[fp16]",
+                "test_job": "tests_torch",
+                "status_code": "ERROR",
+                "exception_type": "TypeError",
+                "trace_id": f"tr-{model}",
+                "pr": "4321",
+                "duration_seconds": 0.5,
+            }
+        )
+    rows.append(
+        {
+            "test_nodeid": "tests/models/llama/test_modeling_llama.py"
+            "::LlamaModelTest::test_generate",
+            "test_function": "test_generate",
+            "test_job": "tests_generate",
+            "status_code": "ERROR",
+            "exception_type": "AssertionError",
+            "trace_id": "tr-gen",
+            "pr": "4321",
+            "duration_seconds": 3.0,
+        }
+    )
+    rows.append(
+        {
+            "test_nodeid": "tests/generation/test_utils.py::UtilsTest::test_ok",
+            "test_function": "test_ok",
+            "test_job": "tests_generate",
+            "status_code": "OK",
+            "trace_id": "tr-ok",
+            "pr": "4321",
+            "duration_seconds": 1.0,
+        }
+    )
+    return rows
+
+
+def test_run_row_model_from_nodeid() -> None:
+    assert trace_exporter.run_row_model("tests/models/bert/test_x.py::T::t") == "bert"
+    assert (
+        trace_exporter.run_row_model("tests/generation/test_utils.py::T::t")
+        == "generation"
+    )
+    assert trace_exporter.run_row_model("tests/test_top.py::t") == "test_top"
+    assert trace_exporter.run_row_model("") == ""
+
+
+def test_render_run_html_group_by_test() -> None:
+    out = trace_exporter.render_run_html(
+        "123:1", _grouping_rows(), status="ERROR", group="test"
+    )
+    # Parametrization is stripped, so the shared breakage is one group, and it
+    # comes first (largest failing group) with its spread and exception.
+    assert "4 tests in 2 groups" in out
+    assert out.index(">test_forward<") < out.index(">test_generate<")
+    assert "3 tests · 3 models · TypeError ×3" in out
+    # Links to the per-test page still render inside the groups.
+    assert "var-trace_id=tr-bert" in out
+    # Status filter still applies: the passing test is not listed.
+    assert "test_ok" not in out
+
+
+def test_render_run_html_group_by_model_and_test_model() -> None:
+    rows = _grouping_rows()
+    by_model = trace_exporter.render_run_html("123:1", rows, group="model")
+    # llama has two failures (two different tests); generation has none and
+    # sorts last.
+    assert by_model.index(">llama<") < by_model.index(">bert<")
+    assert by_model.index(">bert<") < by_model.index(">generation<")
+    assert ">llama</span> <span class='meta'>— 2 tests · 2 jobs ·" in by_model
+
+    both = trace_exporter.render_run_html(
+        "123:1", rows, status="ERROR", group="test_model"
+    )
+    assert "4 tests in 4 groups" in both
+    assert "llama · test_generate" in both
+
+
+def test_render_run_html_group_limit_is_per_group_and_big_groups_collapse() -> None:
+    rows = [
+        {
+            "test_nodeid": f"tests/models/m{i}/test_modeling.py::T::test_shared",
+            "test_function": "test_shared",
+            "test_job": "tests_torch",
+            "status_code": "ERROR",
+            "trace_id": f"t{i}",
+            "pr": "1",
+            "duration_seconds": 1.0,
+        }
+        for i in range(10)
+    ] + [
+        {
+            "test_nodeid": "tests/models/solo/test_modeling.py::T::test_lonely",
+            "test_function": "test_lonely",
+            "test_job": "tests_torch",
+            "status_code": "ERROR",
+            "trace_id": "solo",
+            "pr": "1",
+            "duration_seconds": 1.0,
+        }
+    ]
+    out = trace_exporter.render_run_html("1:1", rows, group="test", limit=3)
+    # The limit caps rows inside a group, never hides a whole group.
+    assert "test_lonely" in out
+    assert "7 more not shown" in out
+    # The big shared group is collapsed, the small one is open.
+    assert '<details data-key="test_shared"><summary>' in out
+    assert '<details open data-key="test_lonely"><summary>' in out
+
+
+def test_render_run_html_unknown_group_is_flat() -> None:
+    rows = _grouping_rows()
+    assert trace_exporter.render_run_html(
+        "123:1", rows, group="none"
+    ) == trace_exporter.render_run_html("123:1", rows)
+    assert "<details" not in trace_exporter.render_run_html("123:1", rows)
+
+
+def test_render_run_html_group_links_keep_the_query() -> None:
+    query = {"run_id": ["123:1"], "status": ["ERROR"], "group": ["test"]}
+    out = trace_exporter.render_run_html(
+        "123:1", _grouping_rows(), status="ERROR", group="test", query=query
+    )
+    # Current options in bold, the others link to the same query with one
+    # parameter swapped.
+    assert ">Errors</b>" in out and ">Test</b>" in out
+    assert "<span class='tl'>Show</span>" in out
+    assert 'href="?run_id=123%3A1&amp;status=ERROR&amp;group=model"' in out
+    assert 'href="?run_id=123%3A1&amp;status=ERROR&amp;group=none"' in out
+    assert 'href="?run_id=123%3A1&amp;status=.%2B&amp;group=test"' in out
+    # Flat, unfiltered view marks None and All as current; no query -> no selector.
+    flat = trace_exporter.render_run_html("123:1", _grouping_rows(), query={})
+    assert ">None</b>" in flat and ">All</b>" in flat
+    assert "Group by" not in trace_exporter.render_run_html("123:1", _grouping_rows())
+
+
+def test_render_run_html_no_failures_keeps_the_toolbar() -> None:
+    rows = [r for r in _grouping_rows() if r["status_code"] == "OK"]
+    query = {"run_id": ["1:1"], "status": ["ERROR"], "group": ["test"]}
+    out = trace_exporter.render_run_html(
+        "1:1", rows, status="ERROR", group="test", query=query
+    )
+    # The empty state still offers the Show toggle it tells the user to use.
+    assert "aria-current='true'>Errors</b>" in out
+    assert 'href="?run_id=1%3A1&amp;status=.%2B&amp;group=test"' in out
+    assert "Set <b>Show</b> to <b>All</b> above to list them." in out
+
+
+def test_render_run_html_failing_rows_toggle_their_traceback() -> None:
+    rows = _grouping_rows()
+    for group in ("", "test"):
+        out = trace_exporter.render_run_html("123:1", rows, group=group)
+        # Each failing row carries a lazy /failure frame source for its own test;
+        # passing rows get no toggle. The script ships once per page.
+        assert out.count("<button class='tb'") == 4
+        assert (
+            'data-src="/failure?trace_id=tr-gen&amp;test_nodeid=tests%2Fmodels%2F'
+            'llama%2Ftest_modeling_llama.py%3A%3ALlamaModelTest%3A%3Atest_generate"'
+        ) in out
+        assert out.count("document.addEventListener('click'") == 1
+
+
+def test_render_run_html_live_flag_drives_the_poller() -> None:
+    rows = _grouping_rows()
+    # The poll script always ships but only runs while the body says live; a
+    # fetched page with data-live='0' is what stops it once the run ends.
+    live = trace_exporter.render_run_html("1:1", rows, group="test", live=True)
+    assert "<div id='runbody' data-live='1'>" in live
+    assert "<span class='dot'>●</span> live, updates every 30s" in live
+    done = trace_exporter.render_run_html("1:1", rows, group="test")
+    assert "<div id='runbody' data-live='0'>" in done
+    assert "● live" not in done
+    # The empty state polls too: a live run with no failures yet must keep
+    # checking.
+    ok_only = [r for r in rows if r["status_code"] == "OK"]
+    empty = trace_exporter.render_run_html("1:1", ok_only, status="ERROR", live=True)
+    assert "data-live='1'" in empty and "fetch(location.href" in empty
+
+
+def test_extract_run_active_metrics_records_active_run_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(trace_exporter, "_active_run_ids", frozenset())
+    now = 2_000.0
+    traces = [
+        _active_trace(
+            run_id="99999:1", pr="4321", job="tests_torch", start_us=int(now * 1e6)
+        ),
+        _active_trace(
+            run_id="88888:1", pr="1234", job="tests_torch", start_us=int(now * 1e6)
+        ),
+    ]
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        status = "in_progress" if run_db_id == "99999" else "completed"
+        return status, frozenset()
+
+    trace_exporter.extract_run_active_metrics(
+        traces, _activity_fetcher=fetcher, _now=now
+    )
+    assert trace_exporter.run_is_active("99999:1")
+    assert not trace_exporter.run_is_active("88888:1")
+
+
+def test_persist_run_rows_keeps_exception_type_only_when_set(tmp_path) -> None:
+    d = str(tmp_path)
+    rows = [
+        {
+            "test_nodeid": "a",
+            "test_job": "j",
+            "status_code": "ERROR",
+            "exception_type": "TypeError",
+            "duration_seconds": 1.0,
+            "trace_id": "t",
+            "pr": "1",
+        },
+        {
+            "test_nodeid": "b",
+            "test_job": "j",
+            "status_code": "OK",
+            "exception_type": "",
+            "duration_seconds": 1.0,
+            "trace_id": "t",
+            "pr": "1",
+        },
+    ]
+    trace_exporter.persist_run_rows("8:1", rows, directory=d)
+    loaded = {
+        r["test_nodeid"]: r for r in trace_exporter.load_run_rows("8:1", directory=d)
+    }
+    assert loaded["a"]["exception_type"] == "TypeError"
+    assert "exception_type" not in loaded["b"]
+
+
 def test_gather_run_test_rows_from_membership(monkeypatch: pytest.MonkeyPatch) -> None:
     """A run in the in-memory membership map is reconstructed from the trace
     cache without any Tempo network call."""
