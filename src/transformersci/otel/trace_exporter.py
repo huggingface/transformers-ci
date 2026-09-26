@@ -6368,7 +6368,11 @@ def render_run_html(
         ".groupby{margin:0 0 8px}.groupby a{margin-right:10px}"
         ".groupby b{margin-right:10px;color:#d8d9da}"
         ".groupby .sep{margin:0 12px 0 2px}"
-        ".live{color:#73bf69}"
+        ".live{color:#73bf69;animation:livepulse 2s ease-in-out infinite}"
+        ".live .dot{display:inline-block;animation:livedot 1s ease-in-out infinite}"
+        "@keyframes livepulse{50%{opacity:.55}}"
+        "@keyframes livedot{50%{opacity:.2;transform:scale(.7)}}"
+        "@media (prefers-reduced-motion:reduce){.live,.live .dot{animation:none}}"
         "</style></head><body>",
         f"<div id='runbody' data-live='{1 if live else 0}'>",
     ]
@@ -6382,7 +6386,11 @@ def render_run_html(
         if run_id
         else ""
     )
-    live_note = "<span class='live'>● live, updates every 30s</span> · " if live else ""
+    live_note = (
+        "<span class='live'><span class='dot'>●</span> live, updates every 30s</span> · "
+        if live
+        else ""
+    )
     if query is not None:
         out.append(
             _render_run_toolbar(

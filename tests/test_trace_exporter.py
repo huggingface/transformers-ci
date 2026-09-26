@@ -748,7 +748,7 @@ def test_render_run_html_live_flag_drives_the_poller() -> None:
     # fetched page with data-live='0' is what stops it once the run ends.
     live = trace_exporter.render_run_html("1:1", rows, group="test", live=True)
     assert "<div id='runbody' data-live='1'>" in live
-    assert "● live, updates every 30s" in live
+    assert "<span class='dot'>●</span> live, updates every 30s" in live
     done = trace_exporter.render_run_html("1:1", rows, group="test")
     assert "<div id='runbody' data-live='0'>" in done
     assert "● live" not in done
