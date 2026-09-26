@@ -6214,17 +6214,31 @@ _RUN_GROUP_LABELS = (
 )
 
 
-def _render_group_links(query: dict[str, list[str]], current: str) -> str:
-    """The panel's own "Group by" selector: one link per mode, current in bold."""
-    base = {k: v[0] for k, v in query.items() if v and k != "group"}
-    links = []
-    for mode, label in _RUN_GROUP_LABELS:
-        if mode == current:
-            links.append(f"<b>{label}</b>")
-        else:
-            href = "?" + urlencode({**base, "group": mode})
-            links.append(f'<a href="{html.escape(href)}">{label}</a>')
-    return f"<p class='groupby meta'>Group by: {''.join(links)}</p>"
+_RUN_STATUS_LABELS = (("ERROR", "Errors"), (".+", "All"))
+
+
+def _render_run_toolbar(query: dict[str, list[str]], status: str, group: str) -> str:
+    """The panel's own Show / Group by selectors: each option links to the same
+    query with that one parameter swapped; the current option is in bold."""
+    base = {k: v[0] for k, v in query.items() if v}
+
+    def options(param: str, current: str, labels: tuple[tuple[str, str], ...]) -> str:
+        links = []
+        for value, label in labels:
+            if value == current:
+                links.append(f"<b>{label}</b>")
+            else:
+                href = "?" + urlencode({**base, param: value})
+                links.append(f'<a href="{html.escape(href)}">{label}</a>')
+        return "".join(links)
+
+    return (
+        "<p class='groupby meta'>Show: "
+        + options("status", status, _RUN_STATUS_LABELS)
+        + "<span class='sep'>·</span>Group by: "
+        + options("group", group, _RUN_GROUP_LABELS)
+        + "</p>"
+    )
 
 
 def render_run_html(
@@ -6302,6 +6316,7 @@ def render_run_html(
         "border-radius:4px;background:#0b0c0e}"
         ".groupby{margin:0 0 8px}.groupby a{margin-right:10px}"
         ".groupby b{margin-right:10px;color:#d8d9da}"
+        ".groupby .sep{margin:0 12px 0 2px}"
         "</style></head><body>",
     ]
     tempo_link = (
@@ -6313,15 +6328,25 @@ def render_run_html(
         if run_id
         else ""
     )
+    if query is not None:
+        out.append(
+            _render_run_toolbar(
+                query,
+                "ERROR" if status == "ERROR" else ".+",
+                group if grouped else "none",
+            )
+        )
+
     if not rows:
         if status_active and job_rows:
             # Tests ran, but the Show filter hid them all (e.g. Failing on a
             # green job). Point the user at the filter rather than implying the
             # run has no data.
+            where = "" if query is None else " above"
             msg = (
                 f"No <b>{show_label}</b> tests in this view — "
-                f"{len(job_rows)} test{'s' if len(job_rows) != 1 else ''} ran. "
-                f"Set <b>Show</b> to <b>All</b> to list them."
+                f"{len(job_rows):,} test{'s' if len(job_rows) != 1 else ''} ran. "
+                f"Set <b>Show</b> to <b>All</b>{where} to list them."
             )
         elif job:
             msg = (
@@ -6336,9 +6361,6 @@ def render_run_html(
         out.append(f"<p class='meta'>{msg}</p>")
         out.append("</body></html>")
         return "".join(out)
-
-    if query is not None:
-        out.append(_render_group_links(query, group if grouped else "none"))
 
     if grouped:
         groups = _render_run_groups(rows, run_id, group, limit)
