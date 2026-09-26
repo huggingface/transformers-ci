@@ -40,6 +40,9 @@ from .reducer import COMPLETED, status_rank
 # Events whose runs the exporter files under their branch rather than a PR.
 _BRANCH_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 
+# Events whose display_title is the PR title (a merge_group run's is not).
+_PR_EVENTS = frozenset({"pull_request", "pull_request_target"})
+
 # Trailing matrix/shard groups on a job display name: " (1, 8)", " [shard 1/8]".
 _MATRIX_SUFFIX = re.compile(r"(?:\s*[(\[][^()\[\]]*[)\]])+\s*$")
 
@@ -125,6 +128,10 @@ def render(
                 "A workflow run attempt GitHub reported (identity and grouping).",
             ),
             (
+                "ci_github_run_title_info",
+                "The PR title GitHub gives a pull_request run (its display_title).",
+            ),
+            (
                 "ci_github_run_status",
                 "Run status from GitHub: 1 queued, 2 in progress, 3 completed.",
             ),
@@ -189,6 +196,12 @@ def render(
             },
             1,
         )
+        # Its own series, not a label on run_info: panels join on run_info with
+        # group_left(), which a relabelled series overlapping the old one breaks.
+        if run.get("event") in _PR_EVENTS and pr.isdigit() and run.get("display_title"):
+            families["ci_github_run_title_info"].add(
+                {**identity, "pr": pr, "title": run["display_title"]}, 1
+            )
         _progress(families, "run", identity, run, run.get("updated_at"))
 
     for job in jobs:

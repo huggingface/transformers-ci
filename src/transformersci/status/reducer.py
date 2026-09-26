@@ -73,6 +73,9 @@ class RunUpdate:
     started_at: float | None = None
     updated_at: float | None = None
     html_url: str = ""
+    # GitHub's title for the run: the PR title on a pull_request run, which is
+    # all the PR page's header has before the exporter has seen a trace.
+    display_title: str = ""
 
     @property
     def key(self) -> tuple[str, int, int]:
@@ -129,6 +132,7 @@ _RUN_FILL = (
     "created_at",
     "started_at",
     "html_url",
+    "display_title",
 )
 _JOB_FILL = (
     "name",

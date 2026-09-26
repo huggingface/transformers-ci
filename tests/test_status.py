@@ -39,6 +39,7 @@ def run_payload(
     updated_at: str = "2026-09-24T07:30:00Z",
     private: bool = False,
     repository: str = REPO,
+    display_title: str = "Fix the tokenizer",
 ) -> dict:
     return {
         "action": action,
@@ -59,6 +60,7 @@ def run_payload(
             "run_started_at": "2026-09-24T07:29:05Z",
             "updated_at": updated_at,
             "html_url": f"https://github.com/{repository}/actions/runs/{run_id}",
+            "display_title": display_title,
         },
         "repository": _repository(private, repository),
     }
@@ -238,6 +240,51 @@ def test_merge_group_and_branch_runs_get_the_exporters_pr_label() -> None:
     assert (
         metrics.pr_label({"prs": push.prs, "event": push.event, "head_branch": "main"})
         == "main"
+    )
+
+
+def _title_series(payload: str) -> list[str]:
+    return [
+        line
+        for line in payload.splitlines()
+        if line.startswith("ci_github_run_title_info{")
+    ]
+
+
+def test_a_pr_run_publishes_its_title_before_any_trace() -> None:
+    update = webhook.parse_delivery(
+        "workflow_run", run_payload(display_title='Fix "quoted" \\ title'), FILTERS
+    )
+    state = merge_run(None, update)
+    lines = _title_series(metrics.render([state], [], service={}))
+    assert lines == [
+        'ci_github_run_title_info{repository="huggingface/transformers",run_id="900:1",'
+        'pr="4321",title="Fix \\"quoted\\" \\\\ title"} 1'
+    ]
+
+
+def test_a_later_event_without_a_title_keeps_it() -> None:
+    first = merge_run(None, run("queued", display_title="Fix the tokenizer"))
+    later = merge_run(first, run("in_progress"))
+    assert later["display_title"] == "Fix the tokenizer"
+
+
+@pytest.mark.parametrize(
+    "event,prs,head_branch",
+    [
+        ("push", [], "main"),
+        ("merge_group", [], "gh-readonly-queue/main/pr-48976-0123abcd"),
+        ("pull_request", [], "fix-bug"),  # a fork PR before its number is known
+    ],
+)
+def test_no_title_series_without_a_pr_title(event, prs, head_branch) -> None:
+    update = webhook.parse_delivery(
+        "workflow_run",
+        run_payload(event=event, prs=prs, head_branch=head_branch),
+        FILTERS,
+    )
+    assert (
+        _title_series(metrics.render([merge_run(None, update)], [], service={})) == []
     )
 
 
