@@ -6008,6 +6008,173 @@ def _cache_run_rows(
             _run_rows_cache.popitem(last=False)
 
 
+# How /run can bucket a run's tests (the dashboards' "Group by" variable).
+# "none" (or anything unknown) keeps the flat table.
+RUN_GROUP_MODES = ("job", "test", "model", "test_model")
+
+# A group this size or smaller renders expanded: the big groups are the one
+# shared breakage a CI breaker wants to skip past, the small ones are the
+# unrelated failures they are looking for.
+_RUN_GROUP_OPEN_MAX = 5
+
+_PARAM_SUFFIX_RE = re.compile(r"\[.*\]$")
+
+
+def run_row_model(nodeid: str) -> str:
+    """Model a test belongs to, from its node id's path.
+
+    ``tests/models/bert/test_modeling_bert.py::...`` -> ``bert``. Tests outside
+    ``tests/models/`` fall back to their first directory under ``tests/``
+    (``generation``, ``utils``, ...) or, at the top level, the module stem.
+    """
+    path = nodeid.split("::", 1)[0]
+    parts = [p for p in path.split("/") if p]
+    if "tests" in parts:
+        parts = parts[parts.index("tests") + 1 :]
+    if len(parts) >= 3 and parts[0] == "models":
+        return parts[1]
+    if len(parts) >= 2:
+        return parts[0]
+    return os.path.splitext(parts[0])[0] if parts else ""
+
+
+def run_row_test_name(row: dict[str, str | float]) -> str:
+    """Test function name without its parametrization (``test_x[a-b]`` -> ``test_x``),
+    so one test failing across every parameter or model reads as one group."""
+    name = str(row.get("test_function", "") or "")
+    if not name:
+        name = str(row.get("test_nodeid", "")).rsplit("::", 1)[-1]
+    return _PARAM_SUFFIX_RE.sub("", name)
+
+
+def _run_group_key(row: dict[str, str | float], mode: str) -> str:
+    if mode == "job":
+        return str(row.get("test_job", ""))
+    if mode == "model":
+        return run_row_model(str(row.get("test_nodeid", "")))
+    if mode == "test":
+        return run_row_test_name(row)
+    # test_model
+    return (
+        f"{run_row_model(str(row.get('test_nodeid', '')))} · {run_row_test_name(row)}"
+    )
+
+
+def _run_row_html(row: dict[str, str | float], run_id: str) -> str:
+    esc = html.escape
+    nodeid = str(row.get("test_nodeid", ""))
+    trace_id = str(row.get("trace_id", ""))
+    pr = str(row.get("pr", ""))
+    st = str(row.get("status_code", ""))
+    is_err = st == "ERROR"
+    dur = float(row.get("duration_seconds", 0) or 0)
+    # The per-test page is no longer backed by per-run Prometheus series, so
+    # pass the run context it needs (run_id, pr, the numeric GitHub run id)
+    # as URL vars. gh_run_id is the leading digits of run_id ("12345:1" ->
+    # "12345") for the "Full logs" GitHub link.
+    gh_run_id = re.match(r"\d+", run_id)
+    # Origin-relative link to the per-test page; opens the parent Grafana frame.
+    href = (
+        f"/d/pytest-test/test?orgId=1"
+        f"&var-trace_id={quote(trace_id, safe='')}"
+        f"&var-test_nodeid={quote(nodeid, safe='')}"
+        f"&var-run_id={quote(run_id, safe='')}"
+        f"&var-pr={quote(pr, safe='')}"
+        f"&var-gh_run_id={gh_run_id.group(0) if gh_run_id else ''}"
+    )
+    st_cls = "err" if is_err else "ok"
+    st_txt = "FAIL" if is_err else esc(st or "OK")
+    return (
+        f"<tr><td class='{st_cls}'>{st_txt}</td>"
+        f"<td class='nodeid'><a target='_parent' href=\"{esc(href)}\">"
+        f"{esc(nodeid)}</a></td>"
+        f"<td>{esc(str(row.get('test_job', '')))}</td>"
+        f"<td>{esc(hardware_display(str(row.get('hardware', ''))))}</td>"
+        f"<td class='dur'>{dur:.3f}s</td></tr>"
+    )
+
+
+_RUN_TABLE_HEAD = (
+    "<table><thead><tr><th>Status</th><th>Test</th><th>Job</th>"
+    "<th>Hardware</th><th style='text-align:right'>Duration</th></tr></thead><tbody>"
+)
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def _render_run_groups(
+    rows: list[dict[str, str | float]], run_id: str, mode: str, limit: int
+) -> list[str]:
+    """Bucket rows by ``mode``, largest failing bucket first, one <details> each.
+
+    Every group is always listed (the counts are over all rows); ``limit`` caps
+    the rows rendered inside each group, not the number of groups — otherwise
+    one big shared breakage would use the whole budget and hide the rest.
+    """
+    esc = html.escape
+    groups: dict[str, list[dict[str, str | float]]] = {}
+    for row in rows:
+        groups.setdefault(_run_group_key(row, mode), []).append(row)
+
+    def failing(members: list[dict[str, str | float]]) -> int:
+        return sum(1 for r in members if str(r.get("status_code", "")) == "ERROR")
+
+    ordered = sorted(
+        groups.items(), key=lambda kv: (-failing(kv[1]), -len(kv[1]), kv[0])
+    )
+    # What each summary line counts besides the tests themselves: the spread
+    # across the other dimension is what tells a base-class typo (one test,
+    # every model) from a broken model (one model, every test).
+    spread = {
+        "test": ("model", lambda r: run_row_model(str(r.get("test_nodeid", "")))),
+        "model": ("job", lambda r: str(r.get("test_job", ""))),
+        "job": ("model", lambda r: run_row_model(str(r.get("test_nodeid", "")))),
+        "test_model": ("job", lambda r: str(r.get("test_job", ""))),
+    }[mode]
+    out = []
+    for key, members in ordered:
+        n_fail = failing(members)
+        members.sort(key=lambda r: str(r.get("test_nodeid", "")))
+        shown = members[: max(0, limit)] if limit else members
+        parts = [_plural(len(members), "test")]
+        if n_fail and n_fail != len(members):
+            parts.append(f"{n_fail} failing")
+        n_spread = len({spread[1](r) for r in members})
+        if n_spread > 1:
+            parts.append(_plural(n_spread, spread[0]))
+        exc: dict[str, int] = {}
+        for r in members:
+            t = str(r.get("exception_type", "") or "")
+            if t:
+                exc[t] = exc.get(t, 0) + 1
+        exc_txt = ", ".join(
+            f"{esc(t)} ×{c}" if c > 1 else esc(t)
+            for t, c in sorted(exc.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        )
+        if len(exc) > 3:
+            exc_txt += f", +{len(exc) - 3} more"
+        more = (
+            f"<p class='meta'>… {len(members) - len(shown)} more not shown "
+            f"(raise <b>Row limit</b>)</p>"
+            if len(shown) < len(members)
+            else ""
+        )
+        is_open = " open" if len(members) <= _RUN_GROUP_OPEN_MAX else ""
+        cls = "err" if n_fail else "ok"
+        out.append(
+            f"<details{is_open}><summary><span class='{cls}'>"
+            f"{esc(key) or '(unknown)'}</span> "
+            f"<span class='meta'>— {' · '.join(parts)}"
+            f"{' · ' + exc_txt if exc_txt else ''}</span></summary>"
+            + _RUN_TABLE_HEAD
+            + "".join(_run_row_html(r, run_id) for r in shown)
+            + f"</tbody></table>{more}</details>"
+        )
+    return out
+
+
 def render_run_html(
     run_id: str,
     rows: list[dict[str, str | float]],
@@ -6016,12 +6183,14 @@ def render_run_html(
     status: str = "",
     limit: int = 200,
     hardware: str = "",
+    group: str = "",
 ) -> str:
     """Render the per-run test table (sortable, links to the per-test page).
 
-    Self-contained dark HTML, embedded via ``<iframe>`` in the Run/Job
+    Self-contained dark HTML, embedded via ``<iframe>`` in the Run/Job/PR
     dashboards. Links are origin-relative (the exporter is served under the
-    Grafana host via ingress) and open in the parent frame.
+    Grafana host via ingress) and open in the parent frame. ``group`` (one of
+    ``RUN_GROUP_MODES``) buckets the tests into collapsible groups instead.
     """
     esc = html.escape
     # Optional hardware filter (raw name, e.g. "single-gpu"). Sentinels from the
@@ -6043,7 +6212,8 @@ def render_run_html(
     )
     rows.sort(key=lambda r: float(r.get("duration_seconds", 0) or 0), reverse=True)
     total = len(rows)
-    shown = rows[: max(0, limit)] if limit else rows
+    grouped = group in RUN_GROUP_MODES
+    shown = rows if grouped else (rows[: max(0, limit)] if limit else rows)
     show_label = "Failing" if status == "ERROR" else esc(status)
 
     out = [
@@ -6063,6 +6233,11 @@ def render_run_html(
         "a{color:#6ab0ff;text-decoration:none}a:hover{text-decoration:underline}"
         ".ok{color:#73bf69}.err{color:#ff8a80;font-weight:600}"
         ".meta{margin:0 0 8px;color:#8e9197}"
+        "details{border-bottom:1px solid #24262b;padding:4px 0}"
+        "summary{cursor:pointer;padding:3px 0;"
+        "font-family:ui-monospace,Menlo,Consolas,monospace}"
+        "summary .meta{font-family:system-ui,sans-serif}"
+        "details table{margin:4px 0 8px 14px;width:calc(100% - 14px)}"
         "</style></head><body>",
     ]
     tempo_link = (
@@ -6098,46 +6273,24 @@ def render_run_html(
         out.append("</body></html>")
         return "".join(out)
 
+    if grouped:
+        groups = _render_run_groups(rows, run_id, group, limit)
+        out.append(
+            f"<p class='meta'>{_plural(total, 'test')} in "
+            f"{_plural(len(groups), 'group')}, largest first · "
+            f"run <code>{esc(run_id)}</code></p>"
+        )
+        out.extend(groups)
+        out.append("</body></html>")
+        return "".join(out)
+
     suffix = f" (showing top {len(shown)})" if total > len(shown) else ""
     out.append(
         f"<p class='meta'>{total} test{'s' if total != 1 else ''}{suffix} · "
         f"run <code>{esc(run_id)}</code></p>"
     )
-    out.append(
-        "<table><thead><tr><th>Status</th><th>Test</th><th>Job</th>"
-        "<th>Hardware</th><th style='text-align:right'>Duration</th></tr></thead><tbody>"
-    )
-    for row in shown:
-        nodeid = str(row.get("test_nodeid", ""))
-        trace_id = str(row.get("trace_id", ""))
-        pr = str(row.get("pr", ""))
-        st = str(row.get("status_code", ""))
-        is_err = st == "ERROR"
-        dur = float(row.get("duration_seconds", 0) or 0)
-        # The per-test page is no longer backed by per-run Prometheus series, so
-        # pass the run context it needs (run_id, pr, the numeric GitHub run id)
-        # as URL vars. gh_run_id is the leading digits of run_id ("12345:1" ->
-        # "12345") for the "Full logs" GitHub link.
-        gh_run_id = re.match(r"\d+", run_id)
-        # Origin-relative link to the per-test page; opens the parent Grafana frame.
-        href = (
-            f"/d/pytest-test/test?orgId=1"
-            f"&var-trace_id={quote(trace_id, safe='')}"
-            f"&var-test_nodeid={quote(nodeid, safe='')}"
-            f"&var-run_id={quote(run_id, safe='')}"
-            f"&var-pr={quote(pr, safe='')}"
-            f"&var-gh_run_id={gh_run_id.group(0) if gh_run_id else ''}"
-        )
-        st_cls = "err" if is_err else "ok"
-        st_txt = "FAIL" if is_err else esc(st or "OK")
-        out.append(
-            f"<tr><td class='{st_cls}'>{st_txt}</td>"
-            f"<td class='nodeid'><a target='_parent' href=\"{esc(href)}\">"
-            f"{esc(nodeid)}</a></td>"
-            f"<td>{esc(str(row.get('test_job', '')))}</td>"
-            f"<td>{esc(hardware_display(str(row.get('hardware', ''))))}</td>"
-            f"<td class='dur'>{dur:.3f}s</td></tr>"
-        )
+    out.append(_RUN_TABLE_HEAD)
+    out.extend(_run_row_html(row, run_id) for row in shown)
     out.append("</tbody></table></body></html>")
     return "".join(out)
 
@@ -6278,6 +6431,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         job = (params.get("job") or [""])[0].strip()
         status = (params.get("status") or [""])[0].strip()
         hardware = (params.get("hardware") or [""])[0].strip()
+        group = (params.get("group") or [""])[0].strip()
         try:
             limit = int((params.get("limit") or ["200"])[0])
         except ValueError:
@@ -6298,7 +6452,13 @@ class MetricsHandler(BaseHTTPRequestHandler):
             200,
             "text/html; charset=utf-8",
             render_run_html(
-                run_id, rows, job=job, status=status, limit=limit, hardware=hardware
+                run_id,
+                rows,
+                job=job,
+                status=status,
+                limit=limit,
+                hardware=hardware,
+                group=group,
             ).encode("utf-8"),
             cache_control=_public_cache_control_header(),
         )

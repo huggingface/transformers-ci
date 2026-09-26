@@ -573,6 +573,132 @@ def test_render_run_html_hardware_column_and_filter() -> None:
     assert "test_x" in both and "test_y" in both
 
 
+def _grouping_rows() -> list[dict[str, str | float]]:
+    # One base-class typo breaking test_forward across three models, plus one
+    # unrelated failure (llama's test_generate) that should not get lost.
+    rows: list[dict[str, str | float]] = []
+    for model in ("bert", "gpt2", "llama"):
+        rows.append(
+            {
+                "test_nodeid": f"tests/models/{model}/test_modeling_{model}.py"
+                f"::{model.title()}ModelTest::test_forward[fp16]",
+                "test_function": "test_forward[fp16]",
+                "test_job": "tests_torch",
+                "status_code": "ERROR",
+                "exception_type": "TypeError",
+                "trace_id": f"tr-{model}",
+                "pr": "4321",
+                "duration_seconds": 0.5,
+            }
+        )
+    rows.append(
+        {
+            "test_nodeid": "tests/models/llama/test_modeling_llama.py"
+            "::LlamaModelTest::test_generate",
+            "test_function": "test_generate",
+            "test_job": "tests_generate",
+            "status_code": "ERROR",
+            "exception_type": "AssertionError",
+            "trace_id": "tr-gen",
+            "pr": "4321",
+            "duration_seconds": 3.0,
+        }
+    )
+    rows.append(
+        {
+            "test_nodeid": "tests/generation/test_utils.py::UtilsTest::test_ok",
+            "test_function": "test_ok",
+            "test_job": "tests_generate",
+            "status_code": "OK",
+            "trace_id": "tr-ok",
+            "pr": "4321",
+            "duration_seconds": 1.0,
+        }
+    )
+    return rows
+
+
+def test_run_row_model_from_nodeid() -> None:
+    assert trace_exporter.run_row_model("tests/models/bert/test_x.py::T::t") == "bert"
+    assert (
+        trace_exporter.run_row_model("tests/generation/test_utils.py::T::t")
+        == "generation"
+    )
+    assert trace_exporter.run_row_model("tests/test_top.py::t") == "test_top"
+    assert trace_exporter.run_row_model("") == ""
+
+
+def test_render_run_html_group_by_test() -> None:
+    out = trace_exporter.render_run_html(
+        "123:1", _grouping_rows(), status="ERROR", group="test"
+    )
+    # Parametrization is stripped, so the shared breakage is one group, and it
+    # comes first (largest failing group) with its spread and exception.
+    assert "4 tests in 2 groups" in out
+    assert out.index(">test_forward<") < out.index(">test_generate<")
+    assert "3 tests · 3 models · TypeError ×3" in out
+    # Links to the per-test page still render inside the groups.
+    assert "var-trace_id=tr-bert" in out
+    # Status filter still applies: the passing test is not listed.
+    assert "test_ok" not in out
+
+
+def test_render_run_html_group_by_model_and_test_model() -> None:
+    rows = _grouping_rows()
+    by_model = trace_exporter.render_run_html("123:1", rows, group="model")
+    # llama has two failures (two different tests); generation has none and
+    # sorts last.
+    assert by_model.index(">llama<") < by_model.index(">bert<")
+    assert by_model.index(">bert<") < by_model.index(">generation<")
+    assert ">llama</span> <span class='meta'>— 2 tests · 2 jobs ·" in by_model
+
+    both = trace_exporter.render_run_html(
+        "123:1", rows, status="ERROR", group="test_model"
+    )
+    assert "4 tests in 4 groups" in both
+    assert "llama · test_generate" in both
+
+
+def test_render_run_html_group_limit_is_per_group_and_big_groups_collapse() -> None:
+    rows = [
+        {
+            "test_nodeid": f"tests/models/m{i}/test_modeling.py::T::test_shared",
+            "test_function": "test_shared",
+            "test_job": "tests_torch",
+            "status_code": "ERROR",
+            "trace_id": f"t{i}",
+            "pr": "1",
+            "duration_seconds": 1.0,
+        }
+        for i in range(10)
+    ] + [
+        {
+            "test_nodeid": "tests/models/solo/test_modeling.py::T::test_lonely",
+            "test_function": "test_lonely",
+            "test_job": "tests_torch",
+            "status_code": "ERROR",
+            "trace_id": "solo",
+            "pr": "1",
+            "duration_seconds": 1.0,
+        }
+    ]
+    out = trace_exporter.render_run_html("1:1", rows, group="test", limit=3)
+    # The limit caps rows inside a group, never hides a whole group.
+    assert "test_lonely" in out
+    assert "7 more not shown" in out
+    # The big shared group is collapsed, the small one is open.
+    assert "<details><summary><span class='err'>test_shared" in out
+    assert "<details open><summary><span class='err'>test_lonely" in out
+
+
+def test_render_run_html_unknown_group_is_flat() -> None:
+    rows = _grouping_rows()
+    assert trace_exporter.render_run_html(
+        "123:1", rows, group="none"
+    ) == trace_exporter.render_run_html("123:1", rows)
+    assert "<details" not in trace_exporter.render_run_html("123:1", rows)
+
+
 def test_gather_run_test_rows_from_membership(monkeypatch: pytest.MonkeyPatch) -> None:
     """A run in the in-memory membership map is reconstructed from the trace
     cache without any Tempo network call."""

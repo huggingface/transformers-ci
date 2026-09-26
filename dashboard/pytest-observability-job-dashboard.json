@@ -414,7 +414,7 @@
       "transparent": true,
       "options": {
         "mode": "html",
-        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&job='+encodeURIComponent('${job}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>"
+        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&job='+encodeURIComponent('${job}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+'&group='+encodeURIComponent('${group_by}')+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>"
       }
     },
     {
@@ -1030,6 +1030,42 @@
           }
         ],
         "query": "100,500,1000,2000",
+        "type": "custom"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "None",
+          "value": "none"
+        },
+        "description": "Bucket the test list: by test name (one test failing across many models, e.g. a base-class typo), by model, or both. Largest group first.",
+        "includeAll": false,
+        "label": "Group by",
+        "multi": false,
+        "name": "group_by",
+        "options": [
+          {
+            "selected": true,
+            "text": "None",
+            "value": "none"
+          },
+          {
+            "selected": false,
+            "text": "Test",
+            "value": "test"
+          },
+          {
+            "selected": false,
+            "text": "Model",
+            "value": "model"
+          },
+          {
+            "selected": false,
+            "text": "Test + Model",
+            "value": "test_model"
+          }
+        ],
+        "query": "None : none,Test : test,Model : model,Test + Model : test_model",
         "type": "custom"
       }
     ]
