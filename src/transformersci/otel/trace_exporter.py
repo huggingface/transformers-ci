@@ -2616,6 +2616,15 @@ def fetch_github_run_activity_cached(
     return value
 
 
+# Run ids the last extract_run_active_metrics pass found queued or in progress on
+# GitHub. /run reads it to tell an in-flight run's page to keep polling itself.
+_active_run_ids: frozenset[str] = frozenset()
+
+
+def run_is_active(run_id: str) -> bool:
+    return run_id in _active_run_ids
+
+
 def extract_run_active_metrics(
     traces: list[dict] | None = None,
     *,
@@ -2715,6 +2724,7 @@ def extract_run_active_metrics(
     run_lines: list[str] = []
     start_lines: list[str] = []
     job_lines: list[str] = []
+    active_run_ids: set[str] = set()
     for key, info in sorted(latest_by_key.items()):
         if key not in polled_keys:
             continue
@@ -2748,6 +2758,7 @@ def extract_run_active_metrics(
             "service_name": str(info["service_name"]),
         }
         run_lines.append(f"pytest_run_active{metric_labels(base_labels)} 1")
+        active_run_ids.add(run_id)
         earliest = earliest_start_by_key.get(key, 0)
         if earliest:
             start_lines.append(
@@ -2797,6 +2808,8 @@ def extract_run_active_metrics(
         )
         lines.append("# TYPE pytest_run_job_active gauge")
         lines.extend(job_lines)
+    global _active_run_ids
+    _active_run_ids = frozenset(active_run_ids)
     return lines
 
 
@@ -5895,6 +5908,7 @@ _RUN_SEARCH_MAX_TRACES = 500
 # time. A big sharded run is dozens of multi-MB traces; the first view fetches
 # them concurrently, subsequent views serve from here.
 _RUN_ROWS_CACHE_TTL_SECONDS = 300.0
+_RUN_ROWS_ACTIVE_CACHE_TTL_SECONDS = 20.0
 _RUN_ROWS_CACHE_MAX = 32
 _run_rows_cache: "OrderedDict[str, tuple[float, list[dict[str, str | float]]]]" = (
     OrderedDict()
@@ -5962,7 +5976,14 @@ def gather_run_test_rows(
     now = time.time()
     with _run_rows_cache_lock:
         hit = _run_rows_cache.get(run_id)
-        if hit is not None and now - hit[0] < _RUN_ROWS_CACHE_TTL_SECONDS:
+        # An in-flight run's page polls itself, so its rows must not sit in
+        # this cache for the full TTL between polls.
+        ttl = (
+            _RUN_ROWS_ACTIVE_CACHE_TTL_SECONDS
+            if run_is_active(run_id)
+            else _RUN_ROWS_CACHE_TTL_SECONDS
+        )
+        if hit is not None and now - hit[0] < ttl:
             _run_rows_cache.move_to_end(run_id)
             return hit[1]
 
@@ -6124,6 +6145,34 @@ _RUN_ERROR_TOGGLE_JS = (
     "});</script>"
 )
 
+# While the run is in flight (#runbody data-live="1") the page re-fetches itself
+# every 30s and swaps the body in place, keeping what the reader opened: groups
+# they expanded or collapsed (by data-key) and tracebacks they opened (by
+# data-src). Skips hidden tabs; stops once a fetched page says the run is done.
+_RUN_LIVE_POLL_JS = (
+    "<script>(function(){var cur=document.getElementById('runbody');"
+    "if(!cur||cur.dataset.live!=='1')return;var last=cur.innerHTML;"
+    "function tick(){if(document.hidden)return setTimeout(tick,30000);"
+    "fetch(location.href,{cache:'no-store'}).then(function(r){return r.text();})"
+    ".then(function(t){var nb=new DOMParser().parseFromString(t,'text/html')"
+    ".getElementById('runbody');if(!nb)return setTimeout(tick,30000);"
+    "if(nb.innerHTML!==last){last=nb.innerHTML;var st={},tb={};"
+    "cur.querySelectorAll('details[data-key]').forEach(function(d){"
+    "st[d.dataset.key]=d.open;});"
+    "cur.querySelectorAll('tr.tbrow').forEach(function(r){"
+    "var b=r.previousElementSibling&&r.previousElementSibling"
+    ".querySelector('button.tb');if(b)tb[b.dataset.src]=r;});"
+    "cur.innerHTML=nb.innerHTML;"
+    "cur.querySelectorAll('details[data-key]').forEach(function(d){"
+    "if(d.dataset.key in st)d.open=st[d.dataset.key];});"
+    "cur.querySelectorAll('button.tb').forEach(function(b){var r=tb[b.dataset.src];"
+    "if(r){b.closest('tr').after(r);b.textContent='error ▾';}});}"
+    "cur.dataset.live=nb.dataset.live;"
+    "if(nb.dataset.live==='1')setTimeout(tick,30000);})"
+    ".catch(function(){setTimeout(tick,30000);});}"
+    "setTimeout(tick,30000);})();</script>"
+)
+
 _RUN_TABLE_HEAD = (
     "<table><thead><tr><th>Status</th><th>Test</th><th>Job</th>"
     "<th>Hardware</th><th style='text-align:right'>Duration</th></tr></thead><tbody>"
@@ -6194,7 +6243,7 @@ def _render_run_groups(
         is_open = " open" if len(members) <= _RUN_GROUP_OPEN_MAX else ""
         cls = "err" if n_fail else "ok"
         out.append(
-            f"<details{is_open}><summary><span class='{cls}'>"
+            f"<details{is_open} data-key=\"{esc(key)}\"><summary><span class='{cls}'>"
             f"{esc(key) or '(unknown)'}</span> "
             f"<span class='meta'>— {' · '.join(parts)}"
             f"{' · ' + exc_txt if exc_txt else ''}</span></summary>"
@@ -6251,6 +6300,7 @@ def render_run_html(
     hardware: str = "",
     group: str = "",
     query: dict[str, list[str]] | None = None,
+    live: bool = False,
 ) -> str:
     """Render the per-run test table (sortable, links to the per-test page).
 
@@ -6260,7 +6310,8 @@ def render_run_html(
     ``RUN_GROUP_MODES``) buckets the tests into collapsible groups instead.
     ``query`` is the request's own query string: when given, the page renders
     its own "Group by" links (same query, ``group`` swapped), so the choice
-    lives in the panel rather than in a dashboard variable.
+    lives in the panel rather than in a dashboard variable. ``live`` (the run
+    is still in flight) makes the page poll itself and update in place.
     """
     esc = html.escape
     # Optional hardware filter (raw name, e.g. "single-gpu"). Sentinels from the
@@ -6317,8 +6368,11 @@ def render_run_html(
         ".groupby{margin:0 0 8px}.groupby a{margin-right:10px}"
         ".groupby b{margin-right:10px;color:#d8d9da}"
         ".groupby .sep{margin:0 12px 0 2px}"
+        ".live{color:#73bf69}"
         "</style></head><body>",
+        f"<div id='runbody' data-live='{1 if live else 0}'>",
     ]
+    tail = "</div>" + _RUN_ERROR_TOGGLE_JS + _RUN_LIVE_POLL_JS + "</body></html>"
     tempo_link = (
         f" <a target='_parent' href=\"/explore?schemaVersion=1&orgId=1&"
         f"panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:"
@@ -6328,6 +6382,7 @@ def render_run_html(
         if run_id
         else ""
     )
+    live_note = "<span class='live'>● live, updates every 30s</span> · " if live else ""
     if query is not None:
         out.append(
             _render_run_toolbar(
@@ -6359,28 +6414,29 @@ def render_run_html(
                 + tempo_link
             )
         out.append(f"<p class='meta'>{msg}</p>")
-        out.append("</body></html>")
+        out.append(tail)
         return "".join(out)
 
     if grouped:
         groups = _render_run_groups(rows, run_id, group, limit)
         out.append(
             f"<p class='meta'>{_plural(total, 'test')} in "
-            f"{_plural(len(groups), 'group')}, largest first · "
+            f"{_plural(len(groups), 'group')}, largest first · {live_note}"
             f"run <code>{esc(run_id)}</code></p>"
         )
         out.extend(groups)
-        out.append(_RUN_ERROR_TOGGLE_JS + "</body></html>")
+        out.append(tail)
         return "".join(out)
 
     suffix = f" (showing top {len(shown)})" if total > len(shown) else ""
     out.append(
         f"<p class='meta'>{total} test{'s' if total != 1 else ''}{suffix} · "
+        f"{live_note}"
         f"run <code>{esc(run_id)}</code></p>"
     )
     out.append(_RUN_TABLE_HEAD)
     out.extend(_run_row_html(row, run_id) for row in shown)
-    out.append("</tbody></table>" + _RUN_ERROR_TOGGLE_JS + "</body></html>")
+    out.append("</tbody></table>" + tail)
     return "".join(out)
 
 
@@ -6549,6 +6605,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 hardware=hardware,
                 group=group,
                 query=params,
+                live=run_is_active(run_id),
             ).encode("utf-8"),
             cache_control=_public_cache_control_header(),
         )

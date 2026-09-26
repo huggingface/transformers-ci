@@ -687,8 +687,8 @@ def test_render_run_html_group_limit_is_per_group_and_big_groups_collapse() -> N
     assert "test_lonely" in out
     assert "7 more not shown" in out
     # The big shared group is collapsed, the small one is open.
-    assert "<details><summary><span class='err'>test_shared" in out
-    assert "<details open><summary><span class='err'>test_lonely" in out
+    assert '<details data-key="test_shared"><summary>' in out
+    assert '<details open data-key="test_lonely"><summary>' in out
 
 
 def test_render_run_html_unknown_group_is_flat() -> None:
@@ -739,7 +739,49 @@ def test_render_run_html_failing_rows_toggle_their_traceback() -> None:
             'data-src="/failure?trace_id=tr-gen&amp;test_nodeid=tests%2Fmodels%2F'
             'llama%2Ftest_modeling_llama.py%3A%3ALlamaModelTest%3A%3Atest_generate"'
         ) in out
-        assert out.count("button.tb") >= 1 and out.count("<script>") == 1
+        assert out.count("document.addEventListener('click'") == 1
+
+
+def test_render_run_html_live_flag_drives_the_poller() -> None:
+    rows = _grouping_rows()
+    # The poll script always ships but only runs while the body says live; a
+    # fetched page with data-live='0' is what stops it once the run ends.
+    live = trace_exporter.render_run_html("1:1", rows, group="test", live=True)
+    assert "<div id='runbody' data-live='1'>" in live
+    assert "● live, updates every 30s" in live
+    done = trace_exporter.render_run_html("1:1", rows, group="test")
+    assert "<div id='runbody' data-live='0'>" in done
+    assert "● live" not in done
+    # The empty state polls too: a live run with no failures yet must keep
+    # checking.
+    ok_only = [r for r in rows if r["status_code"] == "OK"]
+    empty = trace_exporter.render_run_html("1:1", ok_only, status="ERROR", live=True)
+    assert "data-live='1'" in empty and "fetch(location.href" in empty
+
+
+def test_extract_run_active_metrics_records_active_run_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(trace_exporter, "_active_run_ids", frozenset())
+    now = 2_000.0
+    traces = [
+        _active_trace(
+            run_id="99999:1", pr="4321", job="tests_torch", start_us=int(now * 1e6)
+        ),
+        _active_trace(
+            run_id="88888:1", pr="1234", job="tests_torch", start_us=int(now * 1e6)
+        ),
+    ]
+
+    def fetcher(repository: str, run_db_id: str, run_attempt: str):
+        status = "in_progress" if run_db_id == "99999" else "completed"
+        return status, frozenset()
+
+    trace_exporter.extract_run_active_metrics(
+        traces, _activity_fetcher=fetcher, _now=now
+    )
+    assert trace_exporter.run_is_active("99999:1")
+    assert not trace_exporter.run_is_active("88888:1")
 
 
 def test_persist_run_rows_keeps_exception_type_only_when_set(tmp_path) -> None:
