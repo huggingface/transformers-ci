@@ -6402,6 +6402,13 @@ def render_run_html(
         if run_id
         else ""
     )
+    # The run id opens the Grafana run page (in the parent frame, like the
+    # per-test links).
+    run_link = (
+        f"<a target='_parent' href=\"/d/pytest-observability-by-run/"
+        f'pytest-observability-run?orgId=1&var-run_id={quote(run_id, safe="")}">'
+        f"<code>{esc(run_id)}</code></a>"
+    )
     live_note = (
         "<span class='live'><span class='dot'>●</span> live, updates every 30s</span> · "
         if live
@@ -6446,7 +6453,7 @@ def render_run_html(
         out.append(
             f"<p class='meta'>{_plural(total, 'test')} in "
             f"{_plural(len(groups), 'group')}, largest first · {live_note}"
-            f"run <code>{esc(run_id)}</code></p>"
+            f"run {run_link}</p>"
         )
         out.extend(groups)
         out.append(tail)
@@ -6456,7 +6463,7 @@ def render_run_html(
     out.append(
         f"<p class='meta'>{total} test{'s' if total != 1 else ''}{suffix} · "
         f"{live_note}"
-        f"run <code>{esc(run_id)}</code></p>"
+        f"run {run_link}</p>"
     )
     out.append(_RUN_TABLE_HEAD)
     out.extend(_run_row_html(row, run_id) for row in shown)
