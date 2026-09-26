@@ -706,14 +706,15 @@ def test_render_run_html_group_links_keep_the_query() -> None:
     )
     # Current options in bold, the others link to the same query with one
     # parameter swapped.
-    assert "Show: <b>Errors</b>" in out and "<b>Test</b>" in out
+    assert ">Errors</b>" in out and ">Test</b>" in out
+    assert "<span class='tl'>Show</span>" in out
     assert 'href="?run_id=123%3A1&amp;status=ERROR&amp;group=model"' in out
     assert 'href="?run_id=123%3A1&amp;status=ERROR&amp;group=none"' in out
     assert 'href="?run_id=123%3A1&amp;status=.%2B&amp;group=test"' in out
     # Flat, unfiltered view marks None and All as current; no query -> no selector.
     flat = trace_exporter.render_run_html("123:1", _grouping_rows(), query={})
-    assert "<b>None</b>" in flat and "<b>All</b>" in flat
-    assert "Group by:" not in trace_exporter.render_run_html("123:1", _grouping_rows())
+    assert ">None</b>" in flat and ">All</b>" in flat
+    assert "Group by" not in trace_exporter.render_run_html("123:1", _grouping_rows())
 
 
 def test_render_run_html_no_failures_keeps_the_toolbar() -> None:
@@ -723,7 +724,7 @@ def test_render_run_html_no_failures_keeps_the_toolbar() -> None:
         "1:1", rows, status="ERROR", group="test", query=query
     )
     # The empty state still offers the Show toggle it tells the user to use.
-    assert "Show: <b>Errors</b>" in out
+    assert "aria-current='true'>Errors</b>" in out
     assert 'href="?run_id=1%3A1&amp;status=.%2B&amp;group=test"' in out
     assert "Set <b>Show</b> to <b>All</b> above to list them." in out
 

@@ -6268,25 +6268,25 @@ _RUN_STATUS_LABELS = (("ERROR", "Errors"), (".+", "All"))
 
 def _render_run_toolbar(query: dict[str, list[str]], status: str, group: str) -> str:
     """The panel's own Show / Group by selectors: each option links to the same
-    query with that one parameter swapped; the current option is in bold."""
+    query with that one parameter swapped; the current option is the selected (filled) button."""
     base = {k: v[0] for k, v in query.items() if v}
 
     def options(param: str, current: str, labels: tuple[tuple[str, str], ...]) -> str:
         links = []
         for value, label in labels:
             if value == current:
-                links.append(f"<b>{label}</b>")
+                links.append(f"<b class='btn on' aria-current='true'>{label}</b>")
             else:
                 href = "?" + urlencode({**base, param: value})
-                links.append(f'<a href="{html.escape(href)}">{label}</a>')
-        return "".join(links)
+                links.append(f'<a class="btn" href="{html.escape(href)}">{label}</a>')
+        return f"<span class='seg'>{''.join(links)}</span>"
 
     return (
-        "<p class='groupby meta'>Show: "
+        "<div class='toolbar'><span class='tl'>Show</span>"
         + options("status", status, _RUN_STATUS_LABELS)
-        + "<span class='sep'>·</span>Group by: "
+        + "<span class='tl'>Group by</span>"
         + options("group", group, _RUN_GROUP_LABELS)
-        + "</p>"
+        + "</div>"
     )
 
 
@@ -6365,9 +6365,25 @@ def render_run_html(
         "tr.tbrow td{padding:0 0 6px;white-space:normal}"
         "tr.tbrow iframe{width:100%;height:120px;border:1px solid #24262b;"
         "border-radius:4px;background:#0b0c0e}"
-        ".groupby{margin:0 0 8px}.groupby a{margin-right:10px}"
-        ".groupby b{margin-right:10px;color:#d8d9da}"
-        ".groupby .sep{margin:0 12px 0 2px}"
+        # Grafana's outline secondary button (measured off the dashboards' own
+        # "Back to Overview"), joined into a radio-style group; the selected
+        # option takes Grafana's primary-button blue.
+        ".toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;"
+        "margin:0 0 10px}"
+        ".toolbar .tl{color:#8e9197;font:500 12px Inter,Helvetica,Arial,sans-serif;"
+        "margin-left:8px}.toolbar .tl:first-child{margin-left:0}"
+        ".seg{display:inline-flex}"
+        ".btn{display:inline-block;height:24px;padding:0 8px;"
+        "box-sizing:border-box;border:1px solid rgba(204,204,220,.3);"
+        "background:transparent;color:#ccccdc;text-decoration:none;"
+        "font:500 12px/22px Inter,Helvetica,Arial,sans-serif;white-space:nowrap}"
+        ".seg .btn+.btn{margin-left:-1px}"
+        ".seg .btn:first-child{border-radius:2px 0 0 2px}"
+        ".seg .btn:last-child{border-radius:0 2px 2px 0}"
+        "a.btn:hover{background:rgba(204,204,220,.08);"
+        "border-color:rgba(153,153,165,.3);text-decoration:none}"
+        ".btn.on{position:relative;z-index:1;background:#3d71d9;color:#fff;"
+        "border-color:#3d71d9}"
         ".live{color:#73bf69;animation:livepulse 2s ease-in-out infinite}"
         ".live .dot{display:inline-block;animation:livedot 1s ease-in-out infinite}"
         "@keyframes livepulse{50%{opacity:.55}}"
