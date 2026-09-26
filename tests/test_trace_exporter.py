@@ -717,6 +717,15 @@ def test_render_run_html_group_links_keep_the_query() -> None:
     assert "Group by" not in trace_exporter.render_run_html("123:1", _grouping_rows())
 
 
+def test_render_run_html_run_id_links_to_the_run_page() -> None:
+    for group in ("", "test"):
+        out = trace_exporter.render_run_html("123:2", _grouping_rows(), group=group)
+        assert (
+            "<a target='_parent' href=\"/d/pytest-observability-by-run/"
+            'pytest-observability-run?orgId=1&var-run_id=123%3A2"><code>123:2</code></a>'
+        ) in out
+
+
 def test_render_run_html_no_failures_keeps_the_toolbar() -> None:
     rows = [r for r in _grouping_rows() if r["status_code"] == "OK"]
     query = {"run_id": ["1:1"], "status": ["ERROR"], "group": ["test"]}
