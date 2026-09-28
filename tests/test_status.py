@@ -699,3 +699,6 @@ def test_documented_runner_hardware_is_published() -> None:
         and 'source="job log 2026-09-25' in ln
         for ln in documented
     )
+    assert any(
+        'runner_type="github-hosted"' in ln and 'vcpus="4"' in ln for ln in documented
+    )
