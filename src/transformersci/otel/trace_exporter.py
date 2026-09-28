@@ -5288,20 +5288,21 @@ def _public_response_cache_put(key: str, payload: bytes) -> None:
             _public_response_cache.popitem(last=False)
 
 
-def _pr_run_summary_from_prometheus(
+def _prometheus_badge_lookup(
     pr: str, event: str = DEFAULT_BADGE_EVENT
-) -> dict[str, str | float | int | None] | None:
+) -> tuple[bool, dict[str, str | float | int | None] | None]:
     """Read a PR's latest run from Prometheus rollups.
 
     This is much cheaper than the Tempo fallback: the badge fields are already
     persisted as low-cardinality series, while Tempo has to scan blocks and
-    fetch full traces. Prefer job-level totals for the selected run because the
+    fetch full traces. Returns ``(answered, summary)``: ``answered`` is False
+    only when Prometheus could not be asked, the one case Tempo is for. Prefer job-level totals for the selected run because the
     PR dashboard uses those and they can be more complete than the run-level
     aggregate while a run is settling.
     """
     base_url = prometheus_base_url()
     if not base_url:
-        return None
+        return False, None
     metric_pattern = (
         "pytest_run_start_time_seconds|"
         "pytest_run_end_time_seconds|"
@@ -5329,15 +5330,15 @@ def _pr_run_summary_from_prometheus(
     try:
         payload = _http_get_json(url, upstream="prometheus")
     except Exception:
-        return None
+        return False, None
     if not isinstance(payload, dict) or payload.get("status") != "success":
-        return None
+        return False, None
     data = payload.get("data")
     if not isinstance(data, dict):
-        return None
+        return False, None
     result = data.get("result")
     if not isinstance(result, list):
-        return None
+        return False, None
 
     lines: list[str] = []
     job_values: dict[
@@ -5407,7 +5408,8 @@ def _pr_run_summary_from_prometheus(
         else None
     )
     if summary is None:
-        return None
+        # Prometheus answered: this PR has no such run in the lookback.
+        return True, None
 
     summary_key = (
         str(summary.get("service_name") or ""),
@@ -5428,7 +5430,13 @@ def _pr_run_summary_from_prometheus(
             float(aggregate["failed_tests"]) for aggregate in matching_jobs
         )
         summary["job_count"] = len(matching_jobs)
-    return summary
+    return True, summary
+
+
+def _pr_run_summary_from_prometheus(
+    pr: str, event: str = DEFAULT_BADGE_EVENT
+) -> dict[str, str | float | int | None] | None:
+    return _prometheus_badge_lookup(pr, event)[1]
 
 
 def _pr_extracted_rows(
@@ -5517,7 +5525,18 @@ def _pr_run_summary_cached(
         if hit is not None and hit[0] > now:
             return hit[1]
 
-    summary = _pr_run_summary_from_prometheus(pr, event)
+    answered, summary = _prometheus_badge_lookup(pr, event)
+    if answered and summary is None:
+        # Prometheus holds every run roll-up for 90 days: "no run" from it is
+        # the answer. Searching Tempo instead fetched every trace of the PR
+        # (PR CI ones included) to learn it has no run-slow run: 18-97 s per
+        # badge (2026-09-28).
+        with _pr_summary_cache_lock:
+            _pr_summary_cache[cache_key] = (
+                time.monotonic() + _badge_cache_seconds(),
+                None,
+            )
+        return None
     if summary is not None:
         with _pr_summary_cache_lock:
             _pr_summary_cache[cache_key] = (
