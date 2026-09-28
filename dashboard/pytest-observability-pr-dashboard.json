@@ -42,7 +42,7 @@
       },
       "id": 9,
       "options": {
-        "content": "### <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"18\" height=\"18\" alt=\"GH\"/> [${branch_label:raw}](${branch_url:raw})${pr_title_section:raw} ${pr_state_badge:raw}\n\n<img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"16\" height=\"16\" alt=\"GH\"/> [${latest_commit:raw}](${latest_commit_url:raw})\n\n**Repo:** `${pr_repository:raw}` | **Runs:** `${pr_total_runs:raw}`${pr_metadata_section:raw}\n\n<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>",
+        "content": "### <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"18\" height=\"18\" alt=\"GH\"/> [${branch_label:raw}](${branch_url:raw})${pr_title_section:raw} ${pr_state_badge:raw}\n\n<img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"16\" height=\"16\" alt=\"GH\"/> [${latest_commit:raw}](${latest_commit_url:raw})\n\n**Repo:** `${pr_repository:raw}` | **Runs:** `${pr_total_runs:raw}`${pr_metadata_section:raw}\n\n**Runners:** ${latest_runners:csv}\n\n<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>",
         "mode": "markdown"
       },
       "pluginVersion": "12.0.0",
@@ -284,6 +284,15 @@
               {
                 "id": "custom.width",
                 "value": 80
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Runners this job used",
+                    "url": "/d/ci-runners/runners?var-run_id=${latest_run_id}&var-job=${__data.fields.Job}"
+                  }
+                ]
               }
             ]
           },
@@ -1243,6 +1252,37 @@
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(label_replace(count by (runner_type) (ci_github_job_runner_info and on (run_id) topk(1, max by (run_id) ((max by (run_id) (ci_github_run_started_timestamp_seconds * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{pr=~\"$pr\"}))) or max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d])) or max by (run_id) (timestamp(last_over_time(pytest_run_active{pr=~\"$pr\"}[5m])))))), \"md\", \"[$1](/d/ci-runners/runners?var-runner_type=$1&var-run_id=${latest_run_id})\", \"runner_type\", \"(.+)\"))",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "label": "",
+        "name": "latest_runners",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(label_replace(count by (runner_type) (ci_github_job_runner_info and on (run_id) topk(1, max by (run_id) ((max by (run_id) (ci_github_run_started_timestamp_seconds * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{pr=~\"$pr\"}))) or max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=~\"$pr\"}[90d])) or max by (run_id) (timestamp(last_over_time(pytest_run_active{pr=~\"$pr\"}[5m])))))), \"md\", \"[$1](/d/ci-runners/runners?var-runner_type=$1&var-run_id=${latest_run_id})\", \"runner_type\", \"(.+)\"))",
+          "refId": "Prometheus-latest_runners-Variable-Query"
+        },
+        "regex": "/md=\"([^\"]+)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 1,
         "type": "query"
       },
       {

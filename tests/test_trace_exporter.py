@@ -5774,3 +5774,74 @@ def test_other_runs_keep_the_reported_head_revision(ci_event, service_version) -
         _comment_trace(ci_event=ci_event, service_version=service_version)
     )
     assert info["commit_sha"] == MAIN_HEAD
+
+
+def _runner_trace(trace_id: str, start_us: int, **runner: str) -> dict:
+    trace = make_trace(trace_id=trace_id, run_id="1:1", job="tests_torch", spans=[])
+    trace["spans"] = [
+        {
+            "spanID": "s",
+            "processID": "pytest-process",
+            "operationName": "x",
+            "startTime": start_us,
+            "duration": 1,
+            "tags": [],
+        }
+    ]
+    trace["processes"]["pytest-process"]["tags"] += [
+        make_tag(f"transformers.test.runner.{key}", value)
+        for key, value in runner.items()
+    ]
+    return trace
+
+
+def test_extract_runner_hardware_metrics_one_series_per_type_newest_wins() -> None:
+    traces = [
+        _runner_trace(
+            "a",
+            1_000_000,
+            type="aws-g5-4xlarge-cache",
+            name="n1",
+            gpu_model="NVIDIA A10G",
+            gpu_count="1",
+            vcpus="15",
+        ),
+        # A newer job on the same type replaces the older description.
+        _runner_trace(
+            "b",
+            2_000_000,
+            type="aws-g5-4xlarge-cache",
+            name="n2",
+            gpu_model="NVIDIA A10G",
+            gpu_count="1",
+            vcpus="16",
+        ),
+        _runner_trace(
+            "c",
+            1_500_000,
+            type="aws-m8i-l-cache",
+            name="n3",
+            cpu_model="Intel(R) Xeon(R) 6975P-C",
+            vcpus="8",
+            memory_gib="30",
+        ),
+        # A trace from before the fact sheet (or off GitHub) publishes nothing.
+        make_trace(trace_id="d", run_id="2:1", job="tests_tf", spans=[]),
+    ]
+    lines = trace_exporter.extract_runner_hardware_metrics(traces)
+    info = metric_lines(lines, "ci_runner_hardware_info")
+    assert info == [
+        'ci_runner_hardware_info{runner_type="aws-g5-4xlarge-cache",source="measured",'
+        'vcpus="16",gpu_model="NVIDIA A10G",gpu_count="1"} 1',
+        'ci_runner_hardware_info{runner_type="aws-m8i-l-cache",source="measured",'
+        'cpu_model="Intel(R) Xeon(R) 6975P-C",vcpus="8",memory_gib="30"} 1',
+    ]
+    # The unique per-job runner name never becomes a label.
+    assert not any("n2" in line for line in lines)
+    seen = metric_lines(lines, "ci_runner_last_seen_timestamp_seconds")
+    assert 'runner_type="aws-g5-4xlarge-cache"} 2.000' in seen[0]
+
+
+def test_extract_runner_hardware_metrics_empty_without_runner_tags() -> None:
+    traces = [make_trace(trace_id="d", run_id="2:1", job="tests_tf", spans=[])]
+    assert trace_exporter.extract_runner_hardware_metrics(traces) == []

@@ -645,3 +645,57 @@ def test_events_per_minute_are_counted_by_event_and_action(running_service) -> N
         'ci_github_status_events_total{event="workflow_job",action="queued"}': 1,
         'ci_github_status_events_total{event="workflow_run",action="requested"}': 1,
     }
+
+
+# -- runners ------------------------------------------------------------------
+
+
+def test_a_job_keeps_the_runner_it_was_assigned() -> None:
+    payload = job_payload(action="in_progress", status="in_progress")
+    payload["workflow_job"]["runner_name"] = (
+        "aws-m8i-l-cache-use1-public-80-78nkj-runner-twjx2"
+    )
+    payload["workflow_job"]["runner_group_name"] = "aws-m8i-l-cache"
+    queued = merge_job(None, job("queued"))
+    started = merge_job(
+        queued, webhook.parse_delivery("workflow_job", payload, FILTERS)
+    )
+    # A later delivery without the runner (e.g. a replayed "queued") keeps it.
+    later = merge_job(started, job("completed", "success"))
+    assert later["runner_name"].startswith("aws-m8i-l-cache-use1")
+    assert later["runner_group"] == "aws-m8i-l-cache"
+
+
+def test_the_runner_type_is_its_own_series_and_only_once_assigned() -> None:
+    queued = merge_job(None, job("queued", name="pr-ci / tests_torch"))
+    started = merge_job(
+        None,
+        job(
+            "in_progress",
+            name="pr-ci / tests_torch",
+            runner_name="aws-m8i-l-cache-use1-public-80-78nkj-runner-twjx2",
+        ),
+    )
+    lines = metrics.render([], [queued], service={}).splitlines()
+    assert not [ln for ln in lines if ln.startswith("ci_github_job_runner_info{")]
+    lines = metrics.render([], [started], service={}).splitlines()
+    runner = [ln for ln in lines if ln.startswith("ci_github_job_runner_info{")]
+    # Derived from the name when GitHub gave no group; the unique name itself
+    # is never a label.
+    assert runner == [
+        'ci_github_job_runner_info{repository="huggingface/transformers",'
+        'run_id="900:1",job_id="7001",runner_type="aws-m8i-l-cache"} 1'
+    ]
+    info = [ln for ln in lines if ln.startswith("ci_github_job_info{")]
+    assert "runner" not in info[0]
+
+
+def test_documented_runner_hardware_is_published() -> None:
+    lines = metrics.render([], [], service={}).splitlines()
+    documented = [ln for ln in lines if ln.startswith("ci_runner_hardware_info{")]
+    assert any(
+        'runner_type="amd-mi300-2gpu"' in ln
+        and 'gpu_count="2"' in ln
+        and 'source="job log 2026-09-25' in ln
+        for ln in documented
+    )

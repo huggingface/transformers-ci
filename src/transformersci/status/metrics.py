@@ -36,6 +36,7 @@ from __future__ import annotations
 import re
 
 from ..emojize import emojize
+from ..runners import DOCUMENTED_RUNNERS, runner_type
 from .reducer import COMPLETED, status_rank
 
 # Events whose runs the exporter files under their branch rather than a PR.
@@ -161,6 +162,10 @@ def render(
                 "A job of a run attempt (identity and display name).",
             ),
             (
+                "ci_github_job_runner_info",
+                "The runner type (scale set) that picked the job up.",
+            ),
+            (
                 "ci_github_job_status",
                 "Job status from GitHub: 1 queued, 2 in progress, 3 completed.",
             ),
@@ -221,11 +226,27 @@ def render(
             },
             1,
         )
+        # Its own series: the runner is assigned only once the job starts, and
+        # a label that appears mid-life splits ci_github_job_info's joins.
+        kind = runner_type(job.get("runner_name"), job.get("runner_group"))
+        if kind:
+            families["ci_github_job_runner_info"].add(
+                {**identity, "runner_type": kind}, 1
+            )
         _progress(families, "job", identity, job, job.get("completed_at"))
+
+    documented = _Family(
+        "ci_runner_hardware_info",
+        "gauge",
+        "Hardware of a runner type no traced job runs on, documented from its job logs.",
+    )
+    for kind, facts in sorted(DOCUMENTED_RUNNERS.items()):
+        documented.add({"runner_type": kind, **facts}, 1)
 
     lines: list[str] = []
     for family in families.values():
         lines.extend(family.lines())
+    lines.extend(documented.lines())
     lines.extend(_service_lines(service))
     return "\n".join(lines) + "\n"
 

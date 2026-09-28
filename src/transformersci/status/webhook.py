@@ -173,6 +173,8 @@ def parse_workflow_job(payload: dict, filters: Filters) -> JobUpdate:
         started_at=parse_timestamp(job.get("started_at")),
         completed_at=parse_timestamp(job.get("completed_at")),
         html_url=_text(job.get("html_url")),
+        runner_name=_text(job.get("runner_name")),
+        runner_group=_text(job.get("runner_group_name")),
     )
 
 

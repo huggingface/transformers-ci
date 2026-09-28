@@ -45,6 +45,8 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from urllib.parse import urlparse
 
+from transformersci.runners import runner_resource_attributes
+
 DEFAULT_SERVICE_NAME = "transformers-tests"
 DEFAULT_LOCAL_JOB = "local_pytest"
 LOCAL_PROVIDER = "local"
@@ -445,6 +447,8 @@ def build_resource_attributes(
             attributes.append(f"transformers.test.run.id={resolved_run_id}")
         if resolved_job_run_id is not None:
             attributes.append(f"transformers.test.job.run={resolved_job_run_id}")
+        # Which runner this is and the hardware the job sees (Runners page).
+        attributes.extend(runner_resource_attributes(env))
         return attributes
 
     if provider == "circleci":

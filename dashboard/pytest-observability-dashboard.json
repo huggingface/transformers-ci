@@ -41,6 +41,14 @@
       "title": "Main health",
       "type": "link",
       "url": "/d/pytest-test-health/test-health"
+    },
+    {
+      "targetBlank": false,
+      "title": "Runners",
+      "type": "link",
+      "url": "/d/ci-runners/runners",
+      "icon": "info",
+      "tooltip": "Runner types and the hardware each job gets"
     }
   ],
   "refresh": "10s",
@@ -782,6 +790,15 @@
                         "index": 7
                       }
                     }
+                  }
+                ]
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Runners this run used",
+                    "url": "/d/ci-runners/runners?var-run_id=${__data.fields.run_id}"
                   }
                 ]
               }
