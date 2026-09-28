@@ -5905,3 +5905,45 @@ def test_badge_payload_is_parsed_once_per_publish(monkeypatch, tmp_path) -> None
     os.replace(replacement, payload_file)
     assert trace_exporter._pr_state_for_badge("4321") == "closed"
     assert len(opens) == 2
+
+
+def test_badge_trusts_an_empty_prometheus_answer(monkeypatch) -> None:
+    # "No run-slow run" used to fall through to a Tempo search that fetched every
+    # trace of the PR (18-97 s per badge in prod). Prometheus keeps 90 days of
+    # roll-ups, so its empty answer is the answer.
+    trace_exporter._pr_summary_cache.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
+    monkeypatch.setattr(trace_exporter, "_badge_payload_text", lambda: "")
+    monkeypatch.setattr(
+        trace_exporter,
+        "_http_get_json",
+        lambda *a, **k: {"status": "success", "data": {"result": []}},
+    )
+
+    def _must_not_search(*args, **kwargs):
+        raise AssertionError("Tempo must not be searched when Prometheus answered")
+
+    monkeypatch.setattr(trace_exporter, "search_trace_ids", _must_not_search)
+    svg = trace_exporter.render_pr_badge_svg(
+        "48171", trace_exporter.BADGE_EVENT_RUN_SLOW
+    ).decode()
+    assert "not run" in svg
+
+
+def test_badge_still_asks_tempo_when_prometheus_is_down(monkeypatch) -> None:
+    trace_exporter._pr_summary_cache.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
+    monkeypatch.setattr(trace_exporter, "_badge_payload_text", lambda: "")
+
+    def _down(*args, **kwargs):
+        raise OSError("connection refused")
+
+    searched = []
+    monkeypatch.setattr(trace_exporter, "_http_get_json", _down)
+    monkeypatch.setattr(
+        trace_exporter,
+        "search_trace_ids",
+        lambda *a, **k: searched.append(1) or [],
+    )
+    trace_exporter.render_pr_badge_svg("48171", trace_exporter.BADGE_EVENT_RUN_SLOW)
+    assert searched == [1]
