@@ -762,6 +762,14 @@ def test_render_run_html_live_flag_drives_the_poller() -> None:
     done = trace_exporter.render_run_html("1:1", rows, group="test")
     assert "<div id='runbody' data-live='0'>" in done
     assert "● live" not in done
+    # A run that is no longer live says so, in every view.
+    assert "<span class='done'>✓ finished</span> · run <a" in done
+    assert "✓ finished" in trace_exporter.render_run_html("1:1", rows)
+    assert "✓ finished" in trace_exporter.render_run_html(
+        "1:1", [r for r in rows if r["status_code"] == "OK"], status="ERROR"
+    )
+    # ...but a run with no tests at all (e.g. before its first trace) does not.
+    assert "finished" not in trace_exporter.render_run_html("1:1", [])
     # The empty state polls too: a live run with no failures yet must keep
     # checking.
     ok_only = [r for r in rows if r["status_code"] == "OK"]
