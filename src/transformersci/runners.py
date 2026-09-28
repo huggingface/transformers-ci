@@ -185,10 +185,17 @@ def runner_resource_attributes(
 
 
 # Runner types no traced job runs on (the AMD pools run a workflow outside this
-# repo), described by hand from their own job logs (``rocminfo`` in the "Check
+# repo; GitHub's own runners run only untraced steps), described by hand from
+# their own job logs (``rocminfo`` in the "Check
 # Runners" step). ``source`` names the log. The CPU is the host's: these logs do
 # not show the job's CPU or memory share. mi250 is left out: no recent log.
 DOCUMENTED_RUNNERS: dict[str, dict[str, str]] = {
+    # GitHub's own runners run no traced job here; GitHub publishes their size.
+    GITHUB_HOSTED: {
+        "source": "GitHub docs: standard Linux runner, public repositories",
+        "vcpus": "4",
+        "memory_gib": "16",
+    },
     "amd-mi300-1gpu": {
         "source": "job log 2026-09-25 (job 107956364031)",
         "cpu_model": "2x AMD EPYC 9654 96-Core (host)",
