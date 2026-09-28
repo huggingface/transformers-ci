@@ -1504,6 +1504,15 @@ def test_fetch_github_commit_message_expands_emoji_shortcodes() -> None:
     assert message == "🐛 Fix the flaky test"
 
 
+def test_emojize_needs_no_optional_dependency() -> None:
+    # Both pods run on a bare python image: the table is vendored, so this must
+    # work without the ``emoji`` package (whose absence made it a no-op in prod).
+    assert trace_exporter._emojize(":rotating_light: Infer config") == "🚨 Infer config"
+    assert trace_exporter._emojize(":sparkles: :bug: :tada:") == "✨ 🐛 🎉"
+    # Colons that are not a shortcode are left alone.
+    assert trace_exporter._emojize("Fix: a: b std::vector") == "Fix: a: b std::vector"
+
+
 def test_emojize_is_a_noop_without_shortcodes_or_dependency() -> None:
     assert trace_exporter._emojize("plain title with no codes") == (
         "plain title with no codes"

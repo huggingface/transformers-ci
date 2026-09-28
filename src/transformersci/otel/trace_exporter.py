@@ -69,15 +69,7 @@ from urllib.request import Request, urlopen
 
 from transformersci.otel.pr_search import SEARCH_HTML
 
-try:
-    # Optional: only present with the ``otel`` extra. Used to turn GitHub-style
-    # emoji shortcodes (":rotating_light:") embedded in PR titles and commit
-    # subjects into real Unicode glyphs, since Grafana renders shortcodes
-    # literally. Absent in the dependency-free core, where it degrades to a
-    # no-op (see :func:`_emojize`).
-    import emoji as _emoji
-except ImportError:  # pragma: no cover - exercised only without the otel extra
-    _emoji = None
+from transformersci.emojize import emojize as _emojize
 
 
 DEFAULT_TEMPO_URL = "http://tempo:3200"
@@ -1625,20 +1617,6 @@ def fetch_github_pr_reviews(repository: str, pr: str) -> list[str]:
             seen.add(login)
             logins.append(login)
     return logins
-
-
-def _emojize(text: str) -> str:
-    """Convert GitHub-style emoji shortcodes to Unicode glyphs.
-
-    PR titles and commit subjects come straight from GitHub, which stores
-    aliases like ``:rotating_light:``. Grafana has no shortcode parser and
-    renders them verbatim, so we expand them here — at the source — meaning
-    every panel and all stored history show the real 🚨. No-ops when the
-    optional ``emoji`` dependency is missing or there's no shortcode to expand.
-    """
-    if not text or _emoji is None or ":" not in text:
-        return text
-    return _emoji.emojize(text, language="alias")
 
 
 def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
