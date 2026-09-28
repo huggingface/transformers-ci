@@ -17,16 +17,17 @@
     {
       "id": 1,
       "type": "text",
-      "title": "Runners",
+      "title": "",
+      "transparent": true,
       "gridPos": {
-        "h": 6,
+        "h": 1,
         "w": 24,
         "x": 0,
         "y": 0
       },
       "options": {
-        "mode": "markdown",
-        "content": "Each runner type (GitHub's runner group, the scale set a job lands on) and the hardware a job on it gets. **measured** rows come from the runner itself on every traced job: the CPUs and memory are the job's container share, and the GPUs are the ones it can see. **job log** rows are written by hand from that pool's own logs, for pools no traced job runs on; their CPU is the host's.\n\nFiltered to run `${run_id}`, job `${job}` when opened from a Hardware link.\n\n<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
+        "mode": "html",
+        "content": "<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
       }
     },
     {
@@ -38,16 +39,16 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 14,
+        "h": 20,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 1
       },
-      "description": "One row per runner type. Hardware from ci_runner_hardware_info; use from ci-github-status (followed workflows only).",
+      "description": "Every runner type (the scale set a job runs on) and, when known, the hardware a job on it gets. Source \"measured\" comes from the runner itself; \"job log\" is written by hand from that pool's logs.",
       "targets": [
         {
           "refId": "HW",
-          "expr": "(max by (runner_type, source, cpu_model, vcpus, memory_gib, gpu_vendor, gpu_model, gpu_count, gpu_memory_gib) (last_over_time(ci_runner_hardware_info{runner_type=~\"$runner_type\"}[30d]))) and on (runner_type) ((group by (runner_type) (ci_github_job_runner_info{run_id=~\"$run_id\"} and on (repository, run_id, job_id) ci_github_job_info{test_job=~\"$job\"})) or on (runner_type) (group by (runner_type) (max by (runner_type, source, cpu_model, vcpus, memory_gib, gpu_vendor, gpu_model, gpu_count, gpu_memory_gib) (last_over_time(ci_runner_hardware_info{runner_type=~\"$runner_type\"}[30d]))) and on () (label_replace(label_replace(vector(1), \"v\", \"$run_id$job\", \"\", \"\"), \"u\", \"yes\", \"v\", \"\\\\.\\\\*\\\\.\\\\*\") and on (u) label_replace(vector(1), \"u\", \"yes\", \"\", \"\"))))",
+          "expr": "max by (runner_type, source, cpu_model, vcpus, memory_gib, gpu_vendor, gpu_model, gpu_count, gpu_memory_gib) (last_over_time(ci_runner_hardware_info[30d]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -58,32 +59,8 @@
           "legendFormat": "__auto"
         },
         {
-          "refId": "RUN",
-          "expr": "count by (runner_type) (ci_github_job_runner_info{runner_type=~\"$runner_type\",run_id=~\"$run_id\"} and on (repository, run_id, job_id) (ci_github_job_status == 2) and on (repository, run_id, job_id) ci_github_job_info{test_job=~\"$job\"})",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "format": "table",
-          "instant": true,
-          "range": false,
-          "legendFormat": "__auto"
-        },
-        {
-          "refId": "J24",
-          "expr": "count by (runner_type) (last_over_time(ci_github_job_runner_info{runner_type=~\"$runner_type\",run_id=~\"$run_id\"}[24h]) and on (repository, run_id, job_id) last_over_time(ci_github_job_info{test_job=~\"$job\"}[24h]))",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "format": "table",
-          "instant": true,
-          "range": false,
-          "legendFormat": "__auto"
-        },
-        {
-          "refId": "LAST",
-          "expr": "max by (runner_type) (last_over_time(ci_github_job_started_timestamp_seconds[24h]) * on (repository, run_id, job_id) group_left (runner_type) last_over_time(ci_github_job_runner_info{runner_type=~\"$runner_type\",run_id=~\"$run_id\"}[24h]) and on (repository, run_id, job_id) last_over_time(ci_github_job_info{test_job=~\"$job\"}[24h])) * 1000",
+          "refId": "TYPES",
+          "expr": "group by (runner_type) (last_over_time(ci_github_job_runner_info[30d]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -104,7 +81,8 @@
           "options": {
             "excludeByName": {
               "Time": true,
-              "Value #HW": true
+              "Value #HW": true,
+              "Value #TYPES": true
             },
             "indexByName": {
               "runner_type": 0,
@@ -115,10 +93,7 @@
               "vcpus": 5,
               "memory_gib": 6,
               "cpu_model": 7,
-              "Value #RUN": 8,
-              "Value #J24": 9,
-              "Value #LAST": 10,
-              "source": 11
+              "source": 8
             },
             "renameByName": {
               "runner_type": "Runner type",
@@ -129,9 +104,6 @@
               "vcpus": "vCPUs",
               "memory_gib": "RAM GiB",
               "cpu_model": "CPU",
-              "Value #RUN": "Running now",
-              "Value #J24": "Jobs (24h)",
-              "Value #LAST": "Last job started",
               "source": "Source"
             }
           }
@@ -158,22 +130,6 @@
           "noValue": "—"
         },
         "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Last job started"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "dateTimeFromNow"
-              },
-              {
-                "id": "custom.width",
-                "value": 130
-              }
-            ]
-          },
           {
             "matcher": {
               "id": "byName",
@@ -260,31 +216,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 250
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Running now"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 100
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Jobs (24h)"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 85
+                "value": 330
               }
             ]
           },
@@ -327,77 +259,7 @@
     "runners"
   ],
   "templating": {
-    "list": [
-      {
-        "name": "runner_type",
-        "label": "Runner type",
-        "type": "query",
-        "datasource": {
-          "type": "prometheus",
-          "uid": "prometheus"
-        },
-        "definition": "label_values(ci_github_job_runner_info, runner_type)",
-        "query": {
-          "qryType": 1,
-          "query": "label_values(ci_github_job_runner_info, runner_type)",
-          "refId": "PrometheusVariableQueryEditor-VariableQuery"
-        },
-        "includeAll": true,
-        "multi": true,
-        "allValue": ".*",
-        "current": {
-          "text": [
-            "All"
-          ],
-          "value": [
-            "$__all"
-          ]
-        },
-        "refresh": 2,
-        "sort": 1,
-        "hide": 0,
-        "options": [],
-        "regex": ""
-      },
-      {
-        "name": "run_id",
-        "label": "Run",
-        "type": "textbox",
-        "description": "Only runner types this workflow run used (.* = any).",
-        "current": {
-          "text": ".*",
-          "value": ".*"
-        },
-        "options": [
-          {
-            "selected": true,
-            "text": ".*",
-            "value": ".*"
-          }
-        ],
-        "query": ".*",
-        "hide": 0
-      },
-      {
-        "name": "job",
-        "label": "Job",
-        "type": "textbox",
-        "description": "Only runner types this test job used (.* = any).",
-        "current": {
-          "text": ".*",
-          "value": ".*"
-        },
-        "options": [
-          {
-            "selected": true,
-            "text": ".*",
-            "value": ".*"
-          }
-        ],
-        "query": ".*",
-        "hide": 0
-      }
-    ]
+    "list": []
   },
   "time": {
     "from": "now-24h",

@@ -364,8 +364,8 @@
                 "id": "links",
                 "value": [
                   {
-                    "title": "Runners this job used",
-                    "url": "/d/ci-runners/runners?var-run_id=${latest_run_id}&var-job=${__data.fields.Job}"
+                    "title": "Runners",
+                    "url": "/d/ci-runners/runners"
                   }
                 ]
               }
