@@ -19,7 +19,7 @@
       "type": "text",
       "title": "Runners",
       "gridPos": {
-        "h": 4,
+        "h": 6,
         "w": 24,
         "x": 0,
         "y": 0
@@ -41,7 +41,7 @@
         "h": 14,
         "w": 24,
         "x": 0,
-        "y": 4
+        "y": 6
       },
       "description": "One row per runner type. Hardware from ci_runner_hardware_info; use from ci-github-status (followed workflows only).",
       "targets": [
@@ -125,9 +125,9 @@
               "gpu_vendor": "GPU vendor",
               "gpu_model": "GPU",
               "gpu_count": "GPUs",
-              "gpu_memory_gib": "GPU memory (GiB)",
+              "gpu_memory_gib": "GPU GiB",
               "vcpus": "vCPUs",
-              "memory_gib": "Memory (GiB)",
+              "memory_gib": "RAM GiB",
               "cpu_model": "CPU",
               "Value #RUN": "Running now",
               "Value #J24": "Jobs (24h)",
@@ -167,6 +167,10 @@
               {
                 "id": "unit",
                 "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.width",
+                "value": 130
               }
             ]
           },
@@ -193,6 +197,10 @@
                     }
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 90
               }
             ]
           },
@@ -204,7 +212,103 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 230
+                "value": 180
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GPU"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 165
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GPUs"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 55
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "vCPUs"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 65
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 250
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Running now"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Jobs (24h)"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 85
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "GPU GiB"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 75
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RAM GiB"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 80
               }
             ]
           }
