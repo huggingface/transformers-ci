@@ -4151,7 +4151,7 @@ def test_pr_badge_uses_payload_fast_path_without_querying_tempo(monkeypatch) -> 
     payload = "\n".join(
         trace_exporter.extract_run_rollup_metrics(workflow_split_across_three_jobs())
     )
-    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: payload)
+    monkeypatch.setattr(trace_exporter, "_badge_payload_text", lambda: payload)
 
     def _must_not_search(*args, **kwargs):
         raise AssertionError("Tempo search must not run when the payload has the PR")
@@ -4170,7 +4170,9 @@ def test_pr_badge_falls_back_to_tempo_when_payload_has_no_pr(monkeypatch) -> Non
     falls back to a per-PR Tempo search and still reports its latest run."""
     trace_exporter._pr_summary_cache.clear()
     monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
-    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")  # payload miss
+    monkeypatch.setattr(
+        trace_exporter, "_badge_payload_text", lambda: ""
+    )  # payload miss
 
     traces = workflow_split_across_three_jobs()
     by_id = {trace["traceID"]: trace for trace in traces}
@@ -4195,7 +4197,7 @@ def test_pr_badge_scopes_fallback_search_to_requested_pr(monkeypatch) -> None:
     an empty result renders a graceful 'no data' badge rather than erroring."""
     trace_exporter._pr_summary_cache.clear()
     monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
-    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
+    monkeypatch.setattr(trace_exporter, "_badge_payload_text", lambda: "")
     captured: dict[str, str] = {}
 
     def _search(base_url, service_name, start, end, limit, extra_selector=""):
@@ -4214,7 +4216,7 @@ def test_pr_fallback_result_is_memoized_per_pr(monkeypatch) -> None:
     re-search Tempo on every hit."""
     trace_exporter._pr_summary_cache.clear()
     monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
-    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
+    monkeypatch.setattr(trace_exporter, "_badge_payload_text", lambda: "")
     calls = {"n": 0}
 
     def _search(*a, **k):
@@ -4283,7 +4285,7 @@ def test_pr_badge_open_passing_run_is_green(monkeypatch) -> None:
     trace_exporter._pr_summary_cache.clear()
     monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
     monkeypatch.setattr(
-        trace_exporter, "render_metrics", lambda: _passing_pr_payload("4321", "1")
+        trace_exporter, "_badge_payload_text", lambda: _passing_pr_payload("4321", "1")
     )
     svg = trace_exporter.render_pr_badge_svg("4321").decode()
     assert 'fill="green"' in svg
@@ -4295,7 +4297,7 @@ def test_pr_badge_merged_passing_run_is_merged_blue(monkeypatch) -> None:
     trace_exporter._pr_summary_cache.clear()
     monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
     monkeypatch.setattr(
-        trace_exporter, "render_metrics", lambda: _passing_pr_payload("4321", "2")
+        trace_exporter, "_badge_payload_text", lambda: _passing_pr_payload("4321", "2")
     )
     svg = trace_exporter.render_pr_badge_svg("4321").decode()
     assert f'fill="#{trace_exporter.BADGE_MERGED_COLOR}"' in svg
@@ -4307,7 +4309,7 @@ def test_pr_badge_closed_unmerged_passing_run_is_grey(monkeypatch) -> None:
     trace_exporter._pr_summary_cache.clear()
     monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
     monkeypatch.setattr(
-        trace_exporter, "render_metrics", lambda: _passing_pr_payload("4321", "0")
+        trace_exporter, "_badge_payload_text", lambda: _passing_pr_payload("4321", "0")
     )
     svg = trace_exporter.render_pr_badge_svg("4321").decode()
     assert f'fill="#{trace_exporter.BADGE_CLOSED_COLOR}"' in svg
@@ -4320,7 +4322,7 @@ def test_pr_badge_unknown_state_passing_run_stays_green(monkeypatch) -> None:
     trace_exporter._pr_summary_cache.clear()
     monkeypatch.delenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", raising=False)
     monkeypatch.setattr(
-        trace_exporter, "render_metrics", lambda: _passing_pr_payload("4321", None)
+        trace_exporter, "_badge_payload_text", lambda: _passing_pr_payload("4321", None)
     )
     svg = trace_exporter.render_pr_badge_svg("4321").decode()
     assert 'fill="green"' in svg
@@ -4332,7 +4334,7 @@ def test_pr_badge_uses_prometheus_rollups_before_tempo(monkeypatch) -> None:
     expensive Tempo search+full-trace fetch fallback."""
     trace_exporter._pr_summary_cache.clear()
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
-    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
+    monkeypatch.setattr(trace_exporter, "_badge_payload_text", lambda: "")
     captured: dict[str, str] = {}
 
     def _query(url, **_kwargs):
@@ -4380,7 +4382,7 @@ def test_pr_badge_prefers_prometheus_job_rollups_for_latest_run(monkeypatch) -> 
     badge should not underreport when run-level and job-level rollups diverge."""
     trace_exporter._pr_summary_cache.clear()
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
-    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
+    monkeypatch.setattr(trace_exporter, "_badge_payload_text", lambda: "")
 
     def _query(url, **_kwargs):
         labels = {
@@ -4451,7 +4453,7 @@ def test_pr_badge_counts_each_hardware_of_a_job_separately(monkeypatch) -> None:
     """
     trace_exporter._pr_summary_cache.clear()
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
-    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: "")
+    monkeypatch.setattr(trace_exporter, "_badge_payload_text", lambda: "")
 
     def _query(url, **_kwargs):
         labels = {
@@ -4559,7 +4561,7 @@ def test_pr_badge_reports_each_ci_stream_separately(monkeypatch) -> None:
     """One PR, one payload, two badges: each reads only its own stream."""
     trace_exporter._pr_summary_cache.clear()
     payload = "\n".join(_pr_ci_run_lines() + _run_slow_run_lines())
-    monkeypatch.setattr(trace_exporter, "render_metrics", lambda: payload)
+    monkeypatch.setattr(trace_exporter, "_badge_payload_text", lambda: payload)
 
     cpu = trace_exporter.render_pr_badge_svg(
         "48171", trace_exporter.BADGE_EVENT_PR_CI
@@ -4596,7 +4598,7 @@ def test_pr_badge_run_slow_reads_not_run_when_the_pr_has_none(monkeypatch) -> No
     # No Prometheus and no traces: the run-slow stream is genuinely empty.
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "")
     monkeypatch.setattr(
-        trace_exporter, "render_metrics", lambda: "\n".join(_pr_ci_run_lines())
+        trace_exporter, "_badge_payload_text", lambda: "\n".join(_pr_ci_run_lines())
     )
     monkeypatch.setattr(trace_exporter, "search_trace_ids", lambda *a, **k: [])
 
@@ -5866,3 +5868,40 @@ def test_extract_run_runner_metrics_one_series_per_run_and_type() -> None:
         'pytest_run_runner_info{pr="4321",run_id="1:1",ci_event="pr-comment",'
         'test_job="tests_torch",runner_type="aws-g5-4xlarge-cache"} 1',
     ]
+
+
+def test_badge_payload_is_parsed_once_per_publish(monkeypatch, tmp_path) -> None:
+    # /badge/pr used to read + splitlines() the whole payload on every lookup;
+    # a burst of badge views OOMKilled the pod (2026-09-28).
+    payload_file = tmp_path / "payload.prom"
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PAYLOAD_FILE", str(payload_file))
+    monkeypatch.setattr(trace_exporter, "_badge_payload_cache", None)
+    payload_file.write_text(
+        _passing_pr_payload("4321", "2")
+        + "\n"
+        + "\n".join(f'pytest_test_duration_seconds{{n="{i}"}} 1' for i in range(500))
+        + "\n"
+    )
+    opens = []
+    real_open = open
+
+    def counting_open(path, *args, **kwargs):
+        if str(path) == str(payload_file):
+            opens.append(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", counting_open)
+    text = trace_exporter._badge_payload_text()
+    # Only the badge families are kept.
+    assert "pytest_test_duration_seconds" not in text
+    assert "pytest_pr_state" in text and "pytest_run_total_tests" in text
+    for _ in range(5):
+        assert trace_exporter._latest_pr_run_summary("4321") is not None
+        assert trace_exporter._pr_state_for_badge("4321") == "merged"
+    assert len(opens) == 1
+    # A new publish (a different file at the path) is picked up.
+    replacement = tmp_path / "next.prom"
+    replacement.write_text(_passing_pr_payload("4321", "0"))
+    os.replace(replacement, payload_file)
+    assert trace_exporter._pr_state_for_badge("4321") == "closed"
+    assert len(opens) == 2
