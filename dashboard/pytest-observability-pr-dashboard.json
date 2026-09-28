@@ -52,14 +52,14 @@
     {
       "description": "Failing tests of the latest run, grouped by test name by default (switch with Group by, top of the panel), largest group first. Big groups start collapsed so the smaller, unrelated failures stay visible.",
       "gridPos": {
-        "h": 12,
-        "w": 24,
+        "h": 14,
+        "w": 12,
         "x": 0,
         "y": 5
       },
       "id": 14,
       "options": {
-        "content": "<iframe title=\"failing tests\" style=\"width:100%;height:392px;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${latest_run_id}')+'&status=ERROR&limit=200'+'&group=test'+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>",
+        "content": "<iframe title=\"failing tests\" style=\"width:100%;height:470px;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${latest_run_id}')+'&status=ERROR&limit=200'+'&group=test'+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>",
         "mode": "html"
       },
       "pluginVersion": "12.0.0",
@@ -321,10 +321,10 @@
         ]
       },
       "gridPos": {
-        "h": 12,
-        "w": 24,
-        "x": 0,
-        "y": 17
+        "h": 14,
+        "w": 12,
+        "x": 12,
+        "y": 5
       },
       "id": 13,
       "links": [
@@ -755,7 +755,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 29
+        "y": 19
       },
       "id": 5,
       "options": {
