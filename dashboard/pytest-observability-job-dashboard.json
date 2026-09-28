@@ -47,7 +47,7 @@
       },
       "id": 20,
       "options": {
-        "content": "### `${job}`\n\n**Run:** [${run_id}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id})\n\n**PR:** [${pr}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr})",
+        "content": "### `${job}`\n\n**Run:** [${run_id}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id})\n\n**PR:** [${pr}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr})\n\n<style>header [data-testid=\"wrapper\"]:nth-child(2), header button[aria-label=\"Search or jump to...\"] { visibility: hidden !important; }</style>",
         "mode": "markdown"
       },
       "pluginVersion": "12.0.0",

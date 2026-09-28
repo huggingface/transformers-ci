@@ -47,7 +47,7 @@
       },
       "id": 7,
       "options": {
-        "content": "### Run `${run_id:raw}`\n\n<img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"16\" height=\"16\" alt=\"GH\"/> PR [#${pr:raw}](${run_pr_url:raw}) | Commit [${run_commit:raw}](${run_commit_url:raw}) | SHA `${run_commit_sha:raw}`",
+        "content": "### Run `${run_id:raw}`\n\n<img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"16\" height=\"16\" alt=\"GH\"/> PR [#${pr:raw}](${run_pr_url:raw}) | Commit [${run_commit:raw}](${run_commit_url:raw}) | SHA `${run_commit_sha:raw}`\n\n<style>header [data-testid=\"wrapper\"]:nth-child(2), header button[aria-label=\"Search or jump to...\"] { visibility: hidden !important; }</style>",
         "mode": "markdown"
       },
       "pluginVersion": "12.0.0",
