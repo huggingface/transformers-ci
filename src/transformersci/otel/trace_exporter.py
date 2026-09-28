@@ -6384,6 +6384,7 @@ def render_run_html(
         "border-color:rgba(153,153,165,.3);text-decoration:none}"
         ".btn.on{position:relative;z-index:1;background:#3d71d9;color:#fff;"
         "border-color:#3d71d9}"
+        ".done{color:#8e9197}"
         ".live{color:#73bf69;animation:livepulse 2s ease-in-out infinite}"
         ".live .dot{display:inline-block;animation:livedot 1s ease-in-out infinite}"
         "@keyframes livepulse{50%{opacity:.55}}"
@@ -6409,11 +6410,19 @@ def render_run_html(
         f'pytest-observability-run?orgId=1&var-run_id={quote(run_id, safe="")}">'
         f"<code>{esc(run_id)}</code></a>"
     )
-    live_note = (
-        "<span class='live'><span class='dot'>●</span> live, updates every 30s</span> · "
-        if live
-        else ""
-    )
+    # The run's state, next to its id: live while GitHub reports it in flight,
+    # finished once it is not and it has recorded tests. With no tests there is
+    # nothing to call finished (a run that has not sent its first trace yet
+    # reads the same), so it says nothing.
+    if live:
+        live_note = (
+            "<span class='live'><span class='dot'>●</span> live, "
+            "updates every 30s</span> · "
+        )
+    elif job_rows:
+        live_note = "<span class='done'>✓ finished</span> · "
+    else:
+        live_note = ""
     if query is not None:
         out.append(
             _render_run_toolbar(
