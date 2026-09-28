@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import re
 
+from ..emojize import emojize
 from .reducer import COMPLETED, status_rank
 
 # Events whose runs the exporter files under their branch rather than a PR.
@@ -200,7 +201,7 @@ def render(
         # group_left(), which a relabelled series overlapping the old one breaks.
         if run.get("event") in _PR_EVENTS and pr.isdigit() and run.get("display_title"):
             families["ci_github_run_title_info"].add(
-                {**identity, "pr": pr, "title": run["display_title"]}, 1
+                {**identity, "pr": pr, "title": emojize(run["display_title"])}, 1
             )
         _progress(families, "run", identity, run, run.get("updated_at"))
 

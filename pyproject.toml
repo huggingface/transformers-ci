@@ -15,7 +15,6 @@ agentic = [
   "huggingface_hub>=0.25",
 ]
 otel = [
-  "emoji",
   "opentelemetry-api",
   "opentelemetry-exporter-otlp",
   "opentelemetry-sdk",
@@ -44,7 +43,6 @@ reviewers = [
   "PyYAML",
 ]
 test = [
-  "emoji",
   "huggingface_hub>=0.25",
   "psutil",
   "PyGithub",
@@ -52,7 +50,6 @@ test = [
   "PyYAML",
 ]
 dev = [
-  "emoji",
   "opentelemetry-api",
   "opentelemetry-exporter-otlp",
   "opentelemetry-sdk",

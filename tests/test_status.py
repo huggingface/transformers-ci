@@ -263,6 +263,17 @@ def test_a_pr_run_publishes_its_title_before_any_trace() -> None:
     ]
 
 
+def test_a_pr_title_expands_emoji_shortcodes() -> None:
+    # GitHub's display_title keeps what the author typed; Grafana shows it as-is.
+    update = webhook.parse_delivery(
+        "workflow_run",
+        run_payload(display_title=":rotating_light: Infer config fields"),
+        FILTERS,
+    )
+    lines = _title_series(metrics.render([merge_run(None, update)], [], service={}))
+    assert lines and 'title="🚨 Infer config fields"' in lines[0]
+
+
 def test_a_later_event_without_a_title_keeps_it() -> None:
     first = merge_run(None, run("queued", display_title="Fix the tokenizer"))
     later = merge_run(first, run("in_progress"))
