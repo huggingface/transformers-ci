@@ -797,8 +797,8 @@
                 "id": "links",
                 "value": [
                   {
-                    "title": "Runners this run used",
-                    "url": "/d/ci-runners/runners?var-run_id=${__data.fields.run_id}"
+                    "title": "Runners",
+                    "url": "/d/ci-runners/runners"
                   }
                 ]
               }
