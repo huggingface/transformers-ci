@@ -767,6 +767,11 @@ def test_render_run_html_live_flag_drives_the_poller() -> None:
     ok_only = [r for r in rows if r["status_code"] == "OK"]
     empty = trace_exporter.render_run_html("1:1", ok_only, status="ERROR", live=True)
     assert "data-live='1'" in empty and "fetch(location.href" in empty
+    # ... and shows the same live marker and run link as the populated views.
+    assert "<span class='dot'>●</span> live, updates every 30s</span> · run <a" in empty
+    assert "● live" not in trace_exporter.render_run_html(
+        "1:1", ok_only, status="ERROR"
+    )
 
 
 def test_extract_run_active_metrics_records_active_run_ids(

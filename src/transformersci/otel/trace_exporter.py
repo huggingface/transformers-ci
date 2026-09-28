@@ -6444,7 +6444,10 @@ def render_run_html(
                 "No tests found for this run in the exporter's recent window."
                 + tempo_link
             )
-        out.append(f"<p class='meta'>{msg}</p>")
+        # Same live marker and run link as the populated views: an in-flight
+        # run with no failures (yet) is exactly when "live" matters most.
+        run_note = f" · {live_note}run {run_link}" if run_id else ""
+        out.append(f"<p class='meta'>{msg}{run_note}</p>")
         out.append(tail)
         return "".join(out)
 
