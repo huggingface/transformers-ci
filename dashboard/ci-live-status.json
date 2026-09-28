@@ -96,7 +96,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "**Shadow mode.** Run and job status straight from GitHub's `workflow_run` / `workflow_job` webhooks (`ci-github-status`), repaired every minute from the Actions API. Test counts are joined from the trace pipeline where a job emits telemetry \u2014 *Awaiting test details* means GitHub knows the job but no test series exists yet. **STALE** means status has not been reconciled with GitHub recently: treat it as possibly out of date. Pin a run with `?var-run=<id>:<attempt>`, a PR with `?var-pr=<number>`."
+        "content": "**Shadow mode.** Run and job status straight from GitHub's `workflow_run` / `workflow_job` webhooks (`ci-github-status`), repaired every minute from the Actions API. Test counts are joined from the trace pipeline where a job emits telemetry \u2014 *Awaiting test details* means GitHub knows the job but no test series exists yet. **STALE** means status has not been reconciled with GitHub recently: treat it as possibly out of date. Pin a run with `?var-run=<id>:<attempt>`, a PR with `?var-pr=<number>`.\n\n<style>header [data-testid=\"wrapper\"]:nth-child(2), header button[aria-label=\"Search or jump to...\"] { visibility: hidden !important; }</style>"
       }
     },
     {

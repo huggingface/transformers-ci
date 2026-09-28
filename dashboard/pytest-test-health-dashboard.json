@@ -105,7 +105,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 23,
         "x": 0,
         "y": 0
       },
@@ -141,6 +141,27 @@
       ],
       "title": "GPU failed tests per commit over time",
       "type": "timeseries"
+    },
+    {
+      "gridPos": {
+        "h": 1,
+        "w": 1,
+        "x": 23,
+        "y": 0
+      },
+      "id": 7,
+      "options": {
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "<style>header [data-testid=\"wrapper\"]:nth-child(2), header button[aria-label=\"Search or jump to...\"] { visibility: hidden !important; }</style>",
+        "mode": "html"
+      },
+      "title": "",
+      "transparent": true,
+      "type": "text"
     },
     {
       "datasource": {

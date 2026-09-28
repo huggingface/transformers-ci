@@ -26,7 +26,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "### serge agent sessions\nHow serge's LLM loop actually spends a job. serge's own store keeps only its last **25 jobs** (~2 days) \u2014 these series are the durable copy, so ask for a wide time range. A gap means jobs aged out of serge before a scrape saw them, not that serge was idle."
+        "content": "### serge agent sessions\nHow serge's LLM loop actually spends a job. serge's own store keeps only its last **25 jobs** (~2 days) \u2014 these series are the durable copy, so ask for a wide time range. A gap means jobs aged out of serge before a scrape saw them, not that serge was idle.\n\n<style>header [data-testid=\"wrapper\"]:nth-child(2), header button[aria-label=\"Search or jump to...\"] { visibility: hidden !important; }</style>"
       }
     },
     {

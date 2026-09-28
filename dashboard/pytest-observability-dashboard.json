@@ -50,6 +50,281 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "description": "PRs from the last 90 days whose title, number or author matches the Find a PR box. Up to 50, most recent first.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "noValue": "Type a PR number, words from its title, or an author in the Find a PR box above.",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "PR"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View PR",
+                    "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${__data.fields.PR}",
+                    "targetBlank": false
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Title"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View PR",
+                    "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${__data.fields.PR}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Author"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last seen"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.width",
+                "value": 140
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "State"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "closed",
+                        "color": "#808080",
+                        "index": 2
+                      },
+                      "1": {
+                        "text": "open",
+                        "color": "green",
+                        "index": 0
+                      },
+                      "2": {
+                        "text": "merged",
+                        "color": "#1f6feb",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 72
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 23,
+        "x": 0,
+        "y": 0
+      },
+      "id": 12,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Last seen"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "topk(50, topk by (pr) (1, max by (pr, title) (max_over_time(timestamp(pytest_pr_info{title!=\"\"})[90d:1h])) or on (pr) max by (pr, title) (max_over_time(timestamp(ci_github_run_title_info{title!=\"\"})[90d:1h]))) and on (pr) (group by (pr) (last_over_time(pytest_pr_info{title=~\"(?i).*\\\\Q$q\\\\E.*\"}[90d]) or last_over_time(ci_github_run_title_info{title=~\"(?i).*\\\\Q$q\\\\E.*\"}[90d]) or last_over_time(pytest_pr_info{pr=~\"\\\\Q$q\\\\E.*\"}[90d]) or last_over_time(ci_github_run_title_info{pr=~\"\\\\Q$q\\\\E.*\"}[90d]) or last_over_time(pytest_pr_info{author=~\"(?i).*\\\\Q$q\\\\E.*\"}[90d])) and on () (label_replace(vector(1), \"q\", \"$q\", \"\", \"\") unless on (q) vector(1)))) * 1000",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Title"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (pr, author) (last_over_time(pytest_pr_info{author!=\"\"}[90d])) and on (pr) (topk(50, topk by (pr) (1, max by (pr, title) (max_over_time(timestamp(pytest_pr_info{title!=\"\"})[90d:1h])) or on (pr) max by (pr, title) (max_over_time(timestamp(ci_github_run_title_info{title!=\"\"})[90d:1h]))) and on (pr) (group by (pr) (last_over_time(pytest_pr_info{title=~\"(?i).*\\\\Q$q\\\\E.*\"}[90d]) or last_over_time(ci_github_run_title_info{title=~\"(?i).*\\\\Q$q\\\\E.*\"}[90d]) or last_over_time(pytest_pr_info{pr=~\"\\\\Q$q\\\\E.*\"}[90d]) or last_over_time(ci_github_run_title_info{pr=~\"\\\\Q$q\\\\E.*\"}[90d]) or last_over_time(pytest_pr_info{author=~\"(?i).*\\\\Q$q\\\\E.*\"}[90d])) and on () (label_replace(vector(1), \"q\", \"$q\", \"\", \"\") unless on (q) vector(1)))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Author"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (pr) (last_over_time(pytest_pr_state[90d])) and on (pr) (topk(50, topk by (pr) (1, max by (pr, title) (max_over_time(timestamp(pytest_pr_info{title!=\"\"})[90d:1h])) or on (pr) max by (pr, title) (max_over_time(timestamp(ci_github_run_title_info{title!=\"\"})[90d:1h]))) and on (pr) (group by (pr) (last_over_time(pytest_pr_info{title=~\"(?i).*\\\\Q$q\\\\E.*\"}[90d]) or last_over_time(ci_github_run_title_info{title=~\"(?i).*\\\\Q$q\\\\E.*\"}[90d]) or last_over_time(pytest_pr_info{pr=~\"\\\\Q$q\\\\E.*\"}[90d]) or last_over_time(ci_github_run_title_info{pr=~\"\\\\Q$q\\\\E.*\"}[90d]) or last_over_time(pytest_pr_info{author=~\"(?i).*\\\\Q$q\\\\E.*\"}[90d])) and on () (label_replace(vector(1), \"q\", \"$q\", \"\", \"\") unless on (q) vector(1)))))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "State"
+        }
+      ],
+      "title": "PR search",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value #Author": true
+            },
+            "indexByName": {
+              "pr": 0,
+              "title": 1,
+              "author": 2,
+              "Value #State": 3,
+              "Value #Title": 4
+            },
+            "renameByName": {
+              "pr": "PR",
+              "title": "Title",
+              "author": "Author",
+              "Value #State": "State",
+              "Value #Title": "Last seen"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Last seen",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "gridPos": {
+        "h": 1,
+        "w": 1,
+        "x": 23,
+        "y": 0
+      },
+      "id": 13,
+      "options": {
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "<style>header [data-testid=\"wrapper\"]:nth-child(2), header button[aria-label=\"Search or jump to...\"] { visibility: hidden !important; }</style>",
+        "mode": "html"
+      },
+      "title": "",
+      "transparent": true,
+      "type": "text"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -309,7 +584,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 8
       },
       "id": 10,
       "options": {
@@ -796,7 +1071,7 @@
         "h": 13,
         "w": 24,
         "x": 0,
-        "y": 13
+        "y": 21
       },
       "id": 11,
       "options": {
@@ -984,6 +1259,25 @@
   ],
   "templating": {
     "list": [
+      {
+        "name": "q",
+        "label": "Find a PR",
+        "type": "textbox",
+        "hide": 0,
+        "description": "PR number, words from its title, or author",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ],
+        "query": ""
+      },
       {
         "name": "top_prs",
         "label": "Last 10 PRs",
