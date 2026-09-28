@@ -33,6 +33,12 @@ a.row.sel,a.row:hover{background:var(--hover)}
 .meta{grid-column:2;color:var(--dim);font-size:12px}
 .st-open{color:#73bf69}.st-merged{color:#8f7ee7}.st-closed{color:var(--dim)}
 .msg{padding:8px 10px;color:var(--dim)}
+.sk{padding:8px 10px;border-bottom:1px solid var(--line)}
+.sk:last-child{border-bottom:0}
+.sk i{display:block;height:10px;margin:4px 0;border-radius:3px;background:linear-gradient(90deg,var(--hover) 25%,var(--line) 50%,var(--hover) 75%);
+ background-size:200% 100%;animation:shimmer 1.2s linear infinite}
+.sk i+i{width:40%;height:8px}
+@keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
 </style></head>
 <body>
 <input id="box" type="search" autocomplete="off" spellcheck="false"
@@ -41,7 +47,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
 <script>
 (function () {
   var PR_URL = "__PR_URL__";
-  var WIDTH = 460, ROW = 49, MAXH = 396;
+  var WIDTH = 460, MAXH = 396, MIN_CHARS = 3;
   var fe = window.frameElement, pd = parent.document;
   var box = document.getElementById("box"), list = document.getElementById("list");
   var rows = [], sel = -1, seq = 0, timer = null;
@@ -97,16 +103,33 @@ a.row.sel,a.row:hover{background:var(--hover)}
       'last_over_time(ci_github_run_title_info{pr=~"' + n + '.*"}[90d])');
     return "group by (pr) (" + parts.join(" or ") + ")";
   }
-  function queries(q) {
-    var m = q.split(/\\s+/).filter(Boolean).map(matcher).join(" and on (pr) ");
-    var latest = 'topk by (pr) (1, max by (pr, title) (max_over_time(timestamp(pytest_pr_info{title!=""})[90d:1h]))' +
-      ' or on (pr) max by (pr, title) (max_over_time(timestamp(ci_github_run_title_info{title!=""})[90d:1h])))';
-    var hits = "topk(20, " + latest + " and on (pr) (" + m + "))";
+  // Two steps: the matchers are cheap and give the PR numbers; the 90d subquery
+  // for each PR's latest title is not, so it only runs over those PRs.
+  function matches(q) {
+    return q.split(/\\s+/).filter(Boolean).map(matcher).join(" and on (pr) ");
+  }
+  function details(prs) {
+    var sel = 'pr=~"' + prs.join("|") + '"';
     return {
-      hits: hits,
-      author: 'max by (pr, author) (last_over_time(pytest_pr_info{author!=""}[90d])) and on (pr) (' + hits + ")",
-      state: "max by (pr) (last_over_time(pytest_pr_state[90d])) and on (pr) (" + hits + ")"
+      hits: 'topk by (pr) (1, max by (pr, title) (max_over_time(timestamp(pytest_pr_info{' + sel + ',title!=""})[90d:1h]))' +
+        ' or on (pr) max by (pr, title) (max_over_time(timestamp(ci_github_run_title_info{' + sel + ',title!=""})[90d:1h])))',
+      author: 'max by (pr, author) (last_over_time(pytest_pr_info{' + sel + ',author!=""}[90d]))',
+      state: "max by (pr) (last_over_time(pytest_pr_state{" + sel + "}[90d]))"
     };
+  }
+  function query(exprs) {
+    var ds = {type: "prometheus", uid: "prometheus"};
+    var body = {from: "now-5m", to: "now", queries: Object.keys(exprs).map(function (k) {
+      return {refId: k, datasource: ds, expr: exprs[k], instant: true, range: false, maxDataPoints: 1, intervalMs: 60000};
+    })};
+    return fetch("/api/ds/query", {method: "POST", credentials: "same-origin",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var res = j.results || {};
+        Object.keys(res).forEach(function (k) { if (res[k].error) throw new Error(res[k].error); });
+        return res;
+      });
   }
 
   function series(result) {
@@ -133,6 +156,16 @@ a.row.sel,a.row:hover{background:var(--hover)}
     return String(s).replace(/[&<>"]/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]; });
   }
 
+  // Placeholder rows while a query is in flight and nothing has come back yet.
+  function loading() {
+    var widths = [72, 58, 66];
+    list.innerHTML = widths.map(function (w) {
+      return '<div class="sk"><i style="width:' + w + '%"></i><i></i></div>';
+    }).join("");
+    list.classList.add("open");
+    grow();
+  }
+
   function render(msg) {
     if (msg) {
       list.innerHTML = '<div class="msg">' + esc(msg) + "</div>";
@@ -152,27 +185,28 @@ a.row.sel,a.row:hover{background:var(--hover)}
 
   function search() {
     var q = box.value.trim(), mine = ++seq;
-    if (!q) { rows = []; close(); return; }
-    var qs = queries(q), ds = {type: "prometheus", uid: "prometheus"};
-    var body = {from: "now-5m", to: "now", queries: ["hits", "author", "state"].map(function (k) {
-      return {refId: k, datasource: ds, expr: qs[k], instant: true, range: false, maxDataPoints: 1, intervalMs: 60000};
-    })};
-    fetch("/api/ds/query", {method: "POST", credentials: "same-origin",
-      headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
-      .then(function (r) { return r.json(); })
-      .then(function (j) {
-        if (mine !== seq) return;
-        var res = j.results || {}, author = {}, state = {};
-        if (res.hits && res.hits.error) { render("Search failed: " + res.hits.error); return; }
+    if (q.length < MIN_CHARS) { rows = []; close(); return; }
+    query({m: matches(q)})
+      .then(function (res) {
+        if (mine !== seq) return null;
+        // Newest PR numbers first, capped so the second query stays small.
+        var prs = series(res.m).map(function (s) { return s.labels.pr; })
+          .sort(function (a, b) { return b - a; }).slice(0, 200);
+        if (!prs.length) return {};
+        return query(details(prs));
+      })
+      .then(function (res) {
+        if (!res || mine !== seq) return;
+        var author = {}, state = {};
         series(res.author).forEach(function (s) { author[s.labels.pr] = s.labels.author; });
         series(res.state).forEach(function (s) { state[s.labels.pr] = ["closed", "open", "merged"][s.value]; });
         rows = series(res.hits).map(function (s) {
           return {pr: s.labels.pr, title: s.labels.title, seen: s.value, author: author[s.labels.pr], state: state[s.labels.pr]};
-        }).sort(function (a, b) { return b.seen - a.seen; });
+        }).sort(function (a, b) { return b.seen - a.seen; }).slice(0, 20);
         sel = rows.length ? 0 : -1;
         render(rows.length ? "" : "No PR in the last 90 days matches.");
       })
-      .catch(function (e) { if (mine === seq) render("Search failed: " + e); });
+      .catch(function (e) { if (mine === seq) { rows = []; render("Search failed: " + e.message); } });
   }
 
   function go(r, newTab) {
@@ -180,7 +214,13 @@ a.row.sel,a.row:hover{background:var(--hover)}
     if (newTab) parent.open(url, "_blank"); else parent.location.assign(url);
   }
 
-  box.addEventListener("input", function () { clearTimeout(timer); timer = setTimeout(search, 200); });
+  box.addEventListener("input", function () {
+    clearTimeout(timer);
+    rows = [];
+    if (box.value.trim().length < MIN_CHARS) { seq++; close(); return; }
+    loading();
+    timer = setTimeout(search, 200);
+  });
   box.addEventListener("focus", function () { if (box.value.trim() && rows.length) render(); });
   box.addEventListener("keydown", function (e) {
     if (e.key === "Escape") { box.blur(); close(); return; }
