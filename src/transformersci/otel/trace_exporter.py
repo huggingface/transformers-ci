@@ -4961,6 +4961,63 @@ def render_metrics() -> str:
         return _WARMING_PAYLOAD
 
 
+# The only payload families the badge/summary endpoints read.
+_BADGE_METRIC_PREFIXES = tuple(
+    f"{name}{sep}"
+    for name in (
+        "pytest_run_start_time_seconds",
+        "pytest_run_end_time_seconds",
+        "pytest_run_total_tests",
+        "pytest_run_failed_tests",
+        "pytest_run_duration_seconds",
+        "pytest_run_job_count",
+        "pytest_pr_state",
+    )
+    for sep in ("{", " ")
+)
+_badge_payload_lock = threading.Lock()
+_badge_payload_cache: tuple[tuple[int, int, int], str] | None = None
+
+
+def _badge_payload_text() -> str:
+    """The badge families of the published payload, parsed once per publish.
+
+    Every /badge/pr and /summary/pr request used to read the whole payload
+    (~35 MB) into one string and splitlines() it, once per lookup: hundreds of
+    MB of transient objects per request, with requests on their own threads.
+    A burst of badge views on a PR page stacked those on a heap already near
+    its limit and got the pod OOMKilled (2026-09-28). This streams the file once
+    per publish, keeps only the lines the badges parse, and serves every
+    request from that small text; the lock makes a burst share one build.
+    """
+    global _badge_payload_cache
+    path = _payload_path()
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return _WARMING_PAYLOAD
+    key = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+    cached = _badge_payload_cache
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    with _badge_payload_lock:
+        cached = _badge_payload_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        try:
+            with open(path, encoding="utf-8") as handle:
+                # Pin the inode we opened: a publish mid-read replaces the path,
+                # not this file, so the text and the key stay consistent.
+                stat = os.fstat(handle.fileno())
+                text = "".join(
+                    line for line in handle if line.startswith(_BADGE_METRIC_PREFIXES)
+                )
+        except FileNotFoundError:
+            return _WARMING_PAYLOAD
+        _badge_payload_cache = ((stat.st_ino, stat.st_mtime_ns, stat.st_size), text)
+        return text
+
+
 def _parse_metric_labels(raw: str) -> dict[str, str]:
     labels: dict[str, str] = {}
     index = 0
@@ -4994,11 +5051,12 @@ def _iter_metric_samples(
 ) -> Iterator[tuple[dict[str, str], float]]:
     """Yield (labels, value) for every sample of ``metric_name``.
 
-    Reads the published payload (``render_metrics()``) by default, or a caller-
+    Reads the published payload's badge families (:func:`_badge_payload_text`)
+    by default, or a caller-
     supplied Prometheus-text blob — used by the badge fallback to parse freshly
     rendered roll-up lines for a single PR without touching the global payload.
     """
-    text = source if source is not None else render_metrics()
+    text = source if source is not None else _badge_payload_text()
     pattern = re.compile(
         rf"^{re.escape(metric_name)}(?:{{([^}}]*)}})?\s+([-+0-9.eE]+)(?:\s|$)"
     )
@@ -5079,7 +5137,7 @@ def _latest_pr_run_summary(
     pr: str, source: str | None = None, event: str = DEFAULT_BADGE_EVENT
 ) -> dict[str, str | float | int | None] | None:
     return _latest_pr_run_summary_from_metrics(
-        pr, source if source is not None else render_metrics(), event
+        pr, source if source is not None else _badge_payload_text(), event
     )
 
 
