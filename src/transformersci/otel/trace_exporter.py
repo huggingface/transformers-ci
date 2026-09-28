@@ -67,6 +67,8 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+from transformersci.otel.pr_search import SEARCH_HTML
+
 try:
     # Optional: only present with the ``otel`` extra. Used to turn GitHub-style
     # emoji shortcodes (":rotating_light:") embedded in PR titles and commit
@@ -6504,6 +6506,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/run":
             self._request_route = "/run"
             self._serve_run(parse_qs(parsed.query))
+            return
+        if parsed.path == "/pr-search":
+            self._request_route = "/pr-search"
+            self._send(
+                200,
+                "text/html; charset=utf-8",
+                SEARCH_HTML.encode("utf-8"),
+                cache_control=_public_cache_control_header(),
+            )
             return
         if parsed.path == "/healthz":
             # For the kubelet probes and the ALB target health check. They used

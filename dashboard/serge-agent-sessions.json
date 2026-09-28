@@ -26,7 +26,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "### serge agent sessions\nHow serge's LLM loop actually spends a job. serge's own store keeps only its last **25 jobs** (~2 days) \u2014 these series are the durable copy, so ask for a wide time range. A gap means jobs aged out of serge before a scrape saw them, not that serge was idle.\n\n<style>header [data-testid=\"wrapper\"]:nth-child(2), header button[aria-label=\"Search or jump to...\"] { visibility: hidden !important; }</style>"
+        "content": "### serge agent sessions\nHow serge's LLM loop actually spends a job. serge's own store keeps only its last **25 jobs** (~2 days) \u2014 these series are the durable copy, so ask for a wide time range. A gap means jobs aged out of serge before a scrape saw them, not that serge was idle.\n\n<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
       }
     },
     {
