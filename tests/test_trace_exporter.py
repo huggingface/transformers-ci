@@ -2830,6 +2830,29 @@ def test_healthz_is_cheap_and_does_not_serve_the_payload(tmp_path, monkeypatch) 
         server.server_close()
 
 
+def test_pr_search_page_is_served() -> None:
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.request import urlopen
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with urlopen(f"{base}/pr-search", timeout=5) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"].startswith("text/html")
+            page = response.read().decode("utf-8")
+    finally:
+        server.shutdown()
+        server.server_close()
+    # Queries go through Grafana (same origin), and results link to the PR page.
+    assert 'fetch("/api/ds/query"' in page
+    assert "/d/pytest-observability-by-pr/pytest-observability-branch" in page
+    assert "__PR_URL__" not in page
+
+
 def test_limit_malloc_arenas_is_safe_everywhere(monkeypatch) -> None:
     # Must never raise — it's a best-effort glibc tweak that no-ops elsewhere
     # (e.g. macOS), so the feature works without any launcher-set env.

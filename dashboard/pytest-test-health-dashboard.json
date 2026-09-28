@@ -105,9 +105,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 23,
+        "w": 24,
         "x": 0,
-        "y": 0
+        "y": 1
       },
       "id": 6,
       "options": {
@@ -145,8 +145,8 @@
     {
       "gridPos": {
         "h": 1,
-        "w": 1,
-        "x": 23,
+        "w": 24,
+        "x": 0,
         "y": 0
       },
       "id": 7,
@@ -156,7 +156,7 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "<style>header [data-testid=\"wrapper\"]:nth-child(2), header button[aria-label=\"Search or jump to...\"] { visibility: hidden !important; }</style>",
+        "content": "<style>.react-grid-layout:has(iframe[data-slot]){margin-top:-38px}.react-grid-item:has(iframe[data-slot]){pointer-events:none}</style><iframe title=\"PR search loader\" data-slot style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>",
         "mode": "html"
       },
       "title": "",
@@ -294,7 +294,7 @@
         "h": 13,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 9
       },
       "id": 1,
       "options": {
@@ -540,7 +540,7 @@
         "h": 13,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 9
       },
       "id": 3,
       "options": {
@@ -718,7 +718,7 @@
         "h": 14,
         "w": 12,
         "x": 0,
-        "y": 21
+        "y": 22
       },
       "id": 2,
       "options": {
@@ -842,7 +842,7 @@
         "h": 14,
         "w": 12,
         "x": 12,
-        "y": 21
+        "y": 22
       },
       "id": 4,
       "options": {
@@ -976,7 +976,7 @@
         "h": 14,
         "w": 24,
         "x": 0,
-        "y": 35
+        "y": 36
       },
       "id": 5,
       "options": {
