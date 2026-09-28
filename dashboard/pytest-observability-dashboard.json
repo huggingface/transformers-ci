@@ -343,7 +343,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(topk by (pr) (1, max by (pr, title) (max_over_time((timestamp(pytest_pr_info{pr=~\"$top_prs\",title!=\"\"}))[7d:]))))",
+          "expr": "(topk by (pr) (1, max by (pr, title) (max_over_time((timestamp(pytest_pr_info{pr=~\"$top_prs\",title!=\"\"}))[7d:])) or on (pr) max by (pr, title) (max_over_time((timestamp(ci_github_run_title_info{pr=~\"$top_prs\",title!=\"\"}))[7d:]))))",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
