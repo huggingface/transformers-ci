@@ -1051,7 +1051,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(count by (runner_type) (ci_github_job_runner_info{run_id=~\"$run_id\"} and on (repository, run_id, job_id) ci_github_job_info{test_job=~\"$job\"}), \"md\", \"[$1](/d/ci-runners/runners)\", \"runner_type\", \"(.+)\"))",
+        "definition": "query_result(label_replace(count by (runner_type) ((ci_github_job_runner_info{run_id=~\"$run_id\"} and on (repository, run_id, job_id) ci_github_job_info{test_job=~\"$job\"}) or last_over_time(pytest_run_runner_info{run_id=~\"$run_id\",test_job=~\"$job\"}[90d])), \"md\", \"[$1](/d/ci-runners/runners)\", \"runner_type\", \"(.+)\"))",
         "hide": 2,
         "includeAll": true,
         "multi": true,
@@ -1060,7 +1060,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(count by (runner_type) (ci_github_job_runner_info{run_id=~\"$run_id\"} and on (repository, run_id, job_id) ci_github_job_info{test_job=~\"$job\"}), \"md\", \"[$1](/d/ci-runners/runners)\", \"runner_type\", \"(.+)\"))",
+          "query": "query_result(label_replace(count by (runner_type) ((ci_github_job_runner_info{run_id=~\"$run_id\"} and on (repository, run_id, job_id) ci_github_job_info{test_job=~\"$job\"}) or last_over_time(pytest_run_runner_info{run_id=~\"$run_id\",test_job=~\"$job\"}[90d])), \"md\", \"[$1](/d/ci-runners/runners)\", \"runner_type\", \"(.+)\"))",
           "refId": "Prometheus-job_runners-Variable-Query"
         },
         "regex": "/md=\"([^\"]+)\"/",

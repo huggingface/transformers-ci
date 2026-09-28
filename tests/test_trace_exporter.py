@@ -5845,3 +5845,24 @@ def test_extract_runner_hardware_metrics_one_series_per_type_newest_wins() -> No
 def test_extract_runner_hardware_metrics_empty_without_runner_tags() -> None:
     traces = [make_trace(trace_id="d", run_id="2:1", job="tests_tf", spans=[])]
     assert trace_exporter.extract_runner_hardware_metrics(traces) == []
+
+
+def test_extract_run_runner_metrics_one_series_per_run_and_type() -> None:
+    a = _runner_trace("a", 1, type="aws-g5-4xlarge-cache", name="n1")
+    b = _runner_trace("b", 2, type="aws-g5-12xlarge-cache", name="n2")
+    c = _runner_trace("c", 3, type="aws-g5-4xlarge-cache", name="n3")  # same run+type
+    for t in (a, b, c):
+        t["processes"]["pytest-process"]["tags"].append(
+            make_tag("transformers.test.ci_event", "pr-comment")
+        )
+    old = make_trace(trace_id="d", run_id="2:1", job="tests_tf", spans=[])
+    lines = metric_lines(
+        trace_exporter.extract_run_runner_metrics([a, b, c, old]),
+        "pytest_run_runner_info",
+    )
+    assert lines == [
+        'pytest_run_runner_info{pr="4321",run_id="1:1",ci_event="pr-comment",'
+        'test_job="tests_torch",runner_type="aws-g5-12xlarge-cache"} 1',
+        'pytest_run_runner_info{pr="4321",run_id="1:1",ci_event="pr-comment",'
+        'test_job="tests_torch",runner_type="aws-g5-4xlarge-cache"} 1',
+    ]

@@ -2806,6 +2806,52 @@ def extract_run_active_metrics(
     return lines
 
 
+def extract_run_runner_metrics(
+    traces: list[dict] | None = None,
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
+) -> list[str]:
+    """``pytest_run_runner_info`` — the runner types a traced run's jobs ran on.
+
+    Covers runs ci-github-status does not follow (a ``run-slow`` GPU run is a
+    pr-comment workflow). One series per (run, test job, runner type), the same
+    scale as ``pytest_run_job_member_info``.
+    """
+    extracted = (
+        _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
+    )
+    seen: dict[tuple[str, str, str, str], str] = {}
+    for trace_info, _rows in extracted:
+        runner = str(trace_info.get("runner_type", ""))
+        run_id = str(trace_info.get("run_id", ""))
+        if not runner or not run_id:
+            continue
+        key = (
+            str(trace_info.get("pr", "none")),
+            run_id,
+            str(trace_info.get("test_job", "unknown")),
+            runner,
+        )
+        seen.setdefault(key, str(trace_info.get("ci_event", "none")))
+    if not seen:
+        return []
+    lines = [
+        "# HELP pytest_run_runner_info A runner type one of the run's traced jobs ran on.",
+        "# TYPE pytest_run_runner_info gauge",
+    ]
+    for (pr, run_id, test_job, runner), ci_event in sorted(seen.items()):
+        labels = {
+            "pr": pr,
+            "run_id": run_id,
+            "ci_event": ci_event,
+            "test_job": test_job,
+            "runner_type": runner,
+        }
+        lines.append(f"pytest_run_runner_info{metric_labels(labels)} 1")
+    return lines
+
+
 # The hardware facts a runner type publishes, in label order (see runners.py).
 _RUNNER_HARDWARE_FACTS = (
     "cpu_model",
@@ -4775,6 +4821,7 @@ def _iter_metric_lines() -> Iterator[str]:
             "runner_hardware",
             lambda: extract_runner_hardware_metrics(_extracted=extracted),
         ),
+        ("run_runner", lambda: extract_run_runner_metrics(_extracted=extracted)),
         (
             "pr_last_failure",
             lambda: extract_pr_last_failure_metrics([], _extracted=extracted),
