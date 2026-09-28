@@ -702,3 +702,10 @@ def test_documented_runner_hardware_is_published() -> None:
     assert any(
         'runner_type="github-hosted"' in ln and 'vcpus="4"' in ln for ln in documented
     )
+    # The NVIDIA pools are listed even before a job measures them.
+    assert any(
+        'runner_type="aws-g5-12xlarge-cache"' in ln
+        and 'gpu_count="2"' in ln
+        and 'gpu_vendor="nvidia"' in ln
+        for ln in documented
+    )

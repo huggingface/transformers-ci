@@ -196,6 +196,27 @@ DOCUMENTED_RUNNERS: dict[str, dict[str, str]] = {
         "vcpus": "4",
         "memory_gib": "16",
     },
+    # NVIDIA pools (daily CI, run-slow): nvidia-smi in their own job logs. They
+    # describe themselves as measured once a job runs the fact sheet; until
+    # then these keep them listed. The logs show no CPU or memory.
+    "aws-g5-4xlarge-cache": {
+        "source": "job log 2026-09-28 (job 108767465223)",
+        "gpu_vendor": "nvidia",
+        "gpu_model": "NVIDIA A10G",
+        "gpu_count": "1",
+        "gpu_memory_gib": "22",
+    },
+    "aws-g5-12xlarge-cache": {
+        "source": "job log 2026-09-28 (job 108767465264): 2 of the instance's 4 GPUs",
+        "gpu_vendor": "nvidia",
+        "gpu_model": "NVIDIA A10G",
+        "gpu_count": "2",
+        "gpu_memory_gib": "22",
+    },
+    # Report/notification jobs; its log prints no hardware.
+    "aws-general-8-plus": {
+        "source": "job log 2026-09-27 (job 108558713975): no hardware printed",
+    },
     "amd-mi300-1gpu": {
         "source": "job log 2026-09-25 (job 107956364031)",
         "cpu_model": "2x AMD EPYC 9654 96-Core (host)",

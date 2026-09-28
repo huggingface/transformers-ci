@@ -48,7 +48,7 @@
       "targets": [
         {
           "refId": "HW",
-          "expr": "max by (runner_type, source, cpu_model, vcpus, memory_gib, gpu_vendor, gpu_model, gpu_count, gpu_memory_gib) (last_over_time(ci_runner_hardware_info[30d]))",
+          "expr": "max by (runner_type, source, cpu_model, vcpus, memory_gib, gpu_vendor, gpu_model, gpu_count, gpu_memory_gib) (last_over_time(ci_runner_hardware_info{source=\"measured\"}[30d])) or on (runner_type) max by (runner_type, source, cpu_model, vcpus, memory_gib, gpu_vendor, gpu_model, gpu_count, gpu_memory_gib) (last_over_time(ci_runner_hardware_info{source!=\"measured\"}[30d]))",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
