@@ -70,6 +70,7 @@ from urllib.request import Request, urlopen
 from transformersci.otel.pr_search import SEARCH_HTML
 
 from transformersci.emojize import emojize as _emojize
+from transformersci.runners import ATTRIBUTE_PREFIX as RUNNER_ATTRIBUTE_PREFIX
 
 
 DEFAULT_TEMPO_URL = "http://tempo:3200"
@@ -1892,6 +1893,9 @@ def extract_trace_rows(
     process_service_version = ""
     process_ci_event = ""
     process_hardware = ""
+    # transformers.test.runner.* (configure-ci-otel's runner fact sheet), keys
+    # without the prefix. Absent on traces from before it or off GitHub runners.
+    process_runner: dict[str, str] = {}
     service_name = ""
     end_time = 0
     start_time = 0
@@ -1962,6 +1966,12 @@ def extract_trace_rows(
         process_hardware = process_tags.get(
             "transformers.test.hardware", process_hardware
         )
+        if not process_runner:
+            process_runner = {
+                key[len(RUNNER_ATTRIBUTE_PREFIX) :]: _intern(value)
+                for key, value in process_tags.items()
+                if key.startswith(RUNNER_ATTRIBUTE_PREFIX) and value
+            }
 
         span_tags = tag_map(span.get("tags", []))
         nodeid = span_tags.get("pytest.nodeid")
@@ -2047,7 +2057,7 @@ def extract_trace_rows(
     if not process_pr_url and process_repository and process_pr:
         process_pr_url = github_pr_html_url(process_repository, process_pr)
 
-    return {
+    info: dict[str, str | int] = {
         "ci_event": process_ci_event or "none",
         "hardware": process_hardware or hardware_from_job(process_job),
         "commit_sha": process_commit_sha,
@@ -2063,7 +2073,10 @@ def extract_trace_rows(
         "start_time": start_time,
         "test_job": process_job or "unknown",
         "trace_id": trace_id,
-    }, rows
+    }
+    for key, value in process_runner.items():
+        info[f"runner_{key}"] = value
+    return info, rows
 
 
 def _intern(value: object) -> object:
@@ -2790,6 +2803,78 @@ def extract_run_active_metrics(
         lines.extend(job_lines)
     global _active_run_ids
     _active_run_ids = frozenset(active_run_ids)
+    return lines
+
+
+# The hardware facts a runner type publishes, in label order (see runners.py).
+_RUNNER_HARDWARE_FACTS = (
+    "cpu_model",
+    "vcpus",
+    "memory_gib",
+    "gpu_vendor",
+    "gpu_model",
+    "gpu_count",
+    "gpu_memory_gib",
+)
+
+
+def extract_runner_hardware_metrics(
+    traces: list[dict] | None = None,
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
+) -> list[str]:
+    """One ``ci_runner_hardware_info`` series per runner type seen in the window.
+
+    The facts come from the runner itself (``configure-ci-otel`` stamps them as
+    ``transformers.test.runner.*``), so they describe what a job gets, not the
+    instance's spec sheet. Keyed by runner type only (a handful of values): the
+    newest trace of each type wins, so a pool that changes machines is described
+    as it is now. ``ci_runner_last_seen_timestamp_seconds`` says how recent that is.
+    """
+    extracted = (
+        _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
+    )
+    latest: dict[str, dict[str, str | int]] = {}
+    for trace_info, _rows in extracted:
+        runner = str(trace_info.get("runner_type", ""))
+        if not runner:
+            continue
+        current = latest.get(runner)
+        if current is None or int(trace_info.get("latest_start_time", 0) or 0) > int(
+            current.get("latest_start_time", 0) or 0
+        ):
+            latest[runner] = trace_info
+    if not latest:
+        return []
+    info_lines = []
+    seen_lines = []
+    for runner, trace_info in sorted(latest.items()):
+        labels = {"runner_type": runner, "source": "measured"}
+        for fact in _RUNNER_HARDWARE_FACTS:
+            value = str(trace_info.get(f"runner_{fact}", ""))
+            if value:
+                labels[fact] = value
+        info_lines.append(f"ci_runner_hardware_info{metric_labels(labels)} 1")
+        seen = int(trace_info.get("latest_start_time", 0) or 0)
+        if seen:
+            seen_lines.append(
+                "ci_runner_last_seen_timestamp_seconds"
+                f"{metric_labels({'runner_type': runner})} {seen / 1_000_000:.3f}"
+            )
+    lines = [
+        "# HELP ci_runner_hardware_info Hardware a job on this runner type sees, "
+        "as measured by the runner itself.",
+        "# TYPE ci_runner_hardware_info gauge",
+        *info_lines,
+    ]
+    if seen_lines:
+        lines += [
+            "# HELP ci_runner_last_seen_timestamp_seconds Newest traced job on this "
+            "runner type.",
+            "# TYPE ci_runner_last_seen_timestamp_seconds gauge",
+            *seen_lines,
+        ]
     return lines
 
 
@@ -4686,6 +4771,10 @@ def _iter_metric_lines() -> Iterator[str]:
         ("run_info", lambda: extract_run_info_metrics(_extracted=rollup_extracted)),
         ("pr_info", lambda: extract_pr_info_metrics([], _extracted=extracted)),
         ("run_active", lambda: extract_run_active_metrics(_extracted=extracted)),
+        (
+            "runner_hardware",
+            lambda: extract_runner_hardware_metrics(_extracted=extracted),
+        ),
         (
             "pr_last_failure",
             lambda: extract_pr_last_failure_metrics([], _extracted=extracted),

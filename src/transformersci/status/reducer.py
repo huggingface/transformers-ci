@@ -100,6 +100,9 @@ class JobUpdate:
     started_at: float | None = None
     completed_at: float | None = None
     html_url: str = ""
+    # Assigned when a runner picks the job up; empty while it is queued.
+    runner_name: str = ""
+    runner_group: str = ""
 
     @property
     def key(self) -> tuple[str, int]:
@@ -142,6 +145,8 @@ _JOB_FILL = (
     "created_at",
     "started_at",
     "html_url",
+    "runner_name",
+    "runner_group",
 )
 
 

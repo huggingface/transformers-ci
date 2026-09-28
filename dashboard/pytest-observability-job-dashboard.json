@@ -47,7 +47,7 @@
       },
       "id": 20,
       "options": {
-        "content": "### `${job}`\n\n**Run:** [${run_id}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id})\n\n**PR:** [${pr}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr})\n\n<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>",
+        "content": "### `${job}`\n\n**Run:** [${run_id}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id})\n\n**PR:** [${pr}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr})\n\n**Runners:** ${job_runners:csv}\n\n<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>",
         "mode": "markdown"
       },
       "pluginVersion": "12.0.0",
@@ -97,7 +97,13 @@
                 "color": "purple"
               }
             ]
-          }
+          },
+          "links": [
+            {
+              "title": "Runners this job used",
+              "url": "/d/ci-runners/runners?var-run_id=${run_id}&var-job=${job}"
+            }
+          ]
         },
         "overrides": []
       },
@@ -1031,6 +1037,37 @@
         ],
         "query": "100,500,1000,2000",
         "type": "custom"
+      },
+      {
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(label_replace(count by (runner_type) (ci_github_job_runner_info{run_id=~\"$run_id\"} and on (repository, run_id, job_id) ci_github_job_info{test_job=~\"$job\"}), \"md\", \"[$1](/d/ci-runners/runners?var-runner_type=$1&var-run_id=${run_id}&var-job=${job})\", \"runner_type\", \"(.+)\"))",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "label": "",
+        "name": "job_runners",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(label_replace(count by (runner_type) (ci_github_job_runner_info{run_id=~\"$run_id\"} and on (repository, run_id, job_id) ci_github_job_info{test_job=~\"$job\"}), \"md\", \"[$1](/d/ci-runners/runners?var-runner_type=$1&var-run_id=${run_id}&var-job=${job})\", \"runner_type\", \"(.+)\"))",
+          "refId": "Prometheus-job_runners-Variable-Query"
+        },
+        "regex": "/md=\"([^\"]+)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 1,
+        "type": "query"
       }
     ]
   },
