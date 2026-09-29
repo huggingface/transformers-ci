@@ -41,82 +41,18 @@
     {
       "gridPos": {
         "h": 5,
-        "w": 7,
+        "w": 10,
         "x": 0,
         "y": 0
       },
       "id": 20,
       "options": {
         "mode": "html",
-        "content": "<style>.tci-hd{font:600 18px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.tci-hd code{font-size:14px}.tci-meta{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}.tci-meta li{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;padding:3px 8px;border:1px solid rgba(204,204,220,.15);border-radius:4px;background:rgba(204,204,220,.04);font-size:12px;line-height:18px}.tci-meta .k{flex:none;color:#8e9197;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}.tci-meta code{font-size:11px;padding:0;background:none}.tci-meta a,.tci-meta .v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tci-live{margin-left:auto}.tci-live img{height:16px;display:block}.tci-meta li:has(> .v:empty){display:none}</style><div class=\"tci-hd\"><code>${job}</code><span class=\"tci-live\">${job_live_badge:raw}</span></div><ul class=\"tci-meta\"><li><span class=\"k\">Run</span><a href=\"/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id}\">${run_id}</a></li><li><span class=\"k\">PR</span><a href=\"/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr}\">${pr}</a></li><li><span class=\"k\">Runners</span><span class=\"v\">${job_runners:csv}</span></li></ul><iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
+        "content": "<style>.tci-hd{font:600 18px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.tci-hd code{font-size:14px}.tci-meta{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}.tci-meta li{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;padding:3px 8px;border:1px solid rgba(204,204,220,.15);border-radius:4px;background:rgba(204,204,220,.04);font-size:12px;line-height:18px}.tci-meta .k{flex:none;color:#8e9197;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}.tci-meta code{font-size:11px;padding:0;background:none}.tci-meta a,.tci-meta .v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tci-live{margin-left:auto}.tci-live img{height:16px;display:block}.tci-meta li:has(> .v:empty){display:none}</style><div class=\"tci-hd\"><code>${job}</code><span class=\"tci-live\">${job_live_badge:raw}</span></div><ul class=\"tci-meta\"><li><span class=\"k\">Run</span><a href=\"/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id}\">${run_id}</a></li><li><span class=\"k\">PR</span><a href=\"/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr}\">${pr}</a></li><li><span class=\"k\">Hardware</span><a class=\"v\" href=\"/d/ci-runners/runners\">${job_hardware:csv}</a></li><li><span class=\"k\">Runners</span><span class=\"v\">${job_runners:csv}</span></li></ul><iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
       },
       "pluginVersion": "12.0.0",
       "title": "Job",
       "type": "text"
-    },
-    {
-      "id": 27,
-      "type": "stat",
-      "title": "Hardware",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "x": 7,
-        "y": 0,
-        "w": 3,
-        "h": 5
-      },
-      "pluginVersion": "12.0.0",
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "textMode": "name",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": true
-        }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "purple"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "purple"
-              }
-            ]
-          },
-          "links": [
-            {
-              "title": "Runners",
-              "url": "/d/ci-runners/runners"
-            }
-          ]
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "label_replace(label_replace(label_replace(label_replace((group by (hardware) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])) or group by (hardware) (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[6h]))),\"hw\",\"CPU\",\"hardware\",\"cpu\"),\"hw\",\"GPU\",\"hardware\",\"gpu\"),\"hw\",\"GPU\",\"hardware\",\"single-gpu\"),\"hw\",\"xGPU\",\"hardware\",\"multi-gpu\")",
-          "instant": true,
-          "legendFormat": "{{hw}}",
-          "range": false,
-          "refId": "A"
-        }
-      ]
     },
     {
       "id": 21,
@@ -852,6 +788,37 @@
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(label_replace(label_replace(label_replace(label_replace((group by (hardware) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])) or group by (hardware) (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[6h]))),\"hw\",\"CPU\",\"hardware\",\"cpu\"),\"hw\",\"GPU\",\"hardware\",\"gpu\"),\"hw\",\"GPU\",\"hardware\",\"single-gpu\"),\"hw\",\"xGPU\",\"hardware\",\"multi-gpu\"))",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "label": "",
+        "name": "job_hardware",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(label_replace(label_replace(label_replace(label_replace((group by (hardware) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])) or group by (hardware) (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[6h]))),\"hw\",\"CPU\",\"hardware\",\"cpu\"),\"hw\",\"GPU\",\"hardware\",\"gpu\"),\"hw\",\"GPU\",\"hardware\",\"single-gpu\"),\"hw\",\"xGPU\",\"hardware\",\"multi-gpu\"))",
+          "refId": "Prometheus-job_hardware-Variable-Query"
+        },
+        "regex": "/hw=\"([^\"]+)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 1,
         "type": "query"
       }
     ]
