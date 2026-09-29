@@ -6483,24 +6483,36 @@ def _render_run_toolbar(query: dict[str, list[str]], status: str, group: str) ->
     )
 
 
+class LiveCounts(NamedTuple):
+    """What Prometheus knows about a run ahead of the exporter's rows."""
+
+    tests: int
+    failures: int
+    # The counts moved in the last 30 minutes: a gap on a run still streaming
+    # closes within minutes; one on an old run is traces the exporter never got
+    # whole, and will not.
+    recent: bool
+    # ci-github-status's run status (1 queued, 2 in progress, 3 completed), 0
+    # when it does not follow the run's workflow (e.g. run-slow).
+    run_status: int
+
+
 _LIVE_COUNTS_TTL_SECONDS = 10.0
-_live_counts_cache: dict[
-    tuple[str, str, str], tuple[float, tuple[int, int] | None]
-] = {}
+_live_counts_cache: dict[tuple[str, str, str], tuple[float, LiveCounts | None]] = {}
 _live_counts_lock = threading.Lock()
 
 
 def live_test_counts(
     run_id: str, job: str = "", hardware: str = ""
-) -> tuple[int, int] | None:
-    """``(tests, failures)`` otelcol has counted for a run (optionally one job /
-    hardware) as the spans streamed in, from ``ci_live_calls_total``.
+) -> LiveCounts | None:
+    """otelcol's counts for a run (optionally one job / hardware), from
+    ``ci_live_calls_total``, plus GitHub's run status, in one query.
 
-    Ahead of the exporter by minutes: it counts spans on arrival, while /run
-    waits for the job's trace to be searched, fetched and shaped. Summed over
-    the otelcol replicas (each holds a share). ``None`` when Prometheus cannot
-    be asked or has nothing: callers then show only what the exporter has.
-    Cached briefly, since a live /run page polls every 30 s.
+    Ahead of the exporter by minutes: otelcol counts spans on arrival, while
+    /run waits for the job's trace to be searched, fetched and shaped. Summed
+    over the otelcol replicas (each holds a share). ``None`` when Prometheus
+    cannot be asked or has nothing: callers then show only what the exporter
+    has. Cached briefly, since a live /run page polls every 30 s.
     """
     base_url = prometheus_base_url()
     if not run_id or not base_url:
@@ -6516,12 +6528,15 @@ def live_test_counts(
         matchers.append(f'test_job="{job}"')
     if hardware:
         matchers.append(f'hardware="{hardware}"')
+    selector = "ci_live_calls_total{" + ",".join(matchers) + "}"
     query = (
-        "sum by (status_code) (last_over_time(ci_live_calls_total{"
-        + ",".join(matchers)
-        + "}[6h]))"
+        f"sum by (status_code) (last_over_time({selector}[6h]))"
+        f' or label_replace(sum(increase({selector}[30m])), "status_code",'
+        ' "__recent__", "", "")'
+        f' or label_replace(max(ci_github_run_status{{run_id="{run_id}"}}),'
+        ' "status_code", "__run_status__", "", "")'
     )
-    counts: tuple[int, int] | None = None
+    counts: LiveCounts | None = None
     try:
         payload = _http_get_json(
             f"{base_url}/api/v1/query?{urlencode({'query': query})}",
@@ -6533,13 +6548,21 @@ def live_test_counts(
             if isinstance(payload, dict)
             else []
         )
-        tests = failures = 0
+        tests = failures = run_status = 0
+        recent = False
         for item in result:
-            value = int(float(item["value"][1]))
-            tests += value
-            if item["metric"].get("status_code") == "STATUS_CODE_ERROR":
-                failures += value
-        counts = (tests, failures) if tests else None
+            status = item["metric"].get("status_code")
+            value = float(item["value"][1])
+            if status == "__recent__":
+                recent = value > 0
+            elif status == "__run_status__":
+                run_status = int(value)
+            else:
+                tests += int(value)
+                if status == "STATUS_CODE_ERROR":
+                    failures += int(value)
+        if tests or run_status:
+            counts = LiveCounts(tests, failures, recent, run_status)
     except Exception:
         counts = None
     with _live_counts_lock:
@@ -6558,7 +6581,7 @@ def render_run_html(
     group: str = "",
     query: dict[str, list[str]] | None = None,
     live: bool = False,
-    live_counts: tuple[int, int] | None = None,
+    live_counts: LiveCounts | None = None,
 ) -> str:
     """Render the per-run test table (sortable, links to the per-test page).
 
@@ -6694,18 +6717,24 @@ def render_run_html(
             )
         )
 
-    if live_counts is not None:
-        live_tests, live_failures = live_counts
+    if live_counts is not None and live_counts.tests:
         known_failures = sum(
             1 for r in job_rows if str(r.get("status_code", "")) == "ERROR"
         )
-        if live_failures > known_failures:
-            missing = live_failures - known_failures
+        missing = live_counts.failures - known_failures
+        if missing > 0 and live_counts.recent:
             out.append(
                 "<p class='pending'>⚠ "
                 f"{_plural(missing, 'failing test')} reported by the live stream "
                 "that this list does not have yet — details arriving "
-                f"({len(job_rows):,} of {live_tests:,} tests in so far)</p>"
+                f"({len(job_rows):,} of {live_counts.tests:,} tests in so far)</p>"
+            )
+        elif missing > 0:
+            out.append(
+                "<p class='pending stale'>⚠ "
+                f"{_plural(missing, 'failing test')} counted by the live stream "
+                "missing from this list: its traces reached the exporter "
+                f"incomplete ({len(job_rows):,} of {live_counts.tests:,} tests)</p>"
             )
 
     if not rows:
@@ -6931,9 +6960,17 @@ class MetricsHandler(BaseHTTPRequestHandler):
             if (not job or str(r.get("test_job", "")) == job)
             and str(r.get("status_code", "")) == "ERROR"
         )
-        # Keep polling while the live stream is ahead, even once the run is
-        # over, or a finished run would stop before its failures arrive.
-        pending = live_counts is not None and live_counts[1] > known
+        # GitHub's own run status (ci-github-status) beats the exporter's
+        # trace-derived view, which lags a run that just started a new job.
+        github_running = live_counts is not None and live_counts.run_status in (1, 2)
+        github_done = live_counts is not None and live_counts.run_status == 3
+        # Keep polling while the live stream is ahead and still moving, even
+        # once the run is over, or it would stop before its failures arrive.
+        pending = (
+            live_counts is not None
+            and live_counts.recent
+            and live_counts.failures > known
+        )
         self._send(
             200,
             "text/html; charset=utf-8",
@@ -6946,7 +6983,9 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 hardware=hardware,
                 group=group,
                 query=params,
-                live=run_is_active(run_id) or pending,
+                live=github_running
+                or pending
+                or (run_is_active(run_id) and not github_done),
                 live_counts=live_counts,
             ).encode("utf-8"),
             cache_control=_public_cache_control_header(),
