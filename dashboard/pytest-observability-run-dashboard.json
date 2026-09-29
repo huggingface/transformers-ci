@@ -48,103 +48,11 @@
       "id": 7,
       "options": {
         "mode": "html",
-        "content": "<style>.tci-hd{font:600 18px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.tci-hd code{font-size:14px}.tci-meta{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}.tci-meta li{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;padding:3px 8px;border:1px solid rgba(204,204,220,.15);border-radius:4px;background:rgba(204,204,220,.04);font-size:12px;line-height:18px}.tci-meta .k{flex:none;color:#8e9197;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}.tci-meta code{font-size:11px;padding:0;background:none}.tci-meta a,.tci-meta .v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}</style><div class=\"tci-hd\">Run <code>${run_id:raw}</code></div><ul class=\"tci-meta\"><li><span class=\"k\">${run_ref_kind:raw}</span><a href=\"${run_pr_url:raw}\">${run_ref:raw}</a></li><li><span class=\"k\">Commit</span><a href=\"${run_commit_url:raw}\" title=\"${run_commit:raw}\">${run_commit:raw}</a></li><li><span class=\"k\">SHA</span><code title=\"${run_commit_sha:raw}\">${run_commit_sha:raw}</code></li></ul><iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
+        "content": "<style>.tci-hd{font:600 18px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.tci-hd code{font-size:14px}.tci-meta{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}.tci-meta li{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;padding:3px 8px;border:1px solid rgba(204,204,220,.15);border-radius:4px;background:rgba(204,204,220,.04);font-size:12px;line-height:18px}.tci-meta .k{flex:none;color:#8e9197;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}.tci-meta code{font-size:11px;padding:0;background:none}.tci-meta a,.tci-meta .v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tci-live{margin-left:auto}.tci-live img{height:16px;display:block}</style><div class=\"tci-hd\">Run <code>${run_id:raw}</code><span class=\"tci-live\">${run_live_badge:raw}</span></div><ul class=\"tci-meta\"><li><span class=\"k\">${run_ref_kind:raw}</span><a href=\"${run_pr_url:raw}\">${run_ref:raw}</a></li><li><span class=\"k\">Commit</span><a href=\"${run_commit_url:raw}\" title=\"${run_commit:raw}\">${run_commit:raw}</a></li><li><span class=\"k\">SHA</span><code title=\"${run_commit_sha:raw}\">${run_commit_sha:raw}</code></li></ul><iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
       },
       "pluginVersion": "12.0.0",
       "title": "Run Metadata",
       "type": "text"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "From GitHub while the run is recent, else from the trace pipeline. This page does not auto-refresh (it would reload the test list below); 'Watch live' opens the auto-refreshing view of this run.",
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "center",
-            "cellOptions": {
-              "type": "image"
-            },
-            "inspect": false
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "1": {
-                  "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4NiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDg2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PHRleHQgeD0iMjAiIHk9IjEyIiBmb250LWZhbWlseT0iSW50ZXIsSGVsdmV0aWNhLEFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiNmMmNjNjAiPlJ1bm5pbmc8L3RleHQ+PC9zdmc+",
-                  "index": 0
-                },
-                "0": {
-                  "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4NiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDg2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNzNiZjY5IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNNS4yIDguM2wyIDIgMy42LTQuMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNzNiZjY5IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjx0ZXh0IHg9IjIwIiB5PSIxMiIgZm9udC1mYW1pbHk9IkludGVyLEhlbHZldGljYSxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmaWxsPSIjNzNiZjY5Ij5GaW5pc2hlZDwvdGV4dD48L3N2Zz4=",
-                  "index": 1
-                }
-              }
-            }
-          ]
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 4,
-        "x": 12,
-        "y": 0
-      },
-      "id": 8,
-      "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": false
-      },
-      "pluginVersion": "11.4.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "(max(ci_github_run_status{run_id=~\"$run_id\"} < 3) * 0 + 1) or (max(ci_github_run_status{run_id=~\"$run_id\"} == 3) * 0) or (max (last_over_time(pytest_run_active{run_id=~\"$run_id\"}[5m])) or vector(0))",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "Active"
-        }
-      ],
-      "title": "Live",
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true
-            },
-            "indexByName": {},
-            "renameByName": {
-              "Value": "Live"
-            }
-          }
-        }
-      ],
-      "type": "table",
-      "links": [
-        {
-          "title": "Watch live (auto-refresh)",
-          "url": "/d/ci-live-status/live-ci-status?orgId=1&var-run=${run_id}",
-          "targetBlank": false
-        }
-      ]
     },
     {
       "id": 1,
@@ -156,8 +64,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 5,
-        "x": 16,
+        "w": 6,
+        "x": 12,
         "y": 0
       },
       "description": "Passed and failed tests of this run; the legend shows each count and share. Counts stream in live before the run's totals are final.",
@@ -251,40 +159,56 @@
       }
     },
     {
+      "id": 4,
+      "type": "stat",
+      "title": "Timing",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              }
-            ]
-          },
-          "unit": "dateTimeFromNow"
-        },
-        "overrides": []
-      },
       "gridPos": {
         "h": 5,
-        "w": 3,
-        "x": 21,
+        "w": 6,
+        "x": 18,
         "y": 0
       },
-      "id": 4,
+      "description": "When the run started, how long it took end to end (wall), and the summed duration of its tests.",
+      "targets": [
+        {
+          "refId": "STARTED",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "min(max without (instance) (last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\"}[90d]))) * 1000",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Started"
+        },
+        {
+          "refId": "WALL",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(max without (instance) (last_over_time(pytest_run_wall_seconds{run_id=~\"$run_id\"}[90d])))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Wall"
+        },
+        {
+          "refId": "TESTTIME",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(max without (instance) (last_over_time(pytest_run_duration_seconds{run_id=~\"$run_id\"}[90d])))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Test time"
+        }
+      ],
       "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -292,21 +216,42 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "min(max without (instance) (last_over_time(pytest_run_start_time_seconds{run_id=~\"$run_id\"}[90d]))) * 1000",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "text": {
+          "titleSize": 12,
+          "valueSize": 18
         }
-      ],
-      "title": "Started",
-      "type": "stat"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              }
+            ]
+          }
+        ]
+      }
     },
     {
       "id": 5,
@@ -1009,6 +954,30 @@
           "refId": "Prometheus-run_ref-Variable-Query"
         },
         "regex": "/r=\"([^\"]+)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(label_replace(((max(ci_github_run_status{run_id=~\"$run_id\"} < 3) * 0 + 1) or (max(ci_github_run_status{run_id=~\"$run_id\"} == 3) * 0) or (max (last_over_time(pytest_run_active{run_id=~\"$run_id\"}[5m])) or vector(0))) == 1, \"h\", \"<img alt='Running' src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4NiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDg2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PHRleHQgeD0iMjAiIHk9IjEyIiBmb250LWZhbWlseT0iSW50ZXIsSGVsdmV0aWNhLEFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiNmMmNjNjAiPlJ1bm5pbmc8L3RleHQ+PC9zdmc+'>\", \"\", \"\") or label_replace(((max(ci_github_run_status{run_id=~\"$run_id\"} < 3) * 0 + 1) or (max(ci_github_run_status{run_id=~\"$run_id\"} == 3) * 0) or (max (last_over_time(pytest_run_active{run_id=~\"$run_id\"}[5m])) or vector(0))) == 0, \"h\", \"<img alt='Finished' src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4NiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDg2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNzNiZjY5IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNNS4yIDguM2wyIDIgMy42LTQuMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNzNiZjY5IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjx0ZXh0IHg9IjIwIiB5PSIxMiIgZm9udC1mYW1pbHk9IkludGVyLEhlbHZldGljYSxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmaWxsPSIjNzNiZjY5Ij5GaW5pc2hlZDwvdGV4dD48L3N2Zz4='>\", \"\", \"\"))",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "label": "",
+        "name": "run_live_badge",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(label_replace(((max(ci_github_run_status{run_id=~\"$run_id\"} < 3) * 0 + 1) or (max(ci_github_run_status{run_id=~\"$run_id\"} == 3) * 0) or (max (last_over_time(pytest_run_active{run_id=~\"$run_id\"}[5m])) or vector(0))) == 1, \"h\", \"<img alt='Running' src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4NiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDg2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PHRleHQgeD0iMjAiIHk9IjEyIiBmb250LWZhbWlseT0iSW50ZXIsSGVsdmV0aWNhLEFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiNmMmNjNjAiPlJ1bm5pbmc8L3RleHQ+PC9zdmc+'>\", \"\", \"\") or label_replace(((max(ci_github_run_status{run_id=~\"$run_id\"} < 3) * 0 + 1) or (max(ci_github_run_status{run_id=~\"$run_id\"} == 3) * 0) or (max (last_over_time(pytest_run_active{run_id=~\"$run_id\"}[5m])) or vector(0))) == 0, \"h\", \"<img alt='Finished' src='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4NiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDg2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNzNiZjY5IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNNS4yIDguM2wyIDIgMy42LTQuMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNzNiZjY5IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjx0ZXh0IHg9IjIwIiB5PSIxMiIgZm9udC1mYW1pbHk9IkludGVyLEhlbHZldGljYSxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmaWxsPSIjNzNiZjY5Ij5GaW5pc2hlZDwvdGV4dD48L3N2Zz4='>\", \"\", \"\"))",
+          "refId": "Prometheus-run_live_badge-Variable-Query"
+        },
+        "regex": "/h=\"([^\"]+)\"/",
         "refresh": 2,
         "skipUrlSync": true,
         "sort": 0,
