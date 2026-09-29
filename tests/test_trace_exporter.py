@@ -5953,15 +5953,33 @@ def test_render_run_html_flags_failures_the_live_stream_saw_first() -> None:
     rows = [r for r in _grouping_rows() if r["status_code"] == "OK"]
     # otelcol counted 1 failure among 3 tests; the exporter has only the pass.
     out = trace_exporter.render_run_html(
-        "1:1", rows, status="ERROR", query={}, live_counts=(3, 1)
+        "1:1",
+        rows,
+        status="ERROR",
+        query={},
+        live_counts=trace_exporter.LiveCounts(3, 1, True, 2),
     )
     assert "1 failing test reported by the live stream" in out
     assert "(1 of 3 tests in so far)" in out
     # Once the exporter has the failure, the banner goes away.
     caught_up = trace_exporter.render_run_html(
-        "1:1", _grouping_rows(), status="ERROR", query={}, live_counts=(5, 4)
+        "1:1",
+        _grouping_rows(),
+        status="ERROR",
+        query={},
+        live_counts=trace_exporter.LiveCounts(5, 4, True, 2),
     )
     assert "live stream" not in caught_up
+    # A gap that stopped moving is not "arriving": say what it is.
+    stale = trace_exporter.render_run_html(
+        "1:1",
+        rows,
+        status="ERROR",
+        query={},
+        live_counts=trace_exporter.LiveCounts(3, 1, False, 3),
+    )
+    assert "details arriving" not in stale
+    assert "reached the exporter incomplete" in stale
     # No live counts (Prometheus down): nothing is claimed.
     assert "live stream" not in trace_exporter.render_run_html(
         "1:1", rows, status="ERROR", query={}
@@ -5988,12 +6006,16 @@ def test_live_test_counts_sums_replicas_and_errors(monkeypatch) -> None:
                         "value": [0, "25"],
                     },
                     {"metric": {"status_code": "STATUS_CODE_ERROR"}, "value": [0, "1"]},
+                    {"metric": {"status_code": "__recent__"}, "value": [0, "12"]},
+                    {"metric": {"status_code": "__run_status__"}, "value": [0, "2"]},
                 ]
             },
         }
 
     monkeypatch.setattr(trace_exporter, "_http_get_json", _query)
-    assert trace_exporter.live_test_counts("9:1", "tests_torch") == (141900, 1)
+    assert trace_exporter.live_test_counts("9:1", "tests_torch") == (
+        trace_exporter.LiveCounts(141900, 1, True, 2)
+    )
     assert "test_job%3D%22tests_torch%22" in seen[0]
     # Cached: a polling page does not re-query every 30 s per viewer.
     trace_exporter.live_test_counts("9:1", "tests_torch")

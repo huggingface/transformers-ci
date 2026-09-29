@@ -59,7 +59,7 @@
       },
       "id": 14,
       "options": {
-        "content": "<iframe title=\"failing tests\" style=\"width:100%;height:470px;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${latest_run_id}')+'&status=ERROR&limit=200'+'&group=test'+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>",
+        "content": "<iframe title=\"failing tests\" style=\"width:100%;height:470px;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}.ld{font:13px system-ui,sans-serif;color:#8e9197;padding:14px 12px}.ld i{display:inline-block;width:11px;height:11px;margin-right:8px;vertical-align:-2px;border:2px solid #2f3338;border-top-color:#6ab0ff;border-radius:50%;animation:s .8s linear infinite}@keyframes s{to{transform:rotate(360deg)}}</style><div class='ld'><i></i>Loading tests...</div><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${latest_run_id}')+'&status=ERROR&limit=200'+'&group=test'+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>",
         "mode": "html"
       },
       "pluginVersion": "12.0.0",
