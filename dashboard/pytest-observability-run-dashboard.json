@@ -41,7 +41,7 @@
     {
       "gridPos": {
         "h": 5,
-        "w": 12,
+        "w": 10,
         "x": 0,
         "y": 0
       },
@@ -89,8 +89,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 2,
-        "x": 12,
+        "w": 3,
+        "x": 10,
         "y": 0
       },
       "id": 8,
@@ -171,7 +171,7 @@
       "gridPos": {
         "h": 5,
         "w": 3,
-        "x": 14,
+        "x": 13,
         "y": 0
       },
       "id": 1,
@@ -234,7 +234,7 @@
       "gridPos": {
         "h": 5,
         "w": 2,
-        "x": 17,
+        "x": 16,
         "y": 0
       },
       "id": 2,
@@ -263,7 +263,7 @@
           "refId": "A"
         }
       ],
-      "title": "Failed Tests",
+      "title": "Failed",
       "type": "stat",
       "description": "Failed tests so far: streamed from the collector while the run is in flight, then the trace exporter's final count."
     },
@@ -304,8 +304,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 2,
-        "x": 19,
+        "w": 3,
+        "x": 18,
         "y": 0
       },
       "id": 3,
