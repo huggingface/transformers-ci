@@ -396,6 +396,22 @@
       "type": "stat"
     },
     {
+      "id": 5,
+      "type": "text",
+      "title": "Tests (Top $test_limit by Duration)",
+      "gridPos": {
+        "h": 18,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<iframe title=\"run tests\" style=\"width:100%;height:620px;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}.ld{font:13px system-ui,sans-serif;color:#8e9197;padding:14px 12px}.ld i{display:inline-block;width:11px;height:11px;margin-right:8px;vertical-align:-2px;border:2px solid #2f3338;border-top-color:#6ab0ff;border-radius:50%;animation:s .8s linear infinite}@keyframes s{to{transform:rotate(360deg)}}</style><div class='ld'><i></i>Loading tests...</div><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>"
+      }
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -485,6 +501,10 @@
                     }
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 60
               }
             ]
           },
@@ -557,10 +577,6 @@
                 ]
               },
               {
-                "id": "custom.width",
-                "value": 80
-              },
-              {
                 "id": "links",
                 "value": [
                   {
@@ -568,6 +584,10 @@
                     "url": "/d/ci-runners/runners"
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 80
               }
             ]
           },
@@ -618,13 +638,25 @@
                 ]
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Pass"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
+              }
+            ]
           }
         ]
       },
       "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
+        "h": 18,
+        "w": 12,
+        "x": 12,
         "y": 5
       },
       "id": 6,
@@ -742,14 +774,14 @@
               "Time": true
             },
             "indexByName": {
+              "Value #Status": 0,
               "test_job": 1,
-              "hardware": 2,
-              "Value #Started": 3,
-              "Value #Duration": 4,
-              "Value #Wall": 5,
-              "Value #Pass": 6,
-              "Value #Fail": 7,
-              "Value #Status": 0
+              "Value #Pass": 2,
+              "Value #Fail": 3,
+              "hardware": 4,
+              "Value #Started": 5,
+              "Value #Duration": 6,
+              "Value #Wall": 7
             },
             "renameByName": {
               "test_job": "Job",
@@ -766,22 +798,6 @@
       ],
       "type": "table",
       "description": "Status from GitHub while the run is recent (jobs appear before any telemetry; grey = cancelled or skipped); test counts from traces, with failures streamed from the collector while the run is in flight."
-    },
-    {
-      "id": 5,
-      "type": "text",
-      "title": "Tests (Top $test_limit by Duration)",
-      "gridPos": {
-        "h": 24,
-        "w": 24,
-        "x": 0,
-        "y": 13
-      },
-      "transparent": true,
-      "options": {
-        "mode": "html",
-        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}.ld{font:13px system-ui,sans-serif;color:#8e9197;padding:14px 12px}.ld i{display:inline-block;width:11px;height:11px;margin-right:8px;vertical-align:-2px;border:2px solid #2f3338;border-top-color:#6ab0ff;border-radius:50%;animation:s .8s linear infinite}@keyframes s{to{transform:rotate(360deg)}}</style><div class='ld'><i></i>Loading tests...</div><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>"
-      }
     }
   ],
   "schemaVersion": 41,
