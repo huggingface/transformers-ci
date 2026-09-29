@@ -41,7 +41,7 @@
     {
       "gridPos": {
         "h": 5,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 0
       },
@@ -53,6 +53,98 @@
       "pluginVersion": "12.0.0",
       "title": "Run Metadata",
       "type": "text"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "From GitHub while the run is recent, else from the trace pipeline. This page does not auto-refresh (it would reload the test list below); 'Watch live' opens the auto-refreshing view of this run.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "image"
+            },
+            "inspect": false
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4NiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDg2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PHRleHQgeD0iMjAiIHk9IjEyIiBmb250LWZhbWlseT0iSW50ZXIsSGVsdmV0aWNhLEFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiNmMmNjNjAiPlJ1bm5pbmc8L3RleHQ+PC9zdmc+",
+                  "index": 0
+                },
+                "0": {
+                  "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4NiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDg2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNzNiZjY5IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNNS4yIDguM2wyIDIgMy42LTQuMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNzNiZjY5IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjx0ZXh0IHg9IjIwIiB5PSIxMiIgZm9udC1mYW1pbHk9IkludGVyLEhlbHZldGljYSxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmaWxsPSIjNzNiZjY5Ij5GaW5pc2hlZDwvdGV4dD48L3N2Zz4=",
+                  "index": 1
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 2,
+        "x": 12,
+        "y": 0
+      },
+      "id": 8,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": false
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(max(ci_github_run_status{run_id=~\"$run_id\"} < 3) * 0 + 1) or (max(ci_github_run_status{run_id=~\"$run_id\"} == 3) * 0) or (max (last_over_time(pytest_run_active{run_id=~\"$run_id\"}[5m])) or vector(0))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Active"
+        }
+      ],
+      "title": "Live",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {},
+            "renameByName": {
+              "Value": "Live"
+            }
+          }
+        }
+      ],
+      "type": "table",
+      "links": [
+        {
+          "title": "Watch live (auto-refresh)",
+          "url": "/d/ci-live-status/live-ci-status?orgId=1&var-run=${run_id}",
+          "targetBlank": false
+        }
+      ]
     },
     {
       "datasource": {
@@ -78,9 +170,9 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 5,
-        "x": 4,
-        "y": 5
+        "w": 3,
+        "x": 14,
+        "y": 0
       },
       "id": 1,
       "options": {
@@ -141,9 +233,9 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 5,
-        "x": 9,
-        "y": 5
+        "w": 2,
+        "x": 17,
+        "y": 0
       },
       "id": 2,
       "options": {
@@ -212,9 +304,9 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 5,
-        "x": 14,
-        "y": 5
+        "w": 2,
+        "x": 19,
+        "y": 0
       },
       "id": 3,
       "options": {
@@ -270,9 +362,9 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 5,
-        "x": 19,
-        "y": 5
+        "w": 3,
+        "x": 21,
+        "y": 0
       },
       "id": 4,
       "options": {
@@ -302,22 +394,6 @@
       ],
       "title": "Started",
       "type": "stat"
-    },
-    {
-      "id": 5,
-      "type": "text",
-      "title": "Tests (Top $test_limit by Duration)",
-      "gridPos": {
-        "h": 24,
-        "w": 24,
-        "x": 0,
-        "y": 18
-      },
-      "transparent": true,
-      "options": {
-        "mode": "html",
-        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}.ld{font:13px system-ui,sans-serif;color:#8e9197;padding:14px 12px}.ld i{display:inline-block;width:11px;height:11px;margin-right:8px;vertical-align:-2px;border:2px solid #2f3338;border-top-color:#6ab0ff;border-radius:50%;animation:s .8s linear infinite}@keyframes s{to{transform:rotate(360deg)}}</style><div class='ld'><i></i>Loading tests...</div><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>"
-      }
     },
     {
       "datasource": {
@@ -549,7 +625,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 10
+        "y": 5
       },
       "id": 6,
       "options": {
@@ -692,96 +768,20 @@
       "description": "Status from GitHub while the run is recent (jobs appear before any telemetry; grey = cancelled or skipped); test counts from traces, with failures streamed from the collector while the run is in flight."
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "From GitHub while the run is recent, else from the trace pipeline. This page does not auto-refresh (it would reload the test list below); 'Watch live' opens the auto-refreshing view of this run.",
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "center",
-            "cellOptions": {
-              "type": "image"
-            },
-            "inspect": false
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "1": {
-                  "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4NiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDg2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmYzMzM4IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNOCAyYTYgNiAwIDAgMSA2IDYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2YyY2M2MCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiPjxhbmltYXRlVHJhbnNmb3JtIGF0dHJpYnV0ZU5hbWU9InRyYW5zZm9ybSIgdHlwZT0icm90YXRlIiBmcm9tPSIwIDggOCIgdG89IjM2MCA4IDgiIGR1cj0iMC44cyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiLz48L3BhdGg+PHRleHQgeD0iMjAiIHk9IjEyIiBmb250LWZhbWlseT0iSW50ZXIsSGVsdmV0aWNhLEFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiNmMmNjNjAiPlJ1bm5pbmc8L3RleHQ+PC9zdmc+",
-                  "index": 0
-                },
-                "0": {
-                  "text": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4NiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDg2IDE2Ij48Y2lyY2xlIGN4PSI4IiBjeT0iOCIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNzNiZjY5IiBzdHJva2Utd2lkdGg9IjIiLz48cGF0aCBkPSJNNS4yIDguM2wyIDIgMy42LTQuMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNzNiZjY5IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjx0ZXh0IHg9IjIwIiB5PSIxMiIgZm9udC1mYW1pbHk9IkludGVyLEhlbHZldGljYSxBcmlhbCxzYW5zLXNlcmlmIiBmb250LXNpemU9IjExIiBmaWxsPSIjNzNiZjY5Ij5GaW5pc2hlZDwvdGV4dD48L3N2Zz4=",
-                  "index": 1
-                }
-              }
-            }
-          ]
-        },
-        "overrides": []
-      },
+      "id": 5,
+      "type": "text",
+      "title": "Tests (Top $test_limit by Duration)",
       "gridPos": {
-        "h": 5,
-        "w": 4,
+        "h": 24,
+        "w": 24,
         "x": 0,
-        "y": 5
+        "y": 13
       },
-      "id": 8,
+      "transparent": true,
       "options": {
-        "cellHeight": "sm",
-        "footer": {
-          "countRows": false,
-          "fields": "",
-          "reducer": [
-            "sum"
-          ],
-          "show": false
-        },
-        "showHeader": false
-      },
-      "pluginVersion": "11.4.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "(max(ci_github_run_status{run_id=~\"$run_id\"} < 3) * 0 + 1) or (max(ci_github_run_status{run_id=~\"$run_id\"} == 3) * 0) or (max (last_over_time(pytest_run_active{run_id=~\"$run_id\"}[5m])) or vector(0))",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "Active"
-        }
-      ],
-      "title": "Live",
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true
-            },
-            "indexByName": {},
-            "renameByName": {
-              "Value": "Live"
-            }
-          }
-        }
-      ],
-      "type": "table",
-      "links": [
-        {
-          "title": "Watch live (auto-refresh)",
-          "url": "/d/ci-live-status/live-ci-status?orgId=1&var-run=${run_id}",
-          "targetBlank": false
-        }
-      ]
+        "mode": "html",
+        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}.ld{font:13px system-ui,sans-serif;color:#8e9197;padding:14px 12px}.ld i{display:inline-block;width:11px;height:11px;margin-right:8px;vertical-align:-2px;border:2px solid #2f3338;border-top-color:#6ab0ff;border-radius:50%;animation:s .8s linear infinite}@keyframes s{to{transform:rotate(360deg)}}</style><div class='ld'><i></i>Loading tests...</div><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>"
+      }
     }
   ],
   "schemaVersion": 41,
