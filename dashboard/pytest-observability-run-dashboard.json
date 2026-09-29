@@ -41,7 +41,7 @@
     {
       "gridPos": {
         "h": 5,
-        "w": 10,
+        "w": 12,
         "x": 0,
         "y": 0
       },
@@ -90,7 +90,7 @@
       "gridPos": {
         "h": 5,
         "w": 4,
-        "x": 10,
+        "x": 12,
         "y": 0
       },
       "id": 8,
@@ -156,8 +156,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 8,
-        "x": 14,
+        "w": 5,
+        "x": 16,
         "y": 0
       },
       "description": "Passed and failed tests of this run; the legend shows each count and share. Counts stream in live before the run's totals are final.",
@@ -211,8 +211,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "decimals": 0,
+          "unit": "locale",
           "color": {
             "mode": "palette-classic"
           }
@@ -276,8 +275,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 2,
-        "x": 22,
+        "w": 3,
+        "x": 21,
         "y": 0
       },
       "id": 4,

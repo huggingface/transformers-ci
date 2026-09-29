@@ -133,7 +133,7 @@
     {
       "gridPos": {
         "h": 5,
-        "w": 3,
+        "w": 4,
         "x": 3,
         "y": 0
       },
@@ -155,9 +155,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 6,
+        "x": 7,
         "y": 0,
-        "w": 2,
+        "w": 3,
         "h": 5
       },
       "pluginVersion": "12.0.0",
@@ -220,8 +220,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 9,
-        "x": 8,
+        "w": 5,
+        "x": 10,
         "y": 0
       },
       "description": "Passed and failed tests of this job; the legend shows each count and share. Counts stream in live before the run's totals are final.",
@@ -275,8 +275,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "decimals": 0,
+          "unit": "locale",
           "color": {
             "mode": "palette-classic"
           }
@@ -339,8 +338,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 2,
-        "x": 17,
+        "w": 3,
+        "x": 15,
         "y": 0
       },
       "id": 24,
@@ -396,8 +395,8 @@
       },
       "gridPos": {
         "h": 5,
-        "w": 2,
-        "x": 19,
+        "w": 3,
+        "x": 18,
         "y": 0
       },
       "id": 26,
