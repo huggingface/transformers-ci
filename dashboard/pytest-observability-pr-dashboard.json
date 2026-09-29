@@ -158,6 +158,10 @@
                     }
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 60
               }
             ]
           },
@@ -282,10 +286,6 @@
                 ]
               },
               {
-                "id": "custom.width",
-                "value": 80
-              },
-              {
                 "id": "links",
                 "value": [
                   {
@@ -293,6 +293,10 @@
                     "url": "/d/ci-runners/runners"
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 80
               }
             ]
           },
@@ -328,6 +332,18 @@
               {
                 "id": "custom.width",
                 "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Pass"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 70
               }
             ]
           }
@@ -454,18 +470,18 @@
           "id": "organize",
           "options": {
             "excludeByName": {
-              "Time": true
+              "Time": true,
+              "ci_event": true
             },
             "indexByName": {
               "Value #Active": 0,
               "test_job": 1,
-              "hardware": 2,
-              "ci_event": 3,
-              "Value #Started": 4,
-              "Value #Duration": 5,
-              "Value #Wall": 6,
-              "Value #Pass": 7,
-              "Value #Fail": 8
+              "Value #Pass": 2,
+              "Value #Fail": 3,
+              "hardware": 4,
+              "Value #Started": 5,
+              "Value #Duration": 6,
+              "Value #Wall": 7
             },
             "renameByName": {
               "test_job": "Job",
