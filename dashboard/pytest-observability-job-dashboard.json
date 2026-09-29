@@ -39,448 +39,6 @@
   ],
   "panels": [
     {
-      "gridPos": {
-        "h": 5,
-        "w": 3,
-        "x": 3,
-        "y": 0
-      },
-      "id": 20,
-      "options": {
-        "content": "### `${job}`\n\n**Run:** [${run_id}](/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id})\n\n**PR:** [${pr}](/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr})\n\n**Runners:** ${job_runners:csv}\n\n<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>",
-        "mode": "markdown"
-      },
-      "pluginVersion": "12.0.0",
-      "title": "Job",
-      "type": "text"
-    },
-    {
-      "id": 27,
-      "type": "stat",
-      "title": "Hardware",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "x": 6,
-        "y": 0,
-        "w": 2,
-        "h": 5
-      },
-      "pluginVersion": "12.0.0",
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "textMode": "name",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": true
-        }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "purple"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "purple"
-              }
-            ]
-          },
-          "links": [
-            {
-              "title": "Runners",
-              "url": "/d/ci-runners/runners"
-            }
-          ]
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "label_replace(label_replace(label_replace(label_replace((group by (hardware) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])) or group by (hardware) (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[6h]))),\"hw\",\"CPU\",\"hardware\",\"cpu\"),\"hw\",\"GPU\",\"hardware\",\"gpu\"),\"hw\",\"GPU\",\"hardware\",\"single-gpu\"),\"hw\",\"xGPU\",\"hardware\",\"multi-gpu\")",
-          "instant": true,
-          "legendFormat": "{{hw}}",
-          "range": false,
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "blue"
-              }
-            ]
-          }
-        }
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 3,
-        "x": 8,
-        "y": 0
-      },
-      "id": 21,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "max(label_replace(sum(max without (instance) (last_over_time(pytest_run_job_total_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[1d])) and on () (count(count by (run_id) (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\"}[1d]))) == 1), \"src\", \"live\", \"\", \"\"))",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Tests",
-      "type": "stat",
-      "description": "Tests run so far: streamed from the collector while the run is in flight, then the trace exporter's final count."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              }
-            ]
-          }
-        }
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 3,
-        "x": 11,
-        "y": 0
-      },
-      "id": 22,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_passed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))) or vector(0)",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Passed",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          }
-        }
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 3,
-        "x": 14,
-        "y": 0
-      },
-      "id": 23,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "max(label_replace(sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\",hardware=~\"$hardware\",status_code=\"STATUS_CODE_ERROR\"}[1d])) and on () (count(count by (run_id) (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\"}[1d]))) == 1), \"src\", \"live\", \"\", \"\")) or vector(0)",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Failed",
-      "type": "stat",
-      "description": "Failed tests so far: streamed from the collector while the run is in flight, then the trace exporter's final count."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "blue"
-              }
-            ]
-          },
-          "unit": "s"
-        }
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 2,
-        "x": 17,
-        "y": 0
-      },
-      "id": 24,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])))",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Test Time",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "blue"
-              }
-            ]
-          },
-          "unit": "dateTimeFromNow"
-        }
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 3,
-        "x": 21,
-        "y": 0
-      },
-      "id": 25,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "max(max without (instance) (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))) * 1000",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Started",
-      "type": "stat"
-    },
-    {
-      "id": 14,
-      "type": "text",
-      "title": "Tests for Selected Run (Top $test_limit by Duration)",
-      "gridPos": {
-        "h": 22,
-        "w": 24,
-        "x": 0,
-        "y": 11
-      },
-      "transparent": true,
-      "options": {
-        "mode": "html",
-        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}.ld{font:13px system-ui,sans-serif;color:#8e9197;padding:14px 12px}.ld i{display:inline-block;width:11px;height:11px;margin-right:8px;vertical-align:-2px;border:2px solid #2f3338;border-top-color:#6ab0ff;border-radius:50%;animation:s .8s linear infinite}@keyframes s{to{transform:rotate(360deg)}}</style><div class='ld'><i></i>Loading tests...</div><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&job='+encodeURIComponent('${job}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>"
-      }
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "blue"
-              }
-            ]
-          },
-          "unit": "s"
-        }
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 2,
-        "x": 19,
-        "y": 0
-      },
-      "id": 26,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "max(max without (instance) (last_over_time(pytest_run_job_wall_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])))",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Wall",
-      "type": "stat"
-    },
-    {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -571,6 +129,362 @@
           "targetBlank": false
         }
       ]
+    },
+    {
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 3,
+        "y": 0
+      },
+      "id": 20,
+      "options": {
+        "mode": "html",
+        "content": "<style>.tci-hd{font:600 18px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.tci-hd code{font-size:14px}.tci-meta{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}.tci-meta li{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;padding:3px 8px;border:1px solid rgba(204,204,220,.15);border-radius:4px;background:rgba(204,204,220,.04);font-size:12px;line-height:18px}.tci-meta .k{flex:none;color:#8e9197;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}.tci-meta code{font-size:11px;padding:0;background:none}.tci-meta a,.tci-meta .v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}</style><div class=\"tci-hd\"><code>${job}</code></div><ul class=\"tci-meta\"><li><span class=\"k\">Run</span><a href=\"/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${run_id}\">${run_id}</a></li><li><span class=\"k\">PR</span><a href=\"/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr}\">${pr}</a></li><li><span class=\"k\">Runners</span><span class=\"v\">${job_runners:csv}</span></li></ul><iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
+      },
+      "pluginVersion": "12.0.0",
+      "title": "Job",
+      "type": "text"
+    },
+    {
+      "id": 27,
+      "type": "stat",
+      "title": "Hardware",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 2,
+        "h": 5
+      },
+      "pluginVersion": "12.0.0",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "name",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": true
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "purple"
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "Runners",
+              "url": "/d/ci-runners/runners"
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace(label_replace(label_replace(label_replace((group by (hardware) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])) or group by (hardware) (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[6h]))),\"hw\",\"CPU\",\"hardware\",\"cpu\"),\"hw\",\"GPU\",\"hardware\",\"gpu\"),\"hw\",\"GPU\",\"hardware\",\"single-gpu\"),\"hw\",\"xGPU\",\"hardware\",\"multi-gpu\")",
+          "instant": true,
+          "legendFormat": "{{hw}}",
+          "range": false,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "piechart",
+      "title": "Tests",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 9,
+        "x": 8,
+        "y": 0
+      },
+      "description": "Passed and failed tests of this job; the legend shows each count and share. Counts stream in live before the run's totals are final.",
+      "targets": [
+        {
+          "refId": "PASSED",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(max(label_replace(sum(max without (instance) (last_over_time(pytest_run_job_total_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[1d])) and on () (count(count by (run_id) (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\"}[1d]))) == 1), \"src\", \"live\", \"\", \"\"))) - max(max(label_replace(sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\",hardware=~\"$hardware\",status_code=\"STATUS_CODE_ERROR\"}[1d])) and on () (count(count by (run_id) (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\"}[1d]))) == 1), \"src\", \"live\", \"\", \"\")) or vector(0))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Passed"
+        },
+        {
+          "refId": "FAILED",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(max(label_replace(sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\",hardware=~\"$hardware\",status_code=\"STATUS_CODE_ERROR\"}[1d])) and on () (count(count by (run_id) (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\"}[1d]))) == 1), \"src\", \"live\", \"\", \"\")) or vector(0))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Failed"
+        }
+      ],
+      "options": {
+        "pieType": "donut",
+        "displayLabels": [],
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Passed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue"
+              }
+            ]
+          },
+          "unit": "s"
+        }
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 2,
+        "x": 17,
+        "y": 0
+      },
+      "id": 24,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_duration_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])))",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Test Time",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue"
+              }
+            ]
+          },
+          "unit": "s"
+        }
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 2,
+        "x": 19,
+        "y": 0
+      },
+      "id": 26,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "max(max without (instance) (last_over_time(pytest_run_job_wall_seconds{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])))",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Wall",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue"
+              }
+            ]
+          },
+          "unit": "dateTimeFromNow"
+        }
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 21,
+        "y": 0
+      },
+      "id": 25,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "max(max without (instance) (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))) * 1000",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Started",
+      "type": "stat"
     },
     {
       "id": 29,
@@ -839,6 +753,22 @@
           "countRows": false
         }
       }
+    },
+    {
+      "id": 14,
+      "type": "text",
+      "title": "Tests for Selected Run (Top $test_limit by Duration)",
+      "gridPos": {
+        "h": 22,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<iframe title=\"run tests\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}.ld{font:13px system-ui,sans-serif;color:#8e9197;padding:14px 12px}.ld i{display:inline-block;width:11px;height:11px;margin-right:8px;vertical-align:-2px;border:2px solid #2f3338;border-top-color:#6ab0ff;border-radius:50%;animation:s .8s linear infinite}@keyframes s{to{transform:rotate(360deg)}}</style><div class='ld'><i></i>Loading tests...</div><script>var u=parent.location.protocol+'//'+parent.location.host+'/run?run_id='+encodeURIComponent('${run_id}')+'&job='+encodeURIComponent('${job}')+'&status='+encodeURIComponent('${status_filter}')+'&hardware='+encodeURIComponent('${hardware}')+'&limit='+encodeURIComponent('${test_limit}')+(function(){var q=new URLSearchParams(parent.location.search),ms=function(x){return /^[0-9]+$/.test(x||'')?+x:(x&&!/^now/.test(x)?Date.parse(x):NaN);},f=ms(q.get('from')),t=ms(q.get('to'));return isFinite(f)&&isFinite(t)?'&from='+f+'&to='+t:'';})();location.replace(u);</script>\"></iframe>"
+      }
     }
   ],
   "schemaVersion": 41,
@@ -1051,7 +981,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(count by (runner_type) ((ci_github_job_runner_info{run_id=~\"$run_id\"} and on (repository, run_id, job_id) ci_github_job_info{test_job=~\"$job\"}) or last_over_time(pytest_run_runner_info{run_id=~\"$run_id\",test_job=~\"$job\"}[90d])), \"md\", \"[$1](/d/ci-runners/runners)\", \"runner_type\", \"(.+)\"))",
+        "definition": "query_result(label_replace(count by (runner_type) ((ci_github_job_runner_info{run_id=~\"$run_id\"} and on (repository, run_id, job_id) ci_github_job_info{test_job=~\"$job\"}) or last_over_time(pytest_run_runner_info{run_id=~\"$run_id\",test_job=~\"$job\"}[90d])), \"md\", \"<a href='/d/ci-runners/runners'>$1</a>\", \"runner_type\", \"(.+)\"))",
         "hide": 2,
         "includeAll": true,
         "multi": true,
@@ -1060,7 +990,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(count by (runner_type) ((ci_github_job_runner_info{run_id=~\"$run_id\"} and on (repository, run_id, job_id) ci_github_job_info{test_job=~\"$job\"}) or last_over_time(pytest_run_runner_info{run_id=~\"$run_id\",test_job=~\"$job\"}[90d])), \"md\", \"[$1](/d/ci-runners/runners)\", \"runner_type\", \"(.+)\"))",
+          "query": "query_result(label_replace(count by (runner_type) ((ci_github_job_runner_info{run_id=~\"$run_id\"} and on (repository, run_id, job_id) ci_github_job_info{test_job=~\"$job\"}) or last_over_time(pytest_run_runner_info{run_id=~\"$run_id\",test_job=~\"$job\"}[90d])), \"md\", \"<a href='/d/ci-runners/runners'>$1</a>\", \"runner_type\", \"(.+)\"))",
           "refId": "Prometheus-job_runners-Variable-Query"
         },
         "regex": "/md=\"([^\"]+)\"/",
