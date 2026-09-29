@@ -6483,6 +6483,70 @@ def _render_run_toolbar(query: dict[str, list[str]], status: str, group: str) ->
     )
 
 
+_LIVE_COUNTS_TTL_SECONDS = 10.0
+_live_counts_cache: dict[
+    tuple[str, str, str], tuple[float, tuple[int, int] | None]
+] = {}
+_live_counts_lock = threading.Lock()
+
+
+def live_test_counts(
+    run_id: str, job: str = "", hardware: str = ""
+) -> tuple[int, int] | None:
+    """``(tests, failures)`` otelcol has counted for a run (optionally one job /
+    hardware) as the spans streamed in, from ``ci_live_calls_total``.
+
+    Ahead of the exporter by minutes: it counts spans on arrival, while /run
+    waits for the job's trace to be searched, fetched and shaped. Summed over
+    the otelcol replicas (each holds a share). ``None`` when Prometheus cannot
+    be asked or has nothing: callers then show only what the exporter has.
+    Cached briefly, since a live /run page polls every 30 s.
+    """
+    base_url = prometheus_base_url()
+    if not run_id or not base_url:
+        return None
+    key = (run_id, job, hardware)
+    now = time.monotonic()
+    with _live_counts_lock:
+        hit = _live_counts_cache.get(key)
+        if hit is not None and now - hit[0] < _LIVE_COUNTS_TTL_SECONDS:
+            return hit[1]
+    matchers = [f'run_id="{run_id}"']
+    if job:
+        matchers.append(f'test_job="{job}"')
+    if hardware:
+        matchers.append(f'hardware="{hardware}"')
+    query = (
+        "sum by (status_code) (last_over_time(ci_live_calls_total{"
+        + ",".join(matchers)
+        + "}[6h]))"
+    )
+    counts: tuple[int, int] | None = None
+    try:
+        payload = _http_get_json(
+            f"{base_url}/api/v1/query?{urlencode({'query': query})}",
+            timeout=3,
+            upstream="prometheus",
+        )
+        result = (
+            payload.get("data", {}).get("result", [])
+            if isinstance(payload, dict)
+            else []
+        )
+        tests = failures = 0
+        for item in result:
+            value = int(float(item["value"][1]))
+            tests += value
+            if item["metric"].get("status_code") == "STATUS_CODE_ERROR":
+                failures += value
+        counts = (tests, failures) if tests else None
+    except Exception:
+        counts = None
+    with _live_counts_lock:
+        _live_counts_cache[key] = (time.monotonic(), counts)
+    return counts
+
+
 def render_run_html(
     run_id: str,
     rows: list[dict[str, str | float]],
@@ -6494,6 +6558,7 @@ def render_run_html(
     group: str = "",
     query: dict[str, list[str]] | None = None,
     live: bool = False,
+    live_counts: tuple[int, int] | None = None,
 ) -> str:
     """Render the per-run test table (sortable, links to the per-test page).
 
@@ -6505,6 +6570,8 @@ def render_run_html(
     its own "Group by" links (same query, ``group`` swapped), so the choice
     lives in the panel rather than in a dashboard variable. ``live`` (the run
     is still in flight) makes the page poll itself and update in place.
+    ``live_counts`` (:func:`live_test_counts`) adds a banner when the live stream
+    has seen failures the exporter has no rows for yet.
     """
     esc = html.escape
     # Optional hardware filter (raw name, e.g. "single-gpu"). Sentinels from the
@@ -6578,6 +6645,8 @@ def render_run_html(
         ".btn.on{position:relative;z-index:1;background:#3d71d9;color:#fff;"
         "border-color:#3d71d9}"
         ".done{color:#8e9197}"
+        ".pending{margin:0 0 10px;padding:6px 10px;border-radius:4px;"
+        "background:rgba(255,138,128,.12);color:#ff8a80;font-weight:600}"
         ".live{color:#73bf69;animation:livepulse 2s ease-in-out infinite}"
         ".live .dot{display:inline-block;animation:livedot 1s ease-in-out infinite}"
         "@keyframes livepulse{50%{opacity:.55}}"
@@ -6624,6 +6693,20 @@ def render_run_html(
                 group if grouped else "none",
             )
         )
+
+    if live_counts is not None:
+        live_tests, live_failures = live_counts
+        known_failures = sum(
+            1 for r in job_rows if str(r.get("status_code", "")) == "ERROR"
+        )
+        if live_failures > known_failures:
+            missing = live_failures - known_failures
+            out.append(
+                "<p class='pending'>⚠ "
+                f"{_plural(missing, 'failing test')} reported by the live stream "
+                "that this list does not have yet — details arriving "
+                f"({len(job_rows):,} of {live_tests:,} tests in so far)</p>"
+            )
 
     if not rows:
         if status_active and job_rows:
@@ -6838,6 +6921,19 @@ class MetricsHandler(BaseHTTPRequestHandler):
         from_s, to_s = _ts("from"), _ts("to")
         window = (from_s, to_s) if from_s is not None and to_s is not None else None
         rows = gather_run_test_rows(run_id, window=window) if run_id else []
+        hardware_filter = (
+            hardware if hardware not in ("", ".+", ".*", "All", "$__all") else ""
+        )
+        live_counts = live_test_counts(run_id, job, hardware_filter)
+        known = sum(
+            1
+            for r in rows
+            if (not job or str(r.get("test_job", "")) == job)
+            and str(r.get("status_code", "")) == "ERROR"
+        )
+        # Keep polling while the live stream is ahead, even once the run is
+        # over, or a finished run would stop before its failures arrive.
+        pending = live_counts is not None and live_counts[1] > known
         self._send(
             200,
             "text/html; charset=utf-8",
@@ -6850,7 +6946,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 hardware=hardware,
                 group=group,
                 query=params,
-                live=run_is_active(run_id),
+                live=run_is_active(run_id) or pending,
+                live_counts=live_counts,
             ).encode("utf-8"),
             cache_control=_public_cache_control_header(),
         )

@@ -110,7 +110,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "label_replace(label_replace(label_replace(label_replace(group by (hardware) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])),\"hw\",\"CPU\",\"hardware\",\"cpu\"),\"hw\",\"GPU\",\"hardware\",\"gpu\"),\"hw\",\"GPU\",\"hardware\",\"single-gpu\"),\"hw\",\"xGPU\",\"hardware\",\"multi-gpu\")",
+          "expr": "label_replace(label_replace(label_replace(label_replace((group by (hardware) (last_over_time(pytest_run_job_member_info{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])) or group by (hardware) (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[6h]))),\"hw\",\"CPU\",\"hardware\",\"cpu\"),\"hw\",\"GPU\",\"hardware\",\"gpu\"),\"hw\",\"GPU\",\"hardware\",\"single-gpu\"),\"hw\",\"xGPU\",\"hardware\",\"multi-gpu\")",
           "instant": true,
           "legendFormat": "{{hw}}",
           "range": false,

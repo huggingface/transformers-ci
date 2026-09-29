@@ -5947,3 +5947,54 @@ def test_badge_still_asks_tempo_when_prometheus_is_down(monkeypatch) -> None:
     )
     trace_exporter.render_pr_badge_svg("48171", trace_exporter.BADGE_EVENT_RUN_SLOW)
     assert searched == [1]
+
+
+def test_render_run_html_flags_failures_the_live_stream_saw_first() -> None:
+    rows = [r for r in _grouping_rows() if r["status_code"] == "OK"]
+    # otelcol counted 1 failure among 3 tests; the exporter has only the pass.
+    out = trace_exporter.render_run_html(
+        "1:1", rows, status="ERROR", query={}, live_counts=(3, 1)
+    )
+    assert "1 failing test reported by the live stream" in out
+    assert "(1 of 3 tests in so far)" in out
+    # Once the exporter has the failure, the banner goes away.
+    caught_up = trace_exporter.render_run_html(
+        "1:1", _grouping_rows(), status="ERROR", query={}, live_counts=(5, 4)
+    )
+    assert "live stream" not in caught_up
+    # No live counts (Prometheus down): nothing is claimed.
+    assert "live stream" not in trace_exporter.render_run_html(
+        "1:1", rows, status="ERROR", query={}
+    )
+
+
+def test_live_test_counts_sums_replicas_and_errors(monkeypatch) -> None:
+    trace_exporter._live_counts_cache.clear()
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_PROMETHEUS_URL", "http://prometheus:9090")
+    seen = []
+
+    def _query(url, **_kwargs):
+        seen.append(url)
+        return {
+            "status": "success",
+            "data": {
+                "result": [
+                    {
+                        "metric": {"status_code": "STATUS_CODE_OK"},
+                        "value": [0, "141874"],
+                    },
+                    {
+                        "metric": {"status_code": "STATUS_CODE_UNSET"},
+                        "value": [0, "25"],
+                    },
+                    {"metric": {"status_code": "STATUS_CODE_ERROR"}, "value": [0, "1"]},
+                ]
+            },
+        }
+
+    monkeypatch.setattr(trace_exporter, "_http_get_json", _query)
+    assert trace_exporter.live_test_counts("9:1", "tests_torch") == (141900, 1)
+    assert "test_job%3D%22tests_torch%22" in seen[0]
+    # Cached: a polling page does not re-query every 30 s per viewer.
+    trace_exporter.live_test_counts("9:1", "tests_torch")
+    assert len(seen) == 1
