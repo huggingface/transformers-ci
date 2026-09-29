@@ -6331,8 +6331,13 @@ _RUN_ERROR_TOGGLE_JS = (
     "var tr=b.closest('tr'),n=tr.nextElementSibling;"
     "if(n&&n.classList.contains('tbrow')){n.remove();b.textContent='error ▸';return;}"
     "var r=document.createElement('tr');r.className='tbrow';"
-    'r.innerHTML=\'<td colspan="5"><iframe title="traceback"></iframe></td>\';'
-    "var f=r.querySelector('iframe');f.onload=function(){try{f.style.height="
+    # A spinner until /failure answers (it fetches and parses the trace), then
+    # the frame, sized to its content.
+    'r.innerHTML=\'<td colspan="5"><div class="tbload"><i></i>Loading error '
+    'details...</div><iframe title="traceback" style="display:none"></iframe>'
+    "</td>';"
+    "var f=r.querySelector('iframe'),l=r.querySelector('.tbload');"
+    "f.onload=function(){if(l)l.remove();f.style.display='';try{f.style.height="
     "Math.min(600,f.contentDocument.documentElement.scrollHeight+4)+'px';}"
     "catch(_){}};f.src=b.dataset.src;tr.after(r);b.textContent='error ▾';"
     "});</script>"
@@ -6646,6 +6651,11 @@ def render_run_html(
         "border:1px solid #3a3d44;border-radius:3px;color:#8e9197;"
         "font:11px system-ui,sans-serif}button.tb:hover{color:#d8d9da}"
         "tr.tbrow td{padding:0 0 6px;white-space:normal}"
+        ".tbload{padding:10px 12px;color:#8e9197;font:12px system-ui,sans-serif}"
+        ".tbload i{display:inline-block;width:10px;height:10px;margin-right:8px;"
+        "vertical-align:-1px;border:2px solid #2f3338;border-top-color:#6ab0ff;"
+        "border-radius:50%;animation:tbspin .8s linear infinite}"
+        "@keyframes tbspin{to{transform:rotate(360deg)}}"
         "tr.tbrow iframe{width:100%;height:120px;border:1px solid #24262b;"
         "border-radius:4px;background:#0b0c0e}"
         # Grafana's outline secondary button (measured off the dashboards' own
