@@ -47,8 +47,8 @@
       },
       "id": 7,
       "options": {
-        "content": "### Run `${run_id:raw}`\n\n<img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"16\" height=\"16\" alt=\"GH\"/> PR [#${pr:raw}](${run_pr_url:raw}) | Commit [${run_commit:raw}](${run_commit_url:raw}) | SHA `${run_commit_sha:raw}`\n\n<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>",
-        "mode": "markdown"
+        "mode": "html",
+        "content": "<style>.tci-hd{font:600 18px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.tci-hd code{font-size:14px}.tci-meta{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}.tci-meta li{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;padding:3px 8px;border:1px solid rgba(204,204,220,.15);border-radius:4px;background:rgba(204,204,220,.04);font-size:12px;line-height:18px}.tci-meta .k{flex:none;color:#8e9197;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}.tci-meta code{font-size:11px;padding:0;background:none}.tci-meta a,.tci-meta .v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}</style><div class=\"tci-hd\">Run <code>${run_id:raw}</code></div><ul class=\"tci-meta\"><li><span class=\"k\">${run_ref_kind:raw}</span><a href=\"${run_pr_url:raw}\">${run_ref:raw}</a></li><li><span class=\"k\">Commit</span><a href=\"${run_commit_url:raw}\" title=\"${run_commit:raw}\">${run_commit:raw}</a></li><li><span class=\"k\">SHA</span><code title=\"${run_commit_sha:raw}\">${run_commit_sha:raw}</code></li></ul><iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
       },
       "pluginVersion": "12.0.0",
       "title": "Run Metadata",
@@ -147,39 +147,47 @@
       ]
     },
     {
+      "id": 1,
+      "type": "piechart",
+      "title": "Tests",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green"
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
       "gridPos": {
         "h": 5,
-        "w": 3,
+        "w": 8,
         "x": 14,
         "y": 0
       },
-      "id": 1,
+      "description": "Passed and failed tests of this run; the legend shows each count and share. Counts stream in live before the run's totals are final.",
+      "targets": [
+        {
+          "refId": "PASSED",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(max(label_replace((sum(max without (instance) (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])))), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{run_id=~\"$run_id\"}[1d])), \"src\", \"live\", \"\", \"\"))) - max(max(label_replace((sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]))) or vector(0)), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{run_id=~\"$run_id\",status_code=\"STATUS_CODE_ERROR\"}[1d])), \"src\", \"live\", \"\", \"\")))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Passed"
+        },
+        {
+          "refId": "FAILED",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(max(label_replace((sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]))) or vector(0)), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{run_id=~\"$run_id\",status_code=\"STATUS_CODE_ERROR\"}[1d])), \"src\", \"live\", \"\", \"\")))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Failed"
+        }
+      ],
       "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
+        "pieType": "donut",
+        "displayLabels": [],
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -187,155 +195,61 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "max(label_replace((sum(max without (instance) (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])))), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{run_id=~\"$run_id\"}[1d])), \"src\", \"live\", \"\", \"\"))",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
         }
-      ],
-      "title": "Total Tests",
-      "type": "stat",
-      "description": "Tests run so far: streamed from the collector while the run is in flight, then the trace exporter's final count."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
       },
       "fieldConfig": {
         "defaults": {
+          "unit": "short",
+          "decimals": 0,
           "color": {
-            "mode": "thresholds"
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Passed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
           },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failed"
+            },
+            "properties": [
               {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
               }
             ]
           }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 2,
-        "x": 17,
-        "y": 0
-      },
-      "id": 2,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "max(label_replace((sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]))) or vector(0)), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{run_id=~\"$run_id\",status_code=\"STATUS_CODE_ERROR\"}[1d])), \"src\", \"live\", \"\", \"\"))",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Failed",
-      "type": "stat",
-      "description": "Failed tests so far: streamed from the collector while the run is in flight, then the trace exporter's final count."
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 90
-              },
-              {
-                "color": "green",
-                "value": 99
-              }
-            ]
-          },
-          "unit": "percent",
-          "decimals": 2
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 3,
-        "x": 19,
-        "y": 0
-      },
-      "id": 3,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "value"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "floor((100 * ((sum(max without (instance) (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])))) - (sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]))) or vector(0))) / (sum(max without (instance) (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))))) * 100) / 100",
-          "instant": true,
-          "legendFormat": "__auto",
-          "range": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Pass Rate",
-      "type": "stat"
+        ]
+      }
     },
     {
       "datasource": {
@@ -1052,6 +966,54 @@
         ],
         "query": "100,500,1000,2000",
         "type": "custom"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(label_replace(label_replace(label_replace(vector(1), \"v\", \"$pr\", \"\", \"\"), \"k\", \"Branch\", \"\", \"\"), \"k\", \"PR\", \"v\", \"[0-9]+\"))",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "label": "",
+        "name": "run_ref_kind",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(label_replace(label_replace(label_replace(vector(1), \"v\", \"$pr\", \"\", \"\"), \"k\", \"Branch\", \"\", \"\"), \"k\", \"PR\", \"v\", \"[0-9]+\"))",
+          "refId": "Prometheus-run_ref_kind-Variable-Query"
+        },
+        "regex": "/k=\"([^\"]+)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(label_replace(label_replace(label_replace(vector(1), \"v\", \"$pr\", \"\", \"\"), \"r\", \"$1\", \"v\", \"(.*)\"), \"r\", \"#$1\", \"v\", \"([0-9]+)\"))",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "label": "",
+        "name": "run_ref",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(label_replace(label_replace(label_replace(vector(1), \"v\", \"$pr\", \"\", \"\"), \"r\", \"$1\", \"v\", \"(.*)\"), \"r\", \"#$1\", \"v\", \"([0-9]+)\"))",
+          "refId": "Prometheus-run_ref-Variable-Query"
+        },
+        "regex": "/r=\"([^\"]+)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
       }
     ]
   },

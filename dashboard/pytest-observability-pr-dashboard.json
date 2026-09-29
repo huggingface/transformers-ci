@@ -42,8 +42,8 @@
       },
       "id": 9,
       "options": {
-        "content": "### <img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"18\" height=\"18\" alt=\"GH\"/> [${branch_label:raw}](${branch_url:raw})${pr_title_section:raw} ${pr_state_badge:raw}\n\n<img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"16\" height=\"16\" alt=\"GH\"/> [${latest_commit:raw}](${latest_commit_url:raw})\n\n**Repo:** `${pr_repository:raw}` | **Runs:** `${pr_total_runs:raw}`${pr_metadata_section:raw}\n\n**Runners (all runs):** ${pr_runners:csv}\n\n<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>",
-        "mode": "markdown"
+        "mode": "html",
+        "content": "<style>.tci-hd{font:600 18px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.tci-hd code{font-size:14px}.tci-meta{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}.tci-meta li{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;padding:3px 8px;border:1px solid rgba(204,204,220,.15);border-radius:4px;background:rgba(204,204,220,.04);font-size:12px;line-height:18px}.tci-meta .k{flex:none;color:#8e9197;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}.tci-meta code{font-size:11px;padding:0;background:none}.tci-meta a,.tci-meta .v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}</style><div class=\"tci-hd\"><img src=\"https://github.githubassets.com/favicons/favicon-dark.svg\" width=\"18\" height=\"18\" alt=\"GH\"/> <a href=\"${branch_url:raw}\">${branch_label:raw}</a>${pr_title_section:raw} ${pr_state_badge:raw}</div><ul class=\"tci-meta\"><li><span class=\"k\">Latest commit</span><a href=\"${latest_commit_url:raw}\" title=\"${latest_commit:raw}\">${latest_commit:raw}</a></li><li><span class=\"k\">Repo</span><code>${pr_repository:raw}</code></li><li><span class=\"k\">Runs</span>${pr_total_runs:raw}</li>${pr_metadata_section:raw}<li><span class=\"k\">Runners</span><span class=\"v\">${pr_runners:csv}</span></li></ul><iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
       },
       "pluginVersion": "12.0.0",
       "title": "Branch",
@@ -1283,7 +1283,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(count by (runner_type) ((last_over_time(ci_github_job_runner_info[30d]) * on (repository, run_id) group_left() max by (repository, run_id) (last_over_time(ci_github_run_info{pr=~\"$pr\"}[30d]))) or last_over_time(pytest_run_runner_info{pr=~\"$pr\"}[90d])), \"md\", \"[$1](/d/ci-runners/runners)\", \"runner_type\", \"(.+)\"))",
+        "definition": "query_result(label_replace(count by (runner_type) ((last_over_time(ci_github_job_runner_info[30d]) * on (repository, run_id) group_left() max by (repository, run_id) (last_over_time(ci_github_run_info{pr=~\"$pr\"}[30d]))) or last_over_time(pytest_run_runner_info{pr=~\"$pr\"}[90d])), \"md\", \"<a href='/d/ci-runners/runners'>$1</a>\", \"runner_type\", \"(.+)\"))",
         "hide": 2,
         "includeAll": true,
         "multi": true,
@@ -1292,7 +1292,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(count by (runner_type) ((last_over_time(ci_github_job_runner_info[30d]) * on (repository, run_id) group_left() max by (repository, run_id) (last_over_time(ci_github_run_info{pr=~\"$pr\"}[30d]))) or last_over_time(pytest_run_runner_info{pr=~\"$pr\"}[90d])), \"md\", \"[$1](/d/ci-runners/runners)\", \"runner_type\", \"(.+)\"))",
+          "query": "query_result(label_replace(count by (runner_type) ((last_over_time(ci_github_job_runner_info[30d]) * on (repository, run_id) group_left() max by (repository, run_id) (last_over_time(ci_github_run_info{pr=~\"$pr\"}[30d]))) or last_over_time(pytest_run_runner_info{pr=~\"$pr\"}[90d])), \"md\", \"<a href='/d/ci-runners/runners'>$1</a>\", \"runner_type\", \"(.+)\"))",
           "refId": "Prometheus-pr_runners-Variable-Query"
         },
         "regex": "/md=\"([^\"]+)\"/",
@@ -1448,7 +1448,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(group by (pr) (pytest_pr_info{pr=~\"$pr\"}), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days | **Last event:** `${pr_last_event_hours:raw}h ago`\", \"pr\", \".*\"))",
+        "definition": "query_result(label_replace(group by (pr) (pytest_pr_info{pr=~\"$pr\"}), \"m\", \"<li><span class='k'>Author</span>${pr_author:raw}</li><li><span class='k'>State</span>${pr_state:raw}</li><li><span class='k'>Age</span>${pr_age_days:raw} days</li><li><span class='k'>Last event</span>${pr_last_event_hours:raw}h ago</li>\", \"pr\", \".*\"))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -1456,7 +1456,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(topk(1, max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))), \"m\", \" | **Author:** `${pr_author:raw}` | **State:** `${pr_state:raw}` | **Age:** `${pr_age_days:raw}` days | **Last event:** `${pr_last_event_hours:raw}h ago`\", \"pr\", \".*\"))",
+          "query": "query_result(label_replace(topk(1, max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))), \"m\", \"<li><span class='k'>Author</span>${pr_author:raw}</li><li><span class='k'>State</span>${pr_state:raw}</li><li><span class='k'>Age</span>${pr_age_days:raw} days</li><li><span class='k'>Last event</span>${pr_last_event_hours:raw}h ago</li>\", \"pr\", \".*\"))",
           "refId": "Prometheus-pr_metadata_section-Variable-Query"
         },
         "regex": "/m=\"([^\"]+)\"/",
