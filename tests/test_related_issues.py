@@ -214,3 +214,14 @@ def test_foreign_trace_context_is_not_sent_to_relore(server, monkeypatch):
     with urlopen(server + "/related-issues?" + params) as response:
         assert json.load(response)["context"] == "test-only"
     assert calls[0]["query"] == NODE
+
+
+def test_serge_actions_shell(server):
+    with urlopen(server + "/serge-actions") as response:
+        page = response.read().decode()
+        assert response.headers["Cache-Control"] == "no-store"
+    assert "__ACTIONS__" not in page
+    for label in ("New issue", "Fix it!", "WDYT?"):
+        assert label in page
+    assert "b.disabled=true" in page
+    assert "fetch('/api/user'" in page

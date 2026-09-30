@@ -69,6 +69,7 @@ from urllib.request import Request, urlopen
 
 from transformersci.otel.pr_search import SEARCH_HTML
 from transformersci.otel import related_issues
+from transformersci.otel import serge_actions
 
 from transformersci.emojize import emojize as _emojize
 from transformersci.runners import ATTRIBUTE_PREFIX as RUNNER_ATTRIBUTE_PREFIX
@@ -6820,6 +6821,13 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/related-issues":
             self._request_route = "/related-issues"
             self._serve_related_issues(parse_qs(parsed.query))
+            return
+        if parsed.path == "/serge-actions":
+            self._request_route = "/serge-actions"
+            self._send(
+                200, "text/html; charset=utf-8", serge_actions.PAGE_HTML.encode(),
+                cache_control="no-store",
+            )
             return
         if parsed.path == "/run":
             self._request_route = "/run"
