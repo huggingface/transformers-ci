@@ -102,6 +102,10 @@ fetch('/api/user',{credentials:'same-origin',cache:'no-store'}).then(response=>{
 }).catch(signIn);
 
 const context=new URLSearchParams(location.search);
+// Like the traceback panel: a link without var-trace_id uses the test's latest
+// failing trace, which the dashboard resolves into latest_trace.
+if(!context.get('trace_id')&&/^[0-9a-f]{32}$/i.test(context.get('latest_trace')||''))
+  context.set('trace_id',context.get('latest_trace'));
 const MESSAGES={disabled:'WDYT? is not configured on this server yet.',
   unauthorized:'Your Grafana session expired. Sign in again.',
   rate_limited:'You asked a lot this hour. Try again later.',

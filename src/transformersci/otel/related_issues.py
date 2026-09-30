@@ -187,6 +187,11 @@ async function load(){
   retry.hidden=true; results.replaceChildren(); statusNode.hidden=false;
   statusNode.textContent='Searching related issues…';
   const url=new URL(location.href);url.searchParams.set('format','json');
+  // A link without var-trace_id falls back to the test's latest failing trace.
+  const latest=url.searchParams.get('latest_trace')||'';
+  if(!url.searchParams.get('trace_id')&&/^[0-9a-f]{32}$/i.test(latest))
+    url.searchParams.set('trace_id',latest);
+  url.searchParams.delete('latest_trace');
   try {
     let data;
     // The exporter is busy only when saturated: back off quietly, then give up.
