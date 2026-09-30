@@ -173,6 +173,8 @@ traceExporter:
     apiBase: ""
     model: ""
     proxy: ""
+    # HF org billed for the calls (X-HF-Bill-To), like serge's LLM_BILL_TO.
+    billTo: ""
     grafanaUrl: http://grafana:3000
   # Set to a commit SHA or other source identifier to trigger a rollout when
   # source code changes but the rendered Deployment would otherwise be unchanged.

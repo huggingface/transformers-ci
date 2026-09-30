@@ -112,22 +112,41 @@ const MESSAGES={disabled:'WDYT? is not configured on this server yet.',
   busy:'Serge is busy with other questions. Try again in a minute.',
   unavailable:'Serge could not answer right now. Try again in a minute.',
   forbidden:'Request refused.',invalid:'This test has no trace to look at.'};
+let run=null;  // the in-flight question: {view, done}
 async function wdyt(){
   const button=document.getElementById('wdyt');
-  if(button.classList.contains('thinking'))return;
+  if(run){run.view.show();return;}  // reopen the popup of a running question
+  const view=popup();run={view};
   button.classList.add('thinking');document.body.classList.add('thinking');
   button.textContent='Thinking…';
-  let data;
+  let result={status:'unavailable'};
   try{
     const response=await fetch('/serge-actions/wdyt',{method:'POST',credentials:'same-origin',
       headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
       body:JSON.stringify(Object.fromEntries(['trace_id','test_nodeid','status','job',
         'module','pr','run_id'].map(k=>[k,context.get(k)||''])))});
-    data=await response.json();
-  }catch(error){data={status:'unavailable'};}
+    if(!(response.headers.get('Content-Type')||'').includes('ndjson')){
+      result=await response.json();
+    }else{
+      // NDJSON: one event per line, the last one {"event":"done",...}.
+      const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
+      for(;;){
+        const {value,done}=await reader.read();
+        buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});
+        let cut;
+        while((cut=buffer.indexOf('\n'))>=0){
+          const line=buffer.slice(0,cut).trim();buffer=buffer.slice(cut+1);
+          if(!line)continue;
+          const event=JSON.parse(line);
+          if(event.event==='done')result=event;else view.progress(event);
+        }
+        if(done)break;
+      }
+    }
+  }catch(error){}
   button.classList.remove('thinking');document.body.classList.remove('thinking');
-  button.textContent='WDYT?';
-  popup(data);
+  button.textContent='WDYT?';run=null;
+  view.finish(result);
 }
 
 // Tiny Markdown subset -> DOM nodes (never innerHTML): paragraphs, "- " bullets,
@@ -162,48 +181,77 @@ function markdown(doc,text){
   return root;
 }
 
-function popup(data){
+function popup(){
   let doc=document,host=document.body;
   try{if(parent.document.body){doc=parent.document;host=doc.body;}}catch(error){}
   doc.getElementById('tci-wdyt')?.remove();
-  const overlay=doc.createElement('div');overlay.id='tci-wdyt';
-  overlay.style.cssText='position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.55);'+
-    'display:flex;align-items:center;justify-content:center;padding:16px';
-  const box=doc.createElement('div');box.setAttribute('role','dialog');
-  box.setAttribute('aria-modal','true');box.setAttribute('aria-label','Serge thinks');
-  box.style.cssText='background:#181b1f;color:#d8d9da;border:1px solid rgba(204,204,220,.2);'+
+  const el=(tag,css,text)=>{const n=doc.createElement(tag);if(css)n.style.cssText=css;
+    if(text!==undefined)n.textContent=text;return n;};
+  const overlay=el('div','position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.55);'+
+    'display:flex;align-items:center;justify-content:center;padding:16px');overlay.id='tci-wdyt';
+  const box=el('div','background:#181b1f;color:#d8d9da;border:1px solid rgba(204,204,220,.2);'+
     'border-radius:6px;max-width:640px;width:100%;max-height:80vh;overflow:auto;'+
-    'padding:16px 20px;font:14px/1.5 Inter,system-ui,sans-serif;box-shadow:0 8px 32px #000';
-  const title=doc.createElement('div');title.textContent='✨🦄 Serge thinks…';
-  title.style.cssText='font-weight:600;font-size:16px;margin:0 0 8px';
-  const test=doc.createElement('div');test.textContent=context.get('test_nodeid')||'';
-  test.style.cssText='color:#8e9197;font:12px ui-monospace,monospace;overflow-wrap:anywhere;'+
-    'margin:0 0 8px';
-  box.append(title,test);
-  if(data.status==='ok'){
-    box.append(markdown(doc,data.answer));
-    const foot=doc.createElement('div');
-    foot.textContent='Quick opinion from '+data.model+', based only on this page. It can be wrong.';
-    foot.style.cssText='color:#8e9197;font-size:12px;margin:10px 0 0';box.append(foot);
-  }else{
-    const p=doc.createElement('p');p.textContent=MESSAGES[data.status]||MESSAGES.unavailable;
-    box.append(p);
-  }
-  const actions=doc.createElement('div');
-  actions.style.cssText='display:flex;gap:8px;justify-content:flex-end;margin:14px 0 0';
-  const button=(label,help,disabled)=>{const b=doc.createElement('button');b.type='button';
-    b.textContent=label;b.title=help;b.disabled=disabled;
-    b.style.cssText='background:#242b35;color:#d8d9da;border:1px solid #657083;'+
-      'border-radius:4px;padding:5px 12px;font:inherit;cursor:'+(disabled?'not-allowed':'pointer')+
-      ';opacity:'+(disabled?'.55':'1');return b;};
+    'padding:16px 20px;font:14px/1.5 Inter,system-ui,sans-serif;box-shadow:0 8px 32px #000');
+  box.setAttribute('role','dialog');box.setAttribute('aria-modal','true');
+  box.setAttribute('aria-label','Serge thinks');
+  const title=el('div','font-weight:600;font-size:16px;margin:0 0 8px','✨🦄 Serge thinks…');
+  const test=el('div','color:#8e9197;font:12px ui-monospace,monospace;overflow-wrap:anywhere;'+
+    'margin:0 0 8px',context.get('test_nodeid')||'');
+  // Live progress: finished steps get a check, the current one pulses.
+  const steps=el('ul','list-style:none;margin:0 0 8px;padding:0;color:#8e9197;font-size:13px');
+  steps.setAttribute('aria-live','polite');
+  const answer=el('div','margin:6px 0 0');let streamed='';
+  const foot=el('div','color:#8e9197;font-size:12px;margin:10px 0 0');
+  const style=el('style');
+  style.textContent='@keyframes tci-pulse{50%{opacity:.35}}'+
+    '@media (prefers-reduced-motion:reduce){#tci-wdyt *{animation:none!important}}';
+  box.append(style,title,test,steps,answer,foot);
+  let current=null;
+  const step=text=>{
+    if(current){current.firstChild.textContent='✓ ';current.firstChild.style.animation='';}
+    const li=el('li','margin:2px 0'),mark=el('span','animation:tci-pulse 1s infinite','● ');
+    li.append(mark,doc.createTextNode(text));steps.append(li);current=li;
+  };
+  step('Starting');
+  const actions=el('div','display:flex;gap:8px;justify-content:flex-end;margin:14px 0 0');
+  const button=(label,help,disabled)=>{const b=el('button','background:#242b35;color:#d8d9da;'+
+    'border:1px solid #657083;border-radius:4px;padding:5px 12px;font:inherit;cursor:'+
+    (disabled?'not-allowed':'pointer')+';opacity:'+(disabled?'.55':'1'),label);
+    b.type='button';b.title=help;b.disabled=disabled;return b;};
   const deeper=button('Deeper investigation','Runs a full Serge investigation.',true);
   const close=button('Close','',false);actions.append(deeper,close);box.append(actions);
-  overlay.append(box);host.append(overlay);
-  const dismiss=()=>{overlay.remove();doc.removeEventListener('keydown',onKey);};
-  const onKey=event=>{if(event.key==='Escape')dismiss();};
-  close.addEventListener('click',dismiss);doc.addEventListener('keydown',onKey);
-  overlay.addEventListener('click',event=>{if(event.target===overlay)dismiss();});
-  close.focus();
+  overlay.append(box);
+  const onKey=event=>{if(event.key==='Escape')hide();};
+  const show=()=>{if(!overlay.isConnected){host.append(overlay);doc.addEventListener('keydown',onKey);}
+    close.focus();};
+  const hide=()=>{overlay.remove();doc.removeEventListener('keydown',onKey);};
+  close.addEventListener('click',hide);
+  overlay.addEventListener('click',event=>{if(event.target===overlay)hide();});
+  show();
+  let thinkingShown=false;
+  return {show,
+    progress(event){
+      if(event.event==='step')step(event.text);
+      else if(event.event==='thinking'&&!thinkingShown){thinkingShown=true;step('Reasoning…');}
+      else if(event.event==='delta'){
+        if(!answer.dataset.streaming){answer.dataset.streaming='1';step('Writing the answer');}
+        streamed+=event.text;answer.replaceChildren(markdown(doc,streamed));
+      }
+    },
+    finish(data){
+      if(current){current.firstChild.textContent='✓ ';current.firstChild.style.animation='';}
+      title.textContent='✨🦄 Serge thinks';
+      answer.replaceChildren();
+      if(data.status==='ok'){
+        answer.append(markdown(doc,data.answer));
+        foot.textContent=(data.cached?'Answered earlier by ':'Quick opinion from ')+data.model+
+          ', based only on this page. It can be wrong.';
+      }else{
+        current=null;step(MESSAGES[data.status]||MESSAGES.unavailable);
+        current.firstChild.textContent='✗ ';current.style.color='#f2495c';
+      }
+      show();
+    }};
 }
 </script></body></html>"""
 

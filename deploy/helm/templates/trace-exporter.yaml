@@ -88,6 +88,8 @@ spec:
               value: {{ .Values.traceExporter.wdyt.model | quote }}
             - name: PYTEST_TRACE_EXPORTER_LLM_PROXY
               value: {{ .Values.traceExporter.wdyt.proxy | quote }}
+            - name: PYTEST_TRACE_EXPORTER_LLM_BILL_TO
+              value: {{ .Values.traceExporter.wdyt.billTo | quote }}
             - name: PYTEST_TRACE_EXPORTER_GRAFANA_URL
               value: {{ .Values.traceExporter.wdyt.grafanaUrl | quote }}
             - name: PYTEST_TRACE_EXPORTER_LLM_API_KEY

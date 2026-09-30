@@ -60,6 +60,8 @@ def config() -> dict[str, str]:
         "api_key": os.getenv("PYTEST_TRACE_EXPORTER_LLM_API_KEY", "").strip(),
         "proxy": os.getenv("PYTEST_TRACE_EXPORTER_LLM_PROXY", "").strip(),
         "grafana": os.getenv("PYTEST_TRACE_EXPORTER_GRAFANA_URL", "").strip(),
+        # HF org to bill (X-HF-Bill-To), as serge does with LLM_BILL_TO.
+        "bill_to": os.getenv("PYTEST_TRACE_EXPORTER_LLM_BILL_TO", "").strip(),
     }
 
 
@@ -124,7 +126,22 @@ def build_prompt(
     return "\n".join(lines)
 
 
-def ask(cfg: dict[str, str], prompt: str) -> str:
+def _visible(text: str) -> str:
+    """The part of a streamed answer that is safe to show: no reasoning, and
+    no trailing fragment that might still turn into a ``<think>`` tag."""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    start = text.find("<think>")
+    if start >= 0:
+        text = text[:start]
+    for k in range(min(len("<think>") - 1, len(text)), 0, -1):
+        if "<think>".startswith(text[-k:]):
+            text = text[:-k]
+            break
+    return text.lstrip()
+
+
+def ask(cfg: dict[str, str], prompt: str, emit: Callable[[dict], None]) -> str:
+    """Stream one chat completion, emitting reasoning/answer progress."""
     body = {
         "model": cfg["model"],
         "messages": [
@@ -133,24 +150,59 @@ def ask(cfg: dict[str, str], prompt: str) -> str:
         ],
         "max_tokens": MAX_ANSWER_TOKENS,
         "temperature": 0.2,
+        "stream": True,
     }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg['api_key']}",
+    }
+    if cfg["bill_to"]:
+        headers["X-HF-Bill-To"] = cfg["bill_to"]
     request = Request(
         cfg["api_base"].rstrip("/") + "/chat/completions",
         data=json.dumps(body).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {cfg['api_key']}",
-        },
+        headers=headers,
         method="POST",
     )
     proxies = {"https": cfg["proxy"], "http": cfg["proxy"]} if cfg["proxy"] else {}
+    raw, shown, thinking = "", 0, False
+    last = time.monotonic()
     with build_opener(ProxyHandler(proxies)).open(
         request, timeout=LLM_TIMEOUT_SECONDS
     ) as response:
-        result = json.loads(response.read(1024 * 1024))
-    text = result["choices"][0]["message"].get("content") or ""
-    # Reasoning models may inline their thinking; the popup wants the answer.
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S).strip()
+        if "text/event-stream" not in response.headers.get("Content-Type", ""):
+            result = json.loads(response.read(1024 * 1024))
+            raw = result["choices"][0]["message"].get("content") or ""
+        else:
+            for line in response:
+                line = line.strip()
+                if not line.startswith(b"data:"):
+                    continue
+                data = line[5:].strip()
+                if data == b"[DONE]":
+                    break
+                choices = json.loads(data).get("choices") or [{}]
+                delta = choices[0].get("delta") or {}
+                if delta.get("reasoning_content") or delta.get("reasoning"):
+                    if not thinking:
+                        thinking = True
+                        emit({"event": "thinking"})
+                    elif time.monotonic() - last > 10:
+                        # Keep the ALB's 60 s idle timeout from cutting a long
+                        # reasoning phase, which shows the viewer nothing.
+                        emit({"event": "tick"})
+                        last = time.monotonic()
+                raw += delta.get("content") or ""
+                if "<think>" in raw and not thinking:
+                    thinking = True
+                    emit({"event": "thinking"})
+                visible = _visible(raw)
+                if len(visible) > shown:
+                    emit({"event": "delta", "text": visible[shown:]})
+                    shown, last = len(visible), time.monotonic()
+                if len(raw) > 60000:
+                    break
+    text = _visible(raw + "\n").strip()
     if not text:
         raise ValueError("empty answer")
     return text[:6000]
@@ -170,8 +222,10 @@ def answer(
     login: str,
     trace_id: str,
     nodeid: str,
-    make_prompt: Callable[[], str],
+    make_prompt: Callable[[Callable[[dict], None]], str],
+    emit: Callable[[dict], None] = lambda event: None,
 ) -> dict:
+    """Answer once per (trace, test); ``emit`` receives progress events."""
     cfg = config()
     if not (cfg["api_base"] and cfg["model"] and cfg["api_key"]):
         return {"status": "disabled"}
@@ -186,6 +240,12 @@ def answer(
                 return {"status": "rate_limited"}
             done = _inflight[key] = threading.Event()
     if pending is not None:
+        emit(
+            {
+                "event": "step",
+                "text": "Someone asked about this test already: waiting for that answer",
+            }
+        )
         pending.wait(LLM_TIMEOUT_SECONDS + 30)
         with _lock:
             cached = _cache.get(key)
@@ -195,9 +255,11 @@ def answer(
     try:
         if not acquired:
             return {"status": "busy"}
+        prompt = make_prompt(emit)
+        emit({"event": "step", "text": f"Asking {cfg['model']}"})
         result = {
             "status": "ok",
-            "answer": ask(cfg, make_prompt()),
+            "answer": ask(cfg, prompt, emit),
             "model": cfg["model"],
         }
         ttl = 3600

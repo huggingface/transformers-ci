@@ -6815,7 +6815,9 @@ class MetricsHandler(BaseHTTPRequestHandler):
     def _serve_wdyt(self) -> None:
         def reply(status: int, body: dict) -> None:
             self._send(
-                status, JSON_CONTENT_TYPE, json.dumps(body).encode(),
+                status,
+                JSON_CONTENT_TYPE,
+                json.dumps(body).encode(),
                 cache_control="no-store",
             )
 
@@ -6845,7 +6847,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         trace_id = str(body.get("trace_id") or "").strip()
         nodeid = str(body.get("test_nodeid") or "").strip()
         if (
-            not nodeid or len(nodeid) > 2048
+            not nodeid
+            or len(nodeid) > 2048
             or any(ord(c) < 32 for c in nodeid)
             or not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id)
         ):
@@ -6860,20 +6863,67 @@ class MetricsHandler(BaseHTTPRequestHandler):
         labels = {
             label: str(body.get(key) or "")[:200].replace("\n", " ")
             for key, label in (
-                ("status", "Status"), ("job", "Job"), ("module", "Module"),
-                ("pr", "PR"), ("run_id", "Run"),
+                ("status", "Status"),
+                ("job", "Job"),
+                ("module", "Module"),
+                ("pr", "PR"),
+                ("run_id", "Run"),
             )
         }
 
-        def make_prompt() -> str:
+        # From here the reply is NDJSON: progress events, then one "done".
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.close_connection = True
+        sent = [0]
+
+        def emit(event: dict) -> None:
+            line = (json.dumps(event) + "\n").encode()
+            try:
+                self.wfile.write(line)
+                self.wfile.flush()
+                sent[0] += len(line)
+            except OSError:
+                pass  # viewer left; the answer still lands in the cache
+
+        def make_prompt(emit: Callable[[dict], None]) -> str:
+            emit(
+                {
+                    "event": "step",
+                    "text": f"Reading the failure from trace {trace_id[:8]}…",
+                }
+            )
             trace = get_trace(trace_id)
             if not trace or trace_repository(trace) != related_issues.REPOSITORY:
                 raise ValueError("trace unavailable")
             details = extract_failure_details(trace, nodeid)
+            emit(
+                {
+                    "event": "step",
+                    "text": (
+                        f"Found {details[0].get('exception_type') or 'an exception'}"
+                        " and its traceback"
+                        if details
+                        else "No exception recorded in the trace"
+                    ),
+                }
+            )
+            emit({"event": "step", "text": "Searching related issues and PRs"})
             related = related_issues.lookup(trace_id, nodeid, lambda: details)
+            count = len(related["hits"])
+            emit(
+                {
+                    "event": "step",
+                    "text": f"Found {count} related thread{'s' if count != 1 else ''}",
+                }
+            )
             return wdyt.build_prompt(nodeid, labels, details, related["hits"])
 
-        reply(200, wdyt.answer(login, trace_id, nodeid, make_prompt))
+        result = wdyt.answer(login, trace_id, nodeid, make_prompt, emit)
+        emit({"event": "done", **result})
+        self._observe_response(200, sent[0])
 
     def do_GET(self) -> None:  # noqa: N802
         self._request_started = time.monotonic()
@@ -6899,7 +6949,9 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/serge-actions":
             self._request_route = "/serge-actions"
             self._send(
-                200, "text/html; charset=utf-8", serge_actions.PAGE_HTML.encode(),
+                200,
+                "text/html; charset=utf-8",
+                serge_actions.PAGE_HTML.encode(),
                 cache_control="no-store",
             )
             return
@@ -7019,14 +7071,17 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 else related_issues.PAGE_HTML
             )
             self._send(
-                200, "text/html; charset=utf-8", page.encode(),
+                200,
+                "text/html; charset=utf-8",
+                page.encode(),
                 cache_control="no-store",
             )
             return
         trace_id = (params.get("trace_id") or [""])[0].strip()
         nodeid = (params.get("test_nodeid") or [""])[0].strip()
         if (
-            not nodeid or len(nodeid) > 2048
+            not nodeid
+            or len(nodeid) > 2048
             or any(ord(c) < 32 for c in nodeid)
             or (trace_id and not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id))
         ):
@@ -7042,7 +7097,9 @@ class MetricsHandler(BaseHTTPRequestHandler):
 
         result = related_issues.lookup(trace_id, nodeid, load_details)
         self._send(
-            200, JSON_CONTENT_TYPE, json.dumps(result).encode(),
+            200,
+            JSON_CONTENT_TYPE,
+            json.dumps(result).encode(),
             cache_control="no-store",
         )
 
