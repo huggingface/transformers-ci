@@ -161,6 +161,10 @@ tempo:
 #------------------------------------------------------------------------------
 traceExporter:
   replicas: 1
+  # Read-only related-issue search. Empty disables lookups; the panel reports
+  # unavailable. Adapter targets Relore 0.3.17; verify compatibility on upgrades.
+  relore:
+    url: http://ghlore.ghlore.svc.cluster.local
   # Set to a commit SHA or other source identifier to trigger a rollout when
   # source code changes but the rendered Deployment would otherwise be unchanged.
   sourceRevision: ""

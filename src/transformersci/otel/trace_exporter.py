@@ -68,6 +68,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from transformersci.otel.pr_search import SEARCH_HTML
+from transformersci.otel import related_issues
 
 from transformersci.emojize import emojize as _emojize
 from transformersci.runners import ATTRIBUTE_PREFIX as RUNNER_ATTRIBUTE_PREFIX
@@ -6816,6 +6817,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._request_route = "/failure"
             self._serve_failure(parse_qs(parsed.query))
             return
+        if parsed.path == "/related-issues":
+            self._request_route = "/related-issues"
+            self._serve_related_issues(parse_qs(parsed.query))
+            return
         if parsed.path == "/run":
             self._request_route = "/run"
             self._serve_run(parse_qs(parsed.query))
@@ -6922,6 +6927,41 @@ class MetricsHandler(BaseHTTPRequestHandler):
             JSON_CONTENT_TYPE,
             payload,
             cache_control=_public_cache_control_header(),
+        )
+
+    def _serve_related_issues(self, params: dict[str, list[str]]) -> None:
+        if (params.get("format") or [""])[0] != "json":
+            page = (
+                related_issues.SUMMARY_HTML
+                if (params.get("view") or [""])[0] == "summary"
+                else related_issues.PAGE_HTML
+            )
+            self._send(
+                200, "text/html; charset=utf-8", page.encode(),
+                cache_control="no-store",
+            )
+            return
+        trace_id = (params.get("trace_id") or [""])[0].strip()
+        nodeid = (params.get("test_nodeid") or [""])[0].strip()
+        if (
+            not nodeid or len(nodeid) > 2048
+            or any(ord(c) < 32 for c in nodeid)
+            or (trace_id and not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id))
+        ):
+            self._send(400, JSON_CONTENT_TYPE, b'{"error":"invalid test context"}')
+            return
+
+        def load_details() -> list[dict[str, str]]:
+            trace = get_trace(trace_id)
+            # The panel is scoped to the public transformers issue tracker.
+            if not trace or trace_repository(trace) != related_issues.REPOSITORY:
+                return []
+            return extract_failure_details(trace, nodeid)
+
+        result = related_issues.lookup(trace_id, nodeid, load_details)
+        self._send(
+            200, JSON_CONTENT_TYPE, json.dumps(result).encode(),
+            cache_control="no-store",
         )
 
     def _serve_failure(self, params: dict[str, list[str]]) -> None:

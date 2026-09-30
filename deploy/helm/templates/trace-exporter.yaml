@@ -80,6 +80,8 @@ spec:
           env:
             - name: PYTHONPATH
               value: /app/src/src
+            - name: PYTEST_TRACE_EXPORTER_RELORE_URL
+              value: {{ .Values.traceExporter.relore.url | quote }}
             - name: PYTEST_TRACE_EXPORTER_TEMPO_URL
               value: {{ .Values.traceExporter.tempo.url }}
             - name: PYTEST_TRACE_EXPORTER_LIMIT

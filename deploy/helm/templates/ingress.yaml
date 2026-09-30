@@ -74,6 +74,13 @@ spec:
                 name: trace-exporter
                 port:
                   number: 8000
+          - path: /related-issues
+            pathType: Exact
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
           - path: /run
             pathType: Prefix
             backend:

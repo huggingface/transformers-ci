@@ -52,7 +52,7 @@
   "panels": [
     {
       "gridPos": {
-        "h": 7,
+        "h": 20,
         "w": 18,
         "x": 0,
         "y": 0
@@ -60,7 +60,7 @@
       "id": 1,
       "options": {
         "mode": "html",
-        "content": "<iframe title=\"test summary\" style=\"width:100%;height:100%;min-height:210px;border:0;background:#181b1f\" srcdoc=\"<style>html,body{margin:0;background:#181b1f;color:#d8d9da;font:14px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}body{padding:2px 0;background:#181b1f}.node{font-size:15px;font-weight:650;color:#f1f5f9;overflow-wrap:anywhere}.meta{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:8px;color:#aeb7c2}.label{color:#7d8b99}.cmdLabel{margin-top:14px;color:#aeb7c2;font-weight:600}.cmd{display:block;margin-top:6px;padding:10px 12px;border:1px solid #343b45;border-radius:4px;background:#0b0f14;color:#f8fafc;font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}</style><body><div class='node' id='node'></div><div class='meta'><span><span class='label'>Status</span> <span id='status'></span></span><span><span class='label'>Module</span> <span id='module'></span></span><span><span class='label'>Job</span> <span id='job'></span></span><span><span class='label'>PR</span> <span id='pr'></span></span></div><div class='cmdLabel'>Reproduce locally</div><code class='cmd' id='cmd'></code><script>function setText(id,value){document.getElementById(id).textContent=value||''}var node='${test_nodeid:raw}';var fn='${test_function:raw}';setText('node',node);setText('status','${status_code:raw}');setText('module','${test_module:raw}');setText('job','${test_job:raw}');setText('pr','${pr:raw}');var command=node.indexOf('utils/checkers.py::')===0?'make '+(fn||node.split('::').pop()):'pytest -svx '+node;setText('cmd',command);</script></body>\"></iframe>\n\n<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
+        "content": "<iframe title=\"test summary\" style=\"width:100%;height:100%;border:0\" src=\"/related-issues?view=summary&amp;trace_id=${trace_id:percentencode}&amp;test_nodeid=${test_nodeid:percentencode}&amp;status=${status_code:percentencode}&amp;module=${test_module:percentencode}&amp;job=${test_job:percentencode}&amp;pr=${pr:percentencode}&amp;run_id=${run_id:percentencode}\"></iframe>\n\n<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
       },
       "pluginVersion": "12.0.0",
       "title": "Summary",
@@ -129,7 +129,7 @@
         "h": 24,
         "w": 24,
         "x": 0,
-        "y": 7
+        "y": 20
       },
       "id": 3,
       "pluginVersion": "12.0.0",
