@@ -83,7 +83,7 @@ spec:
                 port:
                   number: 8000
           - path: /serge-actions
-            pathType: Exact
+            pathType: Prefix
             backend:
               service:
                 name: trace-exporter

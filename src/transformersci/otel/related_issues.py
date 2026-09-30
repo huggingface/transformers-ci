@@ -20,8 +20,16 @@ REPOSITORY = "huggingface/transformers"
 WIRE_VERSION = "0.3.17"
 MAX_RESPONSE_BYTES = 512 * 1024
 _cache: OrderedDict[tuple[str, str, str], tuple[float, dict]] = OrderedDict()
-_inflight: set[tuple[str, str, str]] = set()
+_inflight: dict[tuple[str, str, str], threading.Event] = {}
 _lock = threading.Lock()
+# At most two upstream lookups at once. A request waits for a slot, and a
+# request for a key already being looked up waits for that result: Grafana
+# re-renders the Summary iframe as each dashboard variable resolves, so one
+# page load sends the same key several times within a second.
+_slots = threading.BoundedSemaphore(2)
+SLOT_WAIT_SECONDS = 10.0
+RESULT_WAIT_SECONDS = 25.0  # a slot wait plus the upstream timeouts
+BUSY = {"status": "busy", "hits": []}
 
 
 def search_payload(nodeid: str, details: list[dict[str, str]]) -> dict:
@@ -111,11 +119,21 @@ def lookup(
         if cached and cached[0] > time.monotonic():
             _cache.move_to_end(key)
             return cached[1]
-        if key in _inflight or len(_inflight) >= 2:
-            return {"status": "busy", "hits": []}
-        _inflight.add(key)
+        pending = _inflight.get(key)
+        if pending is None:
+            done = _inflight[key] = threading.Event()
+    if pending is not None:
+        # Unexpected errors publish nothing, so a waiter can still see BUSY.
+        if not pending.wait(RESULT_WAIT_SECONDS):
+            return BUSY
+        with _lock:
+            cached = _cache.get(key)
+        return cached[1] if cached else BUSY
     result = None
+    acquired = _slots.acquire(timeout=SLOT_WAIT_SECONDS)
     try:
+        if not acquired:
+            return BUSY
         details = load_details() if trace_id else []
         hits = search(base_url, search_payload(nodeid, details))
         result = {
@@ -128,15 +146,19 @@ def lookup(
         result = {"status": "unavailable", "hits": []}
         ttl = 15
     finally:
-        # Removal below is atomic with publishing the cache. Unexpected errors
-        # still release capacity, then propagate to the caller.
+        if acquired:
+            _slots.release()
+        # Publishing the cache and releasing waiters happen together, so a
+        # waiter always finds the result. Unexpected errors still release
+        # waiters, then propagate to the caller.
         with _lock:
-            _inflight.discard(key)
+            _inflight.pop(key, None)
             if result is not None:
                 _cache[key] = (time.monotonic() + ttl, result)
                 _cache.move_to_end(key)
                 while len(_cache) > 256:
                     _cache.popitem(last=False)
+        done.set()
     return result
 
 
@@ -160,17 +182,28 @@ border:1px solid #657083;border-radius:4px;padding:4px 10px;cursor:pointer}
 <script>
 const statusNode=document.getElementById('status'), results=document.getElementById('results');
 const retry=document.getElementById('retry');
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function load(){
   retry.hidden=true; results.replaceChildren(); statusNode.hidden=false;
   statusNode.textContent='Searching related issues…';
   const url=new URL(location.href);url.searchParams.set('format','json');
+  // A link without var-trace_id falls back to the test's latest failing trace.
+  const latest=url.searchParams.get('latest_trace')||'';
+  if(!url.searchParams.get('trace_id')&&/^[0-9a-f]{32}$/i.test(latest))
+    url.searchParams.set('trace_id',latest);
+  url.searchParams.delete('latest_trace');
   try {
-    const response=await fetch(url,{cache:'no-store'});
-    if(!response.ok)throw new Error('Lookup failed');
-    const data=await response.json();
+    let data;
+    // The exporter is busy only when saturated: back off quietly, then give up.
+    for(const delay of [1000,2000,4000,0]){
+      const response=await fetch(url,{cache:'no-store'});
+      if(!response.ok)throw new Error('Lookup failed');
+      data=await response.json();
+      if(data.status!=='busy'||!delay)break;
+      await sleep(delay);
+    }
     if(data.status!=='ok'){
-      statusNode.textContent=data.status==='busy'?'A search is already running. Try again shortly.':
-        'Related issues are temporarily unavailable.';retry.hidden=false;return;
+      statusNode.textContent='Related issues are temporarily unavailable.';retry.hidden=false;return;
     }
     statusNode.textContent='No related issues found.';statusNode.hidden=data.hits.length>0;
     for(const hit of data.hits){

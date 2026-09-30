@@ -153,10 +153,50 @@ def test_disabled_and_busy_do_not_call_upstreams(monkeypatch):
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_RELORE_URL", "")
     assert ri.lookup(TRACE, NODE, unexpected)["status"] == "unavailable"
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_RELORE_URL", "http://relore.test")
-    ri._inflight.add(("http://relore.test", TRACE, NODE))
+    monkeypatch.setattr(ri, "RESULT_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(ri, "SLOT_WAIT_SECONDS", 0.01)
+    # A lookup of the same key that never finishes: the waiter gives up.
+    ri._inflight[("http://relore.test", TRACE, NODE)] = threading.Event()
     assert ri.lookup(TRACE, NODE, unexpected)["status"] == "busy"
-    ri._inflight.add(("http://relore.test", "other", NODE))
+    # Every slot taken for longer than the wait: busy, and waiters released.
+    monkeypatch.setattr(ri, "_slots", threading.BoundedSemaphore(1))
+    ri._slots.acquire()
     assert ri.lookup("f" * 32, NODE, unexpected)["status"] == "busy"
+    assert ("http://relore.test", "f" * 32, NODE) not in ri._inflight
+
+
+def test_concurrent_same_key_shares_one_lookup(monkeypatch):
+    calls, release = [], threading.Event()
+
+    def slow_search(*args):
+        calls.append(1)
+        release.wait(5)
+        return [{"number": 1}]
+
+    monkeypatch.setattr(ri, "search", slow_search)
+    results = []
+    workers = [
+        threading.Thread(target=lambda: results.append(ri.lookup(TRACE, NODE, list)))
+        for _ in range(4)
+    ]
+    for worker in workers:
+        worker.start()
+    while not calls:
+        pass
+    release.set()
+    for worker in workers:
+        worker.join(5)
+    assert len(calls) == 1
+    assert [r["status"] for r in results] == ["ok"] * 4
+    assert not ri._inflight
+
+
+def test_full_slots_wait_instead_of_failing(monkeypatch):
+    monkeypatch.setattr(ri, "_slots", threading.BoundedSemaphore(1))
+    monkeypatch.setattr(ri, "search", lambda *args: [])
+    ri._slots.acquire()
+    threading.Timer(0.1, ri._slots.release).start()
+    assert ri.lookup(TRACE, NODE, list)["status"] == "ok"
 
 
 @pytest.fixture
@@ -220,8 +260,9 @@ def test_serge_actions_shell(server):
     with urlopen(server + "/serge-actions") as response:
         page = response.read().decode()
         assert response.headers["Cache-Control"] == "no-store"
-    assert "__ACTIONS__" not in page
+    assert "__ACTIONS__" not in page and "__NYAN__" not in page
+    assert 'class="nyan"' in page
     for label in ("New issue", "Fix it!", "WDYT?"):
         assert label in page
-    assert "b.disabled=true" in page
+    assert "b.disabled=!enabled" in page
     assert "fetch('/api/user'" in page

@@ -165,6 +165,17 @@ traceExporter:
   # unavailable. Adapter targets Relore 0.3.17; verify compatibility on upgrades.
   relore:
     url: http://ghlore.ghlore.svc.cluster.local
+  # WDYT? on the Test page: one direct LLM call per (trace, test), for signed-in
+  # Grafana users only (checked against grafanaUrl). Disabled until apiBase,
+  # model and the secrets.keys.llmApiKey value are all set. proxy is an HTTP
+  # CONNECT proxy for the call, since the network policy blocks the internet.
+  wdyt:
+    apiBase: ""
+    model: ""
+    proxy: ""
+    # HF org billed for the calls (X-HF-Bill-To), like serge's LLM_BILL_TO.
+    billTo: ""
+    grafanaUrl: http://grafana:3000
   # Set to a commit SHA or other source identifier to trigger a rollout when
   # source code changes but the rendered Deployment would otherwise be unchanged.
   sourceRevision: ""
@@ -640,6 +651,8 @@ secrets:
     # Grafana GitHub-OAuth client secret. Only consumed when
     # grafana.auth.github.enabled is true.
     githubOauthClientSecret: grafana-github-oauth-client-secret
+    # LLM API key for the exporter's WDYT? answers. Optional.
+    llmApiKey: llm-api-key
   placeholder:
     # Only used when secrets.create is true
     traceApiKey: ""
@@ -647,6 +660,7 @@ secrets:
     githubToken: ""
     hfToken: ""
     githubOauthClientSecret: ""
+    llmApiKey: ""
 
 #------------------------------------------------------------------------------
 # External Secret Resource
