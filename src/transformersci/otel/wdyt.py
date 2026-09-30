@@ -222,7 +222,7 @@ def answer(
     login: str,
     trace_id: str,
     nodeid: str,
-    make_prompt: Callable[[Callable[[dict], None]], str],
+    make_prompt: Callable[[Callable[[dict], None]], tuple[str, list[dict]]],
     emit: Callable[[dict], None] = lambda event: None,
 ) -> dict:
     """Answer once per (trace, test); ``emit`` receives progress events."""
@@ -255,12 +255,21 @@ def answer(
     try:
         if not acquired:
             return {"status": "busy"}
-        prompt = make_prompt(emit)
+        prompt, hits = make_prompt(emit)
         emit({"event": "step", "text": f"Asking {cfg['model']}"})
         result = {
             "status": "ok",
             "answer": ask(cfg, prompt, emit),
             "model": cfg["model"],
+            # The threads the model saw: the popup links #N only for these.
+            "related": [
+                {
+                    "number": hit["number"],
+                    "url": hit["url"],
+                    "title": hit.get("title", ""),
+                }
+                for hit in hits
+            ],
         }
         ttl = 3600
     except (OSError, URLError, ValueError, KeyError, IndexError, HTTPException):
@@ -277,3 +286,11 @@ def answer(
                     _cache.popitem(last=False)
         done.set()
     return result
+
+
+def clear_cache() -> int:
+    """Drop every cached answer (for demos); in-flight questions are kept."""
+    with _lock:
+        count = len(_cache)
+        _cache.clear()
+    return count

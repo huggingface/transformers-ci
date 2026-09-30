@@ -6806,29 +6806,53 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self._request_started = time.monotonic()
         self._request_route = "notfound"
         self._request_cache = "none"
-        if urlparse(self.path).path != "/serge-actions/wdyt":
+        path = urlparse(self.path).path
+        if path not in ("/serge-actions/wdyt", "/serge-actions/wdyt/cache"):
             self._send(404, JSON_CONTENT_TYPE, b'{"error":"not found"}')
             return
-        self._request_route = "/serge-actions/wdyt"
-        self._serve_wdyt()
+        self._request_route = path
+        if path == "/serge-actions/wdyt/cache":
+            self._serve_wdyt_cache_clear()
+        else:
+            self._serve_wdyt()
 
-    def _serve_wdyt(self) -> None:
-        def reply(status: int, body: dict) -> None:
-            self._send(
-                status,
-                JSON_CONTENT_TYPE,
-                json.dumps(body).encode(),
-                cache_control="no-store",
-            )
+    def _reply_json(self, status: int, body: dict) -> None:
+        self._send(
+            status,
+            JSON_CONTENT_TYPE,
+            json.dumps(body).encode(),
+            cache_control="no-store",
+        )
 
-        # CSRF: a cross-site page can neither set this header without a
-        # preflight nor pass the Origin check; Grafana's cookie is SameSite=Lax.
+    def _action_allowed(self) -> bool:
+        """CSRF gate for Serge action POSTs, replying 403 when it fails: a
+        cross-site page can neither set the custom header without a preflight
+        nor pass the Origin check, and Grafana's cookie is SameSite=Lax."""
         origin = self.headers.get("Origin", "")
         host = self.headers.get("Host", "")
-        if self.headers.get("X-TCI-Action") != "1" or (
-            origin and urlparse(origin).netloc != host
+        if self.headers.get("X-TCI-Action") == "1" and (
+            not origin or urlparse(origin).netloc == host
         ):
-            reply(403, {"status": "forbidden"})
+            return True
+        self._reply_json(403, {"status": "forbidden"})
+        return False
+
+    def _action_user(self) -> str | None:
+        """The signed-in Grafana login, or None after replying 401."""
+        login = wdyt.grafana_login(
+            wdyt.config()["grafana"], self.headers.get("Cookie", "")
+        )
+        if not login:
+            self._reply_json(401, {"status": "unauthorized"})
+        return login
+
+    def _serve_wdyt_cache_clear(self) -> None:
+        if self._action_allowed() and self._action_user():
+            self._reply_json(200, {"status": "ok", "cleared": wdyt.clear_cache()})
+
+    def _serve_wdyt(self) -> None:
+        reply = self._reply_json
+        if not self._action_allowed():
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -6854,11 +6878,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         ):
             reply(400, {"status": "invalid"})
             return
-        login = wdyt.grafana_login(
-            wdyt.config()["grafana"], self.headers.get("Cookie", "")
-        )
+        login = self._action_user()
         if not login:
-            reply(401, {"status": "unauthorized"})
             return
         labels = {
             label: str(body.get(key) or "")[:200].replace("\n", " ")
@@ -6919,7 +6940,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
                     "text": f"Found {count} related thread{'s' if count != 1 else ''}",
                 }
             )
-            return wdyt.build_prompt(nodeid, labels, details, related["hits"])
+            return (
+                wdyt.build_prompt(nodeid, labels, details, related["hits"]),
+                related["hits"],
+            )
 
         result = wdyt.answer(login, trace_id, nodeid, make_prompt, emit)
         emit({"event": "done", **result})
@@ -6945,6 +6969,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/related-issues":
             self._request_route = "/related-issues"
             self._serve_related_issues(parse_qs(parsed.query))
+            return
+        if parsed.path == "/serge-actions/admin":
+            self._request_route = "/serge-actions/admin"
+            self._send(
+                200,
+                "text/html; charset=utf-8",
+                serge_actions.ADMIN_HTML.encode(),
+                cache_control="no-store",
+            )
             return
         if parsed.path == "/serge-actions":
             self._request_route = "/serge-actions"

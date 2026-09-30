@@ -150,20 +150,31 @@ async function wdyt(){
 }
 
 // Tiny Markdown subset -> DOM nodes (never innerHTML): paragraphs, "- " bullets,
-// **bold** and `code`.
-function inline(doc,parent,text){
+// **bold**, `code`, and #N linked when N is a related thread the model was given
+// (links: number -> server-built GitHub URL), so an invented number stays text.
+function linked(doc,parent,text,links){
+  for(const part of text.split(/(#\d{1,7}\b)/)){
+    if(!part)continue;
+    const url=part[0]==='#'&&links[part.slice(1)];
+    if(url){
+      const a=doc.createElement('a');a.href=url;a.target='_blank';a.rel='noopener noreferrer';
+      a.textContent=part;a.style.cssText='color:#6ab0ff;text-decoration:none';parent.append(a);
+    }else parent.append(doc.createTextNode(part));
+  }
+}
+function inline(doc,parent,text,links){
   for(const part of text.split(/(\*\*[^*]+\*\*|`[^`]+`)/)){
     if(!part)continue;
     if(part.startsWith('**')&&part.endsWith('**')&&part.length>4){
-      const b=doc.createElement('strong');b.textContent=part.slice(2,-2);parent.append(b);
+      const b=doc.createElement('strong');linked(doc,b,part.slice(2,-2),links);parent.append(b);
     }else if(part.startsWith('`')&&part.endsWith('`')&&part.length>2){
       const c=doc.createElement('code');c.textContent=part.slice(1,-1);
       c.style.cssText='background:rgba(204,204,220,.1);padding:0 4px;border-radius:3px;'+
         'font:12px ui-monospace,monospace';parent.append(c);
-    }else parent.append(doc.createTextNode(part));
+    }else linked(doc,parent,part,links);
   }
 }
-function markdown(doc,text){
+function markdown(doc,text,links={}){
   const root=doc.createElement('div');let list=null;
   for(const raw of text.split('\n')){
     const line=raw.trim();
@@ -172,10 +183,10 @@ function markdown(doc,text){
     if(bullet){
       if(!list){list=doc.createElement('ul');list.style.cssText='margin:6px 0;padding-left:20px';
         root.append(list);}
-      const li=doc.createElement('li');li.style.margin='3px 0';inline(doc,li,bullet[1]);list.append(li);
+      const li=doc.createElement('li');li.style.margin='3px 0';inline(doc,li,bullet[1],links);list.append(li);
     }else{
       list=null;const p=doc.createElement('p');p.style.margin='6px 0';
-      inline(doc,p,line.replace(/^#+ /,''));root.append(p);
+      inline(doc,p,line.replace(/^#+ /,''),links);root.append(p);
     }
   }
   return root;
@@ -243,9 +254,14 @@ function popup(){
       title.textContent='✨🦄 Serge thinks';
       answer.replaceChildren();
       if(data.status==='ok'){
-        answer.append(markdown(doc,data.answer));
+        const links={};
+        for(const hit of data.related||[])
+          if(/^https:\/\/github\.com\//.test(hit.url))links[hit.number]=hit.url;
+        answer.append(markdown(doc,data.answer,links));
         foot.textContent=(data.cached?'Answered earlier by ':'Quick opinion from ')+data.model+
           ', based only on this page. It can be wrong.';
+        if(!data.cached)foot.append(el('div','margin:4px 0 0',
+          'You just spent $3. Go easy on the AI ;)'));
       }else{
         current=null;step(MESSAGES[data.status]||MESSAGES.unavailable);
         current.firstChild.textContent='✗ ';current.style.color='#f2495c';
@@ -258,3 +274,31 @@ function popup(){
 PAGE_HTML = PAGE_HTML.replace("__ACTIONS__", json.dumps(ACTIONS)).replace(
     "__NYAN__", NYAN_SVG
 )
+
+# CI Health: clear WDYT?'s answer cache so a demo shows the whole live run.
+ADMIN_HTML = """<!doctype html><html><head><meta charset="utf-8">
+<style>
+body{margin:0;padding:8px 10px;background:#181b1f;color:#d8d9da;
+font:13px/1.45 system-ui,sans-serif;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+button{background:#242b35;color:#d8d9da;border:1px solid #657083;border-radius:4px;
+padding:5px 12px;font:inherit;cursor:pointer}button:disabled{opacity:.55;cursor:wait}
+span{color:#8e9197;font-size:12px}
+</style></head><body>
+<button id="clear" type="button">Clear WDYT? cache</button>
+<span id="note" role="status" aria-live="polite">Next WDYT? on any test asks the model again.</span>
+<script>
+const button=document.getElementById('clear'),note=document.getElementById('note');
+const MESSAGES={unauthorized:'Sign in to clear the cache.',forbidden:'Request refused.'};
+button.addEventListener('click',async()=>{
+  button.disabled=true;
+  try{
+    const response=await fetch('/serge-actions/wdyt/cache',{method:'POST',
+      credentials:'same-origin',headers:{'X-TCI-Action':'1'}});
+    const data=await response.json();
+    note.textContent=data.status==='ok'?
+      'Cleared '+data.cleared+' cached answer'+(data.cleared===1?'':'s')+'.':
+      (MESSAGES[data.status]||'Could not clear the cache.');
+  }catch(error){note.textContent='Could not clear the cache.';}
+  button.disabled=false;
+});
+</script></body></html>"""
