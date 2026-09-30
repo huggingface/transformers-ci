@@ -52,7 +52,7 @@
   "panels": [
     {
       "gridPos": {
-        "h": 20,
+        "h": 11,
         "w": 18,
         "x": 0,
         "y": 0
@@ -129,7 +129,7 @@
         "h": 24,
         "w": 24,
         "x": 0,
-        "y": 20
+        "y": 11
       },
       "id": 3,
       "pluginVersion": "12.0.0",
@@ -223,7 +223,7 @@
           "refId": "C"
         }
       ],
-      "title": "Device memory: inherited \u2192 left",
+      "title": "Device memory: inherited → left",
       "type": "stat"
     }
   ],
