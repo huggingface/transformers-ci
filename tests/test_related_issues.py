@@ -220,7 +220,8 @@ def test_serge_actions_shell(server):
     with urlopen(server + "/serge-actions") as response:
         page = response.read().decode()
         assert response.headers["Cache-Control"] == "no-store"
-    assert "__ACTIONS__" not in page
+    assert "__ACTIONS__" not in page and "__NYAN__" not in page
+    assert "class=\"nyan\"" in page
     for label in ("New issue", "Fix it!", "WDYT?"):
         assert label in page
     assert "b.disabled=true" in page
