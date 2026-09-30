@@ -33,9 +33,17 @@ def reset(monkeypatch):
         "PYTEST_TRACE_EXPORTER_LLM_PROXY": "http://proxy.test:3128",
         "PYTEST_TRACE_EXPORTER_GRAFANA_URL": "http://grafana.test:3000",
         "PYTEST_TRACE_EXPORTER_RELORE_URL": "",
+        "PYTEST_TRACE_EXPORTER_LLM_BILL_TO": "",
     }.items():
         monkeypatch.setenv(name, value)
-    for store in (wdyt._cache, wdyt._inflight, wdyt._asked, ri._cache, ri._inflight):
+    for store in (
+        wdyt._cache,
+        wdyt._inflight,
+        wdyt._asked,
+        wdyt._sessions,
+        ri._cache,
+        ri._inflight,
+    ):
         store.clear()
 
 
@@ -142,34 +150,44 @@ def test_ask_streams_answer_but_never_reasoning(monkeypatch):
 
 def test_answer_disabled_without_key(monkeypatch):
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_LLM_API_KEY", "")
-    assert wdyt.answer("u", TRACE, NODE, lambda emit: "p") == {"status": "disabled"}
+    assert wdyt.answer("u", TRACE, NODE, lambda emit: ("p", [])) == {
+        "status": "disabled"
+    }
 
 
 def test_answer_caches_and_rate_limits(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        wdyt, "ask", lambda cfg, prompt, emit: calls.append(prompt) or "A"
+        wdyt, "ask", lambda cfg, prompt, emit, sid="": calls.append(prompt) or "A"
     )
-    first = wdyt.answer("u", TRACE, NODE, lambda emit: "p")
-    assert first == {"status": "ok", "answer": "A", "model": "some/model"}
-    assert wdyt.answer("other", TRACE, NODE, lambda emit: "p")["cached"] is True
+    first = wdyt.answer("u", TRACE, NODE, lambda emit: ("p", []))
+    assert first.pop("session_id")
+    assert first == {
+        "status": "ok",
+        "answer": "A",
+        "model": "some/model",
+        "related": [],
+    }
+    assert wdyt.answer("other", TRACE, NODE, lambda emit: ("p", []))["cached"] is True
     assert len(calls) == 1
     monkeypatch.setattr(wdyt, "USER_LIMIT", 2)
-    wdyt.answer("u", "a" * 32, NODE, lambda emit: "p")
-    assert wdyt.answer("u", "b" * 32, NODE, lambda emit: "p") == {
+    wdyt.answer("u", "a" * 32, NODE, lambda emit: ("p", []))
+    assert wdyt.answer("u", "b" * 32, NODE, lambda emit: ("p", [])) == {
         "status": "rate_limited"
     }
     assert (
-        wdyt.answer("u", TRACE, NODE, lambda emit: "p")["status"] == "ok"
+        wdyt.answer("u", TRACE, NODE, lambda emit: ("p", []))["status"] == "ok"
     )  # cached: free
 
 
 def test_answer_failure_is_short_lived_and_releases(monkeypatch):
-    def fail(cfg, prompt, emit):
+    def fail(cfg, prompt, emit, sid=""):
         raise URLError("down")
 
     monkeypatch.setattr(wdyt, "ask", fail)
-    assert wdyt.answer("u", TRACE, NODE, lambda emit: "p") == {"status": "unavailable"}
+    assert wdyt.answer("u", TRACE, NODE, lambda emit: ("p", [])) == {
+        "status": "unavailable"
+    }
     assert not wdyt._inflight
     assert wdyt._cache[(TRACE, NODE)][1] == {"status": "unavailable"}
 
@@ -177,7 +195,7 @@ def test_answer_failure_is_short_lived_and_releases(monkeypatch):
 def test_concurrent_same_test_asks_once(monkeypatch):
     calls, release = [], threading.Event()
 
-    def slow(cfg, prompt, emit):
+    def slow(cfg, prompt, emit, sid=""):
         calls.append(1)
         release.wait(5)
         return "A"
@@ -187,7 +205,7 @@ def test_concurrent_same_test_asks_once(monkeypatch):
     workers = [
         threading.Thread(
             target=lambda n=n: results.append(
-                wdyt.answer(f"u{n}", TRACE, NODE, lambda emit: "p")
+                wdyt.answer(f"u{n}", TRACE, NODE, lambda emit: ("p", []))
             )
         )
         for n in range(3)
@@ -246,7 +264,7 @@ def test_route_builds_prompt_from_the_trace(server, monkeypatch):
     monkeypatch.setattr(te, "trace_repository", lambda trace: ri.REPOSITORY)
     monkeypatch.setattr(te, "extract_failure_details", lambda trace, node: DETAILS)
     monkeypatch.setattr(
-        wdyt, "ask", lambda cfg, prompt, emit: prompts.append(prompt) or "A"
+        wdyt, "ask", lambda cfg, prompt, emit, sid="": prompts.append(prompt) or "A"
     )
     body = {
         "trace_id": TRACE,
@@ -262,5 +280,109 @@ def test_route_builds_prompt_from_the_trace(server, monkeypatch):
     assert steps[0].startswith("Reading the failure from trace e48b720b")
     assert "Found RuntimeError and its traceback" in steps
     assert steps[-1] == "Asking some/model"
+    assert result["related"] == []  # Relore is off in these tests
     assert "dataset loading failed" in prompts[0] and "Job: tests_torch" in prompts[0]
     assert "ignore previous" not in prompts[0]  # free text from the browser is dropped
+
+
+def test_cache_clear_route(server, monkeypatch):
+    url = server + "/serge-actions/wdyt/cache"
+    wdyt._cache[(TRACE, NODE)] = (1e18, {"status": "ok", "answer": "A"})
+    assert post(url, {}, {})[0] == 403
+    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: None)
+    assert post(url, {}, {"X-TCI-Action": "1"}) == (401, {"status": "unauthorized"})
+    assert wdyt._cache
+    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: "octocat")
+    assert post(url, {}, {"X-TCI-Action": "1"}) == (200, {"status": "ok", "cleared": 1})
+    assert not wdyt._cache
+    with urlopen(server + "/serge-actions/admin") as response:
+        assert b"Clear WDYT? cache" in response.read()
+
+
+def test_answer_keeps_related_threads_for_links(monkeypatch):
+    monkeypatch.setattr(wdyt, "ask", lambda cfg, prompt, emit, sid="": "see #7")
+    hit = {
+        "number": 7,
+        "url": "https://github.com/x/y/issues/7",
+        "title": "T",
+        "snippet": "s",
+    }
+    result = wdyt.answer("u", TRACE, NODE, lambda emit: ("p", [hit]))
+    assert result["related"] == [{"number": 7, "url": hit["url"], "title": "T"}]
+    assert (
+        wdyt.answer("u", TRACE, NODE, lambda emit: ("p", []))["related"]
+        == result["related"]
+    )
+
+
+def billing(session_id, cents="12.5", calls=2):
+    return {
+        "currency": "USD",
+        "periods": [
+            {"sessions": [{"id": "other", "costCents": 999, "requestCount": 9}]},
+            {
+                "sessions": [
+                    {"id": session_id, "costCents": cents, "requestCount": calls}
+                ]
+            },
+        ],
+    }
+
+
+def test_fresh_answer_carries_a_billing_session(monkeypatch):
+    headers = []
+    monkeypatch.setattr(
+        wdyt, "ask", lambda cfg, prompt, emit, sid: headers.append(sid) or "A"
+    )
+    result = wdyt.answer("u", TRACE, NODE, lambda emit: ("p", []))
+    assert result["session_id"] == headers[0] and len(headers[0]) == 36
+    assert headers[0] in wdyt._sessions
+
+
+def test_ask_sends_session_header(monkeypatch):
+    opener = Opener(stream=[{"content": "A"}])
+    monkeypatch.setattr(wdyt, "build_opener", opener)
+    wdyt.ask(wdyt.config(), "p", lambda event: None, "sid-1")
+    assert opener.requests[0].get_header("X-hf-session-id") == "sid-1"
+
+
+def test_cost_sums_only_this_session_and_caches(monkeypatch):
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_LLM_BILL_TO", "huggingface")
+    sid = "0" * 8 + "-0000-4000-8000-" + "0" * 12
+    assert wdyt.fetch_cost(sid) == {"status": "unknown"}  # not minted here
+    wdyt._sessions[sid] = (1_700_000_000.0, None)
+    opener = Opener(billing(sid))
+    monkeypatch.setattr(wdyt, "build_opener", opener)
+    result = wdyt.fetch_cost(sid)
+    assert result == {"status": "reported", "cost_usd": 0.125, "requests": 2}
+    url = opener.requests[0].full_url
+    assert url.startswith(
+        "https://huggingface.co/api/organizations/huggingface/billing/"
+        "usage-by-inference-session?startDate=2023-11-01T00%3A00%3A00Z"
+    )
+    assert opener.proxies == [
+        {"https": "http://proxy.test:3128", "http": "http://proxy.test:3128"}
+    ]
+    wdyt.fetch_cost(sid)
+    assert len(opener.requests) == 1  # cached for 15 s
+
+
+def test_cost_pending_and_forbidden(monkeypatch):
+    sid = "1" * 8 + "-1111-4111-8111-" + "1" * 12
+    wdyt._sessions[sid] = (1_700_000_000.0, None)
+    monkeypatch.setattr(wdyt, "build_opener", Opener(billing("someone-else")))
+    assert wdyt.fetch_cost(sid) == {"status": "pending"}
+    wdyt._sessions[sid] = (1_700_000_000.0, None)
+    denied = HTTPError("https://huggingface.co", 403, "Forbidden", {}, io.BytesIO())
+    monkeypatch.setattr(wdyt, "build_opener", Opener(error=denied))
+    assert wdyt.fetch_cost(sid) == {"status": "forbidden"}
+
+
+def test_cost_route_validates_and_authenticates(server, monkeypatch):
+    url = server + "/serge-actions/wdyt/cost?session_id="
+    assert post(url + "nope", {}, {"X-TCI-Action": "1"})[0] == 400
+    sid = "2" * 8 + "-2222-4222-8222-" + "2" * 12
+    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: None)
+    assert post(url + sid, {}, {"X-TCI-Action": "1"})[0] == 401
+    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: "octocat")
+    assert post(url + sid, {}, {"X-TCI-Action": "1"}) == (200, {"status": "unknown"})

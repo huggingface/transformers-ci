@@ -14,10 +14,14 @@ import os
 import re
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+from urllib.parse import quote
 from collections import OrderedDict
 from collections.abc import Callable
 from http.client import HTTPException
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 MAX_TRACEBACK_CHARS = 6000
@@ -32,6 +36,9 @@ _inflight: dict[tuple[str, str], threading.Event] = {}
 _asked: dict[str, list[float]] = {}
 _lock = threading.Lock()
 _slots = threading.BoundedSemaphore(2)
+# HF billing session id -> (wall-clock start, last cost lookup). Only ids this
+# exporter minted can be looked up, and each lookup is cached briefly.
+_sessions: OrderedDict[str, tuple[float, tuple[float, dict] | None]] = OrderedDict()
 
 SYSTEM_PROMPT = """You are Serge, a CI assistant for the huggingface/transformers \
 repository. A maintainer is looking at one failing test on the CI dashboard and \
@@ -140,7 +147,12 @@ def _visible(text: str) -> str:
     return text.lstrip()
 
 
-def ask(cfg: dict[str, str], prompt: str, emit: Callable[[dict], None]) -> str:
+def ask(
+    cfg: dict[str, str],
+    prompt: str,
+    emit: Callable[[dict], None],
+    session_id: str = "",
+) -> str:
     """Stream one chat completion, emitting reasoning/answer progress."""
     body = {
         "model": cfg["model"],
@@ -158,6 +170,9 @@ def ask(cfg: dict[str, str], prompt: str, emit: Callable[[dict], None]) -> str:
     }
     if cfg["bill_to"]:
         headers["X-HF-Bill-To"] = cfg["bill_to"]
+    if session_id:
+        # Groups this question's router calls for the billing lookup below.
+        headers["X-HF-Session-id"] = session_id
     request = Request(
         cfg["api_base"].rstrip("/") + "/chat/completions",
         data=json.dumps(body).encode(),
@@ -222,7 +237,7 @@ def answer(
     login: str,
     trace_id: str,
     nodeid: str,
-    make_prompt: Callable[[Callable[[dict], None]], str],
+    make_prompt: Callable[[Callable[[dict], None]], tuple[str, list[dict]]],
     emit: Callable[[dict], None] = lambda event: None,
 ) -> dict:
     """Answer once per (trace, test); ``emit`` receives progress events."""
@@ -255,12 +270,27 @@ def answer(
     try:
         if not acquired:
             return {"status": "busy"}
-        prompt = make_prompt(emit)
+        prompt, hits = make_prompt(emit)
         emit({"event": "step", "text": f"Asking {cfg['model']}"})
+        session_id = str(uuid.uuid4())
+        with _lock:
+            _sessions[session_id] = (time.time(), None)
+            while len(_sessions) > 1024:
+                _sessions.popitem(last=False)
         result = {
             "status": "ok",
-            "answer": ask(cfg, prompt, emit),
+            "answer": ask(cfg, prompt, emit, session_id),
             "model": cfg["model"],
+            "session_id": session_id,
+            # The threads the model saw: the popup links #N only for these.
+            "related": [
+                {
+                    "number": hit["number"],
+                    "url": hit["url"],
+                    "title": hit.get("title", ""),
+                }
+                for hit in hits
+            ],
         }
         ttl = 3600
     except (OSError, URLError, ValueError, KeyError, IndexError, HTTPException):
@@ -276,4 +306,72 @@ def answer(
                 while len(_cache) > 256:
                     _cache.popitem(last=False)
         done.set()
+    return result
+
+
+def clear_cache() -> int:
+    """Drop every cached answer (for demos); in-flight questions are kept."""
+    with _lock:
+        count = len(_cache)
+        _cache.clear()
+    return count
+
+
+def fetch_cost(session_id: str) -> dict:
+    """The HF-billed cost of one question, as serge reads a task's (billing.py):
+    sum the session's costCents from usage-by-inference-session. Usage shows up
+    with a delay, and missing usage is "pending", never $0."""
+    cfg = config()
+    with _lock:
+        known = _sessions.get(session_id)
+    if known is None or not cfg["api_key"]:
+        return {"status": "unknown"}
+    started, last = known
+    now = time.time()
+    if last and now - last[0] < 15:
+        return last[1]
+    namespace = (
+        f"organizations/{quote(cfg['bill_to'], safe='')}"
+        if cfg["bill_to"]
+        else "settings"
+    )
+    month = datetime.fromtimestamp(started, timezone.utc).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    stamp = lambda moment: moment.isoformat().replace("+00:00", "Z")  # noqa: E731
+    query = (
+        f"startDate={quote(stamp(month))}"
+        f"&endDate={quote(stamp(datetime.fromtimestamp(now, timezone.utc)))}"
+    )
+    request = Request(
+        f"https://huggingface.co/api/{namespace}/billing/usage-by-inference-session?{query}",
+        headers={"Authorization": f"Bearer {cfg['api_key']}"},
+    )
+    proxies = {"https": cfg["proxy"], "http": cfg["proxy"]} if cfg["proxy"] else {}
+    result: dict = {"status": "pending"}
+    try:
+        with build_opener(ProxyHandler(proxies)).open(request, timeout=10) as response:
+            payload = json.loads(response.read(4 * 1024 * 1024))
+        if payload["currency"] != "USD":
+            raise ValueError("unexpected billing currency")
+        cost, count, found = Decimal(0), 0, False
+        for period in payload["periods"]:
+            for session in period["sessions"]:
+                if session["id"] != session_id:
+                    continue
+                amount = Decimal(str(session["costCents"]))
+                calls = session["requestCount"]
+                if not amount.is_finite() or amount < 0 or type(calls) is not int:
+                    raise ValueError("invalid billing amount")
+                cost, count, found = cost + amount / 100, count + calls, True
+        if found:
+            result = {"status": "reported", "cost_usd": float(cost), "requests": count}
+    except HTTPError as error:
+        result = {"status": "forbidden" if error.code in (401, 403) else "unavailable"}
+    except (OSError, URLError, ValueError, KeyError, TypeError, InvalidOperation):
+        # Never log the payload: it carries every other session's usage too.
+        result = {"status": "unavailable"}
+    with _lock:
+        if session_id in _sessions:
+            _sessions[session_id] = (started, (now, result))
     return result
