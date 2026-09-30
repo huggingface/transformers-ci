@@ -142,22 +142,27 @@ def lookup(
 
 PAGE_HTML = """<!doctype html><html><head><meta charset="utf-8">
 <style>
-body{margin:0;padding:10px;background:#181b1f;color:#d8d9da;font:13px/1.45 system-ui,sans-serif}
-p{margin:0 0 10px;color:#aeb7c2}ul{list-style:none;padding:0;margin:0}
-li{padding:10px 0;border-top:1px solid #343b45}a{color:#6ab0ff;text-decoration:none}
-a:hover{text-decoration:underline}.meta{color:#aeb7c2;font-size:12px;margin:4px 0}
-.snippet{white-space:pre-wrap;overflow-wrap:anywhere}button{background:#242b35;color:#d8d9da;
+html,body{height:100%}
+body{margin:0;padding:10px;box-sizing:border-box;display:flex;flex-direction:column;
+background:#181b1f;color:#d8d9da;font:13px/1.45 system-ui,sans-serif}body>*{flex:none}
+p{margin:0 0 6px;color:#aeb7c2}ul{list-style:none;padding:0;margin:0}
+#results{flex:1 1 0;min-height:72px;overflow-y:auto;border-bottom:1px solid #343b45}
+#results li{padding:6px 0;border-top:1px solid #343b45}a{color:#6ab0ff;text-decoration:none}
+a:hover{text-decoration:underline}.meta{color:#8e9197;font-size:12px;margin:1px 0}
+.snippet{color:#aeb7c2;font-size:12px;overflow-wrap:anywhere;display:-webkit-box;
+-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+button{background:#242b35;color:#d8d9da;
 border:1px solid #657083;border-radius:4px;padding:4px 10px;cursor:pointer}
 </style></head><body>
-<h3 style="font-size:14px;margin:0 0 8px">Potential related issues</h3>
-<p>Potential matches from Relore — these may describe a different failure.</p>
+<h3 style="font-size:14px;margin:0 0 6px">Potential related issues</h3>
 <p id="status" role="status" aria-live="polite">Searching related issues…</p>
 <ul id="results"></ul><button id="retry" hidden>Retry</button>
 <script>
 const statusNode=document.getElementById('status'), results=document.getElementById('results');
 const retry=document.getElementById('retry');
 async function load(){
-  retry.hidden=true; results.replaceChildren(); statusNode.textContent='Searching related issues…';
+  retry.hidden=true; results.replaceChildren(); statusNode.hidden=false;
+  statusNode.textContent='Searching related issues…';
   const url=new URL(location.href);url.searchParams.set('format','json');
   try {
     const response=await fetch(url,{cache:'no-store'});
@@ -167,15 +172,14 @@ async function load(){
       statusNode.textContent=data.status==='busy'?'A search is already running. Try again shortly.':
         'Related issues are temporarily unavailable.';retry.hidden=false;return;
     }
-    const note=data.context==='test-only'?' Trace details unavailable; searched by test name only.':'';
-    statusNode.textContent=(data.hits.length?'Potential related issues and PRs':'No related issues found.')+note;
+    statusNode.textContent='No related issues found.';statusNode.hidden=data.hits.length>0;
     for(const hit of data.hits){
       const li=document.createElement('li'),a=document.createElement('a');
       a.href=hit.url;a.target='_blank';a.rel='noopener noreferrer';
       a.textContent=(hit.type==='pr'?'PR':'Issue')+' #'+hit.number+' · '+hit.title;
       const meta=document.createElement('div');meta.className='meta';
       meta.textContent=[hit.author,hit.age,hit.trust].filter(Boolean).join(' · ');
-      const snippet=document.createElement('div');snippet.className='snippet';snippet.textContent=hit.snippet;
+      const snippet=document.createElement('div');snippet.className='snippet';snippet.textContent=hit.snippet;snippet.title=hit.snippet;
       li.append(a,meta,snippet);results.append(li);
     }
   }catch(error){statusNode.textContent='Related issues are temporarily unavailable.';retry.hidden=false;}
@@ -198,13 +202,16 @@ background:rgba(204,204,220,.04);font-size:12px;line-height:18px}
 .tci-meta .k{flex:none;color:#8e9197;font-size:10px;font-weight:600;
 text-transform:uppercase;letter-spacing:.05em}
 .tci-meta .v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cmdLabel{font-size:14px;margin:18px 0 8px}.cmd{display:block;margin:0 0 20px;
-padding:10px 12px;border:1px solid rgba(204,204,220,.15);border-radius:4px;
+.cmdLabel{font-size:14px;margin:12px 0 6px}.cmdRow{display:flex;gap:6px;align-items:stretch;
+margin:0 0 12px}.cmdRow button{flex:none}.cmd{display:block;flex:1 1 auto;min-width:0;
+padding:8px 12px;border:1px solid rgba(204,204,220,.15);border-radius:4px;
 background:rgba(204,204,220,.04);font:13px/1.45 ui-monospace,monospace;
 white-space:pre-wrap;overflow-wrap:anywhere}
 </style></head><body>
 <div class="tci-hd" id="test-heading"></div><ul class="tci-meta" id="test-meta"></ul>
-<h3 class="cmdLabel">Reproduce locally</h3><code class="cmd" id="command"></code>
+<h3 class="cmdLabel">Reproduce locally</h3>
+<div class="cmdRow"><code class="cmd" id="command"></code>
+<button id="copy" type="button" aria-label="Copy command">Copy</button></div>
 <script>
 const context=new URLSearchParams(location.search);
 const node=context.get('test_nodeid')||'';
@@ -218,5 +225,14 @@ for(const [key,label] of [['status','Status'],['module','Module'],['job','Job'],
 const shellQuote=value=>"'"+value.replaceAll("'","'\\"'\\"'")+"'";
 document.getElementById('command').textContent=node.startsWith('utils/checkers.py::')?
   'make '+shellQuote(node.split('::').pop()):'pytest -svx '+shellQuote(node);
+const copyButton=document.getElementById('copy');
+copyButton.addEventListener('click',async()=>{
+  const text=document.getElementById('command').textContent;
+  try{await navigator.clipboard.writeText(text);}catch(error){
+    const area=document.createElement('textarea');area.value=text;document.body.append(area);
+    area.select();document.execCommand('copy');area.remove();
+  }
+  copyButton.textContent='Copied';setTimeout(()=>{copyButton.textContent='Copy';},1500);
+});
 </script>""",
 )
