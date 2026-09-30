@@ -66,7 +66,7 @@ border:1px solid #657083;border-radius:4px;padding:5px 8px;font:inherit;cursor:p
 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 button:disabled{opacity:.55;cursor:not-allowed}
 p{margin:6px 0 0;color:#8e9197;font-size:12px}a{color:#6ab0ff;text-decoration:none}
-.sky{position:relative;height:24px;margin:0 0 6px;overflow:hidden}
+.sky{position:relative;height:24px;margin:6px 0 0;overflow:hidden}
 .nyan{position:absolute;top:0;height:24px;width:67px;left:calc(100% - 67px);
 animation:fly 7s linear infinite}
 .nyan .cat,.nyan .w0,.nyan .w1{animation:bob .4s steps(1) infinite}
@@ -75,8 +75,8 @@ animation:fly 7s linear infinite}
 @keyframes bob{0%{transform:translateY(0)}50%{transform:translateY(1px)}}
 @media (prefers-reduced-motion:reduce){.nyan,.nyan *{animation:none}}
 </style></head><body>
-<div class="sky">__NYAN__</div>
 <div class="row" id="actions" hidden></div>
+<div class="sky">__NYAN__</div>
 <p id="note" role="status" aria-live="polite"></p>
 <script>
 const ACTIONS=__ACTIONS__;
@@ -90,9 +90,9 @@ fetch('/api/user',{credentials:'same-origin',cache:'no-store'}).then(response=>{
   if(!response.ok){signIn();return;}
   for(const [id,label,help] of ACTIONS){
     const b=document.createElement('button');b.type='button';b.id=id;
-    b.textContent=label;b.title=help+' (coming soon)';b.disabled=true;row.append(b);
+    b.textContent=label;b.title=help;b.disabled=true;row.append(b);
   }
-  row.hidden=false;note.textContent='Coming soon.';
+  row.hidden=false;
 }).catch(signIn);
 </script></body></html>"""
 
