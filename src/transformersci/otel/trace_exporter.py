@@ -6807,12 +6807,18 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self._request_route = "notfound"
         self._request_cache = "none"
         path = urlparse(self.path).path
-        if path not in ("/serge-actions/wdyt", "/serge-actions/wdyt/cache"):
+        if path not in (
+            "/serge-actions/wdyt",
+            "/serge-actions/wdyt/cache",
+            "/serge-actions/wdyt/cost",
+        ):
             self._send(404, JSON_CONTENT_TYPE, b'{"error":"not found"}')
             return
         self._request_route = path
         if path == "/serge-actions/wdyt/cache":
             self._serve_wdyt_cache_clear()
+        elif path == "/serge-actions/wdyt/cost":
+            self._serve_wdyt_cost(parse_qs(urlparse(self.path).query))
         else:
             self._serve_wdyt()
 
@@ -6849,6 +6855,13 @@ class MetricsHandler(BaseHTTPRequestHandler):
     def _serve_wdyt_cache_clear(self) -> None:
         if self._action_allowed() and self._action_user():
             self._reply_json(200, {"status": "ok", "cleared": wdyt.clear_cache()})
+
+    def _serve_wdyt_cost(self, params: dict[str, list[str]]) -> None:
+        session_id = (params.get("session_id") or [""])[0]
+        if not re.fullmatch(r"[0-9a-f-]{36}", session_id):
+            self._reply_json(400, {"status": "invalid"})
+        elif self._action_allowed() and self._action_user():
+            self._reply_json(200, wdyt.fetch_cost(session_id))
 
     def _serve_wdyt(self) -> None:
         reply = self._reply_json

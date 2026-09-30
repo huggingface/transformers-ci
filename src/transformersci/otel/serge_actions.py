@@ -192,6 +192,31 @@ function markdown(doc,text,links={}){
   return root;
 }
 
+// The billed cost of a fresh answer. HF reports usage with a delay, so poll the
+// exporter (which reads the org's billing API) until it shows up.
+async function cost(sessionId,node){
+  const say=text=>{node.textContent=text;};
+  for(let attempt=0;attempt<36;attempt++){
+    let data={status:'unavailable'};
+    try{
+      const response=await fetch('/serge-actions/wdyt/cost?session_id='+
+        encodeURIComponent(sessionId),{method:'POST',credentials:'same-origin',
+        headers:{'X-TCI-Action':'1'}});
+      data=await response.json();
+    }catch(error){}
+    if(data.status==='reported'){
+      const usd=data.cost_usd;
+      say('You just spent $'+(usd<0.01?usd.toFixed(4):usd.toFixed(2))+'. Go easy on the AI ;)');
+      return;
+    }
+    if(data.status==='forbidden'){say('Cost not visible: this key cannot read the org billing.');return;}
+    if(data.status==='unknown'||data.status==='unauthorized'){say('');return;}
+    if(!node.isConnected&&attempt>2)return;  // popup closed: stop asking
+    await new Promise(resolve=>setTimeout(resolve,5000));
+  }
+  say('Cost not reported yet. HF billing can lag by a few minutes.');
+}
+
 function popup(){
   let doc=document,host=document.body;
   try{if(parent.document.body){doc=parent.document;host=doc.body;}}catch(error){}
@@ -260,8 +285,10 @@ function popup(){
         answer.append(markdown(doc,data.answer,links));
         foot.textContent=(data.cached?'Answered earlier by ':'Quick opinion from ')+data.model+
           ', based only on this page. It can be wrong.';
-        if(!data.cached)foot.append(el('div','margin:4px 0 0',
-          'You just spent $3. Go easy on the AI ;)'));
+        if(!data.cached&&data.session_id){
+          const spent=el('div','margin:4px 0 0','Counting the cost…');foot.append(spent);
+          cost(data.session_id,spent);
+        }
       }else{
         current=null;step(MESSAGES[data.status]||MESSAGES.unavailable);
         current.firstChild.textContent='✗ ';current.style.color='#f2495c';
