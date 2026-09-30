@@ -65,8 +65,9 @@ spec:
           # Route trace-exporter helper endpoints before the Grafana catch-all.
           # /failure serves traceback HTML; /run serves the per-run test table
           # (both embedded as iframes in dashboards); /pr-search is the "Find a PR" box
-          # every dashboard mounts in Grafana's top bar; /badge and /summary serve
-          # PR status integrations.
+          # every dashboard mounts in Grafana's top bar; /related-issues and
+          # /serge-actions are the Test page's Summary and actions; /badge and
+          # /summary serve PR status integrations.
           - path: /failure
             pathType: Prefix
             backend:
@@ -75,6 +76,13 @@ spec:
                 port:
                   number: 8000
           - path: /related-issues
+            pathType: Exact
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
+          - path: /serge-actions
             pathType: Exact
             backend:
               service:
