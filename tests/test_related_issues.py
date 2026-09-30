@@ -264,5 +264,5 @@ def test_serge_actions_shell(server):
     assert 'class="nyan"' in page
     for label in ("New issue", "Fix it!", "WDYT?"):
         assert label in page
-    assert "b.disabled=true" in page
+    assert "b.disabled=!enabled" in page
     assert "fetch('/api/user'" in page

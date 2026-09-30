@@ -70,6 +70,7 @@ from urllib.request import Request, urlopen
 from transformersci.otel.pr_search import SEARCH_HTML
 from transformersci.otel import related_issues
 from transformersci.otel import serge_actions
+from transformersci.otel import wdyt
 
 from transformersci.emojize import emojize as _emojize
 from transformersci.runners import ATTRIBUTE_PREFIX as RUNNER_ATTRIBUTE_PREFIX
@@ -6801,6 +6802,79 @@ def render_run_html(
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:  # noqa: N802
+        self._request_started = time.monotonic()
+        self._request_route = "notfound"
+        self._request_cache = "none"
+        if urlparse(self.path).path != "/serge-actions/wdyt":
+            self._send(404, JSON_CONTENT_TYPE, b'{"error":"not found"}')
+            return
+        self._request_route = "/serge-actions/wdyt"
+        self._serve_wdyt()
+
+    def _serve_wdyt(self) -> None:
+        def reply(status: int, body: dict) -> None:
+            self._send(
+                status, JSON_CONTENT_TYPE, json.dumps(body).encode(),
+                cache_control="no-store",
+            )
+
+        # CSRF: a cross-site page can neither set this header without a
+        # preflight nor pass the Origin check; Grafana's cookie is SameSite=Lax.
+        origin = self.headers.get("Origin", "")
+        host = self.headers.get("Host", "")
+        if self.headers.get("X-TCI-Action") != "1" or (
+            origin and urlparse(origin).netloc != host
+        ):
+            reply(403, {"status": "forbidden"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if not 0 < length <= 8192:
+            reply(400, {"status": "invalid"})
+            return
+        try:
+            body = json.loads(self.rfile.read(length))
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            reply(400, {"status": "invalid"})
+            return
+        trace_id = str(body.get("trace_id") or "").strip()
+        nodeid = str(body.get("test_nodeid") or "").strip()
+        if (
+            not nodeid or len(nodeid) > 2048
+            or any(ord(c) < 32 for c in nodeid)
+            or not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id)
+        ):
+            reply(400, {"status": "invalid"})
+            return
+        login = wdyt.grafana_login(
+            wdyt.config()["grafana"], self.headers.get("Cookie", "")
+        )
+        if not login:
+            reply(401, {"status": "unauthorized"})
+            return
+        labels = {
+            label: str(body.get(key) or "")[:200].replace("\n", " ")
+            for key, label in (
+                ("status", "Status"), ("job", "Job"), ("module", "Module"),
+                ("pr", "PR"), ("run_id", "Run"),
+            )
+        }
+
+        def make_prompt() -> str:
+            trace = get_trace(trace_id)
+            if not trace or trace_repository(trace) != related_issues.REPOSITORY:
+                raise ValueError("trace unavailable")
+            details = extract_failure_details(trace, nodeid)
+            related = related_issues.lookup(trace_id, nodeid, lambda: details)
+            return wdyt.build_prompt(nodeid, labels, details, related["hits"])
+
+        reply(200, wdyt.answer(login, trace_id, nodeid, make_prompt))
+
     def do_GET(self) -> None:  # noqa: N802
         self._request_started = time.monotonic()
         self._request_route = "notfound"

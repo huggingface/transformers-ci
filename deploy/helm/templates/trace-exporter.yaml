@@ -82,6 +82,20 @@ spec:
               value: /app/src/src
             - name: PYTEST_TRACE_EXPORTER_RELORE_URL
               value: {{ .Values.traceExporter.relore.url | quote }}
+            - name: PYTEST_TRACE_EXPORTER_LLM_API_BASE
+              value: {{ .Values.traceExporter.wdyt.apiBase | quote }}
+            - name: PYTEST_TRACE_EXPORTER_LLM_MODEL
+              value: {{ .Values.traceExporter.wdyt.model | quote }}
+            - name: PYTEST_TRACE_EXPORTER_LLM_PROXY
+              value: {{ .Values.traceExporter.wdyt.proxy | quote }}
+            - name: PYTEST_TRACE_EXPORTER_GRAFANA_URL
+              value: {{ .Values.traceExporter.wdyt.grafanaUrl | quote }}
+            - name: PYTEST_TRACE_EXPORTER_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.llmApiKey }}
+                  optional: true
             - name: PYTEST_TRACE_EXPORTER_TEMPO_URL
               value: {{ .Values.traceExporter.tempo.url }}
             - name: PYTEST_TRACE_EXPORTER_LIMIT
