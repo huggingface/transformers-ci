@@ -1802,9 +1802,72 @@ def github_run_html_url(repository: str, run_id: str) -> str:
     return base
 
 
-# How long /failure/context waits for the Traceback panel to memoize the trace
-# before fetching it itself (an unsettled, still-running trace is never cached).
-FAILURE_CONTEXT_WAIT_SECONDS = 3.0
+# The Test page's Summary and Traceback panels need the same trace on the same
+# page load. The raw-trace memo does not help: a trace opened once is seen once
+# and never settles into it. So /failure keeps just the trace's process tags
+# (a few KB, all failure_context reads) for a few minutes, and the two panels
+# share one fetch while it is in flight. A follower waits as long as a slow
+# Tempo read can take before fetching on its own.
+FAILURE_CONTEXT_TTL_SECONDS = 300.0
+FAILURE_FETCH_WAIT_SECONDS = 60.0
+_failure_processes: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+_failure_fetches: dict[str, tuple[threading.Event, list]] = {}
+_failure_processes_lock = threading.Lock()
+
+
+def remember_trace_processes(trace_id: str, trace: dict | None) -> None:
+    processes = (trace or {}).get("processes")
+    if not isinstance(processes, dict):
+        return
+    with _failure_processes_lock:
+        _failure_processes[trace_id] = (
+            time.monotonic() + FAILURE_CONTEXT_TTL_SECONDS,
+            {"processes": processes},
+        )
+        _failure_processes.move_to_end(trace_id)
+        while len(_failure_processes) > 256:
+            _failure_processes.popitem(last=False)
+
+
+def recent_trace_processes(trace_id: str) -> dict | None:
+    with _failure_processes_lock:
+        entry = _failure_processes.get(trace_id)
+    return entry[1] if entry and entry[0] > time.monotonic() else None
+
+
+def fetch_failure_trace(trace_id: str) -> dict | None:
+    """get_trace, shared by concurrent /failure and /failure/context requests
+    for one trace (one Tempo fetch per page load, whichever panel asks first),
+    publishing the trace's process tags for later context requests."""
+    with _failure_processes_lock:
+        flight = _failure_fetches.get(trace_id)
+        leader = flight is None
+        if leader:
+            flight = _failure_fetches[trace_id] = (threading.Event(), [])
+    done, result = flight
+    if not leader:
+        if done.wait(FAILURE_FETCH_WAIT_SECONDS) and result:
+            return result[0]
+        return get_trace(trace_id)
+    try:
+        trace = get_trace(trace_id)
+        result.append(trace)
+        remember_trace_processes(trace_id, trace)
+        return trace
+    finally:
+        with _failure_processes_lock:
+            _failure_fetches.pop(trace_id, None)
+        done.set()
+
+
+def failure_context_trace(trace_id: str) -> dict | None:
+    """What /failure/context reads: the memoized trace, the process tags a
+    recent /failure kept, or else a fetch shared with /failure."""
+    with _trace_cache_lock:
+        trace = _trace_cache.get(trace_id)
+    if trace is not None:
+        return trace
+    return recent_trace_processes(trace_id) or fetch_failure_trace(trace_id)
 
 
 def github_job_html_url(repository: str, run_id: str, job_id: str) -> str:
@@ -7268,7 +7331,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
     def _serve_failure(self, params: dict[str, list[str]]) -> None:
         trace_id = (params.get("trace_id") or [""])[0].strip()
         test_nodeid = (params.get("test_nodeid") or [""])[0].strip()
-        trace = get_trace(trace_id) if trace_id else None
+        trace = fetch_failure_trace(trace_id) if trace_id else None
         details = extract_failure_details(trace, test_nodeid) if trace else []
         if trace and details:
             annotate_github_links(trace, details)
@@ -7291,18 +7354,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         ):
             self._send(400, JSON_CONTENT_TYPE, b'{"error":"invalid test context"}')
             return
-        # The Test page's Traceback panel fetches this same trace on the same
-        # page load, and a settled trace is then memoized: wait for that instead
-        # of pulling a multi-MB trace from Tempo a second time.
-        trace = None
-        deadline = time.monotonic() + FAILURE_CONTEXT_WAIT_SECONDS
-        while trace is None and time.monotonic() < deadline:
-            with _trace_cache_lock:
-                trace = _trace_cache.get(trace_id)
-            if trace is None:
-                time.sleep(0.25)
-        if trace is None:
-            trace = get_trace(trace_id)
+        trace = failure_context_trace(trace_id)
         self._send(
             200,
             JSON_CONTENT_TYPE,

@@ -45,7 +45,10 @@ def make_trace(**extra):
 def clear_caches():
     with te._trace_cache_lock:
         te._trace_cache.clear()
+    te._failure_processes.clear()
     yield
+    te._failure_processes.clear()
+    assert te._failure_fetches == {}
 
 
 def test_failure_context_reads_process_tags_only():
@@ -147,14 +150,45 @@ def test_context_endpoint_uses_memoized_trace(server, monkeypatch):
     assert err.value.code == 400
 
 
-def test_context_endpoint_fetches_after_waiting(server, monkeypatch):
-    monkeypatch.setattr(te, "FAILURE_CONTEXT_WAIT_SECONDS", 0.3)
+def test_context_endpoint_fetches_once_then_reuses_process_tags(server, monkeypatch):
     fetched = []
     monkeypatch.setattr(te, "get_trace", lambda t: fetched.append(t) or make_trace())
     query = urlencode({"trace_id": TRACE, "test_nodeid": NODE})
-    with urlopen(server + "/failure/context?" + query) as response:
-        assert json.load(response)["runner_name"] == RUNNER
+    for _ in range(2):
+        with urlopen(server + "/failure/context?" + query) as response:
+            assert json.load(response)["runner_name"] == RUNNER
     assert fetched == [TRACE]
+    # /failure on the same page load reuses nothing heavy: it needs the spans,
+    # but a later context request is served from the kept process tags.
+    assert set(te._failure_processes[TRACE][1]) == {"processes"}
+
+
+def test_concurrent_panels_share_one_fetch(monkeypatch):
+    started, release = threading.Event(), threading.Event()
+    fetched = []
+
+    def slow_get(trace_id):
+        fetched.append(trace_id)
+        started.set()
+        release.wait(5)
+        return make_trace()
+
+    monkeypatch.setattr(te, "get_trace", slow_get)
+    results = []
+    leader = threading.Thread(
+        target=lambda: results.append(te.fetch_failure_trace(TRACE))
+    )
+    leader.start()
+    assert started.wait(5)
+    follower = threading.Thread(
+        target=lambda: results.append(te.failure_context_trace(TRACE))
+    )
+    follower.start()
+    release.set()
+    leader.join(5)
+    follower.join(5)
+    assert fetched == [TRACE]
+    assert len(results) == 2 and all(r["processes"] for r in results)
 
 
 def test_failure_page_links_job_log(server, monkeypatch):
