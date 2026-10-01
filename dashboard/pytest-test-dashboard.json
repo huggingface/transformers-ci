@@ -46,7 +46,7 @@
       "targetBlank": false,
       "title": "Job",
       "type": "link",
-      "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${link_run_id:raw}&var-pr=${link_pr:raw}"
+      "url": "/failure/job-page?trace_id=${trace_id:percentencode}&latest_trace=${latest_trace:percentencode}&test_nodeid=${test_nodeid:percentencode}&job=${test_job:percentencode}&run_id=${link_run_id:percentencode}&pr=${link_pr:percentencode}&status=${status_code:percentencode}"
     },
     {
       "targetBlank": false,

@@ -1,8 +1,9 @@
+import http.client
 import json
 import threading
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import urlopen
 
 import pytest
@@ -221,7 +222,104 @@ def test_summary_links_scoped_job_page_and_exact_job():
 
     page = ri.SUMMARY_HTML
     assert "fetch('/failure/context?'" in page
-    assert "'var-hardware':hardware||'$__all'" in page
+    assert "'/failure/job-page?'+new URLSearchParams" in page
     assert "runner:info.job_url||info.run_url" in page
     # Only GitHub (new tab) and Grafana-internal (same window) targets are linked.
-    assert "/^https:\\/\\/github\\.com\\//" in page and "/^\\/d\\//" in page
+    assert "/^https:\\/\\/github\\.com\\//" in page
+    assert "/^\\/failure\\/job-page\\?/" in page
+
+
+def run_rows():
+    def row(nodeid, trace, hardware, duration, status="ERROR"):
+        return {
+            "test_nodeid": nodeid,
+            "trace_id": trace,
+            "hardware": hardware,
+            "duration_seconds": duration,
+            "status_code": status,
+            "test_job": "run_models_gpu",
+            "pr": "main",
+        }
+
+    return [
+        row("tests/models/a/test_a.py::T::test_x", "1" * 32, "single-gpu", 50),
+        row("tests/models/b/test_b.py::T::test_y", "2" * 32, "single-gpu", 40),
+        row(NODE, "3" * 32, "single-gpu", 1),
+        row(NODE, TRACE, "multi-gpu", 2),
+    ]
+
+
+def test_run_focus_row_is_shown_highlighted_and_opened():
+    page = te.render_run_html(
+        "36807556167:1", run_rows(), limit=1, focus=NODE, focus_trace=TRACE
+    )
+    # Below the top-1 cut, but still listed, and the multi-gpu (trace) row.
+    assert page.count("id='focus'") == 1
+    focus_row = page[page.index("id='focus'") :].split("</tr>")[0]
+    assert TRACE in focus_row and "xGPU" in focus_row
+    assert "(showing top 1)" in page
+    assert "getElementById('focus')" in page and "b.click()" in page
+    # No trace given: the first row with that node id, in table (duration) order.
+    page = te.render_run_html("36807556167:1", run_rows(), focus=NODE)
+    assert TRACE in page[page.index("id='focus'") :].split("</tr>")[0]
+    page = te.render_run_html("1:1", run_rows(), focus=NODE, focus_trace="3" * 32)
+    assert "3" * 32 in page[page.index("id='focus'") :].split("</tr>")[0]
+    assert "id='focus'" not in te.render_run_html("1:1", run_rows(), focus="nope")
+
+
+def test_run_focus_opens_its_group():
+    rows = run_rows() * 0 + [
+        {**run_rows()[0], "test_nodeid": f"tests/models/c/test_c.py::T::t{i}"}
+        for i in range(te._RUN_GROUP_OPEN_MAX + 5)
+    ]
+    focused = {**rows[0], "test_nodeid": "tests/models/c/test_c.py::T::zz"}
+    rows.append(focused)
+    page = te.render_run_html(
+        "1:1", rows, group="model", limit=2, focus=focused["test_nodeid"]
+    )
+    assert "<details open" in page and "id='focus'" in page
+
+
+def test_job_page_redirect_scopes_hardware_and_focus(server, monkeypatch):
+    monkeypatch.setattr(
+        te,
+        "get_trace",
+        lambda t: make_trace(**{"transformers.test.hardware": "multi-gpu"}),
+    )
+    query = urlencode(
+        {
+            "trace_id": "",
+            "latest_trace": TRACE,
+            "test_nodeid": NODE,
+            "job": "run_models_gpu",
+            "run_id": "36807556167:1",
+            "pr": "main",
+            "status": "ERROR",
+        }
+    )
+    status, location = get_redirect(server, "/failure/job-page?" + query)
+    assert status == 302
+    assert location.startswith(
+        "/d/pytest-observability-by-job/pytest-observability-job?"
+    )
+    params = parse_qs(urlparse(location).query)
+    assert params["var-hardware"] == ["multi-gpu"]
+    assert params["var-focus"] == [NODE] and params["var-focus_trace"] == [TRACE]
+    assert params["var-status_filter"] == ["ERROR"]
+    assert params["var-job"] == ["run_models_gpu"]
+    # No trace at all: still a Job page, every hardware.
+    status, location = get_redirect(
+        server, "/failure/job-page?" + urlencode({"job": "j", "run_id": "1:1"})
+    )
+    params = parse_qs(urlparse(location).query)
+    assert status == 302 and params["var-hardware"] == ["$__all"]
+
+
+def get_redirect(server, path):
+    parsed = urlparse(server)
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port)
+    conn.request("GET", path)
+    response = conn.getresponse()
+    location = response.getheader("Location")
+    conn.close()
+    return response.status, location

@@ -6439,7 +6439,9 @@ def _run_group_key(row: dict[str, str | float], mode: str) -> str:
     )
 
 
-def _run_row_html(row: dict[str, str | float], run_id: str) -> str:
+def _run_row_html(
+    row: dict[str, str | float], run_id: str, focused: bool = False
+) -> str:
     esc = html.escape
     nodeid = str(row.get("test_nodeid", ""))
     trace_id = str(row.get("trace_id", ""))
@@ -6474,8 +6476,9 @@ def _run_row_html(row: dict[str, str | float], run_id: str) -> str:
             f" <button class='tb' type='button' data-src=\"{esc(failure)}\">"
             "error ▸</button>"
         )
+    focus_attrs = " id='focus' class='focus'" if focused else ""
     return (
-        f"<tr><td class='{st_cls}'>{st_txt}</td>"
+        f"<tr{focus_attrs}><td class='{st_cls}'>{st_txt}</td>"
         f"<td class='nodeid'><a target='_parent' href=\"{esc(href)}\">"
         f"{esc(nodeid)}</a></td>"
         f"<td>{esc(str(row.get('test_job', '')))}</td>"
@@ -6503,6 +6506,30 @@ _RUN_ERROR_TOGGLE_JS = (
     "catch(_){}};f.src=b.dataset.src;tr.after(r);b.textContent='error ▾';"
     "});</script>"
 )
+
+# The row a Test page link pointed at (?focus=): scroll to it, open its group
+# and its traceback, once, on load.
+_RUN_FOCUS_JS = (
+    "<script>(function(){var f=document.getElementById('focus');if(!f)return;"
+    "var d=f.closest('details');if(d)d.open=true;"
+    "f.scrollIntoView({block:'center'});"
+    "var b=f.querySelector('button.tb');if(b)b.click();})();</script>"
+)
+
+
+def _pick_focus_row(
+    rows: list[dict[str, str | float]], focus: str, focus_trace: str
+) -> dict[str, str | float] | None:
+    """The row ?focus= names: its trace's row when given (the same test can run
+    on both hardware classes in one job), else the first with that node id."""
+    if not focus:
+        return None
+    matches = [r for r in rows if str(r.get("test_nodeid", "")) == focus]
+    for r in matches:
+        if focus_trace and str(r.get("trace_id", "")) == focus_trace:
+            return r
+    return matches[0] if matches else None
+
 
 # While the run is in flight (#runbody data-live="1") the page re-fetches itself
 # every 30s and swaps the body in place, keeping what the reader opened: groups
@@ -6543,7 +6570,11 @@ def _plural(n: int, word: str) -> str:
 
 
 def _render_run_groups(
-    rows: list[dict[str, str | float]], run_id: str, mode: str, limit: int
+    rows: list[dict[str, str | float]],
+    run_id: str,
+    mode: str,
+    limit: int,
+    focus_row: dict[str, str | float] | None = None,
 ) -> list[str]:
     """Bucket rows by ``mode``, largest failing bucket first, one <details> each.
 
@@ -6576,6 +6607,9 @@ def _render_run_groups(
         n_fail = failing(members)
         members.sort(key=lambda r: str(r.get("test_nodeid", "")))
         shown = members[: max(0, limit)] if limit else members
+        has_focus = any(r is focus_row for r in members)
+        if has_focus and not any(r is focus_row for r in shown):
+            shown = [*shown, focus_row]
         parts = [_plural(len(members), "test")]
         if n_fail and n_fail != len(members):
             parts.append(f"{n_fail} failing")
@@ -6599,7 +6633,7 @@ def _render_run_groups(
             if len(shown) < len(members)
             else ""
         )
-        is_open = " open" if len(members) <= _RUN_GROUP_OPEN_MAX else ""
+        is_open = " open" if has_focus or len(members) <= _RUN_GROUP_OPEN_MAX else ""
         cls = "err" if n_fail else "ok"
         out.append(
             f"<details{is_open} data-key=\"{esc(key)}\"><summary><span class='{cls}'>"
@@ -6607,7 +6641,7 @@ def _render_run_groups(
             f"<span class='meta'>— {' · '.join(parts)}"
             f"{' · ' + exc_txt if exc_txt else ''}</span></summary>"
             + _RUN_TABLE_HEAD
-            + "".join(_run_row_html(r, run_id) for r in shown)
+            + "".join(_run_row_html(r, run_id, r is focus_row) for r in shown)
             + f"</tbody></table>{more}</details>"
         )
     return out
@@ -6748,6 +6782,8 @@ def render_run_html(
     query: dict[str, list[str]] | None = None,
     live: bool = False,
     live_counts: LiveCounts | None = None,
+    focus: str = "",
+    focus_trace: str = "",
 ) -> str:
     """Render the per-run test table (sortable, links to the per-test page).
 
@@ -6760,7 +6796,9 @@ def render_run_html(
     lives in the panel rather than in a dashboard variable. ``live`` (the run
     is still in flight) makes the page poll itself and update in place.
     ``live_counts`` (:func:`live_test_counts`) adds a banner when the live stream
-    has seen failures the exporter has no rows for yet.
+    has seen failures the exporter has no rows for yet. ``focus`` (a node id,
+    with ``focus_trace`` to pick its hardware's row) is the row a Test page link
+    came from: always shown, highlighted, scrolled to, its traceback opened.
     """
     esc = html.escape
     # Optional hardware filter (raw name, e.g. "single-gpu"). Sentinels from the
@@ -6784,6 +6822,10 @@ def render_run_html(
     total = len(rows)
     grouped = group in RUN_GROUP_MODES
     shown = rows if grouped else (rows[: max(0, limit)] if limit else rows)
+    focus_row = _pick_focus_row(rows, focus, focus_trace)
+    top = len(shown)
+    if focus_row is not None and not grouped and not any(r is focus_row for r in shown):
+        shown = [*shown, focus_row]  # below the cut: still listed, last
     show_label = "Failing" if status == "ERROR" else esc(status)
 
     out = [
@@ -6817,6 +6859,8 @@ def render_run_html(
         "vertical-align:-1px;border:2px solid #2f3338;border-top-color:#6ab0ff;"
         "border-radius:50%;animation:tbspin .8s linear infinite}"
         "@keyframes tbspin{to{transform:rotate(360deg)}}"
+        "tr.focus td{background:rgba(61,113,217,.16)}"
+        "tr.focus td:first-child{box-shadow:inset 3px 0 #3d71d9}"
         "tr.tbrow iframe{width:100%;height:120px;border:1px solid #24262b;"
         "border-radius:4px;background:#0b0c0e}"
         # Grafana's outline secondary button (measured off the dashboards' own
@@ -6849,7 +6893,13 @@ def render_run_html(
         "</style></head><body>",
         f"<div id='runbody' data-live='{1 if live else 0}'>",
     ]
-    tail = "</div>" + _RUN_ERROR_TOGGLE_JS + _RUN_LIVE_POLL_JS + "</body></html>"
+    tail = (
+        "</div>"
+        + _RUN_ERROR_TOGGLE_JS
+        + _RUN_FOCUS_JS
+        + _RUN_LIVE_POLL_JS
+        + "</body></html>"
+    )
     tempo_link = (
         f" <a target='_parent' href=\"/explore?schemaVersion=1&orgId=1&"
         f"panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:"
@@ -6937,7 +6987,7 @@ def render_run_html(
         return "".join(out)
 
     if grouped:
-        groups = _render_run_groups(rows, run_id, group, limit)
+        groups = _render_run_groups(rows, run_id, group, limit, focus_row)
         out.append(
             f"<p class='meta'>{_plural(total, 'test')} in "
             f"{_plural(len(groups), 'group')}, largest first · {live_note}"
@@ -6947,14 +6997,14 @@ def render_run_html(
         out.append(tail)
         return "".join(out)
 
-    suffix = f" (showing top {len(shown)})" if total > len(shown) else ""
+    suffix = f" (showing top {top})" if total > top else ""
     out.append(
         f"<p class='meta'>{total} test{'s' if total != 1 else ''}{suffix} · "
         f"{live_note}"
         f"run {run_link}</p>"
     )
     out.append(_RUN_TABLE_HEAD)
-    out.extend(_run_row_html(row, run_id) for row in shown)
+    out.extend(_run_row_html(row, run_id, row is focus_row) for row in shown)
     out.append("</tbody></table>" + tail)
     return "".join(out)
 
@@ -7136,6 +7186,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/failure":
             self._request_route = "/failure"
             self._serve_failure(parse_qs(parsed.query))
+            return
+        if parsed.path == "/failure/job-page":
+            self._request_route = "/failure/job-page"
+            self._serve_failure_job_page(parse_qs(parsed.query))
             return
         if parsed.path == "/failure/context":
             self._request_route = "/failure/context"
@@ -7362,12 +7416,57 @@ class MetricsHandler(BaseHTTPRequestHandler):
             cache_control="public, max-age=300" if trace else "no-store",
         )
 
+    def _serve_failure_job_page(self, params: dict[str, list[str]]) -> None:
+        """Redirect the Test page's Job link to the Job page scoped to the
+        test's hardware, its row focused. The hardware is only in the trace (no
+        test metric carries it), read the way /failure/context reads it."""
+
+        def arg(name: str) -> str:
+            value = (params.get(name) or [""])[0].strip()
+            return "" if len(value) > 2048 or any(ord(c) < 32 for c in value) else value
+
+        trace_id = next(
+            (
+                t
+                for t in (arg("trace_id"), arg("latest_trace"))
+                if re.fullmatch(r"[0-9a-fA-F]{32}", t)
+            ),
+            "",
+        )
+        nodeid = arg("test_nodeid")
+        context = failure_context(
+            failure_context_trace(trace_id) if trace_id else None, nodeid
+        )
+        query = {
+            "orgId": "1",
+            "var-job": arg("job"),
+            "var-run_id": context.get("run_id") or arg("run_id"),
+            "var-pr": arg("pr") or context.get("pr", ""),
+            "var-hardware": context.get("hardware") or "$__all",
+            # A passing test is not in the default Failing view.
+            "var-status_filter": "ERROR" if arg("status") in ("", "ERROR") else ".+",
+            "var-focus": nodeid,
+            "var-focus_trace": trace_id,
+        }
+        self.send_response(302)
+        self.send_header(
+            "Location",
+            "/d/pytest-observability-by-job/pytest-observability-job?"
+            + urlencode(query),
+        )
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self._observe_response(302, 0)
+
     def _serve_run(self, params: dict[str, list[str]]) -> None:
         run_id = (params.get("run_id") or [""])[0].strip()
         job = (params.get("job") or [""])[0].strip()
         status = (params.get("status") or [""])[0].strip()
         hardware = (params.get("hardware") or [""])[0].strip()
         group = (params.get("group") or [""])[0].strip()
+        focus = (params.get("focus") or [""])[0].strip()
+        focus_trace = (params.get("focus_trace") or [""])[0].strip()
         try:
             limit = int((params.get("limit") or ["200"])[0])
         except ValueError:
@@ -7421,6 +7520,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 or pending
                 or (run_is_active(run_id) and not github_done),
                 live_counts=live_counts,
+                focus=focus,
+                focus_trace=focus_trace,
             ).encode("utf-8"),
             cache_control=_public_cache_control_header(),
         )

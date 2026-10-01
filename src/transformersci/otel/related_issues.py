@@ -253,8 +253,10 @@ document.getElementById('test-heading').textContent=node;
 // Chips render from the URL at once; /failure/context (read from the trace,
 // no GitHub call) then adds the Runner chip and the links. One run_id + job
 // spans every model folder on both machine types, so Job opens the Job page
-// scoped to this trace's hardware, and Runner opens the exact GitHub job when
+// scoped to this trace's hardware with this test's row opened, and Runner opens the exact GitHub job when
 // the trace names it (job_url), else the run.
+const latestTrace=context.get('latest_trace')||'';
+const traceId=context.get('trace_id')||(/^[0-9a-f]{32}$/i.test(latestTrace)?latestTrace:'');
 const HARDWARE={'cpu':'CPU','gpu':'GPU','single-gpu':'GPU','multi-gpu':'xGPU'};
 function renderMeta(info){
   const runId=info.run_id||context.get('run_id')||'',pr=info.pr||context.get('pr')||'';
@@ -262,9 +264,10 @@ function renderMeta(info){
   const values={status:context.get('status'),module:context.get('module'),job:job,
     runner:[info.runner_type,HARDWARE[hardware]||hardware].filter(Boolean).join(' · '),
     pr:pr,run_id:runId};
-  const jobPage=job&&runId?'/d/pytest-observability-by-job/pytest-observability-job?'+
-    new URLSearchParams({'var-job':job,'var-run_id':runId,'var-pr':pr,
-      'var-hardware':hardware||'$__all'}):'';
+  // Same redirect as the top bar's Job link: this hardware, this row opened.
+  const jobPage=job&&runId?'/failure/job-page?'+new URLSearchParams({
+    trace_id:traceId,test_nodeid:node,job:job,run_id:runId,pr:pr,
+    status:context.get('status')||''}):'';
   const links={module:info.file_url,pr:info.pr_url,run_id:info.run_url,
     runner:info.job_url||info.run_url,job:jobPage};
   const titles={runner:[info.runner_name,info.job_url?'GitHub job log':'GitHub run (this trace names no job)'].filter(Boolean).join(' · '),
@@ -274,7 +277,7 @@ function renderMeta(info){
     const value=values[key];if(!value)continue;
     const li=document.createElement('li'),k=document.createElement('span');
     const target=links[key]||'',external=/^https:\\/\\/github\\.com\\//.test(target);
-    const link=external||/^\\/d\\//.test(target)?target:'';
+    const link=external||/^\\/failure\\/job-page\\?/.test(target)?target:'';
     const v=document.createElement(link?'a':'span');
     k.className='k';k.textContent=label;v.className='v';v.textContent=external?value+' ↗':value;
     v.title=titles[key]||value;
@@ -284,8 +287,6 @@ function renderMeta(info){
 }
 renderMeta({});
 {
-  const latest=context.get('latest_trace')||'';
-  const traceId=context.get('trace_id')||(/^[0-9a-f]{32}$/i.test(latest)?latest:'');
   if(/^[0-9a-f]{32}$/i.test(traceId)&&node){
     const query=new URLSearchParams({trace_id:traceId,test_nodeid:node});
     fetch('/failure/context?'+query).then(r=>r.ok?r.json():{}).then(info=>{
