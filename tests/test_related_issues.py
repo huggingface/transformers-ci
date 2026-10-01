@@ -11,6 +11,7 @@ from urllib.request import urlopen
 import pytest
 
 from transformersci.otel import related_issues as ri
+from transformersci.otel import serge_actions as sa
 from transformersci.otel import trace_exporter as te
 
 NODE = "tests/trainer/test_trainer.py::TrainerIntegrationTest::test_end_to_end_example"
@@ -266,3 +267,62 @@ def test_serge_actions_shell(server):
         assert label in page
     assert "b.disabled=!enabled" in page
     assert "fetch('/api/user'" in page
+    assert "/serge-actions/fix-prs?test_nodeid=" in page
+
+
+def serge_pr(number, body=NODE, **extra):
+    return {
+        "number": number,
+        "html_url": f"https://github.com/{sa.REPOSITORY}/pull/{number}",
+        "title": f"[serge] Fix {number}",
+        "state": "open",
+        "body": f"## Original CI failure\n- `{body}`",
+        "pull_request": {"merged_at": None},
+        **extra,
+    }
+
+
+def test_fix_prs_keeps_exact_node_ids_and_caches(monkeypatch):
+    sa._fix_cache.clear()
+    queries = []
+    items = [
+        serge_pr(3, pull_request={"merged_at": "2026-10-01T00:00:00Z"}),
+        serge_pr(2, body=NODE + "_bar"),  # phrase search matched a longer name
+        serge_pr(1, state="closed"),
+        serge_pr(4, html_url="https://evil.test/pull/4"),
+        serge_pr(5, draft=True),
+    ]
+    result = sa.fix_prs(NODE, lambda q: queries.append(q) or items)
+    assert result["status"] == "ok"
+    assert [(pr["number"], pr["state"]) for pr in result["prs"]] == [
+        (3, "merged"),
+        (1, "closed"),
+        (5, "draft"),
+    ]
+    assert queries == [
+        f'repo:{sa.REPOSITORY} is:pr author:{sa.SERGE_AUTHOR} in:body "{NODE}"'
+    ]
+    assert sa.fix_prs(NODE, lambda q: queries.append(q) or []) is result
+    assert len(queries) == 1
+
+
+def test_fix_prs_failure_is_unavailable_not_empty(monkeypatch):
+    sa._fix_cache.clear()
+
+    def boom(query):
+        raise OSError("github down")
+
+    assert sa.fix_prs(NODE, boom) == {"status": "unavailable", "prs": []}
+
+
+def test_fix_prs_route(server, monkeypatch):
+    sa._fix_cache.clear()
+    monkeypatch.setattr(te, "search_github_issues", lambda q: [serge_pr(7)])
+    with urlopen(
+        server + "/serge-actions/fix-prs?" + urlencode({"test_nodeid": NODE})
+    ) as response:
+        assert response.headers["Cache-Control"] == "no-store"
+        assert json.load(response)["prs"][0]["url"].endswith("/pull/7")
+    with pytest.raises(HTTPError) as err:
+        urlopen(server + "/serge-actions/fix-prs?test_nodeid=")
+    assert err.value.code == 400

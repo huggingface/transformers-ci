@@ -9,6 +9,10 @@ authorization gate.
 from __future__ import annotations
 
 import json
+import re
+import threading
+import time
+from collections.abc import Callable
 
 # (id, label, what Serge will do, wired yet). Rendered with textContent only.
 ACTIONS = (
@@ -16,6 +20,68 @@ ACTIONS = (
     ("fix-it", "Fix it!", "Serge reproduces the failure and opens a fix PR.", False),
     ("wdyt", "WDYT?", "Serge takes a quick look and tells you what it thinks.", True),
 )
+
+# Fix PRs Serge already opened for a test: its PR bodies quote the failing node id.
+REPOSITORY = "huggingface/transformers"
+SERGE_AUTHOR = "app/sergereview"
+FIX_PR_TTL_SECONDS = 600.0
+FIX_PR_ERROR_TTL_SECONDS = 60.0  # GitHub search allows 30 requests a minute
+FIX_PR_CACHE_SIZE = 512
+FIX_PR_LIMIT = 3
+_fix_cache: dict[str, tuple[float, dict]] = {}
+_fix_lock = threading.Lock()
+
+
+def fix_pr_query(nodeid: str) -> str:
+    return f'repo:{REPOSITORY} is:pr author:{SERGE_AUTHOR} in:body "{nodeid.replace(chr(34), "")}"'
+
+
+def _fix_pr(item: object, nodeid: str) -> dict | None:
+    # Phrase search is fuzzy (test_foo matches test_foo_bar): keep exact quotes only.
+    if not isinstance(item, dict) or not re.search(
+        re.escape(nodeid) + r"(?!\w)", str(item.get("body") or "")
+    ):
+        return None
+    number, url = item.get("number"), item.get("html_url")
+    prefix = f"https://github.com/{REPOSITORY}/pull/"
+    if type(number) is not int or url != f"{prefix}{number}":
+        return None
+    pull = item.get("pull_request") or {}
+    if isinstance(pull, dict) and pull.get("merged_at"):
+        state = "merged"
+    elif item.get("state") == "open":
+        state = "draft" if item.get("draft") else "open"
+    else:
+        state = "closed"
+    return {
+        "number": number,
+        "url": url,
+        "title": str(item.get("title") or "")[:300],
+        "state": state,
+        "created_at": str(item.get("created_at") or ""),
+    }
+
+
+def fix_prs(nodeid: str, search: Callable[[str], list]) -> dict:
+    """Serge PRs that name this test, newest first; cached per node id."""
+    now = time.monotonic()
+    with _fix_lock:
+        cached = _fix_cache.get(nodeid)
+        if cached and cached[0] > now:
+            return cached[1]
+    try:
+        prs = [
+            pr for item in search(fix_pr_query(nodeid)) if (pr := _fix_pr(item, nodeid))
+        ]
+        result, ttl = {"status": "ok", "prs": prs[:FIX_PR_LIMIT]}, FIX_PR_TTL_SECONDS
+    except Exception:
+        result, ttl = {"status": "unavailable", "prs": []}, FIX_PR_ERROR_TTL_SECONDS
+    with _fix_lock:
+        if len(_fix_cache) >= FIX_PR_CACHE_SIZE:
+            _fix_cache.pop(next(iter(_fix_cache)))
+        _fix_cache[nodeid] = (now + ttl, result)
+    return result
+
 
 # A pixel-art homage drawn here (no third-party image): rainbow trail in
 # 5-unit segments that alternate up/down, Pop-Tart body, grey head.
@@ -81,6 +147,7 @@ body.thinking .nyan{animation-duration:1.4s}
 @media (prefers-reduced-motion:reduce){.nyan,.nyan *,button.thinking{animation:none}}
 </style></head><body>
 <div class="row" id="actions" hidden></div>
+<p id="fix" hidden></p>
 <div class="sky">__NYAN__</div>
 <p id="note" role="status" aria-live="polite"></p>
 <script>
@@ -102,6 +169,22 @@ fetch('/api/user',{credentials:'same-origin',cache:'no-store'}).then(response=>{
 }).catch(signIn);
 
 const context=new URLSearchParams(location.search);
+// Public: a fix PR Serge already opened for this test, from its PR bodies on GitHub.
+const FIX_STATES={open:'open',draft:'draft',merged:'merged ✓',closed:'closed'};
+if(context.get('test_nodeid'))fetch('/serge-actions/fix-prs?test_nodeid='+
+  encodeURIComponent(context.get('test_nodeid')),{cache:'no-store'})
+  .then(response=>response.json()).then(data=>{
+    const prs=data.prs||[];if(!prs.length)return;
+    const fix=document.getElementById('fix');
+    fix.append('🔧 Serge opened ');
+    prs.forEach((pr,i)=>{
+      if(i)fix.append(', ');
+      const a=document.createElement('a');a.href=pr.url;a.target='_blank';
+      a.rel='noopener noreferrer';a.title=pr.title;a.textContent='PR #'+pr.number;
+      fix.append(a,' ('+(FIX_STATES[pr.state]||pr.state)+')');
+    });
+    fix.append(' to fix this.');fix.hidden=false;
+  }).catch(()=>{});
 // Like the traceback panel: a link without var-trace_id uses the test's latest
 // failing trace, which the dashboard resolves into latest_trace.
 if(!context.get('trace_id')&&/^[0-9a-f]{32}$/i.test(context.get('latest_trace')||''))

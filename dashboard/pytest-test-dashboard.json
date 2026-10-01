@@ -38,15 +38,21 @@
     },
     {
       "targetBlank": false,
+      "title": "Run",
+      "type": "link",
+      "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${link_run_id:raw}"
+    },
+    {
+      "targetBlank": false,
       "title": "Job",
       "type": "link",
-      "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${run_id:raw}&var-pr=${pr:raw}"
+      "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${link_run_id:raw}&var-pr=${link_pr:raw}"
     },
     {
       "targetBlank": false,
       "title": "PR",
       "type": "link",
-      "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr:raw}"
+      "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${link_pr:raw}"
     }
   ],
   "panels": [
@@ -200,7 +206,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "last_over_time(pytest_test_cuda_inherited_bytes{test_nodeid=\"$test_nodeid\"}[$__range])",
+          "expr": "last_over_time(pytest_test_cuda_inherited_bytes{test_nodeid=\"$test_nodeid\",test_job=\"$test_job\",status_code=\"$status_code\"}[$__range])",
           "instant": true,
           "legendFormat": "inherited",
           "range": false,
@@ -208,7 +214,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "last_over_time(pytest_test_cuda_retained_bytes{test_nodeid=\"$test_nodeid\"}[$__range])",
+          "expr": "last_over_time(pytest_test_cuda_retained_bytes{test_nodeid=\"$test_nodeid\",test_job=\"$test_job\",status_code=\"$status_code\"}[$__range])",
           "instant": true,
           "legendFormat": "left for next",
           "range": false,
@@ -216,7 +222,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "last_over_time(pytest_test_cuda_delta_bytes{test_nodeid=\"$test_nodeid\"}[$__range])",
+          "expr": "last_over_time(pytest_test_cuda_delta_bytes{test_nodeid=\"$test_nodeid\",test_job=\"$test_job\",status_code=\"$status_code\"}[$__range])",
           "instant": true,
           "legendFormat": "net change",
           "range": false,
@@ -577,6 +583,60 @@
         "query": "",
         "type": "textbox",
         "hide": 2
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(topk(1, max by (run_id, pr) (max_over_time((timestamp(pytest_test_last_failure_info{test_nodeid=\"$test_nodeid\",trace_id=~\"${trace_id:regex}.*\",run_id=~\"${run_id:regex}.*\"}))[7d:])) or label_replace(label_replace(vector(0), \"run_id\", \"$run_id\", \"\", \"\"), \"pr\", \"$pr\", \"\", \"\")))",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "name": "link_run_id",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(topk(1, max by (run_id, pr) (max_over_time((timestamp(pytest_test_last_failure_info{test_nodeid=\"$test_nodeid\",trace_id=~\"${trace_id:regex}.*\",run_id=~\"${run_id:regex}.*\"}))[7d:])) or label_replace(label_replace(vector(0), \"run_id\", \"$run_id\", \"\", \"\"), \"pr\", \"$pr\", \"\", \"\")))",
+          "refId": "Prometheus-link_run_id-Variable-Query"
+        },
+        "regex": "/run_id=\"([^\"]*)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(topk(1, max by (run_id, pr) (max_over_time((timestamp(pytest_test_last_failure_info{test_nodeid=\"$test_nodeid\",trace_id=~\"${trace_id:regex}.*\",run_id=~\"${run_id:regex}.*\"}))[7d:])) or label_replace(label_replace(vector(0), \"run_id\", \"$run_id\", \"\", \"\"), \"pr\", \"$pr\", \"\", \"\")))",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "name": "link_pr",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(topk(1, max by (run_id, pr) (max_over_time((timestamp(pytest_test_last_failure_info{test_nodeid=\"$test_nodeid\",trace_id=~\"${trace_id:regex}.*\",run_id=~\"${run_id:regex}.*\"}))[7d:])) or label_replace(label_replace(vector(0), \"run_id\", \"$run_id\", \"\", \"\"), \"pr\", \"$pr\", \"\", \"\")))",
+          "refId": "Prometheus-link_pr-Variable-Query"
+        },
+        "regex": "/pr=\"([^\"]*)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
       }
     ]
   },
@@ -590,5 +650,5 @@
   "timezone": "browser",
   "title": "Test",
   "uid": "pytest-test",
-  "version": 1
+  "version": 2
 }
