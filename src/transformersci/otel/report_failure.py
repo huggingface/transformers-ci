@@ -54,6 +54,17 @@ from . import instrument
 #   worker gw3 crashed while running tests/models/x/test_y.py::T::test_z
 _CRASH_NODEID_PATTERN = re.compile(r"crashed while running ['\"]?([^'\"\s]+)")
 
+# A serial `pytest -v` prints each nodeid at the start of a line before running
+# the test, and its outcome plus progress afterwards (possibly after captured log
+# lines). A SIGKILL leaves the last nodeid with no outcome after it.
+#   tests/models/x/test_y.py::T::test_z PASSED                      [ 98%]
+_VERBOSE_NODEID_PATTERN = re.compile(r"^(\S+\.py::\S+)", re.MULTILINE)
+_VERBOSE_OUTCOME_PATTERN = re.compile(
+    r"\b(?:PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS)\s+\[\s*\d+%\]"
+)
+# pytest's closing line, e.g. `===== 2 failed, 178 passed in 1358.62s (0:22:38) =====`.
+_SESSION_FINISHED_PATTERN = re.compile(r"^=+ .* in [\d.]+s\b", re.MULTILINE)
+
 # Bound the excerpt recorded on the span so a noisy log can't bloat it; the tail
 # holds the crash itself.
 _MAX_OUTPUT_CHARS = 8000
@@ -61,8 +72,8 @@ _MAX_OUTPUT_CHARS = 8000
 # Per-failure-mode defaults: (exception.type, job-level fallback nodeid suffix).
 #   worker_crash: an xdist worker died but pytest kept going (marker + per-test
 #                 nodeids usually in the log).
-#   oom_killed:   the whole pytest process was SIGKILLed mid-run (exit 137); no
-#                 nodeid is recoverable from the captured output.
+#   oom_killed:   the whole pytest process was SIGKILLed mid-run (exit 137); the
+#                 test it was running is the last one `pytest -v` named.
 _KIND_DEFAULTS = {
     "worker_crash": ("WorkerCrash", "worker_crash"),
     "oom_killed": ("OOMKilled", "oom_killed"),
@@ -79,6 +90,24 @@ def parse_crashed_nodeids(text: str) -> list[str]:
             seen.add(nodeid)
             found.append(nodeid)
     return found
+
+
+def parse_running_nodeid(text: str) -> str | None:
+    """Return the test a killed serial `pytest -v` was running, if any.
+
+    ``None`` when the session finished, or when the last test printed its
+    outcome (the kill landed between tests, or no test had started yet).
+    """
+    text = text.replace("\r", "\n")
+    if _SESSION_FINISHED_PATTERN.search(text):
+        return None
+    matches = list(_VERBOSE_NODEID_PATTERN.finditer(text))
+    if not matches:
+        return None
+    last = matches[-1]
+    if _VERBOSE_OUTCOME_PATTERN.search(text, last.end()):
+        return None
+    return last.group(1)
 
 
 def resolve_job(explicit: str | None, env: Mapping[str, str]) -> str:
@@ -122,9 +151,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Failure mode. 'worker_crash': an xdist worker died but pytest kept "
             "going (per-test nodeids are usually in the log). 'oom_killed': the "
-            "whole pytest process was killed mid-run (exit 137) so no nodeid is "
-            "recoverable — a job-level span is recorded. Sets the default "
-            "exception type and job-level fallback nodeid."
+            "whole pytest process was killed mid-run (exit 137); the test it was "
+            "running is read from `pytest -v` output, else a job-level span is "
+            "recorded. Sets the default exception type and job-level fallback "
+            "nodeid."
         ),
     )
     parser.add_argument(
@@ -161,12 +191,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 flush=True,
             )
         else:
-            nodeids = parse_crashed_nodeids(output)
+            if args.kind == "oom_killed":
+                running = parse_running_nodeid(output)
+                nodeids = [running] if running else []
+            else:
+                nodeids = parse_crashed_nodeids(output)
 
     if not nodeids:
         # The caller only runs this once a failure is already detected, but the
         # exact test couldn't be pinned (no xdist marker, or the process was
-        # killed mid-run before any nodeid was logged) — record a job-level
+        # killed between tests) — record a job-level
         # failure so it is still visible and counted rather than silently green.
         nodeids = [f"{job}::{fallback_suffix}"]
 
