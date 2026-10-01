@@ -214,3 +214,14 @@ def test_failure_page_links_job_log(server, monkeypatch):
         in page
     )
     assert "GitHub run ↗" in page
+
+
+def test_summary_links_scoped_job_page_and_exact_job():
+    from transformersci.otel import related_issues as ri
+
+    page = ri.SUMMARY_HTML
+    assert "fetch('/failure/context?'" in page
+    assert "'var-hardware':hardware||'$__all'" in page
+    assert "runner:info.job_url||info.run_url" in page
+    # Only GitHub (new tab) and Grafana-internal (same window) targets are linked.
+    assert "/^https:\\/\\/github\\.com\\//" in page and "/^\\/d\\//" in page

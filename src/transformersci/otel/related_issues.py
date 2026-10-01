@@ -251,23 +251,34 @@ const context=new URLSearchParams(location.search);
 const node=context.get('test_nodeid')||'';
 document.getElementById('test-heading').textContent=node;
 // Chips render from the URL at once; /failure/context (read from the trace,
-// no GitHub call) then adds the Runner chip and turns values into GitHub links.
-// Runner links the job's log only when the trace names the job (job_url).
+// no GitHub call) then adds the Runner chip and the links. One run_id + job
+// spans every model folder on both machine types, so Job opens the Job page
+// scoped to this trace's hardware, and Runner opens the exact GitHub job when
+// the trace names it (job_url), else the run.
+const HARDWARE={'cpu':'CPU','gpu':'GPU','single-gpu':'GPU','multi-gpu':'xGPU'};
 function renderMeta(info){
-  const values={status:context.get('status'),module:context.get('module'),
-    job:context.get('job'),runner:info.runner_type,
-    pr:context.get('pr')||info.pr,run_id:context.get('run_id')||info.run_id};
-  const links={module:info.file_url,pr:info.pr_url,run_id:info.run_url,runner:info.job_url};
-  const titles={runner:[info.runner_name,info.hardware].filter(Boolean).join(' · ')};
+  const runId=info.run_id||context.get('run_id')||'',pr=info.pr||context.get('pr')||'';
+  const job=context.get('job')||'',hardware=info.hardware||'';
+  const values={status:context.get('status'),module:context.get('module'),job:job,
+    runner:[info.runner_type,HARDWARE[hardware]||hardware].filter(Boolean).join(' · '),
+    pr:pr,run_id:runId};
+  const jobPage=job&&runId?'/d/pytest-observability-by-job/pytest-observability-job?'+
+    new URLSearchParams({'var-job':job,'var-run_id':runId,'var-pr':pr,
+      'var-hardware':hardware||'$__all'}):'';
+  const links={module:info.file_url,pr:info.pr_url,run_id:info.run_url,
+    runner:info.job_url||info.run_url,job:jobPage};
+  const titles={runner:[info.runner_name,info.job_url?'GitHub job log':'GitHub run (this trace names no job)'].filter(Boolean).join(' · '),
+    job:hardware?'This job on '+(HARDWARE[hardware]||hardware)+' only, every model folder':''};
   const meta=document.getElementById('test-meta');meta.replaceChildren();
   for(const [key,label] of [['status','Status'],['module','Module'],['job','Job'],['runner','Runner'],['pr','PR'],['run_id','Run']]){
     const value=values[key];if(!value)continue;
     const li=document.createElement('li'),k=document.createElement('span');
-    const link=/^https:\\/\\/github\\.com\\//.test(links[key]||'')?links[key]:'';
+    const target=links[key]||'',external=/^https:\\/\\/github\\.com\\//.test(target);
+    const link=external||/^\\/d\\//.test(target)?target:'';
     const v=document.createElement(link?'a':'span');
-    k.className='k';k.textContent=label;v.className='v';v.textContent=link?value+' ↗':value;
+    k.className='k';k.textContent=label;v.className='v';v.textContent=external?value+' ↗':value;
     v.title=titles[key]||value;
-    if(link){v.href=link;v.target='_blank';v.rel='noopener noreferrer';}
+    if(link){v.href=link;v.target=external?'_blank':'_top';if(external)v.rel='noopener noreferrer';}
     li.append(k,v);meta.append(li);
   }
 }

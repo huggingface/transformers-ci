@@ -238,7 +238,11 @@ jobs:
             | sed -E -e 's/ ci$//' -e 's/[^a-z0-9._]+/-/g' -e 's/^-+//' -e 's/-+$//')"
           [ -n "$ci_event_slug" ] || ci_event_slug="daily"
           echo "ci_event=${CI_EVENT} -> ci_event_slug=${ci_event_slug}"
-          export OTEL_RESOURCE_ATTRIBUTES="transformers.test.ci_event=${ci_event_slug},transformers.test.hardware=${machine_type}"
+          #
+          # cicd.pipeline.task.run.id is this job's GitHub id, so a test page
+          # links its exact job log: one run_id + test_job spans every model
+          # folder and both machine types, and nothing else names the job.
+          export OTEL_RESOURCE_ATTRIBUTES="transformers.test.ci_event=${ci_event_slug},transformers.test.hardware=${machine_type},cicd.pipeline.task.run.id=${{ job.check_run_id }}"
 
           OTEL_WRAP=""
           if [ -n "$OTEL_EXPORTER_OTLP_ENDPOINT" ]; then
