@@ -338,6 +338,14 @@ def extract_failure_details(trace: dict, test_nodeid: str = "") -> list[dict[str
     return details
 
 
+# GitHub's mark, drawn in the link's own colour: links that leave for GitHub
+# carry it instead of a generic arrow.
+GITHUB_MARK_SVG = (
+    "<svg class='gh' viewBox='0 0 16 16' width='12' height='12' aria-hidden='true' "
+    f"fill='currentColor'><path d='{related_issues.GITHUB_MARK_PATH}'/></svg>"
+)
+
+
 def render_failure_html(trace_id: str, details: list[dict[str, str]]) -> str:
     """Render a self-contained, dark-themed HTML page for a trace's failures.
 
@@ -356,6 +364,7 @@ def render_failure_html(trace_id: str, details: list[dict[str, str]]) -> str:
         ".nodeid{margin:0 0 10px;color:#8e9197;font:12px system-ui,sans-serif}"
         ".nodeid a{color:#6ab0ff;text-decoration:none}"
         ".nodeid a:hover{text-decoration:underline}"
+        ".gh{vertical-align:-1px}"
         ".label{margin:14px 0 4px;color:#8e9197;font:600 11px system-ui,sans-serif;"
         "text-transform:uppercase;letter-spacing:.05em}"
         "pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#141619;"
@@ -377,7 +386,7 @@ def render_failure_html(trace_id: str, details: list[dict[str, str]]) -> str:
         if github_url:
             nodeid_html = (
                 f'<a href="{esc(github_url)}" target="_blank" rel="noopener">'
-                f"{esc(detail['test_nodeid'])} ↗</a>"
+                f"{esc(detail['test_nodeid'])} {GITHUB_MARK_SVG}</a>"
             )
         else:
             nodeid_html = esc(detail["test_nodeid"])
@@ -389,7 +398,7 @@ def render_failure_html(trace_id: str, details: list[dict[str, str]]) -> str:
             if detail.get(key):
                 nodeid_html += (
                     f' · <a href="{esc(detail[key])}" target="_blank" rel="noopener">'
-                    f"{label} ↗</a>"
+                    f"{label} {GITHUB_MARK_SVG}</a>"
                 )
                 break
         out.append(f"<div class='nodeid'>{nodeid_html}</div>")

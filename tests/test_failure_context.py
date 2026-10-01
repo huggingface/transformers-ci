@@ -111,7 +111,8 @@ def test_render_failure_html_job_log_link():
         ],
     )
     assert 'href="https://github.com/j?a=1&amp;b=2"' in page
-    assert "GitHub job log ↗" in page and "GitHub run ↗" not in page
+    assert f"GitHub job log {te.GITHUB_MARK_SVG}</a>" in page
+    assert "GitHub run" not in page and "↗" not in page
     page = te.render_failure_html(
         TRACE,
         [
@@ -125,7 +126,8 @@ def test_render_failure_html_job_log_link():
             }
         ],
     )
-    assert 'href="https://github.com/r"' in page and "GitHub run ↗" in page
+    assert 'href="https://github.com/r"' in page
+    assert f"GitHub run {te.GITHUB_MARK_SVG}</a>" in page
 
 
 @pytest.fixture
@@ -214,7 +216,7 @@ def test_failure_page_links_job_log(server, monkeypatch):
         "https://github.com/huggingface/transformers/actions/runs/36807556167/attempts/1"
         in page
     )
-    assert "GitHub run ↗" in page
+    assert f"GitHub run {te.GITHUB_MARK_SVG}" in page
 
 
 def test_summary_links_scoped_job_page_and_exact_job():
@@ -360,3 +362,10 @@ def test_run_search_server_side_and_error_shown():
     assert "data-truncated='1'" in te.render_run_html("1:1", rows, query={}, limit=2)
     assert te.run_row_matches(rows[0], "models/a test_x") is True
     assert te.run_row_matches(rows[0], "models/a xgpu") is False
+
+
+def test_summary_github_links_carry_the_github_mark():
+    from transformersci.otel import related_issues as ri
+
+    assert "__GITHUB_MARK__" not in ri.SUMMARY_HTML
+    assert ri.GITHUB_MARK_PATH in ri.SUMMARY_HTML and "↗" not in ri.SUMMARY_HTML
