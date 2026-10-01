@@ -46,7 +46,7 @@
       "targetBlank": false,
       "title": "Job",
       "type": "link",
-      "url": "/d/pytest-observability-by-job/pytest-observability-job?var-job=${test_job:raw}&var-run_id=${link_run_id:raw}&var-pr=${link_pr:raw}"
+      "url": "/failure/job-page?trace_id=${trace_id:percentencode}&latest_trace=${latest_trace:percentencode}&test_nodeid=${test_nodeid:percentencode}&job=${test_job:percentencode}&run_id=${link_run_id:percentencode}&pr=${link_pr:percentencode}&status=${status_code:percentencode}"
     },
     {
       "targetBlank": false,
@@ -79,21 +79,39 @@
       },
       "fieldConfig": {
         "defaults": {
+          "unit": "s",
+          "decimals": 1,
           "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
               {
-                "color": "blue"
+                "id": "unit",
+                "value": "dateTimeFromNow"
               }
             ]
           },
-          "unit": "s"
-        },
-        "overrides": []
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Date"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:MMM D"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -103,10 +121,6 @@
       },
       "id": 2,
       "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
@@ -114,7 +128,17 @@
           "fields": "",
           "values": false
         },
-        "textMode": "value"
+        "orientation": "horizontal",
+        "textMode": "value_and_name",
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false,
+        "text": {
+          "titleSize": 12,
+          "valueSize": 18
+        }
       },
       "pluginVersion": "12.0.0",
       "targets": [
@@ -122,13 +146,38 @@
           "editorMode": "code",
           "expr": "last_over_time(pytest_test_duration_seconds{test_nodeid=\"$test_nodeid\",test_job=\"$test_job\",status_code=\"$status_code\"}[$__range])",
           "instant": true,
-          "legendFormat": "__auto",
+          "legendFormat": "Duration",
           "range": false,
-          "refId": "A"
+          "refId": "DURATION"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(max without (instance) (last_over_time(pytest_run_start_time_seconds{run_id=\"$link_run_id\"}[$__range]))) * 1000",
+          "instant": true,
+          "legendFormat": "Date",
+          "range": false,
+          "refId": "DATE"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(max without (instance) (last_over_time(pytest_run_start_time_seconds{run_id=\"$link_run_id\"}[$__range]))) * 1000",
+          "instant": true,
+          "legendFormat": "Started",
+          "range": false,
+          "refId": "STARTED"
         }
       ],
-      "title": "Duration",
-      "type": "stat"
+      "title": "Timing",
+      "type": "stat",
+      "description": "How long this test took, and when the run it failed in started."
     },
     {
       "gridPos": {
@@ -650,5 +699,5 @@
   "timezone": "browser",
   "title": "Test",
   "uid": "pytest-test",
-  "version": 2
+  "version": 3
 }

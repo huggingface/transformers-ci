@@ -30,6 +30,18 @@ _slots = threading.BoundedSemaphore(2)
 SLOT_WAIT_SECONDS = 10.0
 RESULT_WAIT_SECONDS = 25.0  # a slot wait plus the upstream timeouts
 BUSY = {"status": "busy", "hits": []}
+# GitHub's mark (octicon mark-github): the icon on links that leave for GitHub,
+# here and in the exporter's traceback page.
+GITHUB_MARK_PATH = (
+    "M8 0c4.42 0 8 3.58 8 8a8.013 8.013 0 0 1-5.45 7.59c-.4.08-.55-.17-.55-.38 0-.27."
+    "01-1.13.01-2.2 0-.75-.25-1.23-.54-1.48 1.78-.2 3.65-.88 3.65-3.95 0-.88-.31-1.59"
+    "-.82-2.15.08-.2.36-1.02-.08-2.12 0 0-.67-.22-2.2.82-.64-.18-1.32-.27-2-.27-.68 0"
+    "-1.36.09-2 .27-1.53-1.03-2.2-.82-2.2-.82-.44 1.1-.16 1.92-.08 2.12-.51.56-.82 1."
+    "28-.82 2.15 0 3.06 1.86 3.75 3.64 3.95-.23.2-.44.55-.51 1.07-.46.21-1.61.55-2.33"
+    "-.66-.15-.24-.6-.83-1.23-.82-.67.01-.27.38.01.53.34.19.73.9.82 1.13.16.45.68 1.3"
+    "1 2.69.94 0 .67.01 1.3.01 1.49 0 .21-.15.45-.55.37A7.995 7.995 0 0 1 0 8c0-4.42 "
+    "3.58-8 8-8Z"
+)
 
 
 def search_payload(nodeid: str, details: list[dict[str, str]]) -> dict:
@@ -235,6 +247,7 @@ background:rgba(204,204,220,.04);font-size:12px;line-height:18px}
 .tci-meta .k{flex:none;color:#8e9197;font-size:10px;font-weight:600;
 text-transform:uppercase;letter-spacing:.05em}
 .tci-meta .v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+a.v{color:#6ab0ff}
 .cmdLabel{font-size:14px;margin:12px 0 6px}.cmdRow{display:flex;gap:6px;align-items:stretch;
 margin:0 0 12px}.cmdRow button{flex:none}.cmd{display:block;flex:1 1 auto;min-width:0;
 padding:8px 12px;border:1px solid rgba(204,204,220,.15);border-radius:4px;
@@ -249,11 +262,57 @@ white-space:pre-wrap;overflow-wrap:anywhere}
 const context=new URLSearchParams(location.search);
 const node=context.get('test_nodeid')||'';
 document.getElementById('test-heading').textContent=node;
-for(const [key,label] of [['status','Status'],['module','Module'],['job','Job'],['pr','PR'],['run_id','Run']]){
-  const value=context.get(key);if(!value)continue;
-  const li=document.createElement('li'),k=document.createElement('span'),v=document.createElement('span');
-  k.className='k';k.textContent=label;v.className='v';v.textContent=value;v.title=value;
-  li.append(k,v);document.getElementById('test-meta').append(li);
+// Chips render from the URL at once; /failure/context (read from the trace,
+// no GitHub call) then adds the Runner chip and the links. One run_id + job
+// spans every model folder on both machine types, so Job opens the Job page
+// scoped to this trace's hardware with this test's row opened, and Runner opens the exact GitHub job when
+// the trace names it (job_url), else the run.
+const latestTrace=context.get('latest_trace')||'';
+const traceId=context.get('trace_id')||(/^[0-9a-f]{32}$/i.test(latestTrace)?latestTrace:'');
+// GitHub's mark (octicon mark-github) on links that leave for GitHub.
+function githubMark(){
+  const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg'),path=document.createElementNS(ns,'path');
+  svg.setAttribute('viewBox','0 0 16 16');svg.setAttribute('width','11');svg.setAttribute('height','11');
+  svg.setAttribute('fill','currentColor');svg.setAttribute('aria-hidden','true');svg.style.verticalAlign='-1px';
+  path.setAttribute('d','__GITHUB_MARK__');svg.append(path);return svg;
+}
+const HARDWARE={'cpu':'CPU','gpu':'GPU','single-gpu':'GPU','multi-gpu':'xGPU'};
+function renderMeta(info){
+  const runId=info.run_id||context.get('run_id')||'',pr=info.pr||context.get('pr')||'';
+  const job=context.get('job')||'',hardware=info.hardware||'';
+  const values={status:context.get('status'),module:context.get('module'),job:job,
+    runner:[info.runner_type,HARDWARE[hardware]||hardware].filter(Boolean).join(' · '),
+    pr:pr,run_id:runId};
+  // Same redirect as the top bar's Job link: this hardware, this row opened.
+  const jobPage=job&&runId?'/failure/job-page?'+new URLSearchParams({
+    trace_id:traceId,test_nodeid:node,job:job,run_id:runId,pr:pr,
+    status:context.get('status')||''}):'';
+  const links={module:info.file_url,pr:info.pr_url,run_id:info.run_url,
+    runner:info.job_url||info.run_url,job:jobPage};
+  const titles={runner:[info.runner_name,info.job_url?'GitHub job log':'GitHub run (this trace names no job)'].filter(Boolean).join(' · '),
+    job:hardware?'This job on '+(HARDWARE[hardware]||hardware)+' only, every model folder':''};
+  const meta=document.getElementById('test-meta');meta.replaceChildren();
+  for(const [key,label] of [['status','Status'],['module','Module'],['job','Job'],['runner','Runner'],['pr','PR'],['run_id','Run']]){
+    const value=values[key];if(!value)continue;
+    const li=document.createElement('li'),k=document.createElement('span');
+    const target=links[key]||'',external=/^https:\\/\\/github\\.com\\//.test(target);
+    const link=external||/^\\/failure\\/job-page\\?/.test(target)?target:'';
+    const v=document.createElement(link?'a':'span');
+    k.className='k';k.textContent=label;v.className='v';v.textContent=value;
+    if(external)v.append(' ',githubMark());
+    v.title=titles[key]||value;
+    if(link){v.href=link;v.target=external?'_blank':'_top';if(external)v.rel='noopener noreferrer';}
+    li.append(k,v);meta.append(li);
+  }
+}
+renderMeta({});
+{
+  if(/^[0-9a-f]{32}$/i.test(traceId)&&node){
+    const query=new URLSearchParams({trace_id:traceId,test_nodeid:node});
+    fetch('/failure/context?'+query).then(r=>r.ok?r.json():{}).then(info=>{
+      if(info)renderMeta(info);
+    }).catch(()=>{});
+  }
 }
 const shellQuote=value=>"'"+value.replaceAll("'","'\\"'\\"'")+"'";
 document.getElementById('command').textContent=node.startsWith('utils/checkers.py::')?
@@ -268,4 +327,4 @@ copyButton.addEventListener('click',async()=>{
   copyButton.textContent='Copied';setTimeout(()=>{copyButton.textContent='Copy';},1500);
 });
 </script>""",
-)
+).replace("__GITHUB_MARK__", GITHUB_MARK_PATH)

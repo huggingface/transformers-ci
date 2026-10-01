@@ -757,10 +757,10 @@ def test_render_run_html_live_flag_drives_the_poller() -> None:
     # The poll script always ships but only runs while the body says live; a
     # fetched page with data-live='0' is what stops it once the run ends.
     live = trace_exporter.render_run_html("1:1", rows, group="test", live=True)
-    assert "<div id='runbody' data-live='1'>" in live
+    assert "<div id='runbody' data-live='1' " in live
     assert "<span class='dot'>●</span> live, updates every 30s" in live
     done = trace_exporter.render_run_html("1:1", rows, group="test")
-    assert "<div id='runbody' data-live='0'>" in done
+    assert "<div id='runbody' data-live='0' " in done
     assert "● live" not in done
     # A run that is no longer live says so, in every view.
     assert "<span class='done'>✓ finished</span> · run <a" in done

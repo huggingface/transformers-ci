@@ -282,6 +282,20 @@ def extract_exception_info(span: dict) -> tuple[str, str]:
     return "", ""
 
 
+def exception_message_line(span: dict, limit: int = 200) -> str:
+    """First non-empty line of a span's exception message, capped: enough to
+    tell failures apart in /run and to search them, without keeping the whole
+    message per failing row (the stacktrace is dropped for the same reason)."""
+    for log in span.get("logs") or []:
+        if isinstance(log, dict):
+            fields = tag_map(log.get("fields", []))
+            if fields.get("event") == "exception":
+                message = str(fields.get("exception.message", ""))
+                line = next((x.strip() for x in message.splitlines() if x.strip()), "")
+                return line[:limit] + ("…" if len(line) > limit else "")
+    return ""
+
+
 def extract_failure_details(trace: dict, test_nodeid: str = "") -> list[dict[str, str]]:
     """Pull full (untruncated) exception info for failing test spans in a trace.
 
@@ -324,6 +338,14 @@ def extract_failure_details(trace: dict, test_nodeid: str = "") -> list[dict[str
     return details
 
 
+# GitHub's mark, drawn in the link's own colour: links that leave for GitHub
+# carry it instead of a generic arrow.
+GITHUB_MARK_SVG = (
+    "<svg class='gh' viewBox='0 0 16 16' width='12' height='12' aria-hidden='true' "
+    f"fill='currentColor'><path d='{related_issues.GITHUB_MARK_PATH}'/></svg>"
+)
+
+
 def render_failure_html(trace_id: str, details: list[dict[str, str]]) -> str:
     """Render a self-contained, dark-themed HTML page for a trace's failures.
 
@@ -342,6 +364,7 @@ def render_failure_html(trace_id: str, details: list[dict[str, str]]) -> str:
         ".nodeid{margin:0 0 10px;color:#8e9197;font:12px system-ui,sans-serif}"
         ".nodeid a{color:#6ab0ff;text-decoration:none}"
         ".nodeid a:hover{text-decoration:underline}"
+        ".gh{vertical-align:-1px}"
         ".label{margin:14px 0 4px;color:#8e9197;font:600 11px system-ui,sans-serif;"
         "text-transform:uppercase;letter-spacing:.05em}"
         "pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#141619;"
@@ -363,10 +386,21 @@ def render_failure_html(trace_id: str, details: list[dict[str, str]]) -> str:
         if github_url:
             nodeid_html = (
                 f'<a href="{esc(github_url)}" target="_blank" rel="noopener">'
-                f"{esc(detail['test_nodeid'])} ↗</a>"
+                f"{esc(detail['test_nodeid'])} {GITHUB_MARK_SVG}</a>"
             )
         else:
             nodeid_html = esc(detail["test_nodeid"])
+        # The job's own log when the trace names the job, else its run.
+        for key, label in (
+            ("job_log_url", "GitHub job log"),
+            ("run_url", "GitHub run"),
+        ):
+            if detail.get(key):
+                nodeid_html += (
+                    f' · <a href="{esc(detail[key])}" target="_blank" rel="noopener">'
+                    f"{label} {GITHUB_MARK_SVG}</a>"
+                )
+                break
         out.append(f"<div class='nodeid'>{nodeid_html}</div>")
         if detail["exception_message"]:
             out.append("<div class='label'>Message</div>")
@@ -1791,6 +1825,141 @@ def github_run_html_url(repository: str, run_id: str) -> str:
     return base
 
 
+# The Test page's Summary and Traceback panels need the same trace on the same
+# page load. The raw-trace memo does not help: a trace opened once is seen once
+# and never settles into it. So /failure keeps just the trace's process tags
+# (a few KB, all failure_context reads) for a few minutes, and the two panels
+# share one fetch while it is in flight. A follower waits as long as a slow
+# Tempo read can take before fetching on its own.
+FAILURE_CONTEXT_TTL_SECONDS = 300.0
+FAILURE_FETCH_WAIT_SECONDS = 60.0
+_failure_processes: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+_failure_fetches: dict[str, tuple[threading.Event, list]] = {}
+_failure_processes_lock = threading.Lock()
+
+
+def remember_trace_processes(trace_id: str, trace: dict | None) -> None:
+    processes = (trace or {}).get("processes")
+    if not isinstance(processes, dict):
+        return
+    with _failure_processes_lock:
+        _failure_processes[trace_id] = (
+            time.monotonic() + FAILURE_CONTEXT_TTL_SECONDS,
+            {"processes": processes},
+        )
+        _failure_processes.move_to_end(trace_id)
+        while len(_failure_processes) > 256:
+            _failure_processes.popitem(last=False)
+
+
+def recent_trace_processes(trace_id: str) -> dict | None:
+    with _failure_processes_lock:
+        entry = _failure_processes.get(trace_id)
+    return entry[1] if entry and entry[0] > time.monotonic() else None
+
+
+def fetch_failure_trace(trace_id: str) -> dict | None:
+    """get_trace, shared by concurrent /failure and /failure/context requests
+    for one trace (one Tempo fetch per page load, whichever panel asks first),
+    publishing the trace's process tags for later context requests."""
+    with _failure_processes_lock:
+        flight = _failure_fetches.get(trace_id)
+        leader = flight is None
+        if leader:
+            flight = _failure_fetches[trace_id] = (threading.Event(), [])
+    done, result = flight
+    if not leader:
+        if done.wait(FAILURE_FETCH_WAIT_SECONDS) and result:
+            return result[0]
+        return get_trace(trace_id)
+    try:
+        trace = get_trace(trace_id)
+        result.append(trace)
+        remember_trace_processes(trace_id, trace)
+        return trace
+    finally:
+        with _failure_processes_lock:
+            _failure_fetches.pop(trace_id, None)
+        done.set()
+
+
+def failure_context_trace(trace_id: str) -> dict | None:
+    """What /failure/context reads: the memoized trace, the process tags a
+    recent /failure kept, or else a fetch shared with /failure."""
+    with _trace_cache_lock:
+        trace = _trace_cache.get(trace_id)
+    if trace is not None:
+        return trace
+    return recent_trace_processes(trace_id) or fetch_failure_trace(trace_id)
+
+
+def github_job_html_url(repository: str, run_id: str, job_id: str) -> str:
+    """The GitHub Actions job page, or "" without a numeric job id.
+
+    A run's matrix splits one test_job across runner types (models/glm4_moe ran
+    single- AND multi-gpu under the same run_id and test_job), so only the job
+    id picks the right log. Workflows stamp it as ``cicd.pipeline.task.run.id``
+    (``${{ job.check_run_id }}``); listing a run's jobs instead costs ~4 s per
+    100 jobs, a minute for a nightly, so it is never done.
+    """
+    run_db_id, _ = split_run_id(run_id)
+    if not (repository and run_db_id.isdigit() and job_id.isdigit()):
+        return ""
+    return f"https://github.com/{repository}/actions/runs/{run_db_id}/job/{job_id}"
+
+
+def failure_context(trace: dict | None, test_nodeid: str) -> dict[str, str]:
+    """Where a traced test ran, as display values plus GitHub links.
+
+    Reads the trace's process (resource) tags only - a handful of entries even
+    on a 200k-span trace, unlike :func:`extract_trace_rows`, which walks every
+    span - and calls no API, so the Test page's metadata renders at once.
+    """
+    processes = (trace or {}).get("processes")
+    if not isinstance(processes, dict):
+        return {}
+    tags: dict[str, str] = {}
+    for process in processes.values():
+        if isinstance(process, dict):
+            for key, value in tag_map(process.get("tags", [])).items():
+                if value and key not in tags:
+                    tags[key] = str(value)
+    pr_url = tags.get("vcs.change.url", "")
+    repository = tags.get("vcs.repository.name", "") or repository_from_pr_url(pr_url)
+    run_id = tags.get("transformers.test.run.id", tags.get("cicd.pipeline.run.id", ""))
+    pr = tags.get("vcs.change.id", "") or tags.get("vcs.ref.head.name", "")
+    if pr.isdigit() and not pr_url:
+        pr_url = github_pr_html_url(repository, pr)
+    # Same rule as extract_trace_rows: a pr-comment run's head revision is main.
+    commit_sha = tags.get(
+        "service.version"
+        if tags.get("transformers.test.ci_event") == "pr-comment"
+        else "vcs.ref.head.revision",
+        "",
+    )
+    job = tags.get("transformers.test.job", tags.get("transformers.test.suite", ""))
+    return {
+        "repository": repository,
+        "run_id": run_id,
+        "run_url": github_run_html_url(repository, run_id),
+        "job_url": github_job_html_url(
+            repository, run_id, tags.get("cicd.pipeline.task.run.id", "")
+        ),
+        "pr": pr or "none",
+        "pr_url": pr_url if pr.isdigit() else "",
+        "hardware": tags.get("transformers.test.hardware", "")
+        or hardware_from_job(job),
+        "runner_type": tags.get(RUNNER_ATTRIBUTE_PREFIX + "type", ""),
+        "runner_name": tags.get(RUNNER_ATTRIBUTE_PREFIX + "name", ""),
+        "file_url": github_test_url(
+            repository,
+            commit_sha if _FULL_SHA.match(commit_sha) else "main",
+            test_nodeid,
+            "",
+        ),
+    }
+
+
 def fetch_github_commit_message(repository: str, sha: str) -> str:
     """Return the first line (subject) of a commit's message from GitHub.
 
@@ -2042,6 +2211,11 @@ def extract_trace_rows(
             "test_nodeid": nodeid,
             "trace_id": _intern(trace_id),
         }
+        # Failing rows only: passing rows keep exactly the keys they had.
+        if row["status_code"] == "ERROR":
+            message = exception_message_line(span)
+            if message:
+                row["exception_message"] = message
         for tag, field in (
             ("pytest.cuda_delta_bytes", "cuda_delta_bytes"),
             ("pytest.cuda_delta_after_gc_bytes", "cuda_delta_after_gc_bytes"),
@@ -5811,7 +5985,7 @@ _RUN_STORE_FIELDS = (
 )
 # Kept only when set (failing rows), so the store does not grow a key per passing
 # test: /run's grouped view summarises each group's exception types from it.
-_RUN_STORE_OPTIONAL_FIELDS = ("exception_type",)
+_RUN_STORE_OPTIONAL_FIELDS = ("exception_type", "exception_message")
 
 
 def _run_store_dir() -> str:
@@ -6293,7 +6467,9 @@ def _run_group_key(row: dict[str, str | float], mode: str) -> str:
     )
 
 
-def _run_row_html(row: dict[str, str | float], run_id: str) -> str:
+def _run_row_html(
+    row: dict[str, str | float], run_id: str, focused: bool = False
+) -> str:
     esc = html.escape
     nodeid = str(row.get("test_nodeid", ""))
     trace_id = str(row.get("trace_id", ""))
@@ -6328,10 +6504,20 @@ def _run_row_html(row: dict[str, str | float], run_id: str) -> str:
             f" <button class='tb' type='button' data-src=\"{esc(failure)}\">"
             "error ▸</button>"
         )
+    focus_attrs = " id='focus' class='focus'" if focused else ""
+    error = ": ".join(
+        x
+        for x in (
+            str(row.get("exception_type", "") or ""),
+            str(row.get("exception_message", "") or ""),
+        )
+        if x
+    )
+    error_html = f"<div class='exc'>{esc(error)}</div>" if is_err and error else ""
     return (
-        f"<tr><td class='{st_cls}'>{st_txt}</td>"
+        f"<tr{focus_attrs}><td class='{st_cls}'>{st_txt}</td>"
         f"<td class='nodeid'><a target='_parent' href=\"{esc(href)}\">"
-        f"{esc(nodeid)}</a></td>"
+        f"{esc(nodeid)}</a>{error_html}</td>"
         f"<td>{esc(str(row.get('test_job', '')))}</td>"
         f"<td>{esc(hardware_display(str(row.get('hardware', ''))))}</td>"
         f"<td class='dur'>{dur:.3f}s</td></tr>"
@@ -6358,6 +6544,67 @@ _RUN_ERROR_TOGGLE_JS = (
     "});</script>"
 )
 
+# The search box above /run's table: filters the rendered rows as you type
+# (every space-separated term must appear in the row: test id, so model and
+# test name, job, hardware, error), hiding emptied groups. Enter reloads with
+# ?q= so the server filters every row before the row limit cuts the list.
+_RUN_SEARCH_JS = (
+    "<script>(function(){var q=document.getElementById('q');if(!q)return;"
+    "var n=document.getElementById('qn');function apply(){"
+    "var t=q.value.toLowerCase().split(/\\s+/).filter(Boolean),m=0,all=0;"
+    "document.querySelectorAll('#runbody tbody tr:not(.tbrow)').forEach("
+    "function(tr){all++;var h=tr.textContent.toLowerCase(),ok=t.every("
+    "function(x){return h.indexOf(x)>=0;});tr.hidden=!ok;"
+    "var nx=tr.nextElementSibling;"
+    "if(nx&&nx.classList.contains('tbrow'))nx.hidden=!ok;if(ok)m++;});"
+    "document.querySelectorAll('#runbody details').forEach(function(d){"
+    "var any=d.querySelector('tbody tr:not(.tbrow):not([hidden])');"
+    "d.hidden=!any;if(t.length&&any)d.open=true;});"
+    "var more=document.getElementById('runbody').dataset.truncated==='1';"
+    "n.textContent=t.length?m+' of '+all+' listed match'"
+    "+(more?' · Enter searches every test':''):'';}"
+    "q.addEventListener('input',apply);"
+    "q.addEventListener('keydown',function(e){if(e.key!=='Enter')return;"
+    "var u=new URL(location.href),v=q.value.trim();"
+    "if(v)u.searchParams.set('q',v);else u.searchParams.delete('q');"
+    "location.replace(u);});window.tciRunFilter=apply;apply();})();</script>"
+)
+
+
+def run_row_matches(row: dict[str, str | float], query: str) -> bool:
+    """Server half of the search box: every term in the fields a row shows."""
+    haystack = " ".join(
+        str(row.get(key, "") or "")
+        for key in ("test_nodeid", "test_job", "exception_type", "exception_message")
+    )
+    haystack = f"{haystack} {hardware_display(str(row.get('hardware', '')))}".lower()
+    return all(term in haystack for term in query.lower().split())
+
+
+# The row a Test page link pointed at (?focus=): scroll to it, open its group
+# and its traceback, once, on load.
+_RUN_FOCUS_JS = (
+    "<script>(function(){var f=document.getElementById('focus');if(!f)return;"
+    "var d=f.closest('details');if(d)d.open=true;"
+    "f.scrollIntoView({block:'center'});"
+    "var b=f.querySelector('button.tb');if(b)b.click();})();</script>"
+)
+
+
+def _pick_focus_row(
+    rows: list[dict[str, str | float]], focus: str, focus_trace: str
+) -> dict[str, str | float] | None:
+    """The row ?focus= names: its trace's row when given (the same test can run
+    on both hardware classes in one job), else the first with that node id."""
+    if not focus:
+        return None
+    matches = [r for r in rows if str(r.get("test_nodeid", "")) == focus]
+    for r in matches:
+        if focus_trace and str(r.get("trace_id", "")) == focus_trace:
+            return r
+    return matches[0] if matches else None
+
+
 # While the run is in flight (#runbody data-live="1") the page re-fetches itself
 # every 30s and swaps the body in place, keeping what the reader opened: groups
 # they expanded or collapsed (by data-key) and tracebacks they opened (by
@@ -6379,7 +6626,8 @@ _RUN_LIVE_POLL_JS = (
     "cur.querySelectorAll('details[data-key]').forEach(function(d){"
     "if(d.dataset.key in st)d.open=st[d.dataset.key];});"
     "cur.querySelectorAll('button.tb').forEach(function(b){var r=tb[b.dataset.src];"
-    "if(r){b.closest('tr').after(r);b.textContent='error ▾';}});}"
+    "if(r){b.closest('tr').after(r);b.textContent='error ▾';}});"
+    "if(window.tciRunFilter)window.tciRunFilter();}"
     "cur.dataset.live=nb.dataset.live;"
     "if(nb.dataset.live==='1')setTimeout(tick,30000);})"
     ".catch(function(){setTimeout(tick,30000);});}"
@@ -6397,7 +6645,11 @@ def _plural(n: int, word: str) -> str:
 
 
 def _render_run_groups(
-    rows: list[dict[str, str | float]], run_id: str, mode: str, limit: int
+    rows: list[dict[str, str | float]],
+    run_id: str,
+    mode: str,
+    limit: int,
+    focus_row: dict[str, str | float] | None = None,
 ) -> list[str]:
     """Bucket rows by ``mode``, largest failing bucket first, one <details> each.
 
@@ -6430,6 +6682,9 @@ def _render_run_groups(
         n_fail = failing(members)
         members.sort(key=lambda r: str(r.get("test_nodeid", "")))
         shown = members[: max(0, limit)] if limit else members
+        has_focus = any(r is focus_row for r in members)
+        if has_focus and not any(r is focus_row for r in shown):
+            shown = [*shown, focus_row]
         parts = [_plural(len(members), "test")]
         if n_fail and n_fail != len(members):
             parts.append(f"{n_fail} failing")
@@ -6453,7 +6708,7 @@ def _render_run_groups(
             if len(shown) < len(members)
             else ""
         )
-        is_open = " open" if len(members) <= _RUN_GROUP_OPEN_MAX else ""
+        is_open = " open" if has_focus or len(members) <= _RUN_GROUP_OPEN_MAX else ""
         cls = "err" if n_fail else "ok"
         out.append(
             f"<details{is_open} data-key=\"{esc(key)}\"><summary><span class='{cls}'>"
@@ -6461,7 +6716,7 @@ def _render_run_groups(
             f"<span class='meta'>— {' · '.join(parts)}"
             f"{' · ' + exc_txt if exc_txt else ''}</span></summary>"
             + _RUN_TABLE_HEAD
-            + "".join(_run_row_html(r, run_id) for r in shown)
+            + "".join(_run_row_html(r, run_id, r is focus_row) for r in shown)
             + f"</tbody></table>{more}</details>"
         )
     return out
@@ -6602,6 +6857,9 @@ def render_run_html(
     query: dict[str, list[str]] | None = None,
     live: bool = False,
     live_counts: LiveCounts | None = None,
+    focus: str = "",
+    focus_trace: str = "",
+    q: str = "",
 ) -> str:
     """Render the per-run test table (sortable, links to the per-test page).
 
@@ -6614,7 +6872,10 @@ def render_run_html(
     lives in the panel rather than in a dashboard variable. ``live`` (the run
     is still in flight) makes the page poll itself and update in place.
     ``live_counts`` (:func:`live_test_counts`) adds a banner when the live stream
-    has seen failures the exporter has no rows for yet.
+    has seen failures the exporter has no rows for yet. ``focus`` (a node id,
+    with ``focus_trace`` to pick its hardware's row) is the row a Test page link
+    came from: always shown, highlighted, scrolled to, its traceback opened.
+    ``q`` (the search box, on Enter) keeps only rows matching every term.
     """
     esc = html.escape
     # Optional hardware filter (raw name, e.g. "single-gpu"). Sentinels from the
@@ -6634,10 +6895,17 @@ def render_run_html(
         if status_active
         else job_rows
     )
+    unsearched = len(rows)
+    if q:
+        rows = [r for r in rows if run_row_matches(r, q)]
     rows.sort(key=lambda r: float(r.get("duration_seconds", 0) or 0), reverse=True)
     total = len(rows)
     grouped = group in RUN_GROUP_MODES
     shown = rows if grouped else (rows[: max(0, limit)] if limit else rows)
+    focus_row = _pick_focus_row(rows, focus, focus_trace)
+    top = len(shown)
+    if focus_row is not None and not grouped and not any(r is focus_row for r in shown):
+        shown = [*shown, focus_row]  # below the cut: still listed, last
     show_label = "Failing" if status == "ERROR" else esc(status)
 
     out = [
@@ -6671,6 +6939,15 @@ def render_run_html(
         "vertical-align:-1px;border:2px solid #2f3338;border-top-color:#6ab0ff;"
         "border-radius:50%;animation:tbspin .8s linear infinite}"
         "@keyframes tbspin{to{transform:rotate(360deg)}}"
+        "tr.focus td{background:rgba(61,113,217,.16)}"
+        "td .exc{margin-top:2px;color:#ff8a80;font:12px system-ui,sans-serif;"
+        "white-space:normal;overflow-wrap:anywhere}"
+        ".search{display:flex;align-items:center;gap:8px;margin:0 0 10px}"
+        ".search input{flex:0 1 420px;height:24px;box-sizing:border-box;"
+        "padding:0 8px;border:1px solid rgba(204,204,220,.3);border-radius:2px;"
+        "background:#111217;color:#d8d9da;font:12px Inter,Helvetica,Arial,sans-serif}"
+        ".search input:focus{outline:none;border-color:#3d71d9}"
+        "tr.focus td:first-child{box-shadow:inset 3px 0 #3d71d9}"
         "tr.tbrow iframe{width:100%;height:120px;border:1px solid #24262b;"
         "border-radius:4px;background:#0b0c0e}"
         # Grafana's outline secondary button (measured off the dashboards' own
@@ -6701,9 +6978,28 @@ def render_run_html(
         "@keyframes livedot{50%{opacity:.2;transform:scale(.7)}}"
         "@media (prefers-reduced-motion:reduce){.live,.live .dot{animation:none}}"
         "</style></head><body>",
-        f"<div id='runbody' data-live='{1 if live else 0}'>",
     ]
-    tail = "</div>" + _RUN_ERROR_TOGGLE_JS + _RUN_LIVE_POLL_JS + "</body></html>"
+    if query is not None:
+        # Outside #runbody: the live refresh swaps that, not what is being typed.
+        out.append(
+            "<div class='search'><input id='q' type='search' autocomplete='off' "
+            "placeholder='Search: model, test name or error' aria-label='Search tests'"
+            f" value=\"{esc(q)}\"><span id='qn' class='meta' role='status'></span>"
+            "</div>"
+        )
+    truncated = bool(limit) and total > limit
+    out.append(
+        f"<div id='runbody' data-live='{1 if live else 0}' "
+        f"data-truncated='{1 if truncated else 0}'>"
+    )
+    tail = (
+        "</div>"
+        + _RUN_ERROR_TOGGLE_JS
+        + _RUN_FOCUS_JS
+        + _RUN_SEARCH_JS
+        + _RUN_LIVE_POLL_JS
+        + "</body></html>"
+    )
     tempo_link = (
         f" <a target='_parent' href=\"/explore?schemaVersion=1&orgId=1&"
         f"panes=%7B%22jg%22:%7B%22datasource%22:%22tempo%22,%22queries%22:"
@@ -6763,7 +7059,12 @@ def render_run_html(
             )
 
     if not rows:
-        if status_active and job_rows:
+        if q and unsearched:
+            msg = (
+                f"No test matches <b>{esc(q)}</b> among {unsearched:,}. "
+                "Clear the search and press Enter to list them all."
+            )
+        elif status_active and job_rows:
             # Tests ran, but the Show filter hid them all (e.g. Failing on a
             # green job). Point the user at the filter rather than implying the
             # run has no data.
@@ -6791,7 +7092,7 @@ def render_run_html(
         return "".join(out)
 
     if grouped:
-        groups = _render_run_groups(rows, run_id, group, limit)
+        groups = _render_run_groups(rows, run_id, group, limit, focus_row)
         out.append(
             f"<p class='meta'>{_plural(total, 'test')} in "
             f"{_plural(len(groups), 'group')}, largest first · {live_note}"
@@ -6801,14 +7102,14 @@ def render_run_html(
         out.append(tail)
         return "".join(out)
 
-    suffix = f" (showing top {len(shown)})" if total > len(shown) else ""
+    suffix = f" (showing top {top})" if total > top else ""
     out.append(
         f"<p class='meta'>{total} test{'s' if total != 1 else ''}{suffix} · "
         f"{live_note}"
         f"run {run_link}</p>"
     )
     out.append(_RUN_TABLE_HEAD)
-    out.extend(_run_row_html(row, run_id) for row in shown)
+    out.extend(_run_row_html(row, run_id, row is focus_row) for row in shown)
     out.append("</tbody></table>" + tail)
     return "".join(out)
 
@@ -6990,6 +7291,14 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/failure":
             self._request_route = "/failure"
             self._serve_failure(parse_qs(parsed.query))
+            return
+        if parsed.path == "/failure/job-page":
+            self._request_route = "/failure/job-page"
+            self._serve_failure_job_page(parse_qs(parsed.query))
+            return
+        if parsed.path == "/failure/context":
+            self._request_route = "/failure/context"
+            self._serve_failure_context(parse_qs(parsed.query))
             return
         if parsed.path == "/related-issues":
             self._request_route = "/related-issues"
@@ -7181,10 +7490,14 @@ class MetricsHandler(BaseHTTPRequestHandler):
     def _serve_failure(self, params: dict[str, list[str]]) -> None:
         trace_id = (params.get("trace_id") or [""])[0].strip()
         test_nodeid = (params.get("test_nodeid") or [""])[0].strip()
-        trace = get_trace(trace_id) if trace_id else None
+        trace = fetch_failure_trace(trace_id) if trace_id else None
         details = extract_failure_details(trace, test_nodeid) if trace else []
         if trace and details:
             annotate_github_links(trace, details)
+            context = failure_context(trace, test_nodeid)
+            for detail in details:
+                detail["job_log_url"] = context.get("job_url", "")
+                detail["run_url"] = context.get("run_url", "")
         self._send(
             200,
             "text/html; charset=utf-8",
@@ -7192,12 +7505,74 @@ class MetricsHandler(BaseHTTPRequestHandler):
             cache_control="public, max-age=300",
         )
 
+    def _serve_failure_context(self, params: dict[str, list[str]]) -> None:
+        trace_id = (params.get("trace_id") or [""])[0].strip()
+        nodeid = (params.get("test_nodeid") or [""])[0].strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id) or (
+            len(nodeid) > 2048 or any(ord(c) < 32 for c in nodeid)
+        ):
+            self._send(400, JSON_CONTENT_TYPE, b'{"error":"invalid test context"}')
+            return
+        trace = failure_context_trace(trace_id)
+        self._send(
+            200,
+            JSON_CONTENT_TYPE,
+            json.dumps(failure_context(trace, nodeid)).encode(),
+            cache_control="public, max-age=300" if trace else "no-store",
+        )
+
+    def _serve_failure_job_page(self, params: dict[str, list[str]]) -> None:
+        """Redirect the Test page's Job link to the Job page scoped to the
+        test's hardware, its row focused. The hardware is only in the trace (no
+        test metric carries it), read the way /failure/context reads it."""
+
+        def arg(name: str) -> str:
+            value = (params.get(name) or [""])[0].strip()
+            return "" if len(value) > 2048 or any(ord(c) < 32 for c in value) else value
+
+        trace_id = next(
+            (
+                t
+                for t in (arg("trace_id"), arg("latest_trace"))
+                if re.fullmatch(r"[0-9a-fA-F]{32}", t)
+            ),
+            "",
+        )
+        nodeid = arg("test_nodeid")
+        context = failure_context(
+            failure_context_trace(trace_id) if trace_id else None, nodeid
+        )
+        query = {
+            "orgId": "1",
+            "var-job": arg("job"),
+            "var-run_id": context.get("run_id") or arg("run_id"),
+            "var-pr": arg("pr") or context.get("pr", ""),
+            "var-hardware": context.get("hardware") or "$__all",
+            # A passing test is not in the default Failing view.
+            "var-status_filter": "ERROR" if arg("status") in ("", "ERROR") else ".+",
+            "var-focus": nodeid,
+            "var-focus_trace": trace_id,
+        }
+        self.send_response(302)
+        self.send_header(
+            "Location",
+            "/d/pytest-observability-by-job/pytest-observability-job?"
+            + urlencode(query),
+        )
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self._observe_response(302, 0)
+
     def _serve_run(self, params: dict[str, list[str]]) -> None:
         run_id = (params.get("run_id") or [""])[0].strip()
         job = (params.get("job") or [""])[0].strip()
         status = (params.get("status") or [""])[0].strip()
         hardware = (params.get("hardware") or [""])[0].strip()
         group = (params.get("group") or [""])[0].strip()
+        focus = (params.get("focus") or [""])[0].strip()
+        focus_trace = (params.get("focus_trace") or [""])[0].strip()
+        q = (params.get("q") or [""])[0].strip()[:200]
         try:
             limit = int((params.get("limit") or ["200"])[0])
         except ValueError:
@@ -7251,6 +7626,9 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 or pending
                 or (run_is_active(run_id) and not github_done),
                 live_counts=live_counts,
+                focus=focus,
+                focus_trace=focus_trace,
+                q=q,
             ).encode("utf-8"),
             cache_control=_public_cache_control_header(),
         )
