@@ -367,6 +367,17 @@ def render_failure_html(trace_id: str, details: list[dict[str, str]]) -> str:
             )
         else:
             nodeid_html = esc(detail["test_nodeid"])
+        # The job's own log when the trace names the job, else its run.
+        for key, label in (
+            ("job_log_url", "GitHub job log"),
+            ("run_url", "GitHub run"),
+        ):
+            if detail.get(key):
+                nodeid_html += (
+                    f' · <a href="{esc(detail[key])}" target="_blank" rel="noopener">'
+                    f"{label} ↗</a>"
+                )
+                break
         out.append(f"<div class='nodeid'>{nodeid_html}</div>")
         if detail["exception_message"]:
             out.append("<div class='label'>Message</div>")
@@ -1789,6 +1800,78 @@ def github_run_html_url(repository: str, run_id: str) -> str:
     if run_attempt:
         return f"{base}/attempts/{quote(run_attempt, safe='')}"
     return base
+
+
+# How long /failure/context waits for the Traceback panel to memoize the trace
+# before fetching it itself (an unsettled, still-running trace is never cached).
+FAILURE_CONTEXT_WAIT_SECONDS = 3.0
+
+
+def github_job_html_url(repository: str, run_id: str, job_id: str) -> str:
+    """The GitHub Actions job page, or "" without a numeric job id.
+
+    A run's matrix splits one test_job across runner types (models/glm4_moe ran
+    single- AND multi-gpu under the same run_id and test_job), so only the job
+    id picks the right log. Workflows stamp it as ``cicd.pipeline.task.run.id``
+    (``${{ job.check_run_id }}``); listing a run's jobs instead costs ~4 s per
+    100 jobs, a minute for a nightly, so it is never done.
+    """
+    run_db_id, _ = split_run_id(run_id)
+    if not (repository and run_db_id.isdigit() and job_id.isdigit()):
+        return ""
+    return f"https://github.com/{repository}/actions/runs/{run_db_id}/job/{job_id}"
+
+
+def failure_context(trace: dict | None, test_nodeid: str) -> dict[str, str]:
+    """Where a traced test ran, as display values plus GitHub links.
+
+    Reads the trace's process (resource) tags only - a handful of entries even
+    on a 200k-span trace, unlike :func:`extract_trace_rows`, which walks every
+    span - and calls no API, so the Test page's metadata renders at once.
+    """
+    processes = (trace or {}).get("processes")
+    if not isinstance(processes, dict):
+        return {}
+    tags: dict[str, str] = {}
+    for process in processes.values():
+        if isinstance(process, dict):
+            for key, value in tag_map(process.get("tags", [])).items():
+                if value and key not in tags:
+                    tags[key] = str(value)
+    pr_url = tags.get("vcs.change.url", "")
+    repository = tags.get("vcs.repository.name", "") or repository_from_pr_url(pr_url)
+    run_id = tags.get("transformers.test.run.id", tags.get("cicd.pipeline.run.id", ""))
+    pr = tags.get("vcs.change.id", "") or tags.get("vcs.ref.head.name", "")
+    if pr.isdigit() and not pr_url:
+        pr_url = github_pr_html_url(repository, pr)
+    # Same rule as extract_trace_rows: a pr-comment run's head revision is main.
+    commit_sha = tags.get(
+        "service.version"
+        if tags.get("transformers.test.ci_event") == "pr-comment"
+        else "vcs.ref.head.revision",
+        "",
+    )
+    job = tags.get("transformers.test.job", tags.get("transformers.test.suite", ""))
+    return {
+        "repository": repository,
+        "run_id": run_id,
+        "run_url": github_run_html_url(repository, run_id),
+        "job_url": github_job_html_url(
+            repository, run_id, tags.get("cicd.pipeline.task.run.id", "")
+        ),
+        "pr": pr or "none",
+        "pr_url": pr_url if pr.isdigit() else "",
+        "hardware": tags.get("transformers.test.hardware", "")
+        or hardware_from_job(job),
+        "runner_type": tags.get(RUNNER_ATTRIBUTE_PREFIX + "type", ""),
+        "runner_name": tags.get(RUNNER_ATTRIBUTE_PREFIX + "name", ""),
+        "file_url": github_test_url(
+            repository,
+            commit_sha if _FULL_SHA.match(commit_sha) else "main",
+            test_nodeid,
+            "",
+        ),
+    }
 
 
 def fetch_github_commit_message(repository: str, sha: str) -> str:
@@ -6991,6 +7074,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._request_route = "/failure"
             self._serve_failure(parse_qs(parsed.query))
             return
+        if parsed.path == "/failure/context":
+            self._request_route = "/failure/context"
+            self._serve_failure_context(parse_qs(parsed.query))
+            return
         if parsed.path == "/related-issues":
             self._request_route = "/related-issues"
             self._serve_related_issues(parse_qs(parsed.query))
@@ -7185,11 +7272,42 @@ class MetricsHandler(BaseHTTPRequestHandler):
         details = extract_failure_details(trace, test_nodeid) if trace else []
         if trace and details:
             annotate_github_links(trace, details)
+            context = failure_context(trace, test_nodeid)
+            for detail in details:
+                detail["job_log_url"] = context.get("job_url", "")
+                detail["run_url"] = context.get("run_url", "")
         self._send(
             200,
             "text/html; charset=utf-8",
             render_failure_html(trace_id, details).encode("utf-8"),
             cache_control="public, max-age=300",
+        )
+
+    def _serve_failure_context(self, params: dict[str, list[str]]) -> None:
+        trace_id = (params.get("trace_id") or [""])[0].strip()
+        nodeid = (params.get("test_nodeid") or [""])[0].strip()
+        if not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id) or (
+            len(nodeid) > 2048 or any(ord(c) < 32 for c in nodeid)
+        ):
+            self._send(400, JSON_CONTENT_TYPE, b'{"error":"invalid test context"}')
+            return
+        # The Test page's Traceback panel fetches this same trace on the same
+        # page load, and a settled trace is then memoized: wait for that instead
+        # of pulling a multi-MB trace from Tempo a second time.
+        trace = None
+        deadline = time.monotonic() + FAILURE_CONTEXT_WAIT_SECONDS
+        while trace is None and time.monotonic() < deadline:
+            with _trace_cache_lock:
+                trace = _trace_cache.get(trace_id)
+            if trace is None:
+                time.sleep(0.25)
+        if trace is None:
+            trace = get_trace(trace_id)
+        self._send(
+            200,
+            JSON_CONTENT_TYPE,
+            json.dumps(failure_context(trace, nodeid)).encode(),
+            cache_control="public, max-age=300" if trace else "no-store",
         )
 
     def _serve_run(self, params: dict[str, list[str]]) -> None:

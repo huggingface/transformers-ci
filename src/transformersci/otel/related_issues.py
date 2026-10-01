@@ -235,6 +235,7 @@ background:rgba(204,204,220,.04);font-size:12px;line-height:18px}
 .tci-meta .k{flex:none;color:#8e9197;font-size:10px;font-weight:600;
 text-transform:uppercase;letter-spacing:.05em}
 .tci-meta .v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+a.v{color:#6ab0ff}
 .cmdLabel{font-size:14px;margin:12px 0 6px}.cmdRow{display:flex;gap:6px;align-items:stretch;
 margin:0 0 12px}.cmdRow button{flex:none}.cmd{display:block;flex:1 1 auto;min-width:0;
 padding:8px 12px;border:1px solid rgba(204,204,220,.15);border-radius:4px;
@@ -249,11 +250,37 @@ white-space:pre-wrap;overflow-wrap:anywhere}
 const context=new URLSearchParams(location.search);
 const node=context.get('test_nodeid')||'';
 document.getElementById('test-heading').textContent=node;
-for(const [key,label] of [['status','Status'],['module','Module'],['job','Job'],['pr','PR'],['run_id','Run']]){
-  const value=context.get(key);if(!value)continue;
-  const li=document.createElement('li'),k=document.createElement('span'),v=document.createElement('span');
-  k.className='k';k.textContent=label;v.className='v';v.textContent=value;v.title=value;
-  li.append(k,v);document.getElementById('test-meta').append(li);
+// Chips render from the URL at once; /failure/context (read from the trace,
+// no GitHub call) then adds the Runner chip and turns values into GitHub links.
+// Runner links the job's log only when the trace names the job (job_url).
+function renderMeta(info){
+  const values={status:context.get('status'),module:context.get('module'),
+    job:context.get('job'),runner:info.runner_type,
+    pr:context.get('pr')||info.pr,run_id:context.get('run_id')||info.run_id};
+  const links={module:info.file_url,pr:info.pr_url,run_id:info.run_url,runner:info.job_url};
+  const titles={runner:[info.runner_name,info.hardware].filter(Boolean).join(' · ')};
+  const meta=document.getElementById('test-meta');meta.replaceChildren();
+  for(const [key,label] of [['status','Status'],['module','Module'],['job','Job'],['runner','Runner'],['pr','PR'],['run_id','Run']]){
+    const value=values[key];if(!value)continue;
+    const li=document.createElement('li'),k=document.createElement('span');
+    const link=/^https:\\/\\/github\\.com\\//.test(links[key]||'')?links[key]:'';
+    const v=document.createElement(link?'a':'span');
+    k.className='k';k.textContent=label;v.className='v';v.textContent=link?value+' ↗':value;
+    v.title=titles[key]||value;
+    if(link){v.href=link;v.target='_blank';v.rel='noopener noreferrer';}
+    li.append(k,v);meta.append(li);
+  }
+}
+renderMeta({});
+{
+  const latest=context.get('latest_trace')||'';
+  const traceId=context.get('trace_id')||(/^[0-9a-f]{32}$/i.test(latest)?latest:'');
+  if(/^[0-9a-f]{32}$/i.test(traceId)&&node){
+    const query=new URLSearchParams({trace_id:traceId,test_nodeid:node});
+    fetch('/failure/context?'+query).then(r=>r.ok?r.json():{}).then(info=>{
+      if(info)renderMeta(info);
+    }).catch(()=>{});
+  }
 }
 const shellQuote=value=>"'"+value.replaceAll("'","'\\"'\\"'")+"'";
 document.getElementById('command').textContent=node.startsWith('utils/checkers.py::')?
