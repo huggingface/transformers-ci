@@ -323,3 +323,40 @@ def get_redirect(server, path):
     location = response.getheader("Location")
     conn.close()
     return response.status, location
+
+
+def test_exception_message_line_first_line_capped():
+    span = {
+        "logs": [
+            {
+                "fields": tags(
+                    event="exception",
+                    **{"exception.message": "\n  boom: shard 40 missing\nsecond line"},
+                )
+            }
+        ]
+    }
+    assert te.exception_message_line(span) == "boom: shard 40 missing"
+    span["logs"][0]["fields"] = tags(
+        event="exception", **{"exception.message": "x" * 300}
+    )
+    assert te.exception_message_line(span) == "x" * 200 + "…"
+    assert te.exception_message_line({"logs": []}) == ""
+
+
+def test_run_search_server_side_and_error_shown():
+    rows = run_rows()
+    rows[3]["exception_type"] = "FileNotFoundError"
+    rows[3]["exception_message"] = "No such file: model-00040-of-00047.safetensors"
+    page = te.render_run_html("1:1", rows, query={}, q="glm4 xgpu safetensors")
+    assert page.count("<tr><td") + page.count("<tr id=") == 1
+    assert "FileNotFoundError: No such file: model-00040" in page
+    assert "id='q'" in page and 'value="glm4 xgpu safetensors"' in page
+    # The search box sits outside the live-refreshed body.
+    assert page.index("id='q'") < page.index("id='runbody'")
+    page = te.render_run_html("1:1", rows, query={}, q="nothing-matches")
+    assert "No test matches <b>nothing-matches</b> among 4" in page
+    # Truncated lists tell the box that Enter can search every row.
+    assert "data-truncated='1'" in te.render_run_html("1:1", rows, query={}, limit=2)
+    assert te.run_row_matches(rows[0], "models/a test_x") is True
+    assert te.run_row_matches(rows[0], "models/a xgpu") is False

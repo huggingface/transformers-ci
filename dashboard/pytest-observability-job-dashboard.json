@@ -175,6 +175,17 @@
       "description": "When the run started, how long this job took end to end (wall), and the summed duration of its tests.",
       "targets": [
         {
+          "refId": "DATE",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(max without (instance) (last_over_time(pytest_run_start_time_seconds{service_name=~\"$service\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))) * 1000",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Date"
+        },
+        {
           "refId": "STARTED",
           "datasource": {
             "type": "prometheus",
@@ -247,6 +258,18 @@
               {
                 "id": "unit",
                 "value": "dateTimeFromNow"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Date"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:MMM D"
               }
             ]
           }

@@ -98,6 +98,18 @@
                 "value": "dateTimeFromNow"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Date"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:MMM D"
+              }
+            ]
           }
         ]
       },
@@ -137,6 +149,18 @@
           "legendFormat": "Duration",
           "range": false,
           "refId": "DURATION"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(max without (instance) (last_over_time(pytest_run_start_time_seconds{run_id=\"$link_run_id\"}[$__range]))) * 1000",
+          "instant": true,
+          "legendFormat": "Date",
+          "range": false,
+          "refId": "DATE"
         },
         {
           "datasource": {
