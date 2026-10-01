@@ -1591,6 +1591,18 @@ def _github_api_get(api_url: str, timeout: float = 5.0) -> object:
     return json.loads(body)
 
 
+def search_github_issues(query: str) -> list:
+    """GitHub issue/PR search, newest first (one page)."""
+    api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip(
+        "/"
+    )
+    params = urlencode({"q": query, "sort": "created", "order": "desc", "per_page": 20})
+    data = _github_api_get(f"{api_base_url}/search/issues?{params}")
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        raise ValueError("Invalid GitHub search response")
+    return data["items"]
+
+
 def fetch_github_pr_reviews(repository: str, pr: str) -> list[str]:
     """Return GitHub logins that have submitted a review on the PR.
 
@@ -6992,6 +7004,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 cache_control="no-store",
             )
             return
+        if parsed.path == "/serge-actions/fix-prs":
+            self._request_route = "/serge-actions/fix-prs"
+            self._serve_fix_prs(parse_qs(parsed.query))
+            return
         if parsed.path == "/serge-actions":
             self._request_route = "/serge-actions"
             self._send(
@@ -7107,6 +7123,19 @@ class MetricsHandler(BaseHTTPRequestHandler):
             JSON_CONTENT_TYPE,
             payload,
             cache_control=_public_cache_control_header(),
+        )
+
+    def _serve_fix_prs(self, params: dict[str, list[str]]) -> None:
+        nodeid = (params.get("test_nodeid") or [""])[0].strip()
+        if not nodeid or len(nodeid) > 512 or any(ord(c) < 32 for c in nodeid):
+            self._send(400, JSON_CONTENT_TYPE, b'{"error":"invalid test context"}')
+            return
+        result = serge_actions.fix_prs(nodeid, search_github_issues)
+        self._send(
+            200,
+            JSON_CONTENT_TYPE,
+            json.dumps(result).encode(),
+            cache_control="no-store",
         )
 
     def _serve_related_issues(self, params: dict[str, list[str]]) -> None:
