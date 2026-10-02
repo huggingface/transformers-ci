@@ -422,9 +422,12 @@ grafana:
   resources:
     requests:
       cpu: 100m
-      memory: 512Mi
-    limits:
       memory: 1Gi
+    limits:
+      memory: 2Gi
+  # Go soft memory limit (GOMEMLIMIT). Keep it ~80% of limits.memory so the GC
+  # works harder before the kernel OOM-kills Grafana. Empty = unset.
+  goMemLimit: "1600MiB"
 
   dashboards:
     enabled: true

@@ -522,6 +522,10 @@ spec:
                   name: {{ .Values.secrets.name }}
                   key: {{ .Values.secrets.keys.githubOauthClientSecret }}
             {{- end }}
+            {{- with .Values.grafana.goMemLimit }}
+            - name: GOMEMLIMIT
+              value: {{ . | quote }}
+            {{- end }}
             - name: GF_PANELS_DISABLE_SANITIZE_HTML
               value: "true"
             - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
