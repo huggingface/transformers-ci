@@ -111,6 +111,10 @@
               {
                 "id": "unit",
                 "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               }
             ]
           },
@@ -130,7 +134,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 50
+                "value": 60
               },
               {
                 "id": "mappings",
