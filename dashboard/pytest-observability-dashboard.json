@@ -604,6 +604,18 @@
                 "value": 72
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "filterable",
+                "value": false
+              }
+            ]
           }
         ]
       },
@@ -1098,6 +1110,18 @@
               {
                 "id": "custom.width",
                 "value": 85
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "filterable",
+                "value": false
               }
             ]
           }
