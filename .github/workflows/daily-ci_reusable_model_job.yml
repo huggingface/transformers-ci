@@ -232,6 +232,19 @@ jobs:
             echo "EFS cache selected for ${model_short}: HF_HOME=/mnt/efs_cache"
           fi
 
+          # ── Print env vars that will be in effect for pytest ────────────────
+          echo "=== Pytest env vars ==="
+          echo "HF_HOME=${HF_HOME}"
+          echo "RUN_SLOW=${RUN_SLOW}"
+          echo "TRANSFORMERS_IS_CI=${TRANSFORMERS_IS_CI}"
+          echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+          echo "CI_CPU_MEMORY_LIMIT_GB=${CI_CPU_MEMORY_LIMIT_GB}"
+          echo "OMP_NUM_THREADS=${OMP_NUM_THREADS}"
+          echo "MKL_NUM_THREADS=${MKL_NUM_THREADS}"
+          echo "HF_TOKEN set: $([ -n "$HF_TOKEN" ] && echo yes || echo no)"
+          echo "=== End env vars ==="
+
+
 
           # ── CI observability (OTEL) ─────────────────────────────────────────
           # OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_TOKEN are injected by the self-
