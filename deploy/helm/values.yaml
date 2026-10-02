@@ -368,7 +368,7 @@ grafana:
   replicas: 1
   image:
     repository: grafana/grafana
-    tag: "11.4.0"
+    tag: "13.2.3"
     pullPolicy: IfNotPresent
 
   # Alert-notification email via Amazon SES (us-east-1). user/password are SES SMTP
