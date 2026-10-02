@@ -333,6 +333,13 @@ data:
     [analytics]
     reporting_enabled = false
     check_for_updates = false
+    check_for_plugin_updates = false
+
+    # Grafana 12+ background-installs decoupled core plugins (jaeger, zipkin,
+    # elasticsearch, ...) from grafana.com. Egress blocks that, so it only logs
+    # timeouts; the stack uses prometheus + tempo only.
+    [plugins]
+    preinstall_disabled = true
 
     [dashboards]
     default_home_dashboard_path = /var/lib/grafana/dashboards/pytest-observability-dashboard.json
