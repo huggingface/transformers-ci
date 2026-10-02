@@ -221,6 +221,7 @@ jobs:
           fi
 
           # ── EFS cache for large models with Xet FUSE OOM issues ─────────────
+          # TODO: temporary workaround until Xet FUSE prefetch OOM is fixed upstream.
           # Bucket cache runners mount model weights via Xet FUSE. For large
           # models (>20 GB), Xet prefetch can exhaust cgroup RAM → exit 137.
           # /mnt/efs_cache is an EFS (NFS) mount pre-warmed with these weights;
