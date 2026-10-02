@@ -504,18 +504,6 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Title"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 520
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
               "options": "State"
             },
             "properties": [
