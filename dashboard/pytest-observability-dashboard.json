@@ -122,7 +122,7 @@
             "properties": [
               {
                 "id": "unit",
-                "value": "d"
+                "value": "suffix:d"
               },
               {
                 "id": "decimals",
@@ -130,7 +130,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 75
+                "value": 50
               }
             ]
           },
@@ -220,7 +220,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 75
+                "value": 58
               }
             ]
           },
@@ -718,7 +718,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Job Count"
+              "options": "Jobs"
             },
             "properties": [
               {
@@ -820,7 +820,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 55
+                "value": 46
               }
             ]
           },
@@ -988,7 +988,7 @@
               "commit_message": "Commit",
               "Value #Start": "Started",
               "Value #HW": "Hardware",
-              "Value #Jobs": "Job Count",
+              "Value #Jobs": "Jobs",
               "Value #Total": "Tests",
               "Value #Duration": "Test Time",
               "Value #Rate": "Failure Rate",
