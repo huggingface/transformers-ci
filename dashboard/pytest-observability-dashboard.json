@@ -145,6 +145,10 @@
                 "value": "percent"
               },
               {
+                "id": "custom.width",
+                "value": 90
+              },
+              {
                 "id": "custom.cellOptions",
                 "value": {
                   "mode": "gradient",
@@ -597,7 +601,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 130
+                "value": 90
               },
               {
                 "id": "custom.cellOptions",
