@@ -127,6 +127,10 @@
               {
                 "id": "decimals",
                 "value": 0
+              },
+              {
+                "id": "custom.width",
+                "value": 75
               }
             ]
           },
@@ -213,6 +217,10 @@
                     "targetBlank": false
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 75
               }
             ]
           },
@@ -569,7 +577,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 125
+                "value": 100
               },
               {
                 "id": "unit",
@@ -675,7 +683,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 105
+                "value": 84
               },
               {
                 "id": "unit",
@@ -715,7 +723,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 95
+                "value": 48
               }
             ]
           },
@@ -727,7 +735,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 100
+                "value": 80
               },
               {
                 "id": "unit",
@@ -812,7 +820,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 110
+                "value": 55
               }
             ]
           },
