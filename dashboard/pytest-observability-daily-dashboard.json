@@ -253,6 +253,10 @@
               {
                 "id": "unit",
                 "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               }
             ]
           },
@@ -265,6 +269,10 @@
               {
                 "id": "unit",
                 "value": "s"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               }
             ]
           },
@@ -321,6 +329,10 @@
               {
                 "id": "unit",
                 "value": "s"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               }
             ]
           },
@@ -572,6 +584,10 @@
               {
                 "id": "unit",
                 "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               }
             ]
           },
@@ -678,6 +694,10 @@
               {
                 "id": "unit",
                 "value": "s"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               }
             ]
           },
@@ -732,7 +752,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 90
+                "value": 45
               }
             ]
           },
@@ -745,6 +765,10 @@
               {
                 "id": "unit",
                 "value": "s"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               }
             ]
           }

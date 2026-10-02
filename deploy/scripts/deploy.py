@@ -69,11 +69,11 @@ APPLY_RELOAD = "reload"
 APPLY_RESTART = "restart"
 
 CONFIG_APPLY = {
-    # Grafana's file provisioner rescans the dashboard directory on its own poll
-    # interval (10s unless updateIntervalSeconds says otherwise), so dashboard
-    # JSON lands by itself once kubelet syncs the ConfigMap volume.
-    "grafana-dashboards": APPLY_AUTO,
-    "grafana-dashboards-restricted": APPLY_AUTO,
+    # Grafana 13's file provisioner does not reliably pick up a ConfigMap
+    # update: after the first ..data symlink swap it kept serving the old
+    # dashboard JSON, though the new file was mounted. Restart to be sure.
+    "grafana-dashboards": APPLY_RESTART,
+    "grafana-dashboards-restricted": APPLY_RESTART,
     # Prometheus runs with --web.enable-lifecycle, so it can re-read the config
     # in place; that keeps the TSDB head and avoids a scrape gap.
     "prometheus-config": APPLY_RELOAD,

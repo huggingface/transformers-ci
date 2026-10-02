@@ -133,8 +133,8 @@ class TestConfigChangeRestarts:
 
 
 class TestApplyPolicies:
-    def test_self_reloading_config_needs_no_restart(self):
-        """Grafana's file provisioner rescans dashboards on its own."""
+    def test_dashboard_change_restarts_grafana(self):
+        """Grafana 13 does not reliably reload provisioned dashboards on its own."""
         live = [
             configmap("grafana-dashboards", "old"),
             workload("Deployment", "grafana", configmaps=["grafana-dashboards"]),
@@ -144,9 +144,9 @@ class TestApplyPolicies:
             workload("Deployment", "grafana", configmaps=["grafana-dashboards"]),
         ]
         plan = plan_for(live, new)
-        assert plan.restart == {}
+        assert names(plan.restart) == {"grafana"}
         assert plan.reload == {}
-        assert names(plan.self_applying) == {"grafana"}
+        assert not plan.self_applying
 
     def test_prometheus_config_reloads_instead_of_restarting(self):
         live = [

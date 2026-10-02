@@ -111,6 +111,10 @@
               {
                 "id": "unit",
                 "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               }
             ]
           },
@@ -122,11 +126,284 @@
             "properties": [
               {
                 "id": "unit",
-                "value": "d"
+                "value": "suffix:d"
               },
               {
                 "id": "decimals",
                 "value": 0
+              },
+              {
+                "id": "custom.width",
+                "value": 60
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0,
+                      "to": 0.041666665666666665,
+                      "result": {
+                        "text": "Now",
+                        "index": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.041666666666666664,
+                      "to": 0.08333333233333333,
+                      "result": {
+                        "text": "1h",
+                        "index": 1
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.08333333333333333,
+                      "to": 0.124999999,
+                      "result": {
+                        "text": "2h",
+                        "index": 2
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.125,
+                      "to": 0.16666666566666666,
+                      "result": {
+                        "text": "3h",
+                        "index": 3
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.16666666666666666,
+                      "to": 0.20833333233333334,
+                      "result": {
+                        "text": "4h",
+                        "index": 4
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.20833333333333334,
+                      "to": 0.249999999,
+                      "result": {
+                        "text": "5h",
+                        "index": 5
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.25,
+                      "to": 0.29166666566666666,
+                      "result": {
+                        "text": "6h",
+                        "index": 6
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.2916666666666667,
+                      "to": 0.3333333323333333,
+                      "result": {
+                        "text": "7h",
+                        "index": 7
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.3333333333333333,
+                      "to": 0.374999999,
+                      "result": {
+                        "text": "8h",
+                        "index": 8
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.375,
+                      "to": 0.41666666566666666,
+                      "result": {
+                        "text": "9h",
+                        "index": 9
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.4166666666666667,
+                      "to": 0.4583333323333333,
+                      "result": {
+                        "text": "10h",
+                        "index": 10
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.4583333333333333,
+                      "to": 0.499999999,
+                      "result": {
+                        "text": "11h",
+                        "index": 11
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.5,
+                      "to": 0.5416666656666667,
+                      "result": {
+                        "text": "12h",
+                        "index": 12
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.5416666666666666,
+                      "to": 0.5833333323333334,
+                      "result": {
+                        "text": "13h",
+                        "index": 13
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.5833333333333334,
+                      "to": 0.624999999,
+                      "result": {
+                        "text": "14h",
+                        "index": 14
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.625,
+                      "to": 0.6666666656666667,
+                      "result": {
+                        "text": "15h",
+                        "index": 15
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.6666666666666666,
+                      "to": 0.7083333323333334,
+                      "result": {
+                        "text": "16h",
+                        "index": 16
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.7083333333333334,
+                      "to": 0.749999999,
+                      "result": {
+                        "text": "17h",
+                        "index": 17
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.75,
+                      "to": 0.7916666656666667,
+                      "result": {
+                        "text": "18h",
+                        "index": 18
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.7916666666666666,
+                      "to": 0.8333333323333334,
+                      "result": {
+                        "text": "19h",
+                        "index": 19
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.8333333333333334,
+                      "to": 0.874999999,
+                      "result": {
+                        "text": "20h",
+                        "index": 20
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.875,
+                      "to": 0.9166666656666667,
+                      "result": {
+                        "text": "21h",
+                        "index": 21
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.9166666666666666,
+                      "to": 0.9583333323333334,
+                      "result": {
+                        "text": "22h",
+                        "index": 22
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0.9583333333333334,
+                      "to": 0.999999999,
+                      "result": {
+                        "text": "23h",
+                        "index": 23
+                      }
+                    }
+                  }
+                ]
               }
             ]
           },
@@ -139,6 +416,10 @@
               {
                 "id": "unit",
                 "value": "percent"
+              },
+              {
+                "id": "custom.width",
+                "value": 90
               },
               {
                 "id": "custom.cellOptions",
@@ -213,18 +494,10 @@
                     "targetBlank": false
                   }
                 ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Title"
-            },
-            "properties": [
+              },
               {
                 "id": "custom.width",
-                "value": 520
+                "value": 58
               }
             ]
           },
@@ -331,6 +604,18 @@
                 "value": 72
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "filterable",
+                "value": false
+              }
+            ]
           }
         ]
       },
@@ -408,7 +693,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "(floor((time() - max by (pr) (max without (instance) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$top_prs\"}[7d])))) / 86400))",
+          "expr": "(floor((time() - max by (pr) (max without (instance) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$top_prs\"}[7d])))) / 86400) >= 1) or ((time() - max by (pr) (max without (instance) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$top_prs\"}[7d])))) / 86400)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -569,7 +854,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 125
+                "value": 100
               },
               {
                 "id": "unit",
@@ -589,7 +874,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 130
+                "value": 100
               },
               {
                 "id": "custom.cellOptions",
@@ -675,7 +960,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 105
+                "value": 84
               },
               {
                 "id": "unit",
@@ -710,12 +995,12 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Job Count"
+              "options": "Jobs"
             },
             "properties": [
               {
                 "id": "custom.width",
-                "value": 95
+                "value": 48
               }
             ]
           },
@@ -727,7 +1012,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 100
+                "value": 80
               },
               {
                 "id": "unit",
@@ -812,7 +1097,7 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 110
+                "value": 62
               }
             ]
           },
@@ -825,6 +1110,18 @@
               {
                 "id": "custom.width",
                 "value": 85
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "filterable",
+                "value": false
               }
             ]
           }
@@ -980,7 +1277,7 @@
               "commit_message": "Commit",
               "Value #Start": "Started",
               "Value #HW": "Hardware",
-              "Value #Jobs": "Job Count",
+              "Value #Jobs": "Jobs",
               "Value #Total": "Tests",
               "Value #Duration": "Test Time",
               "Value #Rate": "Failure Rate",

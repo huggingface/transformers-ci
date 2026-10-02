@@ -398,6 +398,10 @@
               {
                 "id": "unit",
                 "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               }
             ]
           },
@@ -410,6 +414,10 @@
               {
                 "id": "unit",
                 "value": "s"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               }
             ]
           },
@@ -422,6 +430,10 @@
               {
                 "id": "unit",
                 "value": "s"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
               }
             ]
           },
