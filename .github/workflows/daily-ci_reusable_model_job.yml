@@ -244,8 +244,6 @@ jobs:
           echo "HF_TOKEN set: $([ -n "$HF_TOKEN" ] && echo yes || echo no)"
           echo "=== End env vars ==="
 
-
-
           # ── CI observability (OTEL) ─────────────────────────────────────────
           # OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_TOKEN are injected by the self-
           # hosted runner. When absent, OTEL_WRAP stays empty and the pytest
