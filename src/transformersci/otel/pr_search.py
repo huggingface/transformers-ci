@@ -2,7 +2,7 @@
 
 Every dashboard carries a hidden text panel whose iframe appends
 ``<iframe id="tci-pr-search" src="/pr-search">`` to Grafana's ``<body>``, fixed over
-the slot of Grafana's own "Search or jump to" box (which only finds dashboard
+the slot of Grafana's own "Search..." box (which only finds dashboard
 titles). This page is that iframe. It is same-origin with Grafana (the ingress
 routes ``/pr-search`` here), so it hides Grafana's box, sizes its own frame, and
 queries Prometheus through Grafana's ``/api/ds/query`` like any panel does.
@@ -52,12 +52,14 @@ a.row.sel,a.row:hover{background:var(--hover)}
   var box = document.getElementById("box"), list = document.getElementById("list");
   var rows = [], sel = -1, seq = 0, timer = null;
 
-  // Hide Grafana's own box; this one takes its place.
+  // Hide Grafana's own box; this one takes its place. Grafana 13 renders the
+  // wide box as the command-palette trigger and, below the lg breakpoint, an
+  // icon button labelled "Search...".
   if (!pd.getElementById("tci-pr-search-style")) {
     var st = pd.createElement("style");
     st.id = "tci-pr-search-style";
-    st.textContent = 'header [data-testid="wrapper"]:nth-child(2),' +
-      'header button[aria-label="Search or jump to..."]{visibility:hidden!important}';
+    st.textContent = '[data-testid="data-testid Command palette trigger"],' +
+      'header button[aria-label="Search..."]{visibility:hidden!important}';
     pd.head.appendChild(st);
   }
 
