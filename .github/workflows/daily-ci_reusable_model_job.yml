@@ -220,6 +220,19 @@ jobs:
             test_path="tests/trainer --ignore=tests/trainer/distributed"
           fi
 
+          # ── EFS cache for large models with Xet FUSE OOM issues ─────────────
+          # Bucket cache runners mount model weights via Xet FUSE. For large
+          # models (>20 GB), Xet prefetch can exhaust cgroup RAM → exit 137.
+          # /mnt/efs_cache is an EFS (NFS) mount pre-warmed with these weights;
+          # it avoids the Xet FUSE entirely. Has no effect on other runner types.
+          EFS_MODELS="cohere2_vision esm exaone4 exaone4_5 gemma2 glm4_moe glm4v_moe llama4 minimax_m3_vl mistral4 muse_glimmer muse_glimmer_assistant nllb_moe persimmon phimoe qwen2_moe qwen3_omni_moe qwen3_vl_moe"
+          model_short="${model#models/}"
+          if printf '%s\n' $EFS_MODELS | grep -qx "$model_short" && [ -d "/mnt/efs_cache" ]; then
+            export HF_HOME=/mnt/efs_cache
+            echo "EFS cache selected for ${model_short}: HF_HOME=/mnt/efs_cache"
+          fi
+
+
           # ── CI observability (OTEL) ─────────────────────────────────────────
           # OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_TOKEN are injected by the self-
           # hosted runner. When absent, OTEL_WRAP stays empty and the pytest
