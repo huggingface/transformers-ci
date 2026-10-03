@@ -698,7 +698,7 @@ jobs:
     secrets: inherit
 
   check_new_failures:
-    if: ${{ always() && needs.send_results.result == 'success' }}
+    if: ${{ !cancelled() && needs.send_results.result == 'success' }}
     name: Check new failures
     needs: send_results
     uses: huggingface/transformers/.github/workflows/check_failed_tests.yml@main
