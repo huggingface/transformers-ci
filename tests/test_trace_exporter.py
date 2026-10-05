@@ -2862,6 +2862,45 @@ def test_pr_search_page_is_served() -> None:
     assert "__PR_URL__" not in page
 
 
+def test_page_view_counts_dashboards(monkeypatch) -> None:
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.error import HTTPError
+    from urllib.request import urlopen
+
+    monkeypatch.setattr(trace_exporter, "_page_views_total", {})
+    monkeypatch.setattr(trace_exporter, "_PAGE_VIEW_MAX_DASHBOARDS", 2)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        for uid in ("pytest-observability", "pytest-observability", "ci-runners"):
+            with urlopen(f"{base}/page-view?d={uid}", timeout=5) as response:
+                assert response.status == 204
+                assert response.headers["Cache-Control"] == "no-store"
+        # Past the cap a new uid folds into "other" rather than a new series.
+        with urlopen(f"{base}/page-view?d=pytest-test", timeout=5) as response:
+            assert response.status == 204
+        for bad in ("", "a%22b", "x" * 65):
+            try:
+                urlopen(f"{base}/page-view?d={bad}", timeout=5)
+            except HTTPError as exc:
+                assert exc.code == 400
+            else:
+                raise AssertionError(f"{bad!r} was accepted")
+    finally:
+        server.shutdown()
+        server.server_close()
+    lines = trace_exporter._http_metric_lines()
+    assert (
+        'pytest_trace_exporter_page_views_total{dashboard="pytest-observability"} 2'
+        in lines
+    )
+    assert 'pytest_trace_exporter_page_views_total{dashboard="ci-runners"} 1' in lines
+    assert 'pytest_trace_exporter_page_views_total{dashboard="other"} 1' in lines
+
+
 def test_limit_malloc_arenas_is_safe_everywhere(monkeypatch) -> None:
     # Must never raise — it's a best-effort glibc tweak that no-ops elsewhere
     # (e.g. macOS), so the feature works without any launcher-set env.

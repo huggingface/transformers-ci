@@ -159,7 +159,7 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "<style>.react-grid-layout:has(iframe[data-slot]){margin-top:-38px}.react-grid-item:has(iframe[data-slot]){pointer-events:none}</style><iframe title=\"PR search loader\" data-slot style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>",
+        "content": "<style>.react-grid-layout:has(iframe[data-slot]){margin-top:-38px}.react-grid-item:has(iframe[data-slot]){pointer-events:none}</style><iframe title=\"PR search loader\" data-slot style=\"display:none\" srcdoc=\"<script>var w=parent;if(w.tciViewed!=='pytest-observability-daily'){w.tciViewed='pytest-observability-daily';new Image().src='/page-view?d=pytest-observability-daily';}var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>",
         "mode": "html"
       },
       "title": "",

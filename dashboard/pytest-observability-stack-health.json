@@ -55,7 +55,7 @@
    "id": 100,
    "options": {
     "mode": "markdown",
-    "content": "### CI Health - [v$dashboard_version](https://github.com/huggingface/transformers-ci/releases/tag/v$dashboard_version)\n\n<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
+    "content": "### CI Health - [v$dashboard_version](https://github.com/huggingface/transformers-ci/releases/tag/v$dashboard_version)\n\n<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var w=parent;if(w.tciViewed!=='pytest-observability-stack-health'){w.tciViewed='pytest-observability-stack-health';new Image().src='/page-view?d=pytest-observability-stack-health';}var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
    },
    "pluginVersion": "12.0.0",
    "title": "",
@@ -1828,6 +1828,128 @@
    "type": "timeseries"
   },
   {
+   "id": 403,
+   "type": "bargauge",
+   "title": "Page views by dashboard",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "Dashboard page loads over the selected time range, reported by each dashboard's hidden loader panel (GET /page-view). One count per visit; re-renders of the same dashboard are not counted. Grafana OSS has no per-dashboard view count of its own.",
+   "gridPos": {
+    "h": 8,
+    "w": 8,
+    "x": 0,
+    "y": 110
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "decimals": 0,
+     "unit": "short",
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "displayMode": "basic",
+    "orientation": "horizontal",
+    "showUnfilled": true,
+    "valueMode": "color",
+    "namePlacement": "left",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "editorMode": "code",
+     "expr": "sort_desc(sum by (dashboard) (round(increase(pytest_trace_exporter_page_views_total[$__range]))))",
+     "instant": true,
+     "range": false,
+     "legendFormat": "{{dashboard}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
+   "id": 404,
+   "type": "timeseries",
+   "title": "Page views per hour",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "description": "Dashboard page loads per hour, stacked by dashboard.",
+   "gridPos": {
+    "h": 8,
+    "w": 16,
+    "x": 8,
+    "y": 110
+   },
+   "interval": "1h",
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "custom": {
+      "axisLabel": "views/h",
+      "drawStyle": "bars",
+      "fillOpacity": 80,
+      "lineWidth": 1,
+      "showPoints": "never",
+      "stacking": {
+       "group": "A",
+       "mode": "normal"
+      }
+     },
+     "decimals": 0,
+     "unit": "short",
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "calcs": [
+      "sum"
+     ],
+     "displayMode": "table",
+     "placement": "right",
+     "showLegend": true,
+     "sortBy": "Total",
+     "sortDesc": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "editorMode": "code",
+     "expr": "sum by (dashboard) (round(increase(pytest_trace_exporter_page_views_total[1h])))",
+     "legendFormat": "{{dashboard}}",
+     "refId": "A"
+    }
+   ]
+  },
+  {
    "id": 506,
    "type": "row",
    "title": "Live GitHub status (ci-github-status)",
@@ -1836,7 +1958,7 @@
     "h": 1,
     "w": 24,
     "x": 0,
-    "y": 110
+    "y": 118
    },
    "panels": []
   },
@@ -1853,7 +1975,7 @@
     "h": 4,
     "w": 5,
     "x": 0,
-    "y": 111
+    "y": 119
    },
    "targets": [
     {
@@ -1931,7 +2053,7 @@
     "h": 4,
     "w": 5,
     "x": 5,
-    "y": 111
+    "y": 119
    },
    "targets": [
     {
@@ -2001,7 +2123,7 @@
     "h": 4,
     "w": 5,
     "x": 10,
-    "y": 111
+    "y": 119
    },
    "targets": [
     {
@@ -2062,7 +2184,7 @@
     "h": 4,
     "w": 4,
     "x": 15,
-    "y": 111
+    "y": 119
    },
    "targets": [
     {
@@ -2127,7 +2249,7 @@
     "h": 4,
     "w": 5,
     "x": 19,
-    "y": 111
+    "y": 119
    },
    "targets": [
     {
@@ -2196,7 +2318,7 @@
     "h": 8,
     "w": 12,
     "x": 0,
-    "y": 115
+    "y": 123
    },
    "targets": [
     {
@@ -2254,7 +2376,7 @@
     "h": 8,
     "w": 12,
     "x": 12,
-    "y": 115
+    "y": 123
    },
    "targets": [
     {
@@ -2322,7 +2444,7 @@
     "h": 8,
     "w": 12,
     "x": 0,
-    "y": 123
+    "y": 131
    },
    "targets": [
     {
@@ -2390,7 +2512,7 @@
     "h": 8,
     "w": 12,
     "x": 12,
-    "y": 123
+    "y": 131
    },
    "targets": [
     {
@@ -2468,7 +2590,7 @@
     "h": 8,
     "w": 6,
     "x": 0,
-    "y": 131
+    "y": 139
    },
    "targets": [
     {
@@ -2530,7 +2652,7 @@
     "h": 8,
     "w": 18,
     "x": 6,
-    "y": 131
+    "y": 139
    },
    "targets": [
     {
@@ -2589,7 +2711,7 @@
     "h": 3,
     "w": 8,
     "x": 0,
-    "y": 139
+    "y": 147
    },
    "options": {
     "mode": "html",
