@@ -4420,6 +4420,15 @@ _http_requests_total: dict[tuple[str, str, str], int] = {}
 _http_request_duration_seconds_total: dict[tuple[str, str, str], float] = {}
 _http_response_bytes_total: dict[tuple[str, str, str], int] = {}
 
+# Dashboard page views, reported by a beacon in each dashboard's hidden loader
+# panel (GET /page-view?d=<uid>). Grafana OSS only counts requests per route
+# pattern, so this is the only per-dashboard view count. The label is
+# client-supplied: it must look like a dashboard uid, and past the cap every
+# new value folds into "other" so a scripted caller cannot blow up cardinality.
+_PAGE_VIEW_UID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_PAGE_VIEW_MAX_DASHBOARDS = 50
+_page_views_total: dict[str, int] = {}
+
 
 def _observe_http_request(
     route: str,
@@ -4439,11 +4448,26 @@ def _observe_http_request(
         )
 
 
+def _observe_page_view(dashboard: str) -> bool:
+    """Count one view of ``dashboard``; False when it is not a valid uid."""
+    if not _PAGE_VIEW_UID_RE.fullmatch(dashboard):
+        return False
+    with _http_metrics_lock:
+        if (
+            dashboard not in _page_views_total
+            and len(_page_views_total) >= _PAGE_VIEW_MAX_DASHBOARDS
+        ):
+            dashboard = "other"
+        _page_views_total[dashboard] = _page_views_total.get(dashboard, 0) + 1
+    return True
+
+
 def _http_metric_lines() -> list[str]:
     with _http_metrics_lock:
         request_counts = dict(_http_requests_total)
         duration_counts = dict(_http_request_duration_seconds_total)
         byte_counts = dict(_http_response_bytes_total)
+        page_views = dict(_page_views_total)
 
     lines = [
         "# HELP pytest_trace_exporter_http_requests_total HTTP requests served by the trace-exporter helper endpoints.",
@@ -4478,6 +4502,16 @@ def _http_metric_lines() -> list[str]:
         lines.append(
             f"pytest_trace_exporter_http_response_bytes_total"
             f"{metric_labels({'route': route, 'status': status, 'cache': cache})} {byte_count}"
+        )
+    lines.extend(
+        [
+            "# HELP pytest_trace_exporter_page_views_total Grafana dashboard page views, reported by each dashboard's loader panel.",
+            "# TYPE pytest_trace_exporter_page_views_total counter",
+        ]
+    )
+    for dashboard, count in sorted(page_views.items()):
+        lines.append(
+            f"pytest_trace_exporter_page_views_total{metric_labels({'dashboard': dashboard})} {count}"
         )
     return lines
 
@@ -7338,6 +7372,16 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 SEARCH_HTML.encode("utf-8"),
                 cache_control=_public_cache_control_header(),
             )
+            return
+        if parsed.path == "/page-view":
+            self._request_route = "/page-view"
+            dashboard = (parse_qs(parsed.query).get("d") or [""])[0]
+            status = 204 if _observe_page_view(dashboard) else 400
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self._observe_response(status, 0)
             return
         if parsed.path == "/healthz":
             # For the kubelet probes and the ALB target health check. They used

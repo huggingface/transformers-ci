@@ -27,7 +27,7 @@
       },
       "options": {
         "mode": "html",
-        "content": "<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
+        "content": "<iframe title=\"PR search loader\" style=\"display:none\" srcdoc=\"<script>var w=parent;if(w.tciViewed!=='ci-runners'){w.tciViewed='ci-runners';new Image().src='/page-view?d=ci-runners';}var d=parent.document;if(!d.getElementById('tci-pr-search')){var f=d.createElement('iframe');f.id='tci-pr-search';f.title='Find a PR';f.src='/pr-search';f.style.cssText='position:fixed;top:4px;left:50%;transform:translateX(-50%);width:0;height:0;border:0;z-index:1060;background:transparent;color-scheme:normal';d.body.appendChild(f);}</script>\"></iframe>"
       }
     },
     {
