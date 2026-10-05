@@ -274,6 +274,37 @@ def test_a_pr_title_expands_emoji_shortcodes() -> None:
     assert lines and 'title="🚨 Infer config fields"' in lines[0]
 
 
+def _commit_series(payload: str) -> list[str]:
+    return [
+        line
+        for line in payload.splitlines()
+        if line.startswith("ci_github_run_commit_info{")
+    ]
+
+
+def test_a_push_run_publishes_its_commit_before_any_trace() -> None:
+    update = webhook.parse_delivery(
+        "workflow_run",
+        run_payload(
+            prs=[],
+            event="push",
+            head_branch="ci-images-python-3.11",
+            display_title="dev-ci :rocket:",
+        ),
+        FILTERS,
+    )
+    payload = metrics.render([merge_run(None, update)], [], service={})
+    sha = "a" * 40
+    assert _commit_series(payload) == [
+        'ci_github_run_commit_info{repository="huggingface/transformers",run_id="900:1",'
+        f'pr="ci-images-python-3.11",commit_message="dev-ci 🚀",commit_sha="{sha}",'
+        f'html_url="https://github.com/huggingface/transformers/commit/{sha}"}} 1'
+    ]
+    # A PR run gets its title series instead, never a commit one.
+    pr_run = webhook.parse_delivery("workflow_run", run_payload(), FILTERS)
+    assert not _commit_series(metrics.render([merge_run(None, pr_run)], [], service={}))
+
+
 def test_a_later_event_without_a_title_keeps_it() -> None:
     first = merge_run(None, run("queued", display_title="Fix the tokenizer"))
     later = merge_run(first, run("in_progress"))

@@ -134,6 +134,10 @@ def render(
                 "The PR title GitHub gives a pull_request run (its display_title).",
             ),
             (
+                "ci_github_run_commit_info",
+                "The head commit of a push run (display_title is its headline).",
+            ),
+            (
                 "ci_github_run_status",
                 "Run status from GitHub: 1 queued, 2 in progress, 3 completed.",
             ),
@@ -207,6 +211,19 @@ def render(
         if run.get("event") in _PR_EVENTS and pr.isdigit() and run.get("display_title"):
             families["ci_github_run_title_info"].add(
                 {**identity, "pr": pr, "title": emojize(run["display_title"])}, 1
+            )
+        # The branch-run table's Commit column before the exporter has a trace;
+        # labelled like pytest_run_info so the panel can fall back to it.
+        if run.get("event") == "push" and pr and run.get("head_sha"):
+            families["ci_github_run_commit_info"].add(
+                {
+                    **identity,
+                    "pr": pr,
+                    "commit_message": emojize(run.get("display_title") or ""),
+                    "commit_sha": run["head_sha"],
+                    "html_url": f"https://github.com/{run['repository']}/commit/{run['head_sha']}",
+                },
+                1,
             )
         _progress(families, "run", identity, run, run.get("updated_at"))
 
