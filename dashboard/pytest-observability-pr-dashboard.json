@@ -1220,7 +1220,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(floor((time() - max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d]))) / 3600))",
+        "definition": "query_result(floor((time() - max by (pr) (label_replace(max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d])), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"$pr\"})), \"src\", \"github\", \"\", \"\"))) / 3600))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -1229,7 +1229,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(floor((time() - max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d]))) / 3600))",
+          "query": "query_result(floor((time() - max by (pr) (label_replace(max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d])), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"$pr\"})), \"src\", \"github\", \"\", \"\"))) / 3600))",
           "refId": "Prometheus-pr_last_event_hours-Variable-Query"
         },
         "regex": "/} (\\d+)/",
@@ -1244,7 +1244,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(floor((time() - max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d]))) / 3600) < 1, \"t\", \"now\", \"\", \"\") or label_replace(floor((time() - max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d]))) / 3600) >= 1, \"t\", \"${pr_last_event_hours:raw}h ago\", \"\", \"\"))",
+        "definition": "query_result(label_replace(floor((time() - max by (pr) (label_replace(max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d])), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"$pr\"})), \"src\", \"github\", \"\", \"\"))) / 3600) < 1, \"t\", \"now\", \"\", \"\") or label_replace(floor((time() - max by (pr) (label_replace(max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d])), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"$pr\"})), \"src\", \"github\", \"\", \"\"))) / 3600) >= 1, \"t\", \"${pr_last_event_hours:raw}h ago\", \"\", \"\"))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -1253,7 +1253,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(floor((time() - max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d]))) / 3600) < 1, \"t\", \"now\", \"\", \"\") or label_replace(floor((time() - max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d]))) / 3600) >= 1, \"t\", \"${pr_last_event_hours:raw}h ago\", \"\", \"\"))",
+          "query": "query_result(label_replace(floor((time() - max by (pr) (label_replace(max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d])), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"$pr\"})), \"src\", \"github\", \"\", \"\"))) / 3600) < 1, \"t\", \"now\", \"\", \"\") or label_replace(floor((time() - max by (pr) (label_replace(max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d])), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"$pr\"})), \"src\", \"github\", \"\", \"\"))) / 3600) >= 1, \"t\", \"${pr_last_event_hours:raw}h ago\", \"\", \"\"))",
           "refId": "Prometheus-pr_last_event_text-Variable-Query"
         },
         "regex": "/t=\"([^\"]+)\"/",
@@ -1281,7 +1281,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(count(count by (run_id) (last_over_time(pytest_run_total_tests{pr=~\"$pr\"}[90d]))))",
+          "query": "query_result(count(count by (run_id) (last_over_time(pytest_run_total_tests{pr=~\"$pr\"}[90d]) or last_over_time(ci_github_run_info{pr=~\"$pr\"}[90d]))))",
           "refId": "Prometheus-pr_total_runs-Variable-Query"
         },
         "regex": "/} (\\d+)/",
