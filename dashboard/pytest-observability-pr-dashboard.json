@@ -1220,6 +1220,58 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
+        "definition": "query_result(floor((time() - max by (pr) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$pr\"}[90d]))) / 3600))",
+        "hide": 2,
+        "includeAll": false,
+        "label": "",
+        "multi": false,
+        "name": "pr_age_hours",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(floor((time() - max by (pr) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$pr\"}[90d]))) / 3600))",
+          "refId": "Prometheus-pr_age_hours-Variable-Query"
+        },
+        "regex": "/} (\\d+)/",
+        "refresh": 1,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(label_replace((time() - max by (pr) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$pr\"}[90d]))) < 3600, \"t\", \"Now\", \"\", \"\") or label_replace((time() - max by (pr) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$pr\"}[90d]))) >= 3600 < 86400, \"t\", \"${pr_age_hours:raw}h\", \"\", \"\") or label_replace((time() - max by (pr) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$pr\"}[90d]))) >= 86400, \"t\", \"${pr_age_days:raw} days\", \"\", \"\"))",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "label": "",
+        "name": "pr_age_text",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(label_replace((time() - max by (pr) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$pr\"}[90d]))) < 3600, \"t\", \"Now\", \"\", \"\") or label_replace((time() - max by (pr) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$pr\"}[90d]))) >= 3600 < 86400, \"t\", \"${pr_age_hours:raw}h\", \"\", \"\") or label_replace((time() - max by (pr) (last_over_time(pytest_pr_created_at_seconds{pr=~\"$pr\"}[90d]))) >= 86400, \"t\", \"${pr_age_days:raw} days\", \"\", \"\"))",
+          "refId": "Prometheus-pr_age_text-Variable-Query"
+        },
+        "regex": "/t=\"([^\"]+)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
         "definition": "query_result(floor((time() - max by (pr) (label_replace(max by (pr) (last_over_time(pytest_run_end_time_seconds{pr=~\"$pr\"}[90d])), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"$pr\"})), \"src\", \"github\", \"\", \"\"))) / 3600))",
         "hide": 2,
         "includeAll": false,
@@ -1520,7 +1572,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(group by (pr) (pytest_pr_info{pr=~\"$pr\"}), \"m\", \"<li><span class='k'>Author</span>${pr_author:raw}</li><li><span class='k'>State</span>${pr_state:raw}</li><li><span class='k'>Age</span>${pr_age_days:raw} days</li><li><span class='k'>Last event</span>${pr_last_event_text:raw}</li>\", \"pr\", \".*\"))",
+        "definition": "query_result(label_replace(group by (pr) (pytest_pr_info{pr=~\"$pr\"}), \"m\", \"<li><span class='k'>Author</span>${pr_author:raw}</li><li><span class='k'>State</span>${pr_state:raw}</li><li><span class='k'>Age</span>${pr_age_text:raw}</li><li><span class='k'>Last event</span>${pr_last_event_text:raw}</li>\", \"pr\", \".*\"))",
         "hide": 2,
         "includeAll": false,
         "multi": false,
@@ -1528,7 +1580,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(topk(1, max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))), \"m\", \"<li><span class='k'>Author</span>${pr_author:raw}</li><li><span class='k'>State</span>${pr_state:raw}</li><li><span class='k'>Age</span>${pr_age_days:raw} days</li><li><span class='k'>Last event</span>${pr_last_event_text:raw}</li>\", \"pr\", \".*\"))",
+          "query": "query_result(label_replace(topk(1, max by (pr) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))), \"m\", \"<li><span class='k'>Author</span>${pr_author:raw}</li><li><span class='k'>State</span>${pr_state:raw}</li><li><span class='k'>Age</span>${pr_age_text:raw}</li><li><span class='k'>Last event</span>${pr_last_event_text:raw}</li>\", \"pr\", \".*\"))",
           "refId": "Prometheus-pr_metadata_section-Variable-Query"
         },
         "regex": "/m=\"([^\"]+)\"/",
