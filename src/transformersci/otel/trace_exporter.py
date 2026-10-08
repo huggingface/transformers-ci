@@ -68,6 +68,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from transformersci.otel.pr_search import SEARCH_HTML
+from transformersci import github_app
 from transformersci.otel import related_issues
 from transformersci.otel import rerun_actions
 from transformersci.otel import rerun_failed
@@ -1581,11 +1582,11 @@ def checks_out_own_commit(ci_event: str) -> bool:
 
 
 def github_api_token() -> str | None:
-    for env_name in ("PYTEST_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
-        value = os.getenv(env_name, "").strip()
-        if value:
-            return value
-    return None
+    """The dashboard App's installation token, else the first token env set."""
+    return (
+        github_app.read_token(("PYTEST_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"))
+        or None
+    )
 
 
 def github_cache_ttl_seconds() -> float:

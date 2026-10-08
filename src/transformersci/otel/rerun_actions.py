@@ -29,6 +29,7 @@ from collections.abc import Callable
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
+from .. import github_app
 from . import rerun_failed
 
 OPEN_STATES = ("prepared", "cancelling", "dispatching")
@@ -226,7 +227,7 @@ def _github_read(path: str) -> tuple[int, object]:
         "User-Agent": "transformersci-rerun-failed",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    token = os.getenv("PYTEST_GITHUB_TOKEN", "").strip()
+    token = github_app.read_token(("PYTEST_GITHUB_TOKEN",))
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request = Request(

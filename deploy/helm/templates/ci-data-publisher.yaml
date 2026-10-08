@@ -81,6 +81,18 @@ spec:
                       name: {{ .Values.secrets.name }}
                       key: {{ .Values.secrets.keys.githubToken }}
                       optional: true
+                - name: TRANSFORMERSCI_GITHUB_APP_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.secrets.name }}
+                      key: {{ .Values.secrets.keys.githubAppId }}
+                      optional: true
+                - name: TRANSFORMERSCI_GITHUB_APP_PRIVATE_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.secrets.name }}
+                      key: {{ .Values.secrets.keys.githubAppPrivateKey }}
+                      optional: true
                 - name: PUBLISH_SERVICE_NAMES
                   value: {{ .Values.ciDataPublisher.config.serviceNames }}
                 - name: HF_BUCKET_URI

@@ -101,6 +101,18 @@ spec:
                   name: {{ .Values.secrets.name }}
                   key: {{ .Values.ciGithubStatus.secretKeys.githubToken }}
                   optional: true
+            - name: TRANSFORMERSCI_GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.githubAppId }}
+                  optional: true
+            - name: TRANSFORMERSCI_GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.githubAppPrivateKey }}
+                  optional: true
           ports:
             - name: http
               containerPort: {{ .Values.ciGithubStatus.port }}

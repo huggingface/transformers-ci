@@ -676,6 +676,12 @@ secrets:
     traceApiKey: trace-api-key
     grafanaAdminPassword: grafana-admin-password
     githubToken: gh-token
+    # The dashboard's read-only GitHub App (Actions, Contents, Issues, Pull
+    # requests: read). When both are set, the exporter, the publisher and
+    # ci-github-status read GitHub as the App, on its own rate-limit budget,
+    # and fall back to githubToken while it cannot mint a token. Optional.
+    githubAppId: github-app-id
+    githubAppPrivateKey: github-app-private-key
     hfToken: hf-token
     # Grafana GitHub-OAuth client secret. Only consumed when
     # grafana.auth.github.enabled is true.

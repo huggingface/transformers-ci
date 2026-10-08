@@ -103,7 +103,7 @@ class GitHubClient:
 
     def __init__(
         self,
-        token: str,
+        token: str | Callable[[], str],
         *,
         api: str = API,
         timeout: float = 20.0,
@@ -157,8 +157,10 @@ class GitHubClient:
         request.add_header("Accept", "application/vnd.github+json")
         request.add_header("X-GitHub-Api-Version", "2022-11-28")
         request.add_header("User-Agent", "transformersci-ci-github-status")
-        if self._token:
-            request.add_header("Authorization", f"Bearer {self._token}")
+        # A callable is asked per request: App installation tokens expire hourly.
+        token = self._token() if callable(self._token) else self._token
+        if token:
+            request.add_header("Authorization", f"Bearer {token}")
         cached = self._etags.get(url)
         if cached:
             self._etags.move_to_end(url)
