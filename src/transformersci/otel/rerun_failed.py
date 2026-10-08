@@ -166,8 +166,8 @@ def snapshot(
 PAGE_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Re-run failed tests</title><style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0b0c0e;color:#d8d9da;font:14px/1.5 system-ui,sans-serif}
-main{max-width:960px;margin:0 auto;padding:24px}h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:22px 0 7px}
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#181b1f;color:#d8d9da;font:14px/1.5 system-ui,sans-serif}
+main{max-width:960px;margin:0 auto;padding:20px}h1{font-size:20px;margin:0 36px 4px 0}h2{font-size:17px;margin:22px 0 7px}
 .muted{color:#9699a0}.intro{margin:0 0 20px}.card{border:1px solid #33363c;background:#15171a;border-radius:8px;padding:16px;margin:16px 0}
 .meta{display:flex;flex-wrap:wrap;gap:12px;margin:3px 0 12px;font-size:12px;color:#a9abb1}a{color:#79baff}
 .group{border-top:1px solid #303238;padding:10px 0}.group summary{display:flex;align-items:center;gap:10px;cursor:pointer;list-style:none}
@@ -175,7 +175,7 @@ main{max-width:960px;margin:0 auto;padding:24px}h1{font-size:22px;margin:0 0 4px
 .group summary strong{min-width:100px}.group .count{color:#9699a0;font-size:12px}.tests{margin:8px 0 0 24px;display:grid;gap:7px}
 .test{display:flex;gap:8px;align-items:flex-start;overflow-wrap:anywhere}.test code{font-size:12px}.test small{color:#9699a0;margin-left:5px}
 input[type=checkbox]{accent-color:#72aaff;margin-top:4px}.warning{border-color:#a06734;background:#2b2118}.warning strong{color:#ffce92}
-footer{position:sticky;bottom:0;display:flex;align-items:center;justify-content:space-between;gap:16px;background:#0b0c0e;border-top:1px solid #33363c;padding:14px 0}
+footer{position:sticky;bottom:0;display:flex;align-items:center;justify-content:space-between;gap:16px;background:#181b1f;border-top:1px solid #33363c;padding:14px 0}
 button{border:1px solid #5777a5;border-radius:5px;background:#30538a;color:white;padding:8px 14px;font:inherit}button:disabled{opacity:.52;cursor:not-allowed}
 </style></head><body><main><h1>Re-run failed tests</h1><p class="intro muted">Choose exact failures from each lane’s latest completed run. This preview cannot launch tests yet.</p>
 <div id="message" role="status">Loading failures…</div><div id="runs"></div>
@@ -200,5 +200,5 @@ function showLane(lane,data){const card=el('section','card'),heading=el('h2','',
   master.addEventListener('change',()=>{for(const check of checks)check.checked=master.checked;master.indeterminate=false;update()});details.append(list);card.append(details)}
  if(ineligible.length){card.append(el('p','muted',ineligible.length+' job-level failure'+(ineligible.length===1?' is':'s are')+' unavailable for exact test reruns.'))}
  runs.append(card)}
-if(!/^[1-9][0-9]*$/.test(pr||'')){msg.textContent='Open this page from a PR dashboard.'}else fetch('/rerun-failed/data?pr='+encodeURIComponent(pr),{credentials:'same-origin',cache:'no-store'}).then(async r=>{if(r.status===401)throw Error('Sign in to Grafana to view and select failed tests.');if(!r.ok)throw Error('Could not load failures. Please refresh and try again.');return r.json()}).then(data=>{msg.textContent='PR #'+pr;showLane('cpu',data.lanes.cpu);showLane('gpu',data.lanes.gpu)}).catch(e=>{msg.textContent=e.message});
+if(!/^[1-9][0-9]*$/.test(pr||'')){msg.textContent='Open this page from a PR dashboard.'}else fetch('/rerun-failed/data?pr='+encodeURIComponent(pr),{credentials:'same-origin',cache:'no-store'}).then(async r=>{if(r.status===401){msg.textContent='Sign in to Grafana to view and select failed tests. ';const a=el('a','','Sign in');a.href='/login';a.target='_top';msg.append(a);return null}if(!r.ok)throw Error('Could not load failures. Please refresh and try again.');return r.json()}).then(data=>{if(!data)return;msg.textContent='PR #'+pr;showLane('cpu',data.lanes.cpu);showLane('gpu',data.lanes.gpu)}).catch(e=>{msg.textContent=e.message});
 </script></body></html>"""
