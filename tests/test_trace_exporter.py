@@ -4687,7 +4687,10 @@ def test_pr_badge_scopes_the_prometheus_query_to_its_stream(monkeypatch) -> None
 
     assert len(captured) == 2
     assert urllib.parse.quote_plus('ci_event="pr-comment"') in captured[0]
-    assert urllib.parse.quote_plus('ci_event!="pr-comment"') in captured[1]
+    # Targeted reruns from the PR page belong to neither stream.
+    assert (
+        urllib.parse.quote_plus('ci_event!~"pr-comment|rerun-failed-.*"') in captured[1]
+    )
 
 
 def test_normalize_badge_event_defaults_to_pr_ci_and_rejects_unknown() -> None:

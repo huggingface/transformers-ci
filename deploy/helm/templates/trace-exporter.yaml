@@ -149,6 +149,16 @@ spec:
             - name: PYTEST_TRACE_EXPORTER_RUN_STORE_RETENTION_DAYS
               value: "{{ .Values.traceExporter.runStore.retentionDays }}"
             {{- end }}
+            - name: PYTEST_TRACE_EXPORTER_RERUN_DISPATCH
+              value: {{ ternary "1" "0" .Values.traceExporter.rerunFailed.dispatch | quote }}
+            {{- range $name, $key := dict "PYTEST_TRACE_EXPORTER_GITHUB_APP_ID" .Values.secrets.keys.rerunAppId "PYTEST_TRACE_EXPORTER_GITHUB_APP_INSTALLATION_ID" .Values.secrets.keys.rerunAppInstallationId "PYTEST_TRACE_EXPORTER_GITHUB_APP_PRIVATE_KEY" .Values.secrets.keys.rerunAppPrivateKey }}
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.name }}
+                  key: {{ $key }}
+                  optional: true
+            {{- end }}
             - name: PYTEST_GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
