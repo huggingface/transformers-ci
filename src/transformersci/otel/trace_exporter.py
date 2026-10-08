@@ -7623,8 +7623,6 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self._observe_response(302, 0)
 
     def _serve_rerun_failed_data(self, params: dict[str, list[str]]) -> None:
-        if not self._action_user():
-            return
         pr = (params.get("pr") or [""])[0].strip()
         if not re.fullmatch(r"[1-9][0-9]*", pr):
             self._reply_json(400, {"status": "invalid_pr"})
