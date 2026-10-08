@@ -28,7 +28,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # Tie every check to the SHA that will be approved: refuse if the PR head moved.
+          current_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          if [ "$current_head" != "$HEAD_SHA" ]; then
+            echo "::error::PR head ($current_head) does not match the event head SHA ($HEAD_SHA) — refusing to evaluate a moving target."
+            exit 1
+          fi
           # Pre-check: changed_files on the PR object may reflect the true count before the
           # REST file-listing endpoint's 3000-file cap kicks in (not officially documented)
           changed_files_count=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.changed_files')
@@ -40,6 +47,12 @@ jobs:
 
           # Save full API response (includes patches) and extract non-deleted filenames
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" | jq -s 'add' > /tmp/pr_files.json
+          # Re-verify the head did not move while the file list was being fetched
+          current_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          if [ "$current_head" != "$HEAD_SHA" ]; then
+            echo "::error::PR head changed during evaluation ($current_head != $HEAD_SHA) — refusing to approve."
+            exit 1
+          fi
           jq -r '.[] | select(.status != "removed") | .filename' /tmp/pr_files.json > /tmp/changed_files.txt
           echo "Changed files:"
           cat /tmp/changed_files.txt
@@ -303,7 +316,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          current_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          if [ "$current_head" != "$HEAD_SHA" ]; then
+            echo "::error::PR head ($current_head) does not match the inspected SHA ($HEAD_SHA) — refusing to approve."
+            exit 1
+          fi
           for i in $(seq 1 12); do
             run_id=$(gh api \
               "repos/$REPO/actions/runs?event=pull_request&head_sha=$HEAD_SHA&status=action_required" \
