@@ -174,6 +174,13 @@ def _model(nodeid: str) -> str:
 
 def _ineligible_reason(lane: str, nodeid: str, job: str, hardware: str) -> str:
     if not _NODEID.fullmatch(nodeid):
+        # check_repository_consistency reports each checker as utils/checkers.py::<name>.
+        checker = re.fullmatch(r"utils/checkers\.py::([A-Za-z0-9_-]+)", nodeid)
+        if checker:
+            return (
+                "repository check, not a test: run python utils/checkers.py "
+                f"{checker.group(1)} locally and push the fix"
+            )
         return "job-level failure, not a single test"
     if lane == "cpu" and (job not in CPU_JOBS or hardware != "cpu"):
         return f"no targeted environment for {job} on {hardware}"
@@ -458,7 +465,8 @@ button.secondary{background:#242b35;border-color:#657083}
 <footer><span id="selected">0 tests selected</span><button id="submit" disabled>Run selected tests</button></footer>
 </main><script>
 const params=new URLSearchParams(location.search),pr=params.get('pr'),runs=document.getElementById('runs'),msg=document.getElementById('message'),selected=document.getElementById('selected'),submit=document.getElementById('submit'),actionBox=document.getElementById('action'),confirmBox=document.getElementById('confirm');
-document.getElementById('close').addEventListener('click',()=>{if(parent!==window)parent.postMessage({type:'tci-rerun-close'},location.origin);else history.back()});
+function closePicker(){if(parent!==window)parent.postMessage({type:'tci-rerun-close'},location.origin);else history.back()}
+document.getElementById('close').addEventListener('click',closePicker);document.addEventListener('keydown',e=>{if(e.key==='Escape')closePicker()});
 const labels={cpu:'CPU · PR CI',gpu:'GPU · run-slow'},lanes={cpu:'CPU',gpu:'GPU'};
 let snapshot=null,dispatch={enabled:false,reason:''},pending=null,polling=null,busy=false;
 function el(tag,cls,content){const n=document.createElement(tag);if(cls)n.className=cls;if(content!==undefined)n.textContent=content;return n}
@@ -506,9 +514,10 @@ function send(confirmActive){busy=true;update();msg.textContent='Submitting…';
   if(status===401)return fail('Sign in to re-run tests.',true);
   if(status===403)return fail(d.status==='no_write_access'?'Re-running needs write access to huggingface/transformers.':'Request refused.');
   if(status===429)return fail('Too many re-runs recently. Try again later.');
+  if(d.status==='github_rate_limited'){pending=null;return fail('GitHub API rate limit reached. Try again later.')}
   pending=null;fail(d.detail||'Could not start the re-run ('+(d.status||status)+').')}).catch(()=>fail('Could not reach the server. Please try again.'))}
 submit.addEventListener('click',()=>{const keys=checkedKeys();if(!keys.length||!snapshot)return;pending={keys,idem:(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random())};send([])});
-function load(){fetch('/rerun-failed/data?pr='+encodeURIComponent(pr),{cache:'no-store'}).then(async r=>{if(!r.ok)throw Error('Could not load failures. Please refresh and try again.');return r.json()}).then(data=>{snapshot=data;dispatch=data.dispatch||dispatch;msg.textContent='PR #'+pr+(data.pr_state&&data.pr_state!=='open'?' is '+data.pr_state+': re-runs are only for open PRs.':'');
+function load(){fetch('/rerun-failed/data?pr='+encodeURIComponent(pr),{cache:'no-store'}).then(async r=>{if(!r.ok){const d=await r.json().catch(()=>({}));if(d.status==='github_rate_limited')throw Error('GitHub API rate limit reached'+(d.retry_after>=0?'; try again in '+Math.max(1,Math.ceil(d.retry_after/60))+' min.':'. Try again later.'));throw Error('Could not load failures. Please refresh and try again.')}return r.json()}).then(data=>{snapshot=data;dispatch=data.dispatch||dispatch;msg.textContent='PR #'+pr+(data.pr_state&&data.pr_state!=='open'?' is '+data.pr_state+': re-runs are only for open PRs.':'');
  if(data.pr_state!=='open')dispatch={enabled:false,reason:'The PR is not open.'};else if(!dispatch.enabled&&dispatch.reason)msg.textContent='PR #'+pr+' · '+dispatch.reason;
  runs.replaceChildren();showLane('cpu',data.lanes.cpu);showLane('gpu',data.lanes.gpu);showAction(data.latest_action);update()}).catch(e=>{msg.textContent=e.message})}
 if(!/^[1-9][0-9]*$/.test(pr||'')){msg.textContent='Open this page from a PR dashboard.'}else load();

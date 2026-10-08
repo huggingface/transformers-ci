@@ -719,3 +719,82 @@ def test_picker_posts_only_keys_and_shows_the_exact_warning() -> None:
     assert "/rerun-failed/actions/" in page
     # Upstream text is only ever set as text, never parsed as HTML.
     assert "innerHTML" not in page
+
+
+def _rate_limited(url: str) -> trace_exporter.HTTPError:
+    from email.message import Message
+
+    headers = Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    headers["X-RateLimit-Reset"] = "2000"
+    return trace_exporter.HTTPError(url, 403, "Forbidden", headers, io.BytesIO(b"{}"))
+
+
+def test_github_reads_are_cached_and_fresh_reads_refill_the_cache(monkeypatch) -> None:
+    calls: list[str] = []
+    payloads = iter([{"n": 1}, {"n": 2}, {"n": 3}])
+
+    def fake_get(url: str) -> object:
+        calls.append(url)
+        return next(payloads)
+
+    monkeypatch.setattr(trace_exporter, "_github_api_get", fake_get)
+    monkeypatch.setattr(trace_exporter, "_rerun_github_cache", {})
+    clock = [100.0]
+    monkeypatch.setattr(trace_exporter.time, "monotonic", lambda: clock[0])
+
+    assert trace_exporter._rerun_github_api("pulls/42") == {"n": 1}
+    assert trace_exporter._rerun_github_api("pulls/42") == {"n": 1}
+    assert len(calls) == 1
+    # The action reads fresh, and the picker's reload then sees that read.
+    assert trace_exporter._rerun_github_api("pulls/42", fresh=True) == {"n": 2}
+    assert trace_exporter._rerun_github_api("pulls/42") == {"n": 2}
+    clock[0] += trace_exporter.RERUN_GITHUB_CACHE_SECONDS
+    assert trace_exporter._rerun_github_api("pulls/42") == {"n": 3}
+    assert len(calls) == 3
+
+
+def test_a_spent_github_budget_is_reported_with_its_reset(monkeypatch) -> None:
+    def spent(url: str) -> object:
+        raise _rate_limited(url)
+
+    monkeypatch.setattr(trace_exporter, "_github_api_get", spent)
+    monkeypatch.setattr(trace_exporter, "_rerun_github_cache", {})
+    monkeypatch.setattr(trace_exporter.time, "time", lambda: 1900.0)
+    handler = _Handler({}, {})
+    monkeypatch.setattr(trace_exporter, "prometheus_base_url", lambda: "http://prom")
+    handler._serve_rerun_failed_data({"pr": ["42"]})
+    assert handler.replies == [
+        (503, {"status": "github_rate_limited", "retry_after": 100})
+    ]
+
+
+def test_other_snapshot_failures_stay_source_unavailable(monkeypatch) -> None:
+    def broken(self, pr, api):
+        raise ValueError("Prometheus unavailable")
+
+    monkeypatch.setattr(trace_exporter.MetricsHandler, "_rerun_snapshot", broken)
+    handler = _Handler({}, {})
+    handler._serve_rerun_failed_data({"pr": ["42"]})
+    assert handler.replies == [(503, {"status": "source_unavailable"})]
+
+
+def test_rerun_opener_is_built_in_the_parent_realm() -> None:
+    """The panel's helper iframe is re-created on every refresh; listeners
+    created in its realm stop firing, so the overlay could not be closed."""
+    content = (ROOT / "dashboard/pytest-observability-pr-dashboard.json").read_text()
+    assert "w.tciOpenRerunFailed=new w.Function('pr'," in content
+    assert "w.tciOpenRerunFailed=function" not in content
+
+
+def test_repository_checks_explain_how_to_fix_them() -> None:
+    assert rerun_failed._ineligible_reason(
+        "cpu", "utils/checkers.py::docstrings", "check_repository_consistency", "cpu"
+    ) == (
+        "repository check, not a test: run python utils/checkers.py docstrings "
+        "locally and push the fix"
+    )
+    assert (
+        rerun_failed._ineligible_reason("cpu", "tests_torch", "tests_torch", "cpu")
+        == "job-level failure, not a single test"
+    )
