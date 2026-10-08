@@ -785,3 +785,16 @@ def test_rerun_opener_is_built_in_the_parent_realm() -> None:
     content = (ROOT / "dashboard/pytest-observability-pr-dashboard.json").read_text()
     assert "w.tciOpenRerunFailed=new w.Function('pr'," in content
     assert "w.tciOpenRerunFailed=function" not in content
+
+
+def test_repository_checks_explain_how_to_fix_them() -> None:
+    assert rerun_failed._ineligible_reason(
+        "cpu", "utils/checkers.py::docstrings", "check_repository_consistency", "cpu"
+    ) == (
+        "repository check, not a test: run python utils/checkers.py docstrings "
+        "locally and push the fix"
+    )
+    assert (
+        rerun_failed._ineligible_reason("cpu", "tests_torch", "tests_torch", "cpu")
+        == "job-level failure, not a single test"
+    )

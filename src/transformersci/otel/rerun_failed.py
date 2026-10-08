@@ -174,6 +174,13 @@ def _model(nodeid: str) -> str:
 
 def _ineligible_reason(lane: str, nodeid: str, job: str, hardware: str) -> str:
     if not _NODEID.fullmatch(nodeid):
+        # check_repository_consistency reports each checker as utils/checkers.py::<name>.
+        checker = re.fullmatch(r"utils/checkers\.py::([A-Za-z0-9_-]+)", nodeid)
+        if checker:
+            return (
+                "repository check, not a test: run python utils/checkers.py "
+                f"{checker.group(1)} locally and push the fix"
+            )
         return "job-level failure, not a single test"
     if lane == "cpu" and (job not in CPU_JOBS or hardware != "cpu"):
         return f"no targeted environment for {job} on {hardware}"
