@@ -168,6 +168,7 @@ PAGE_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Re-run failed tests</title><style>
 :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#181b1f;color:#d8d9da;font:14px/1.5 system-ui,sans-serif}
 main{max-width:960px;margin:0 auto;padding:20px}h1{font-size:20px;margin:0 36px 4px 0}h2{font-size:17px;margin:22px 0 7px}
+.close{position:fixed;top:8px;right:12px;z-index:2;background:#242b35;color:#d8d9da;border:1px solid #657083;border-radius:4px;width:28px;height:28px;padding:0;font:20px/20px system-ui;cursor:pointer}
 .muted{color:#9699a0}.intro{margin:0 0 20px}.card{border:1px solid #33363c;background:#15171a;border-radius:8px;padding:16px;margin:16px 0}
 .meta{display:flex;flex-wrap:wrap;gap:12px;margin:3px 0 12px;font-size:12px;color:#a9abb1}a{color:#79baff}
 .group{border-top:1px solid #303238;padding:10px 0}.group summary{display:flex;align-items:center;gap:10px;cursor:pointer;list-style:none}
@@ -177,11 +178,12 @@ main{max-width:960px;margin:0 auto;padding:20px}h1{font-size:20px;margin:0 36px 
 input[type=checkbox]{accent-color:#72aaff;margin-top:4px}.warning{border-color:#a06734;background:#2b2118}.warning strong{color:#ffce92}
 footer{position:sticky;bottom:0;display:flex;align-items:center;justify-content:space-between;gap:16px;background:#181b1f;border-top:1px solid #33363c;padding:14px 0}
 button{border:1px solid #5777a5;border-radius:5px;background:#30538a;color:white;padding:8px 14px;font:inherit}button:disabled{opacity:.52;cursor:not-allowed}
-</style></head><body><main><h1>Re-run failed tests</h1><p class="intro muted">Choose exact failures from each lane’s latest completed run. This preview cannot launch tests yet.</p>
+</style></head><body><button id="close" class="close" type="button" aria-label="Close">×</button><main><h1>Re-run failed tests</h1><p class="intro muted">Choose exact failures from each lane’s latest completed run. This preview cannot launch tests yet.</p>
 <div id="message" role="status">Loading failures…</div><div id="runs"></div>
 <footer><span id="selected">0 tests selected</span><button disabled title="Dispatch is not connected yet">Run selected tests (coming soon)</button></footer>
 </main><script>
 const params=new URLSearchParams(location.search),pr=params.get('pr'),runs=document.getElementById('runs'),msg=document.getElementById('message'),selected=document.getElementById('selected');
+document.getElementById('close').addEventListener('click',()=>{if(parent!==window)parent.postMessage({type:'tci-rerun-close'},location.origin);else history.back()});
 const labels={cpu:'CPU · PR CI',gpu:'GPU · run-slow'};
 function el(tag,cls,content){const n=document.createElement(tag);if(cls)n.className=cls;if(content!==undefined)n.textContent=content;return n}
 function link(parent,href,label){const a=el('a','',label);a.href=href;a.target='_blank';a.rel='noopener noreferrer';parent.append(a)}
@@ -195,10 +197,10 @@ function showLane(lane,data){const card=el('section','card'),heading=el('h2','',
  const eligible=data.tests.filter(t=>t.eligible),ineligible=data.tests.filter(t=>!t.eligible);
  if(!data.tests.length)card.append(el('p','muted','No failed tests found in this run.'));
  const groups=new Map();for(const test of eligible){if(!groups.has(test.model))groups.set(test.model,[]);groups.get(test.model).push(test)}
- for(const [model,tests] of [...groups].sort((a,b)=>a[0].localeCompare(b[0]))){const details=el('details','group'),summary=el('summary'),master=document.createElement('input');master.type='checkbox';master.setAttribute('aria-label','Select all '+model+' tests');master.addEventListener('click',e=>e.stopPropagation());summary.append(master,el('strong','',model),el('span','count',tests.length+' failed'));details.append(summary);
-  const list=el('div','tests'),checks=[];for(const test of tests){const row=el('label','test'),check=document.createElement('input');check.type='checkbox';checks.push(check);const body=el('span');body.append(el('code','',test.nodeid),el('small','',test.job+' · '+test.hardware));row.append(check,body);list.append(row);check.addEventListener('change',()=>{master.checked=checks.every(x=>x.checked);master.indeterminate=!master.checked&&checks.some(x=>x.checked);update()})}
+ for(const [model,tests] of [...groups].sort((a,b)=>a[0].localeCompare(b[0]))){const details=el('details','group'),summary=el('summary'),master=document.createElement('input');master.type='checkbox';master.checked=true;master.setAttribute('aria-label','Select all '+model+' tests');master.addEventListener('click',e=>e.stopPropagation());summary.append(master,el('strong','',model),el('span','count',tests.length+' failed'));details.append(summary);
+  const list=el('div','tests'),checks=[];for(const test of tests){const row=el('label','test'),check=document.createElement('input');check.type='checkbox';check.checked=true;checks.push(check);const body=el('span');body.append(el('code','',test.nodeid),el('small','',test.job+' · '+test.hardware));row.append(check,body);list.append(row);check.addEventListener('change',()=>{master.checked=checks.every(x=>x.checked);master.indeterminate=!master.checked&&checks.some(x=>x.checked);update()})}
   master.addEventListener('change',()=>{for(const check of checks)check.checked=master.checked;master.indeterminate=false;update()});details.append(list);card.append(details)}
  if(ineligible.length){card.append(el('p','muted',ineligible.length+' job-level failure'+(ineligible.length===1?' is':'s are')+' unavailable for exact test reruns.'))}
  runs.append(card)}
-if(!/^[1-9][0-9]*$/.test(pr||'')){msg.textContent='Open this page from a PR dashboard.'}else fetch('/rerun-failed/data?pr='+encodeURIComponent(pr),{cache:'no-store'}).then(async r=>{if(!r.ok)throw Error('Could not load failures. Please refresh and try again.');return r.json()}).then(data=>{msg.textContent='PR #'+pr;showLane('cpu',data.lanes.cpu);showLane('gpu',data.lanes.gpu)}).catch(e=>{msg.textContent=e.message});
+if(!/^[1-9][0-9]*$/.test(pr||'')){msg.textContent='Open this page from a PR dashboard.'}else fetch('/rerun-failed/data?pr='+encodeURIComponent(pr),{cache:'no-store'}).then(async r=>{if(!r.ok)throw Error('Could not load failures. Please refresh and try again.');return r.json()}).then(data=>{msg.textContent='PR #'+pr;showLane('cpu',data.lanes.cpu);showLane('gpu',data.lanes.gpu);update()}).catch(e=>{msg.textContent=e.message});
 </script></body></html>"""
