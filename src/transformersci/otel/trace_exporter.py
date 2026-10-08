@@ -69,6 +69,8 @@ from urllib.request import Request, urlopen
 
 from transformersci.otel.pr_search import SEARCH_HTML
 from transformersci.otel import related_issues
+from transformersci.otel import rerun_actions
+from transformersci.otel import rerun_failed
 from transformersci.otel import serge_actions
 from transformersci.otel import wdyt
 
@@ -206,6 +208,9 @@ BADGE_CLOSED_COLOR = "9f9f9f"
 # carry both side by side and each one agrees with the by-PR dashboard, which
 # selects on the same label.
 RUN_SLOW_CI_EVENT = "pr-comment"
+# Targeted reruns from the PR page (rerun_failed.RERUN_EVENTS). A handful of
+# selected tests is not a PR CI result, so no badge stream ever reports one.
+RERUN_CI_EVENT_PREFIX = "rerun-failed-"
 BADGE_EVENT_PR_CI = "pr-ci"
 BADGE_EVENT_RUN_SLOW = "run-slow"
 DEFAULT_BADGE_EVENT = BADGE_EVENT_PR_CI
@@ -1568,6 +1573,13 @@ def repository_from_pr_url(pr_url: str) -> str:
     return ""
 
 
+def checks_out_own_commit(ci_event: str) -> bool:
+    """Runs whose GITHUB_SHA is main, not the code under test: run-slow
+    (issue_comment) and targeted reruns (workflow_dispatch). Their
+    service.version is the commit the job checked out."""
+    return ci_event == RUN_SLOW_CI_EVENT or ci_event.startswith(RERUN_CI_EVENT_PREFIX)
+
+
 def github_api_token() -> str | None:
     for env_name in ("PYTEST_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
         value = os.getenv(env_name, "").strip()
@@ -1933,7 +1945,7 @@ def failure_context(trace: dict | None, test_nodeid: str) -> dict[str, str]:
     # Same rule as extract_trace_rows: a pr-comment run's head revision is main.
     commit_sha = tags.get(
         "service.version"
-        if tags.get("transformers.test.ci_event") == "pr-comment"
+        if checks_out_own_commit(tags.get("transformers.test.ci_event", ""))
         else "vcs.ref.head.revision",
         "",
     )
@@ -2238,7 +2250,11 @@ def extract_trace_rows(
     # stranger's commit ("[serge] Fix ... (#49044)" on PR 49084). service.version is
     # the commit the job checked out - GitHub's merge of the PR head into main, the
     # same shape a PR CI run reports - so it names the code under test.
-    if process_ci_event == "pr-comment" and _FULL_SHA.match(process_service_version):
+    # A targeted rerun (workflow_dispatch, ci_event rerun-failed-*) has the same
+    # shape: it runs on main and checks out the PR's merge commit itself.
+    if checks_out_own_commit(process_ci_event) and _FULL_SHA.match(
+        process_service_version
+    ):
         process_commit_sha = process_service_version
 
     if not process_repository and process_pr_url:
@@ -5410,6 +5426,8 @@ def normalize_badge_event(raw: str) -> str | None:
 
 def _badge_event_matches(event: str, ci_event: str) -> bool:
     """Does a run's ``ci_event`` label belong to ``event``'s stream?"""
+    if ci_event.startswith(RERUN_CI_EVENT_PREFIX):
+        return False
     if event == BADGE_EVENT_RUN_SLOW:
         return ci_event == RUN_SLOW_CI_EVENT
     return ci_event != RUN_SLOW_CI_EVENT
@@ -5537,13 +5555,13 @@ def _prometheus_badge_lookup(
         "pytest_run_job_total_tests|"
         "pytest_run_job_failed_tests"
     )
-    # `ci_event!="pr-comment"` also matches series carrying no ci_event label at
-    # all, which is what we want: runs from before the attribute existed are PR
-    # CI. This mirrors the by-PR dashboard's own selector.
+    # `ci_event!~"pr-comment|rerun-failed-.*"` also matches series carrying no
+    # ci_event label at all, which is what we want: runs from before the
+    # attribute existed are PR CI. Targeted reruns belong to neither stream.
     ci_event_matcher = (
         f'ci_event="{RUN_SLOW_CI_EVENT}"'
         if event == BADGE_EVENT_RUN_SLOW
-        else f'ci_event!="{RUN_SLOW_CI_EVENT}"'
+        else f'ci_event!~"{RUN_SLOW_CI_EVENT}|{RERUN_CI_EVENT_PREFIX}.*"'
     )
     query = (
         f'last_over_time({{__name__=~"{metric_pattern}",{ci_event_matcher},'
@@ -7148,6 +7166,13 @@ def render_run_html(
     return "".join(out)
 
 
+def _rerun_github_api(path: str) -> object:
+    """GET under the rerun repository's REST root, with the exporter's token."""
+    return _github_api_get(
+        f"https://api.github.com/repos/{rerun_failed.REPOSITORY}/{path}"
+    )
+
+
 class MetricsHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         self._request_started = time.monotonic()
@@ -7158,11 +7183,14 @@ class MetricsHandler(BaseHTTPRequestHandler):
             "/serge-actions/wdyt",
             "/serge-actions/wdyt/cache",
             "/serge-actions/wdyt/cost",
+            "/rerun-failed",
         ):
             self._send(404, JSON_CONTENT_TYPE, b'{"error":"not found"}')
             return
         self._request_route = path
-        if path == "/serge-actions/wdyt/cache":
+        if path == "/rerun-failed":
+            self._serve_rerun_failed_action()
+        elif path == "/serge-actions/wdyt/cache":
             self._serve_wdyt_cache_clear()
         elif path == "/serge-actions/wdyt/cost":
             self._serve_wdyt_cost(parse_qs(urlparse(self.path).query))
@@ -7357,6 +7385,23 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 200,
                 "text/html; charset=utf-8",
                 serge_actions.PAGE_HTML.encode(),
+                cache_control="no-store",
+            )
+            return
+        if parsed.path.startswith("/rerun-failed/actions/"):
+            self._request_route = "/rerun-failed/actions"
+            self._serve_rerun_failed_status(parsed.path.rsplit("/", 1)[1])
+            return
+        if parsed.path == "/rerun-failed/data":
+            self._request_route = "/rerun-failed/data"
+            self._serve_rerun_failed_data(parse_qs(parsed.query))
+            return
+        if parsed.path == "/rerun-failed":
+            self._request_route = "/rerun-failed"
+            self._send(
+                200,
+                "text/html; charset=utf-8",
+                rerun_failed.PAGE_HTML.encode(),
                 cache_control="no-store",
             )
             return
@@ -7608,6 +7653,195 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self._observe_response(302, 0)
 
+    def _rerun_snapshot(self, pr: str, api: Callable[[str], object]) -> dict:
+        base_url = prometheus_base_url()
+        if not base_url:
+            raise ValueError("Prometheus unavailable")
+
+        def query(expr: str) -> list[dict]:
+            url = f"{base_url}/api/v1/query?{urlencode({'query': expr})}"
+            payload = _http_get_json(url, upstream="prometheus")
+            if not isinstance(payload, dict) or payload.get("status") != "success":
+                raise ValueError("Prometheus query failed")
+            data = payload.get("data")
+            if not isinstance(data, dict) or not isinstance(data.get("result"), list):
+                raise ValueError("Prometheus response incomplete")
+            return data["result"]
+
+        return rerun_failed.snapshot(
+            pr, query=query, api=api, get_rows=gather_run_test_rows
+        )
+
+    def _serve_rerun_failed_data(self, params: dict[str, list[str]]) -> None:
+        pr = (params.get("pr") or [""])[0].strip()
+        if not re.fullmatch(r"[1-9][0-9]*", pr):
+            self._reply_json(400, {"status": "invalid_pr"})
+            return
+
+        try:
+            result = self._rerun_snapshot(pr, _rerun_github_api)
+        except Exception:
+            self._reply_json(503, {"status": "source_unavailable"})
+            return
+        enabled, reason = rerun_actions.dispatch_enabled()
+        latest = None
+        if enabled:
+            try:
+                record = rerun_actions.store().latest_for_pr(pr)
+                latest = rerun_actions.public_view(record) if record else None
+            except Exception:
+                latest = None
+        self._reply_json(
+            200,
+            {
+                "status": "ok",
+                **result,
+                "dispatch": {"enabled": enabled, "reason": reason},
+                "latest_action": latest,
+            },
+        )
+
+    def _serve_rerun_failed_status(self, action_id: str) -> None:
+        if not re.fullmatch(r"[0-9a-f]{16}", action_id):
+            self._reply_json(404, {"status": "not_found"})
+            return
+        if not rerun_actions.database_path():
+            self._reply_json(503, {"status": "disabled"})
+            return
+        try:
+            record = rerun_actions.store().get(action_id)
+        except Exception:
+            self._reply_json(503, {"status": "store_unavailable"})
+            return
+        if record is None:
+            self._reply_json(404, {"status": "not_found"})
+            return
+        self._reply_json(
+            200, {"status": "ok", "action": rerun_actions.public_view(record)}
+        )
+
+    def _serve_rerun_failed_action(self) -> None:
+        """Start a rerun: the server re-derives everything from GitHub and
+        telemetry; the browser only names which listed failures to run."""
+        reply = self._reply_json
+        if not self._action_allowed():
+            return
+        enabled, reason = rerun_actions.dispatch_enabled()
+        if not enabled:
+            reply(503, {"status": "disabled", "detail": reason})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if not 0 < length <= 65536:
+            reply(400, {"status": "invalid"})
+            return
+        try:
+            body = json.loads(self.rfile.read(length))
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            reply(400, {"status": "invalid"})
+            return
+        pr = str(body.get("pr") or "")
+        version = body.get("version")
+        idempotency_key = body.get("idempotency_key")
+        confirmed = body.get("confirm_active") or []
+        if (
+            not re.fullmatch(r"[1-9][0-9]{0,9}", pr)
+            or not isinstance(version, str)
+            or not isinstance(idempotency_key, str)
+            or not re.fullmatch(r"[A-Za-z0-9.-]{8,64}", idempotency_key)
+            or not isinstance(confirmed, list)
+            or len(confirmed) > 50
+            or not all(isinstance(r, str) for r in confirmed)
+        ):
+            reply(400, {"status": "invalid"})
+            return
+        login = self._action_user()
+        if not login:
+            return
+        try:
+            db = rerun_actions.store()
+            existing = db.by_idempotency_key(idempotency_key)
+            if existing is not None:
+                if existing["actor"] != login or existing["pr"] != pr:
+                    reply(409, {"status": "invalid"})
+                else:
+                    reply(
+                        200,
+                        {
+                            "status": "accepted",
+                            "action": rerun_actions.public_view(existing),
+                        },
+                    )
+                return
+            if not rerun_actions.can_write(rerun_actions.default_serge(), login):
+                reply(403, {"status": "no_write_access"})
+                return
+            hour_ago = time.time() - 3600
+            if (
+                db.count_since("actor", login, hour_ago)
+                >= rerun_actions.MAX_ACTIONS_PER_HOUR
+                or db.count_since("pr", pr, hour_ago)
+                >= rerun_actions.MAX_ACTIONS_PER_HOUR
+            ):
+                reply(429, {"status": "rate_limited"})
+                return
+            snap = self._rerun_snapshot(pr, _rerun_github_api)
+        except Exception:
+            reply(503, {"status": "source_unavailable"})
+            return
+        if snap["pr_state"] != "open":
+            reply(409, {"status": "pr_not_open", "detail": "The PR is not open."})
+            return
+        if snap["version"] != version:
+            reply(409, {"status": "stale"})
+            return
+        try:
+            lanes = rerun_failed.plan(snap, body.get("keys"))
+        except rerun_failed.SelectionError as error:
+            reply(422, {"status": error.code, "detail": str(error)})
+            return
+        if (
+            "gpu" in lanes
+            and db.live_gpu_actions() >= rerun_actions.MAX_LIVE_GPU_ACTIONS
+        ):
+            reply(429, {"status": "gpu_busy"})
+            return
+        # Cancel only what the person saw and confirmed; a run that appeared
+        # since needs a fresh confirmation.
+        active = [
+            {**run, "lane": lane}
+            for lane, data in sorted(lanes.items())
+            for run in data["active_runs"]
+        ]
+        if not {run["run_id"] for run in active} <= set(confirmed):
+            reply(409, {"status": "confirm", "active_runs": active})
+            return
+        record = rerun_actions.new_record(
+            pr=pr,
+            actor=login,
+            idempotency_key=idempotency_key,
+            snap=snap,
+            lanes=lanes,
+        )
+        try:
+            record, _ = db.create(record)
+        except rerun_actions.Busy:
+            latest = db.latest_for_pr(pr)
+            reply(
+                409,
+                {
+                    "status": "busy",
+                    "action": rerun_actions.public_view(latest) if latest else None,
+                },
+            )
+            return
+        rerun_actions.start(record["id"])
+        reply(202, {"status": "accepted", "action": rerun_actions.public_view(record)})
+
     def _serve_run(self, params: dict[str, list[str]]) -> None:
         run_id = (params.get("run_id") or [""])[0].strip()
         job = (params.get("job") or [""])[0].strip()
@@ -7733,6 +7967,7 @@ def main() -> None:
         target=_refresh_loop, args=(_cache_ttl_seconds(),), daemon=True
     )
     refresher.start()
+    rerun_actions.resume_all()
     server = ThreadingHTTPServer(("0.0.0.0", port), MetricsHandler)
     server.serve_forever()
 

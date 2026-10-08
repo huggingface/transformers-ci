@@ -190,6 +190,15 @@ traceExporter:
     # HF org billed for the calls (X-HF-Bill-To), like serge's LLM_BILL_TO.
     billTo: ""
     grafanaUrl: http://grafana:3000
+  # "Re-run failed tests" on the PR page. The picker is always public; the
+  # action that cancels and dispatches runs needs dispatch: true AND the serge
+  # token (secrets.keys.sergeDashboardToken) — either missing keeps it
+  # read-only. serge makes the GitHub writes with its App (/dashboard/* on
+  # serge); the exporter holds no write credential. Actions are kept in a
+  # SQLite file on the run-store volume.
+  rerunFailed:
+    dispatch: false
+    sergeUrl: http://serge.serge.svc.cluster.local
   # Set to a commit SHA or other source identifier to trigger a rollout when
   # source code changes but the rendered Deployment would otherwise be unchanged.
   sourceRevision: ""
@@ -310,6 +319,9 @@ ciGithubStatus:
   # the same PR must not become its latest run.
   workflows:
     - PR CI
+    # Targeted reruns from the PR page; filed under their PR by run-name.
+    - Rerun failed tests (CPU)
+    - Rerun failed tests (GPU)
   publishCompleted: 6h
   retention: 7d
   reconcile:
@@ -670,6 +682,9 @@ secrets:
     githubOauthClientSecret: grafana-github-oauth-client-secret
     # LLM API key for the exporter's WDYT? answers. Optional.
     llmApiKey: llm-api-key
+    # Bearer token for serge's /dashboard/* API ("Re-run failed tests"); the
+    # same value is DASHBOARD_API_TOKEN in Infisical /serge. Optional.
+    sergeDashboardToken: serge-dashboard-token
   placeholder:
     # Only used when secrets.create is true
     traceApiKey: ""

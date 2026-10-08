@@ -149,6 +149,16 @@ spec:
             - name: PYTEST_TRACE_EXPORTER_RUN_STORE_RETENTION_DAYS
               value: "{{ .Values.traceExporter.runStore.retentionDays }}"
             {{- end }}
+            - name: PYTEST_TRACE_EXPORTER_RERUN_DISPATCH
+              value: {{ ternary "1" "0" .Values.traceExporter.rerunFailed.dispatch | quote }}
+            - name: PYTEST_TRACE_EXPORTER_SERGE_URL
+              value: {{ .Values.traceExporter.rerunFailed.sergeUrl | quote }}
+            - name: PYTEST_TRACE_EXPORTER_SERGE_DASHBOARD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.sergeDashboardToken }}
+                  optional: true
             - name: PYTEST_GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:

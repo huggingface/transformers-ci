@@ -93,6 +93,13 @@ spec:
                 name: trace-exporter
                 port:
                   number: 8000
+          - path: /rerun-failed
+            pathType: Prefix
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
           - path: /run
             pathType: Prefix
             backend:

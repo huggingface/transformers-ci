@@ -45,6 +45,16 @@ _BRANCH_EVENTS = frozenset({"push", "schedule", "workflow_dispatch"})
 # Events whose display_title is the PR title (a merge_group run's is not).
 _PR_EVENTS = frozenset({"pull_request", "pull_request_target"})
 
+# A targeted rerun from the PR page is a workflow_dispatch run on main; the PR
+# is in the title its caller gives it (run-name), the only place GitHub keeps it.
+_RERUN_WORKFLOW_PATHS = frozenset(
+    {
+        ".github/workflows/rerun-failed-cpu.yml",
+        ".github/workflows/rerun-failed-gpu.yml",
+    }
+)
+_RERUN_TITLE = re.compile(r"^Rerun failed tests \((?:CPU|GPU)\) · PR #([1-9][0-9]*) · ")
+
 # Trailing matrix/shard groups on a job display name: " (1, 8)", " [shard 1/8]".
 _MATRIX_SUFFIX = re.compile(r"(?:\s*[(\[][^()\[\]]*[)\]])+\s*$")
 
@@ -86,7 +96,12 @@ def pr_label(state: dict) -> str:
     A branch run is filed under its branch even when GitHub lists PRs for it:
     ``pull_requests`` on a push to ``main`` names any PR whose head branch is
     also called ``main`` (observed: ``pr="1"`` on two pushes to main), which the
-    exporter never does."""
+    exporter never does. A targeted rerun's PR comes from its title."""
+    if state.get("event") == "workflow_dispatch":
+        path = str(state.get("workflow_path") or "").split("@", 1)[0]
+        match = _RERUN_TITLE.match(str(state.get("display_title") or ""))
+        if path in _RERUN_WORKFLOW_PATHS and match:
+            return match.group(1)
     if state.get("event") in _BRANCH_EVENTS:
         return str(state.get("head_branch") or "")
     prs = state.get("prs") or ()

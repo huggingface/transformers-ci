@@ -1,0 +1,260 @@
+# =============================================================================
+# Re-run selected failed PR CI tests (CPU), exactly as PR CI ran them.
+#
+# Called by huggingface/transformers' rerun-failed-cpu.yml (workflow_dispatch),
+# which the PR dashboard's "Re-run failed tests" action dispatches with an
+# App token after cancelling the runs the person confirmed. One workflow run per
+# request; one job per original PR CI job in the selection.
+#
+# The caller only says WHICH tests. HOW each job runs (image, install, marker,
+# pytest flags) is the allowlist below, a copy of pr-ci_dynamic_caller_example.yml
+# — a job not listed is refused, and tests/test_rerun_failed.py pins this list
+# to the exporter's rerun_failed.CPU_JOBS. Node IDs reach pytest as an argument
+# array built in Python: never passed through a shell.
+#
+# No collection job, no commit status, no PR comment: a handful of selected
+# tests is not a PR CI result. The run shows on the PR page through telemetry
+# (ci_event=rerun-failed-cpu) and ci-github-status (its run-name names the PR).
+# =============================================================================
+
+name: "[Reusable] Re-run failed tests (CPU)"
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_sha:
+        description: The PR head the selection was made against; the run refuses a PR that moved.
+        required: true
+        type: string
+      selection:
+        description: '{"v":1,"groups":[{"job":"tests_torch","hardware":"cpu","tests":["tests/...::test_x"]}]}'
+        required: true
+        type: string
+      correlation_id:
+        required: true
+        type: string
+      source_run:
+        required: false
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  prepare:
+    name: Validate selection
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Check the PR is open at the expected head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]{0,9}$ ]] || { echo "bad PR number"; exit 1; }
+          [[ "$CORRELATION_ID" =~ ^[0-9a-f]{16}-cpu$ ]] || { echo "bad correlation id"; exit 1; }
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "bad head sha"; exit 1; }
+          state=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '.state + " " + .head.sha')
+          echo "PR #$PR_NUMBER: $state"
+          [ "$state" = "open $HEAD_SHA" ] || { echo "PR is not open at $HEAD_SHA; refusing."; exit 1; }
+
+      - name: Plan jobs from the allowlist
+        id: plan
+        env:
+          SELECTION: ${{ inputs.selection }}
+        shell: python3 {0}
+        run: |
+          import json, os, re
+
+          # Copied from pr-ci_dynamic_caller_example.yml; keep in step with it.
+          LIGHT = "huggingface/transformers-torch-light"
+          ENVIRONMENTS = {
+              "tests_torch": {"image": LIGHT, "marker": "not (generate or is_training_test or is_tensor_parallel_test or is_fsdp_test)"},
+              "tests_generate": {"image": LIGHT, "marker": "generate"},
+              "tests_tokenization": {"image": LIGHT},
+              "tests_processors": {"image": LIGHT},
+              "pipelines_torch": {"image": LIGHT, "marker": "is_pipeline_test", "report": "tests_pipelines_torch", "env": {"RUN_PIPELINE_TESTS": "true"}},
+              "tests_custom_tokenizers": {"image": "huggingface/transformers-custom-tokenizers", "env": {"RUN_CUSTOM_TOKENIZERS": "true"}},
+              "examples_torch": {"image": "huggingface/transformers-examples-torch", "install": "examples", "workers": 4, "env": {"OMP_NUM_THREADS": "8"}},
+              "tests_exotic_models": {"image": "huggingface/transformers-exotic-models", "extra": ["--durations=100"]},
+              "tests_repo_utils": {"image": "huggingface/transformers-consistency", "workers": 4},
+              "tests_non_model": {"image": LIGHT, "install": "serving", "marker": "not generate"},
+              "tests_training_ci": {"image": LIGHT, "marker": "is_training_test", "env": {"RUN_TRAINING_TESTS": "true"}},
+              "tests_tensor_parallel_ci": {"image": LIGHT, "install": "torchao", "marker": "is_tensor_parallel_test", "env": {"RUN_TENSOR_PARALLEL_TESTS": "true"}},
+              "tests_fsdp_ci": {"image": LIGHT, "marker": "is_fsdp_test", "env": {"RUN_FSDP_TESTS": "true"}},
+              "tests_peft_integration": {"image": LIGHT, "install": "peft"},
+          }
+          NODEID = re.compile(r"^(?:tests|examples)/[^\s\x00-\x1f]+\.py::[^\x00-\x1f]+$")
+
+          selection = json.loads(os.environ["SELECTION"])
+          assert selection.get("v") == 1, "unknown selection version"
+          groups = selection.get("groups")
+          assert isinstance(groups, list) and 0 < len(groups) <= len(ENVIRONMENTS), "bad groups"
+          matrix, seen, total = [], set(), 0
+          for group in groups:
+              job, hardware, tests = group.get("job"), group.get("hardware"), group.get("tests")
+              assert job in ENVIRONMENTS and job not in seen, f"job {job!r} is not allowed"
+              assert hardware == "cpu", f"hardware {hardware!r} is not a CPU environment"
+              assert isinstance(tests, list) and tests, "empty group"
+              assert all(isinstance(t, str) and NODEID.fullmatch(t) for t in tests), "bad node id"
+              assert len(set(tests)) == len(tests), "duplicate node id"
+              seen.add(job)
+              total += len(tests)
+              spec = ENVIRONMENTS[job]
+              matrix.append({
+                  "job": job,
+                  "image": spec["image"],
+                  "install": spec.get("install", "default"),
+                  "marker": spec.get("marker", ""),
+                  "workers": spec.get("workers", 8),
+                  "report": spec.get("report", job),
+                  "extra": json.dumps(spec.get("extra", [])),
+                  "env": json.dumps(spec.get("env", {})),
+                  "tests": json.dumps(tests),
+              })
+          assert total <= 100, "too many tests"
+          print(f"{total} tests in {len(matrix)} jobs")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"matrix={json.dumps({'include': matrix})}\n")
+
+  run:
+    name: "${{ matrix.job }} (rerun)"
+    needs: prepare
+    runs-on:
+      group: aws-m8i-l-cache
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    container:
+      image: ${{ matrix.image }}
+      options: "--shm-size=16gb -v /mnt/cache/.cache/huggingface:/mnt/cache/"
+    env:
+      OMP_NUM_THREADS: 1
+      TRANSFORMERS_IS_CI: "true"
+      PYTEST_TIMEOUT: 120
+      RUN_FLAKY: "false"
+      DISABLE_SAFETENSORS_CONVERSION: "true"
+      TRANSFORMERSCI_OTEL_DEBUG: "1"
+      TRANSFORMERS_TEST_OTEL_PR: ${{ inputs.pr_number }}
+      TRANSFORMERS_TEST_OTEL_SUITE: ${{ matrix.job }}
+      HF_HOME: /mnt/cache
+      HF_DATASETS_CACHE: /tmp/hf_datasets_cache
+      HF_MODULES_CACHE: /tmp/hf_modules_cache
+      HF_XET_LOG_DEST: /tmp/xet_logs/
+      HF_METRICS_CACHE: /tmp/hf_metrics_cache
+    steps:
+      # GITHUB_SHA is main on a workflow_dispatch run: check out the PR's merge
+      # commit, the same code PR CI tests, and refuse one built on another head.
+      - name: Checkout the PR merge commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: refs/pull/${{ inputs.pr_number }}/merge
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Verify the merge is of the selected head
+        env:
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          git config --global --add safe.directory '*'
+          merged=$(git rev-parse HEAD^2)
+          echo "merge $(git rev-parse HEAD) of PR head $merged"
+          [ "$merged" = "$HEAD_SHA" ] || { echo "PR moved to $merged; refusing."; exit 1; }
+
+      - name: Install dependencies
+        env:
+          INSTALL: ${{ matrix.install }}
+        run: |
+          apt-get update && apt-get install -y curl
+          case "$INSTALL" in
+            default) uv pip install -e . ;;
+            serving) uv pip install -e ".[serving]" ;;
+            examples) uv pip install -e . && uv pip install -r examples/pytorch/_tests_requirements.txt ;;
+            torchao) uv pip install -e . && uv pip install torchao ;;
+            peft) uv pip install . && uv pip install peft ;;
+            *) echo "unknown install $INSTALL"; exit 1 ;;
+          esac
+          uv pip install 'transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@main'
+          pip list --format=freeze | tee installed.txt || true
+          cp -r /test_data/* . 2>/dev/null || true
+          mkdir -p test-results
+
+      - name: Run the selected tests
+        env:
+          # job.check_run_id is only available at step level.
+          OTEL_RESOURCE_ATTRIBUTES: "transformers.test.ci_event=rerun-failed-cpu,transformers.test.hardware=cpu,cicd.pipeline.task.run.id=${{ job.check_run_id }}"
+          JOB_NAME: ${{ matrix.job }}
+          MARKER: ${{ matrix.marker }}
+          WORKERS: ${{ matrix.workers }}
+          REPORT_NAME: ${{ matrix.report }}
+          EXTRA: ${{ matrix.extra }}
+          JOB_ENV: ${{ matrix.env }}
+          TESTS: ${{ matrix.tests }}
+        shell: python3 {0}
+        run: |
+          import json, os, subprocess, sys
+
+          env = dict(os.environ)
+          env.update(json.loads(os.environ["JOB_ENV"]))
+          job = env["JOB_NAME"]
+          otel = [
+              "configure-ci-otel", "--suite", job, "--service-name", "pytest-observability",
+              "--protocol", "http", "--otlp-endpoint", env.get("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+              "--token", env.get("OTEL_TOKEN", ""),
+          ]
+          # Visible on the dashboards before the first test span; never fatal.
+          subprocess.run([*otel, "--", "report-ci-start"], env=env, check=False)
+          flaky = (
+              "OSError|Timeout|ConnectionError|FileNotFoundError|PIL.UnidentifiedImageError|"
+              "HTTPError|AssertionError: Tensor-likes are not close!|"
+              "TypeError: expected str, bytes or os.PathLike object, not NoneType|"
+              "TypeError: stat: path should be string, bytes, os.PathLike or integer, not NoneType|"
+              "Converting from Tiktoken failed|KeyError: <class |TypeError: not a string"
+          )
+          pytest = ["python3", "-m", "pytest"]
+          if env["MARKER"]:
+              pytest += ["-m", env["MARKER"]]
+          pytest += [
+              "-n", str(env["WORKERS"]),
+              "-p", "no:warning", "-o", "junit_family=xunit1", "--junitxml=test-results/junit.xml",
+              "--reruns", "5", "--reruns-delay", "2", "--only-rerun", f"({flaky})",
+              "--max-worker-restart=0", "-vvv", "-rsfE",
+              "--random-order-bucket=module", f"--random-order-seed={env.get('GITHUB_RUN_NUMBER', '0')}",
+              *json.loads(env["EXTRA"]),
+              f"--make-reports={env['REPORT_NAME']}",
+              "--",
+              *json.loads(env["TESTS"]),
+          ]
+          with open("tests_output.txt", "wb") as log:
+              process = subprocess.Popen([*otel, "--", *pytest], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              for line in process.stdout:
+                  sys.stdout.buffer.write(line)
+                  log.write(line)
+          sys.exit(process.wait())
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: "rerun_${{ matrix.job }}_${{ inputs.correlation_id }}"
+          path: |
+            test-results/junit.xml
+            reports/
+            tests_output.txt
+            installed.txt
+          retention-days: 14
+          if-no-files-found: warn

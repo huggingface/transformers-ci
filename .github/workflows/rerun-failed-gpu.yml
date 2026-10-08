@@ -1,0 +1,222 @@
+# =============================================================================
+# Re-run selected failed run-slow tests (GPU), on the runner pool and image
+# run-slow used.
+#
+# Called by huggingface/transformers' rerun-failed-gpu.yml (workflow_dispatch),
+# which the PR dashboard's "Re-run failed tests" action dispatches. One job per
+# (hardware, cache) group: single-gpu tests on the G5 4xlarge pool, multi-gpu
+# ones on the 12xlarge pool, exactly the nodes selected.
+#
+# The environment mirrors daily-ci_reusable_model_job.yml for run_models_gpu
+# (RUN_SLOW, -m slow, the EFS cache list). Unlike run-slow it posts no PR
+# comment, sets no commit status and runs no collated report or new-failure
+# check: the result lives on the PR dashboard (ci_event=rerun-failed-gpu).
+# =============================================================================
+
+name: "[Reusable] Re-run failed tests (GPU)"
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+      selection:
+        description: '{"v":1,"groups":[{"job":"run_models_gpu","hardware":"single-gpu","tests":["tests/models/...::test_x"]}]}'
+        required: true
+        type: string
+      correlation_id:
+        required: true
+        type: string
+      source_run:
+        required: false
+        type: string
+        default: ""
+    secrets:
+      # Gated Hub repositories, as in run-slow (bot `hf-transformers-bot`).
+      HF_HUB_READ_TOKEN:
+        required: false
+
+permissions: {}
+
+env:
+  HF_HOME: /mnt/cache
+  TRANSFORMERS_IS_CI: yes
+  OMP_NUM_THREADS: 8
+  MKL_NUM_THREADS: 8
+  RUN_SLOW: yes
+  HF_TOKEN: ${{ secrets.HF_HUB_READ_TOKEN }}
+  TF_FORCE_GPU_ALLOW_GROWTH: true
+  CUDA_VISIBLE_DEVICES: 0,1
+  NO_COLOR: 1
+  CI_CPU_MEMORY_LIMIT_GB: 60
+
+jobs:
+  prepare:
+    name: Validate selection
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Check the PR is open at the expected head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          CORRELATION_ID: ${{ inputs.correlation_id }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]{0,9}$ ]] || { echo "bad PR number"; exit 1; }
+          [[ "$CORRELATION_ID" =~ ^[0-9a-f]{16}-gpu$ ]] || { echo "bad correlation id"; exit 1; }
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "bad head sha"; exit 1; }
+          state=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '.state + " " + .head.sha')
+          echo "PR #$PR_NUMBER: $state"
+          [ "$state" = "open $HEAD_SHA" ] || { echo "PR is not open at $HEAD_SHA; refusing."; exit 1; }
+
+      - name: Plan jobs from the allowlist
+        id: plan
+        env:
+          SELECTION: ${{ inputs.selection }}
+        shell: python3 {0}
+        run: |
+          import json, os, re
+
+          RUNNERS = {"single-gpu": "aws-g5-4xlarge-cache", "multi-gpu": "aws-g5-12xlarge-cache"}
+          JOBS = {"run_models_gpu": {"image": "huggingface/transformers-all-latest-gpu", "marker": "slow"}}
+          # Same list as daily-ci_reusable_model_job.yml's EFS_MODELS.
+          EFS_MODELS = set("cohere2_vision deepseek_v32 exaone4 exaone4_5 gemma2 glm4_moe glm4v_moe llama4 minimax_m3_vl mistral4 muse_glimmer muse_glimmer_assistant phimoe qwen2_moe qwen3_omni_moe qwen3_vl_moe".split())
+          NODEID = re.compile(r"^tests/[^\s\x00-\x1f]+\.py::[^\x00-\x1f]+$")
+
+          selection = json.loads(os.environ["SELECTION"])
+          assert selection.get("v") == 1, "unknown selection version"
+          groups = selection.get("groups")
+          assert isinstance(groups, list) and 0 < len(groups) <= 4, "bad groups"
+          planned, total = {}, 0
+          for group in groups:
+              job, hardware, tests = group.get("job"), group.get("hardware"), group.get("tests")
+              assert job in JOBS, f"job {job!r} is not allowed"
+              assert hardware in RUNNERS, f"hardware {hardware!r} is not a GPU pool"
+              assert isinstance(tests, list) and tests, "empty group"
+              assert all(isinstance(t, str) and NODEID.fullmatch(t) for t in tests), "bad node id"
+              assert len(set(tests)) == len(tests), "duplicate node id"
+              total += len(tests)
+              for test in tests:
+                  parts = test.split("::", 1)[0].split("/")
+                  model = parts[2] if len(parts) >= 4 and parts[1] == "models" else ""
+                  key = (job, hardware, model in EFS_MODELS)
+                  planned.setdefault(key, []).append(test)
+          assert total <= 100, "too many tests"
+          matrix = [
+              {
+                  "job": job,
+                  "hardware": hardware,
+                  "runner": RUNNERS[hardware],
+                  "image": JOBS[job]["image"],
+                  "marker": JOBS[job]["marker"],
+                  "hf_home": "/mnt/efs_cache" if efs else "/mnt/cache",
+                  "tests": json.dumps(tests),
+              }
+              for (job, hardware, efs), tests in sorted(planned.items())
+          ]
+          print(f"{total} tests in {len(matrix)} jobs")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"matrix={json.dumps({'include': matrix})}\n")
+
+  run:
+    # The matrix suffix keeps ci-github-status's test_job key "run_models_gpu".
+    name: "${{ matrix.job }} (${{ matrix.hardware }}, rerun)"
+    needs: prepare
+    runs-on:
+      group: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    container:
+      image: ${{ matrix.image }}
+      options: --gpus all --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
+    env:
+      TRANSFORMERSCI_OTEL_DEBUG: "1"
+      TRANSFORMERS_TEST_OTEL_PR: ${{ inputs.pr_number }}
+      TRANSFORMERS_TEST_OTEL_SUITE: ${{ matrix.job }}
+    steps:
+      # GITHUB_SHA is main on a workflow_dispatch run: test the PR's merge
+      # commit, as run-slow does, and refuse one built on another head.
+      - name: Check out the PR merge commit
+        working-directory: /transformers
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          git fetch origin "+refs/pull/${PR_NUMBER}/merge:refs/remotes/pr/merge"
+          git checkout --detach refs/remotes/pr/merge
+          merged=$(git rev-parse HEAD^2)
+          echo "merge $(git rev-parse HEAD) of PR head $merged"
+          [ "$merged" = "$HEAD_SHA" ] || { echo "PR moved to $merged; refusing."; exit 1; }
+
+      - name: Reinstall transformers in edit mode
+        working-directory: /transformers
+        run: |
+          python3 -m pip uninstall -y transformers && python3 -m pip install -e .
+          python3 -m pip install 'transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@main'
+
+      - name: NVIDIA-SMI
+        run: nvidia-smi
+
+      - name: Run the selected tests
+        working-directory: /transformers
+        env:
+          # job.check_run_id is only available at step level.
+          OTEL_RESOURCE_ATTRIBUTES: "transformers.test.ci_event=rerun-failed-gpu,transformers.test.hardware=${{ matrix.hardware }},cicd.pipeline.task.run.id=${{ job.check_run_id }}"
+          JOB_NAME: ${{ matrix.job }}
+          HARDWARE: ${{ matrix.hardware }}
+          MARKER: ${{ matrix.marker }}
+          SELECTED_HF_HOME: ${{ matrix.hf_home }}
+          TESTS: ${{ matrix.tests }}
+        shell: python3 {0}
+        run: |
+          import json, os, subprocess, sys
+
+          env = dict(os.environ)
+          if env["SELECTED_HF_HOME"] != "/mnt/cache" and os.path.isdir(env["SELECTED_HF_HOME"]):
+              env["HF_HOME"] = env["SELECTED_HF_HOME"]
+          reports = f"{env['HARDWARE']}_{env['JOB_NAME']}_rerun_test_reports"
+          env["PATCH_TESTING_METHODS_TO_COLLECT_OUTPUTS"] = "yes"
+          env["_PATCHED_TESTING_METHODS_OUTPUT_DIR"] = f"/transformers/reports/{reports}"
+          os.makedirs(f"/transformers/reports/{reports}", exist_ok=True)
+          otel = []
+          if env.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+              otel = [
+                  "configure-ci-otel", "--suite", env["JOB_NAME"], "--service-name", "pytest-observability",
+                  "--protocol", "http", "--otlp-endpoint", env["OTEL_EXPORTER_OTLP_ENDPOINT"],
+                  "--token", env.get("OTEL_TOKEN", ""),
+              ]
+              subprocess.run([*otel, "--", "report-ci-start"], env=env, check=False)
+              otel.append("--")
+          pytest = ["python3", "-m", "pytest", "-rsfE", "-v", "-m", env["MARKER"],
+                    f"--make-reports={reports}", "--", *json.loads(env["TESTS"])]
+          with open(f"/transformers/reports/{reports}/test_outputs.txt", "wb") as log:
+              process = subprocess.Popen([*otel, *pytest], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              for line in process.stdout:
+                  sys.stdout.buffer.write(line)
+                  log.write(line)
+          sys.exit(process.wait())
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: "rerun_${{ matrix.hardware }}_${{ strategy.job-index }}_${{ inputs.correlation_id }}"
+          path: /transformers/reports/
+          retention-days: 14
+          if-no-files-found: warn
