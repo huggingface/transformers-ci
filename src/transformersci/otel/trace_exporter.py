@@ -7166,11 +7166,70 @@ def render_run_html(
     return "".join(out)
 
 
-def _rerun_github_api(path: str) -> object:
-    """GET under the rerun repository's REST root, with the exporter's token."""
-    return _github_api_get(
-        f"https://api.github.com/repos/{rerun_failed.REPOSITORY}/{path}"
+RERUN_GITHUB_CACHE_SECONDS = 30.0
+_rerun_github_cache: dict[str, tuple[float, object]] = {}
+_rerun_github_cache_lock = threading.Lock()
+
+
+class GitHubRateLimited(Exception):
+    """GitHub refused a read because the token's core budget is spent."""
+
+    def __init__(self, reset: float | None) -> None:
+        super().__init__("GitHub API rate limit exceeded")
+        self.reset = reset
+
+
+def _rerun_github_api(path: str, *, fresh: bool = False) -> object:
+    """GET under the rerun repository's REST root, with the exporter's token.
+
+    Cached for RERUN_GITHUB_CACHE_SECONDS: a picker open costs 10-25 reads on a
+    token whose budget is shared. ``fresh`` skips the cache but still refills it,
+    so the reload after a ``stale`` answer sees what the action saw."""
+    now = time.monotonic()
+    if not fresh:
+        with _rerun_github_cache_lock:
+            cached = _rerun_github_cache.get(path)
+        if cached is not None and now - cached[0] < RERUN_GITHUB_CACHE_SECONDS:
+            return cached[1]
+    try:
+        payload = _github_api_get(
+            f"https://api.github.com/repos/{rerun_failed.REPOSITORY}/{path}"
+        )
+    except HTTPError as error:
+        headers = error.headers
+        if error.code in (403, 429) and headers.get("X-RateLimit-Remaining") == "0":
+            try:
+                reset = float(headers.get("X-RateLimit-Reset"))
+            except (TypeError, ValueError):
+                reset = None
+            raise GitHubRateLimited(reset) from error
+        raise
+    with _rerun_github_cache_lock:
+        if len(_rerun_github_cache) > 512:
+            for key in [
+                k
+                for k, (at, _) in _rerun_github_cache.items()
+                if now - at >= RERUN_GITHUB_CACHE_SECONDS
+            ]:
+                del _rerun_github_cache[key]
+        _rerun_github_cache[path] = (now, payload)
+    return payload
+
+
+def _rerun_source_error(error: Exception) -> tuple[int, dict]:
+    """The reply for a snapshot that could not be built, logged once here."""
+    print(
+        f"[pytest-trace-exporter] rerun-failed snapshot failed: "
+        f"{type(error).__name__}: {error}",
+        file=sys.stderr,
+        flush=True,
     )
+    if isinstance(error, GitHubRateLimited):
+        body: dict = {"status": "github_rate_limited"}
+        if error.reset is not None:
+            body["retry_after"] = max(0, int(error.reset - time.time()))
+        return 503, body
+    return 503, {"status": "source_unavailable"}
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
@@ -7680,8 +7739,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
 
         try:
             result = self._rerun_snapshot(pr, _rerun_github_api)
-        except Exception:
-            self._reply_json(503, {"status": "source_unavailable"})
+        except Exception as error:
+            self._reply_json(*_rerun_source_error(error))
             return
         enabled, reason = rerun_actions.dispatch_enabled()
         latest = None
@@ -7789,9 +7848,11 @@ class MetricsHandler(BaseHTTPRequestHandler):
             ):
                 reply(429, {"status": "rate_limited"})
                 return
-            snap = self._rerun_snapshot(pr, _rerun_github_api)
-        except Exception:
-            reply(503, {"status": "source_unavailable"})
+            snap = self._rerun_snapshot(
+                pr, lambda path: _rerun_github_api(path, fresh=True)
+            )
+        except Exception as error:
+            reply(*_rerun_source_error(error))
             return
         if snap["pr_state"] != "open":
             reply(409, {"status": "pr_not_open", "detail": "The PR is not open."})
