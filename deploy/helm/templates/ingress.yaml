@@ -171,6 +171,16 @@ spec:
     - host: {{ .Values.ingress.grafanaLegacy.domain }}
       http:
         paths:
+          {{- if and .Values.ingress.grafanaLegacy.forwardWebhook .Values.ciGithubStatus.enabled }}
+          # GitHub sends POST /webhook to the old URL until its registration moves.
+          - path: /webhook
+            pathType: Exact
+            backend:
+              service:
+                name: ci-github-status
+                port:
+                  number: {{ .Values.ciGithubStatus.port }}
+          {{- end }}
           - path: /
             pathType: Prefix
             backend:

@@ -43,6 +43,8 @@ ingress:
   # original ALB group so existing DNS and TLS continue to work.
   grafanaLegacy:
     enabled: false
+    # Keep a registered GitHub webhook working until its payload URL is updated.
+    forwardWebhook: false
     domain: old-grafana.example.com
     certificateArn: ""
     annotations:
