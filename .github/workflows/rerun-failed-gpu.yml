@@ -149,7 +149,6 @@ jobs:
       TRANSFORMERSCI_OTEL_DEBUG: "1"
       TRANSFORMERS_TEST_OTEL_PR: ${{ inputs.pr_number }}
       TRANSFORMERS_TEST_OTEL_SUITE: ${{ matrix.job }}
-      OTEL_RESOURCE_ATTRIBUTES: "transformers.test.ci_event=rerun-failed-gpu,transformers.test.hardware=${{ matrix.hardware }},cicd.pipeline.task.run.id=${{ job.check_run_id }}"
     steps:
       # GITHUB_SHA is main on a workflow_dispatch run: test the PR's merge
       # commit, as run-slow does, and refuse one built on another head.
@@ -177,6 +176,8 @@ jobs:
       - name: Run the selected tests
         working-directory: /transformers
         env:
+          # job.check_run_id is only available at step level.
+          OTEL_RESOURCE_ATTRIBUTES: "transformers.test.ci_event=rerun-failed-gpu,transformers.test.hardware=${{ matrix.hardware }},cicd.pipeline.task.run.id=${{ job.check_run_id }}"
           JOB_NAME: ${{ matrix.job }}
           HARDWARE: ${{ matrix.hardware }}
           MARKER: ${{ matrix.marker }}

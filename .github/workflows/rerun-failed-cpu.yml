@@ -151,7 +151,6 @@ jobs:
       TRANSFORMERSCI_OTEL_DEBUG: "1"
       TRANSFORMERS_TEST_OTEL_PR: ${{ inputs.pr_number }}
       TRANSFORMERS_TEST_OTEL_SUITE: ${{ matrix.job }}
-      OTEL_RESOURCE_ATTRIBUTES: "transformers.test.ci_event=rerun-failed-cpu,transformers.test.hardware=cpu,cicd.pipeline.task.run.id=${{ job.check_run_id }}"
       HF_HOME: /mnt/cache
       HF_DATASETS_CACHE: /tmp/hf_datasets_cache
       HF_MODULES_CACHE: /tmp/hf_modules_cache
@@ -196,6 +195,8 @@ jobs:
 
       - name: Run the selected tests
         env:
+          # job.check_run_id is only available at step level.
+          OTEL_RESOURCE_ATTRIBUTES: "transformers.test.ci_event=rerun-failed-cpu,transformers.test.hardware=cpu,cicd.pipeline.task.run.id=${{ job.check_run_id }}"
           JOB_NAME: ${{ matrix.job }}
           MARKER: ${{ matrix.marker }}
           WORKERS: ${{ matrix.workers }}
