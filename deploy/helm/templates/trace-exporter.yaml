@@ -178,18 +178,26 @@ spec:
             - name: run-store
               mountPath: {{ .Values.traceExporter.runStore.path }}
             {{- end }}
+          # Single replica + Recreate: every deploy is a gap with no backend. Probe
+          # often at startup so the pod takes traffic as soon as it serves, instead
+          # of after a fixed delay; up to 5 minutes for a large run store to load.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.traceExporter.config.port }}
+            timeoutSeconds: 2
+            periodSeconds: 2
+            failureThreshold: 150
           livenessProbe:
             httpGet:
               path: /healthz
               port: {{ .Values.traceExporter.config.port }}
-            initialDelaySeconds: 60
             timeoutSeconds: 10
             periodSeconds: 30
           readinessProbe:
             httpGet:
               path: /healthz
               port: {{ .Values.traceExporter.config.port }}
-            initialDelaySeconds: 30
             timeoutSeconds: 10
             periodSeconds: 10
       volumes:
