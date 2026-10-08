@@ -46,7 +46,7 @@ import urllib.parse
 import urllib.request
 
 DEFAULT_BASE = os.environ.get(
-    "TRANSFORMERS_CI_GRAFANA_URL", "https://transformers-ci.lor-e.huggingface.cool"
+    "TRANSFORMERS_CI_GRAFANA_URL", "https://transformers-ci.huggingface.cool"
 )
 TEMPO_UID = os.environ.get("TEMPO_DATASOURCE_UID", "tempo")
 PROM_UID = os.environ.get("PROM_DATASOURCE_UID", "prometheus")

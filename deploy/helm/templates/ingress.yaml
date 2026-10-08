@@ -51,6 +51,9 @@ metadata:
     alb.ingress.kubernetes.io/target-type: {{ index .Values.ingress.grafana.annotations "alb.ingress.kubernetes.io/target-type" }}
     alb.ingress.kubernetes.io/listen-ports: {{ index .Values.ingress.grafana.annotations "alb.ingress.kubernetes.io/listen-ports" | quote }}
     alb.ingress.kubernetes.io/group.name: {{ index .Values.ingress.grafana.annotations "alb.ingress.kubernetes.io/group.name" }}
+    {{- with index .Values.ingress.grafana.annotations "alb.ingress.kubernetes.io/load-balancer-name" }}
+    alb.ingress.kubernetes.io/load-balancer-name: {{ . }}
+    {{- end }}
     {{- if .Values.ingress.grafana.certificateArn }}
     alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.grafana.certificateArn }}
     {{- end }}
@@ -143,3 +146,36 @@ spec:
                 name: grafana
                 port:
                   number: 3000
+{{- if .Values.ingress.grafanaLegacy.enabled }}
+---
+# Keep existing links working on the old ALB without forwarding traffic to Grafana.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana-legacy-redirect
+  namespace: {{ include "transformers-ci.namespace" . }}
+  labels:
+    {{- include "transformers-ci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana
+  annotations:
+    alb.ingress.kubernetes.io/scheme: {{ index .Values.ingress.grafanaLegacy.annotations "alb.ingress.kubernetes.io/scheme" }}
+    alb.ingress.kubernetes.io/target-type: {{ index .Values.ingress.grafanaLegacy.annotations "alb.ingress.kubernetes.io/target-type" }}
+    alb.ingress.kubernetes.io/listen-ports: {{ index .Values.ingress.grafanaLegacy.annotations "alb.ingress.kubernetes.io/listen-ports" | quote }}
+    alb.ingress.kubernetes.io/group.name: {{ index .Values.ingress.grafanaLegacy.annotations "alb.ingress.kubernetes.io/group.name" }}
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.grafanaLegacy.certificateArn }}
+    alb.ingress.kubernetes.io/actions.redirect-to-grafana: {{ dict "type" "redirect" "redirectConfig" (dict "protocol" "HTTPS" "port" "443" "host" .Values.ingress.grafana.domain "path" "/#{path}" "query" "#{query}" "statusCode" "HTTP_301") | toJson | quote }}
+    external-dns.alpha.kubernetes.io/hostname: {{ .Values.ingress.grafanaLegacy.domain }}
+spec:
+  ingressClassName: alb
+  rules:
+    - host: {{ .Values.ingress.grafanaLegacy.domain }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: redirect-to-grafana
+                port:
+                  name: use-annotation
+{{- end }}

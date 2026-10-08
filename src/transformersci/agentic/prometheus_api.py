@@ -32,7 +32,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 
-DEFAULT_BASE_URL = "https://transformers-ci.lor-e.huggingface.cool"
+DEFAULT_BASE_URL = "https://transformers-ci.huggingface.cool"
 QUERY_PATH = "/api/datasources/proxy/uid/prometheus/api/v1/query"
 DEFAULT_TIMEOUT = 30.0
 

@@ -66,7 +66,7 @@ def _otlp_trace(spans):
 
 
 _URL = (
-    "https://transformers-ci.lor-e.huggingface.cool/d/pytest-test/test?"
+    "https://transformers-ci.huggingface.cool/d/pytest-test/test?"
     "var-trace_id=abc123&"
     "var-test_nodeid=tests/models/foo/test_modeling_foo.py::FooTest::test_x&"
     "var-exception_type=AttributeError&var-test_job=run_tests_gpu&"

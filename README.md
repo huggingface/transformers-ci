@@ -67,7 +67,7 @@ To use `transformers-ci` in a GitHub Actions workflow:
    `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and
    `OTEL_EXPORTER_OTLP_HEADERS` for you from CLI flags.
    Use the traces collector host here, not the Grafana UI host:
-   `transformers-ci-traces.lor-e.huggingface.cool`, not `transformers-ci.lor-e.huggingface.cool`.
+   `transformers-ci-traces.lor-e.huggingface.cool`, not `transformers-ci.huggingface.cool`.
 
 2. **Update your workflow:**
 
