@@ -65,6 +65,18 @@ _VERBOSE_OUTCOME_PATTERN = re.compile(
 # pytest's closing line, e.g. `===== 2 failed, 178 passed in 1358.62s (0:22:38) =====`.
 _SESSION_FINISHED_PATTERN = re.compile(r"^=+ .* in [\d.]+s\b", re.MULTILINE)
 
+# Under pytest-xdist (`-n N -v`) the workers interleave: each test is named on a
+# line of its own when it starts, and its outcome comes later on a `[gwN]` line.
+# A SIGKILL leaves up to N tests started with no outcome.
+#   tests/models/x/test_y.py::T::test_z <- tests/generation/test_utils.py
+#   [gw3] [  5%] PASSED tests/models/x/test_y.py::T::test_z <- tests/...
+_XDIST_MARKER_PATTERN = re.compile(r"^\[gw\d+\] ", re.MULTILINE)
+_XDIST_START_PATTERN = re.compile(r"^(\S+\.py::\S+)(?: |$)")
+_XDIST_OUTCOME_PATTERN = re.compile(
+    r"^\[gw\d+\] \[\s*\d+%\] (?:PASSED|FAILED|SKIPPED|ERROR|XFAIL|XPASS|RERUN) "
+    r"(\S+\.py::\S+)"
+)
+
 # Bound the excerpt recorded on the span so a noisy log can't bloat it; the tail
 # holds the crash itself.
 _MAX_OUTPUT_CHARS = 8000
@@ -73,7 +85,8 @@ _MAX_OUTPUT_CHARS = 8000
 #   worker_crash: an xdist worker died but pytest kept going (marker + per-test
 #                 nodeids usually in the log).
 #   oom_killed:   the whole pytest process was SIGKILLed mid-run (exit 137); the
-#                 test it was running is the last one `pytest -v` named.
+#                 tests it was running are those `pytest -v` started but gave no
+#                 outcome for (one, or one per xdist worker).
 _KIND_DEFAULTS = {
     "worker_crash": ("WorkerCrash", "worker_crash"),
     "oom_killed": ("OOMKilled", "oom_killed"),
@@ -108,6 +121,28 @@ def parse_running_nodeid(text: str) -> str | None:
     if _VERBOSE_OUTCOME_PATTERN.search(text, last.end()):
         return None
     return last.group(1)
+
+
+def parse_running_nodeids(text: str) -> list[str]:
+    """Return the tests a killed `pytest -v` was running, in start order.
+
+    A serial run has at most one; an xdist run has up to one per worker, and
+    any of them may be the one that ran the host out of memory.
+    """
+    text = text.replace("\r", "\n")
+    if not _XDIST_MARKER_PATTERN.search(text):
+        running = parse_running_nodeid(text)
+        return [running] if running else []
+    if _SESSION_FINISHED_PATTERN.search(text):
+        return []
+    # A dict keeps start order; a rerun starts its test again after RERUN.
+    started: dict[str, None] = {}
+    for line in text.splitlines():
+        if match := _XDIST_OUTCOME_PATTERN.match(line):
+            started.pop(match.group(1), None)
+        elif match := _XDIST_START_PATTERN.match(line):
+            started[match.group(1)] = None
+    return list(started)
 
 
 def resolve_job(explicit: str | None, env: Mapping[str, str]) -> str:
@@ -151,8 +186,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Failure mode. 'worker_crash': an xdist worker died but pytest kept "
             "going (per-test nodeids are usually in the log). 'oom_killed': the "
-            "whole pytest process was killed mid-run (exit 137); the test it was "
-            "running is read from `pytest -v` output, else a job-level span is "
+            "whole pytest process was killed mid-run (exit 137); the tests it was "
+            "running are read from `pytest -v` output, else a job-level span is "
             "recorded. Sets the default exception type and job-level fallback "
             "nodeid."
         ),
@@ -192,8 +227,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         else:
             if args.kind == "oom_killed":
-                running = parse_running_nodeid(output)
-                nodeids = [running] if running else []
+                nodeids = parse_running_nodeids(output)
             else:
                 nodeids = parse_crashed_nodeids(output)
 

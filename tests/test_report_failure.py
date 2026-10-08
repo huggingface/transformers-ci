@@ -94,6 +94,41 @@ def test_parse_running_nodeid_no_test_started():
     )
 
 
+# `pytest -n 8 -v` output, as a PR-CI shard prints it, cut off by a SIGKILL:
+# each worker names a test when it starts it, and gives its outcome later.
+XDIST_KILLED_LOG = (
+    "tests/models/a/test_a.py::ATest::test_done <- tests/test_mixin.py \n"
+    "tests/models/b/test_b.py::BTest::test_rerun \n"
+    "tests/models/c/test_c.py::CTest::test_running <- tests/test_mixin.py \n"
+    "[gw0] [  5%] PASSED tests/models/a/test_a.py::ATest::test_done "
+    "<- tests/test_mixin.py tests/models/a/test_a.py::ATest::test_done\n"
+    "[gw1] [  5%] RERUN tests/models/b/test_b.py::BTest::test_rerun\n"
+    "tests/models/b/test_b.py::BTest::test_rerun \n"
+    "tests/models/d/test_d.py::DTest::test_running \n"
+    "[gw2] [  6%] SKIPPED tests/models/e/test_e.py::ETest::test_skipped\n"
+)
+
+
+def test_parse_running_nodeids_xdist_lists_every_unfinished_test():
+    # The rerun counts from its second start.
+    assert report_failure.parse_running_nodeids(XDIST_KILLED_LOG) == [
+        "tests/models/c/test_c.py::CTest::test_running",
+        "tests/models/b/test_b.py::BTest::test_rerun",
+        "tests/models/d/test_d.py::DTest::test_running",
+    ]
+
+
+def test_parse_running_nodeids_xdist_session_finished():
+    text = XDIST_KILLED_LOG + "========== 3 passed in 12.34s ==========\n"
+    assert report_failure.parse_running_nodeids(text) == []
+
+
+def test_parse_running_nodeids_serial():
+    assert report_failure.parse_running_nodeids(KILLED_LOG) == [
+        "tests/models/foo/test_bar.py::FooIntegrationTest::test_export"
+    ]
+
+
 def test_resolve_job_precedence():
     assert (
         report_failure.resolve_job("explicit", {"TRANSFORMERS_TEST_OTEL_JOB": "x"})

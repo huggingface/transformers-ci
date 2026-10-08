@@ -40,29 +40,29 @@ def _job(job_id, name, conclusion="failure"):
 
 
 def test_parse_model_job():
-    job = rkj.parse_model_job(
+    job = rkj.parse_test_job(
         _job(
             110493403532,
             "Model CI / run_models_gpu (aws-g5-4xlarge-cache, 0) / run_models_gpu (models/exaone4)",
         )
     )
-    assert job == rkj.ModelJob(
+    assert job == rkj.TestJob(
         job_id=110493403532,
         suite="run_models_gpu",
-        folder="models/exaone4",
+        label="models/exaone4",
         hardware="single-gpu",
     )
 
 
 def test_parse_model_job_trainer_family_and_multi_gpu():
-    job = rkj.parse_model_job(
+    job = rkj.parse_test_job(
         _job(
             7,
             "Trainer CI / run_trainer_and_fsdp_gpu (aws-g5-12xlarge-cache, 2) / run_trainer_and_fsdp_gpu (fsdp)",
         )
     )
     assert job is not None
-    assert (job.suite, job.folder, job.hardware) == (
+    assert (job.suite, job.label, job.hardware) == (
         "run_trainer_and_fsdp_gpu",
         "fsdp",
         "multi-gpu",
@@ -78,7 +78,28 @@ def test_parse_model_job_trainer_family_and_multi_gpu():
     ],
 )
 def test_parse_model_job_ignores_other_jobs(name):
-    assert rkj.parse_model_job(_job(1, name)) is None
+    assert rkj.parse_test_job(_job(1, name)) is None
+
+
+def test_parse_test_job_pr_shard():
+    job = rkj.parse_test_job(
+        _job(113212858545, "pr-ci / tests_torch / tests_torch [shard 2/8]")
+    )
+    assert job == rkj.TestJob(
+        job_id=113212858545, suite="tests_torch", label="shard 2/8"
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "pr-ci / PR CI status",
+        "pr-ci / Check code quality",
+        "pr-ci / tests_torch / setup",
+    ],
+)
+def test_parse_test_job_ignores_other_pr_jobs(name):
+    assert rkj.parse_test_job(_job(1, name)) is None
 
 
 def test_pytest_output_from_killed_job_log():
@@ -87,10 +108,9 @@ def test_pytest_output_from_killed_job_log():
     assert "##[error]" not in output
     assert "::debug::" not in output
     assert output.splitlines()[0].startswith("tests/models/exaone4/")
-    assert (
-        rkj.parse_running_nodeid(output)
-        == "tests/models/exaone4/test_modeling_exaone4.py::Exaone4IntegrationTest::test_export_static_cache"
-    )
+    assert rkj.parse_running_nodeids(output) == [
+        "tests/models/exaone4/test_modeling_exaone4.py::Exaone4IntegrationTest::test_export_static_cache"
+    ]
 
 
 def test_pytest_output_from_job_log_not_killed():
@@ -111,10 +131,10 @@ def test_ci_event_slug_matches_the_model_job(ci_event, slug):
 
 
 def test_report_command_and_env():
-    job = rkj.ModelJob(
+    job = rkj.TestJob(
         job_id=42,
         suite="run_models_gpu",
-        folder="models/exaone4",
+        label="models/exaone4",
         hardware="single-gpu",
     )
     wrapper = ["configure-ci-otel", "--service-name", "pytest-observability"]
@@ -181,6 +201,53 @@ def test_main_reports_only_killed_model_jobs(monkeypatch):
     assert "cicd.pipeline.task.run.id=1" in attributes
     assert "transformers.test.hardware=single-gpu" in attributes
     assert "test_export_static_cache" in crash_log
+
+
+# A PR-CI shard (8 xdist workers) killed with two tests still running.
+PR_KILLED_JOB_LOG = """\
+2026-10-08T08:08:15.7289294Z tests/models/fuyu/test_modeling_fuyu.py::FuyuModelTest::test_sample_generate <- tests/generation/test_utils.py 
+2026-10-08T08:08:15.7289300Z tests/models/gemma3/test_modeling_gemma3.py::Gemma3TextModelTest::test_dqa <- tests/test_pipeline_mixin.py 
+2026-10-08T08:08:15.7292434Z [gw1] [  6%] SKIPPED tests/models/gemma3/test_modeling_gemma3.py::Gemma3TextModelTest::test_dqa <- tests/test_pipeline_mixin.py tests/models/gemma3/test_modeling_gemma3.py::Gemma3TextModelTest::test_dqa
+2026-10-08T08:08:15.7293834Z 
+2026-10-08T08:08:15.9000000Z tests/models/glm5_next/test_modeling_glm5_next.py::Glm5NextModelTest::test_compile <- tests/generation/test_utils.py 
+2026-10-08T08:08:16.1405411Z [gw4] [  6%] SKIPPED tests/models/gemma4/test_modeling_gemma4.py::Gemma4Test::test_seg <- tests/test_pipeline_mixin.py ::debug::{"message":"command terminated"}
+2026-10-08T08:08:16.1430561Z ##[error]Error: failed to run script step: command terminated with non-zero exit code: error executing command [sh -e /__w/_temp/x.sh], exit code 137
+"""
+
+
+def test_main_reports_killed_pr_shard(monkeypatch, capsys):
+    jobs = [
+        _job(5, "pr-ci / tests_torch / tests_torch [shard 2/8]"),
+        _job(6, "pr-ci / tests_torch / tests_torch [shard 3/8]"),
+        _job(7, "pr-ci / PR CI status"),
+    ]
+    logs = {5: PR_KILLED_JOB_LOG, 6: FAILED_JOB_LOG}
+    calls = []
+
+    class Result:
+        returncode = 0
+
+    def fake_run(command, env, check):
+        calls.append((command, env["OTEL_RESOURCE_ATTRIBUTES"]))
+        return Result()
+
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+    monkeypatch.setattr(
+        rkj, "list_failed_jobs", lambda repo, run_id, attempt, token: jobs
+    )
+    monkeypatch.setattr(rkj, "fetch_job_log", lambda repo, job_id, token: logs[job_id])
+    monkeypatch.setattr(rkj.subprocess, "run", fake_run)
+
+    assert rkj.main(["--repo", "o/r", "--run-id", "9", "--", "configure-ci-otel"]) == 0
+    assert len(calls) == 1
+    command, attributes = calls[0]
+    assert command[:4] == ["configure-ci-otel", "--suite", "tests_torch", "--"]
+    assert command[command.index("--message") + 1].startswith("shard 2/8: ")
+    assert attributes == "cicd.pipeline.task.run.id=5"
+    printed = capsys.readouterr().out
+    assert "FuyuModelTest::test_sample_generate" in printed
+    assert "Glm5NextModelTest::test_compile" in printed
+    assert "test_dqa" not in printed
 
 
 def test_main_requires_wrapper(monkeypatch):

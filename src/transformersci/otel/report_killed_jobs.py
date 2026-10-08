@@ -11,18 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Report the daily-CI model jobs that were killed (exit 137) as failing tests.
+"""Report the CI test jobs that were killed (exit 137) as failing tests.
 
-When a daily-CI model job's pod goes over its memory limit, the whole job
-container is killed: pytest never exports the running test's span, and no
-later step of that job can run to report it, since the container is gone. The
-dashboards then show the job with no failure.
+When a test job's pod goes over its memory limit, the whole job container is
+killed: pytest never exports the running tests' spans, and no later step of
+that job can run to report them, since the container is gone. The dashboards
+then show the job with no failure.
 
-This runs as a separate job after the model jobs. It reads the run's failed
-jobs from the GitHub API, keeps those whose log shows ``exit code 137``, takes
-the killed test from the ``pytest -v`` output in the log, and emits it through
-``report-ci-failure --kind oom_killed`` with the killed job's own labels
-(hardware, ci_event, job id), so the span lands next to that job's other spans.
+This runs as a separate job after the test jobs, for the daily-CI model jobs
+and for the PR-CI shard jobs. It reads the run's failed jobs from the GitHub
+API, keeps those whose log shows ``exit code 137``, takes the killed tests from
+the ``pytest -v`` output in the log (one, or one per xdist worker), and emits
+them through ``report-ci-failure --kind oom_killed`` with the killed job's own
+labels (job id, and for daily jobs hardware and ci_event), so the spans land
+next to that job's other spans.
 
 The OTEL wrapper is passed after ``--`` (without ``--suite``, which is set per
 job here):
@@ -49,7 +51,7 @@ from dataclasses import dataclass
 
 from transformersci.agentic.github_api import gh_headers
 
-from .report_failure import parse_running_nodeid
+from .report_failure import parse_running_nodeids
 
 _API = "https://api.github.com"
 
@@ -58,6 +60,12 @@ _API = "https://api.github.com"
 # The machine type is the caller's matrix value, not the runner the job got.
 _MODEL_JOB_NAME = re.compile(
     r"\((?P<machine>aws-[^,()]+), \d+\) / (?P<suite>[a-z_]+) \((?P<folder>[^()]+)\)$"
+)
+
+# PR-CI shard-job names, e.g.
+#   pr-ci / tests_torch / tests_torch [shard 2/8]
+_PR_SHARD_JOB_NAME = re.compile(
+    r"(?:^|/ )(?P<suite>[a-z_]+) / (?P=suite) \[(?P<shard>shard \d+/\d+)\]$"
 )
 
 # The k8s container hook's error once the step's process is SIGKILLed.
@@ -76,25 +84,34 @@ _HARDWARE = {
 
 
 @dataclass(frozen=True)
-class ModelJob:
+class TestJob:
     job_id: int
     suite: str
-    folder: str
-    hardware: str
+    # What the job ran: the model folder of a daily job, the shard of a PR job.
+    label: str
+    # Daily jobs only; PR jobs all run on the same CPU runners.
+    hardware: str | None = None
 
 
-def parse_model_job(job: Mapping[str, object]) -> ModelJob | None:
-    """The daily model job a GitHub job entry is, or ``None`` for any other job."""
-    match = _MODEL_JOB_NAME.search(str(job.get("name", "")))
-    if match is None:
-        return None
-    machine = match.group("machine")
-    return ModelJob(
-        job_id=int(job["id"]),  # type: ignore[arg-type]
-        suite=match.group("suite"),
-        folder=match.group("folder"),
-        hardware=_HARDWARE.get(machine, machine),
-    )
+def parse_test_job(job: Mapping[str, object]) -> TestJob | None:
+    """The daily model job or PR shard job a GitHub job entry is, else ``None``."""
+    name = str(job.get("name", ""))
+    job_id = int(job["id"])  # type: ignore[arg-type]
+    match = _MODEL_JOB_NAME.search(name)
+    if match is not None:
+        machine = match.group("machine")
+        return TestJob(
+            job_id=job_id,
+            suite=match.group("suite"),
+            label=match.group("folder"),
+            hardware=_HARDWARE.get(machine, machine),
+        )
+    match = _PR_SHARD_JOB_NAME.search(name)
+    if match is not None:
+        return TestJob(
+            job_id=job_id, suite=match.group("suite"), label=match.group("shard")
+        )
+    return None
 
 
 def pytest_output_from_job_log(log: str) -> str | None:
@@ -156,7 +173,7 @@ def fetch_job_log(repo: str, job_id: int, token: str) -> str:
     return _get(url, token).decode("utf-8", errors="replace")
 
 
-def report_command(wrapper: Sequence[str], job: ModelJob, crash_log: str) -> list[str]:
+def report_command(wrapper: Sequence[str], job: TestJob, crash_log: str) -> list[str]:
     return [
         *wrapper,
         "--suite",
@@ -168,17 +185,18 @@ def report_command(wrapper: Sequence[str], job: ModelJob, crash_log: str) -> lis
         "--crash-log",
         crash_log,
         "--message",
-        f"{job.folder}: pytest was killed (exit 137, likely out of host memory)",
+        f"{job.label}: pytest was killed (exit 137, likely out of host memory)",
     ]
 
 
-def report_env(env: Mapping[str, str], job: ModelJob, ci_event: str) -> dict[str, str]:
+def report_env(env: Mapping[str, str], job: TestJob, ci_event: str) -> dict[str, str]:
     """The env the killed job's own spans were emitted with, for its labels."""
-    attributes = (
-        f"transformers.test.ci_event={ci_event_slug(ci_event)},"
-        f"transformers.test.hardware={job.hardware},"
-        f"cicd.pipeline.task.run.id={job.job_id}"
-    )
+    attributes = f"cicd.pipeline.task.run.id={job.job_id}"
+    if job.hardware is not None:
+        attributes = (
+            f"transformers.test.ci_event={ci_event_slug(ci_event)},"
+            f"transformers.test.hardware={job.hardware},{attributes}"
+        )
     return {**env, "OTEL_RESOURCE_ATTRIBUTES": attributes}
 
 
@@ -191,14 +209,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Emit a failing test span for each daily-CI model job of a run that "
-            "was killed (exit 137). Pass the configure-ci-otel wrapper after `--`."
+            "Emit failing test spans for each daily-CI model job or PR-CI shard "
+            "job of a run that was killed (exit 137). Pass the configure-ci-otel "
+            "wrapper after `--`."
         )
     )
     parser.add_argument("--repo", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--attempt", default="1")
-    parser.add_argument("--ci-event", default="Daily CI")
+    parser.add_argument(
+        "--ci-event", default="Daily CI", help="Daily CI only: the ci_event label."
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -220,7 +241,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     status = 0
     for entry in failed:
-        job = parse_model_job(entry)
+        job = parse_test_job(entry)
         if job is None:
             continue
         try:
@@ -236,10 +257,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             continue
         if output is None:
             continue
+        running = parse_running_nodeids(output)
         print(
-            f"report-killed-jobs: job {job.job_id} ({job.suite}, {job.folder}, "
-            f"{job.hardware}) was killed while running "
-            f"{parse_running_nodeid(output) or 'no identifiable test'}",
+            f"report-killed-jobs: job {job.job_id} ({job.suite}, {job.label}"
+            f"{f', {job.hardware}' if job.hardware else ''}) was killed while "
+            f"running {', '.join(running) or 'no identifiable test'}",
             flush=True,
         )
         if args.dry_run:
