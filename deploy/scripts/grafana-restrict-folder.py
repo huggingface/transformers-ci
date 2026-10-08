@@ -37,7 +37,7 @@ Usage:
 Verify independently — an anonymous read of a dashboard in the folder must 403:
 
     curl -s -o /dev/null -w '%{http_code}\\n' \\
-      https://transformers-ci.lor-e.huggingface.cool/api/dashboards/uid/<uid>
+      https://transformers-ci.huggingface.cool/api/dashboards/uid/<uid>
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-DEFAULT_URL = "https://transformers-ci.lor-e.huggingface.cool"
+DEFAULT_URL = "https://transformers-ci.huggingface.cool"
 DEFAULT_FOLDER = "Restricted"
 
 # Grafana's legacy folder-permission levels.

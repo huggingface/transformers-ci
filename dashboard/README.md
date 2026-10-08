@@ -156,11 +156,11 @@ identical across the compose and kube deployments. The exporter serves a small
 live SVG badge and JSON summary for a PR from its cached metrics payload:
 
 ```md
-[![CI](https://transformers-ci.lor-e.huggingface.cool/badge/pr?pr=46767)](https://transformers-ci.lor-e.huggingface.cool/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=46767)
+[![CI](https://transformers-ci.huggingface.cool/badge/pr?pr=46767)](https://transformers-ci.huggingface.cool/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=46767)
 ```
 
 ```sh
-curl -fsS "https://transformers-ci.lor-e.huggingface.cool/summary/pr?pr=46767"
+curl -fsS "https://transformers-ci.huggingface.cool/summary/pr?pr=46767"
 ```
 
 (The old `/exporter/*` prefix still works on the compose deployment as a

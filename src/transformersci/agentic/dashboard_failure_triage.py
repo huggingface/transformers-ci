@@ -46,7 +46,7 @@ Serge/GitHub plumbing via :mod:`transformersci.agentic.serge_dispatch` and
 Usage:
 
     # Propose-only (default): print everything, POST nothing.
-    dashboard-failure-triage "https://transformers-ci.lor-e.huggingface.cool/d/pytest-test/test?var-trace_id=…&var-test_nodeid=…"
+    dashboard-failure-triage "https://transformers-ci.huggingface.cool/d/pytest-test/test?var-trace_id=…&var-test_nodeid=…"
 
     # Real run (from CI): mint an OIDC token, then dispatch to Serge.
     dashboard-failure-triage --dispatch --serge-url "$SERGE_URL" "<dashboard-url>"
@@ -90,7 +90,7 @@ from .serge_dispatch import (
 )
 
 DEFAULT_GRAFANA_URL = os.environ.get(
-    "TRANSFORMERS_CI_GRAFANA_URL", "https://transformers-ci.lor-e.huggingface.cool"
+    "TRANSFORMERS_CI_GRAFANA_URL", "https://transformers-ci.huggingface.cool"
 )
 TEMPO_UID = os.environ.get("TEMPO_DATASOURCE_UID", "tempo")
 

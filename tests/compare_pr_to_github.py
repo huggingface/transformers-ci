@@ -34,7 +34,7 @@ Usage:
   python dashboard/compare_pr_to_github.py 46754
   python dashboard/compare_pr_to_github.py 46754 --run-id 28036323378
   python dashboard/compare_pr_to_github.py 46754 --repo huggingface/transformers \
-      --prom-base https://transformers-ci.lor-e.huggingface.cool
+      --prom-base https://transformers-ci.huggingface.cool
 
 Requires: the `gh` CLI (authenticated) for the GitHub side; the Prometheus side
 goes through the public Grafana datasource proxy (no auth needed).
@@ -50,7 +50,7 @@ import sys
 import urllib.parse
 import urllib.request
 
-DEFAULT_PROM_BASE = "https://transformers-ci.lor-e.huggingface.cool"
+DEFAULT_PROM_BASE = "https://transformers-ci.huggingface.cool"
 DEFAULT_PROM_DS_UID = "prometheus"
 DEFAULT_REPO = "huggingface/transformers"
 DEFAULT_LOOKBACK = "14d"

@@ -16,7 +16,7 @@ import unittest
 
 from transformersci.agentic import pr_evidence
 
-GRAFANA = "https://transformers-ci.lor-e.huggingface.cool"
+GRAFANA = "https://transformers-ci.huggingface.cool"
 NODE = "tests/models/gemma3/test_modeling_gemma3.py::Gemma3IntegrationTest::test_x"
 OTHER = "tests/models/foo/test_modeling_foo.py::FooTest::test_a"
 
