@@ -132,7 +132,7 @@ def source_candidates(
 
 def tested_commits(pr: str, query: Callable[[str], list[dict]]) -> dict[str, str]:
     expr = f'last_over_time(pytest_run_info{{pr="{pr}"}}[90d])'
-    result = {}
+    candidates: dict[str, set[str]] = {}
     for item in query(expr):
         metric = item.get("metric") if isinstance(item, dict) else None
         if isinstance(metric, dict):
@@ -142,8 +142,14 @@ def tested_commits(pr: str, query: Callable[[str], list[dict]]) -> dict[str, str
                 and _RUN_ID.fullmatch(run_id)
                 and isinstance(sha, str)
             ):
-                result[run_id] = sha if _SHA.fullmatch(sha) else ""
-    return result
+                candidates.setdefault(run_id, set()).add(
+                    sha if _SHA.fullmatch(sha) else ""
+                )
+    # Partial or conflicting telemetry cannot identify an immutable revision.
+    return {
+        run_id: next(iter(shas)) if len(shas) == 1 else ""
+        for run_id, shas in candidates.items()
+    }
 
 
 def _source_run(run: object, lane: str) -> bool:
@@ -423,6 +429,12 @@ def plan(snap: dict, keys: object) -> dict[str, dict]:
         data = snap["lanes"][lane]
         if not data["complete"]:
             raise SelectionError("incomplete_source", " ".join(data["notes"]))
+        source = data.get("source_run") or {}
+        if not _SHA.fullmatch(source.get("commit", "")):
+            raise SelectionError(
+                "incomplete_source",
+                "No unambiguous tested commit for the source attempt.",
+            )
         selection = {
             "v": 1,
             "groups": [
