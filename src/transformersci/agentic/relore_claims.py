@@ -179,9 +179,7 @@ def find_open_claims(
     claims: list[Claim] = []
     seen: set[int] = set()
     for number in candidates:
-        payload = _relore(
-            ["inflight", str(number), "--repo", repo], timeout=timeout
-        )
+        payload = _relore(["inflight", str(number), "--repo", repo], timeout=timeout)
         if not payload:
             continue
         for raw in payload.get("claims") or []:

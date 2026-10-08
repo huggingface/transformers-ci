@@ -29,6 +29,10 @@ on:
         description: The PR head the selection was made against; the run refuses a PR that moved.
         required: true
         type: string
+      tested_sha:
+        description: Immutable PR merge commit tested by the source attempt.
+        required: true
+        type: string
       selection:
         description: '{"v":1,"groups":[{"job":"tests_torch","hardware":"cpu","tests":["tests/...::test_x"]}]}'
         required: true
@@ -37,9 +41,9 @@ on:
         required: true
         type: string
       source_run:
-        required: false
+        description: Source workflow run and attempt (RUN_ID:ATTEMPT).
+        required: true
         type: string
-        default: ""
 
 permissions: {}
 
@@ -50,24 +54,34 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
-      - name: Check the PR is open at the expected head
+      - name: Checkout trusted revision validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: huggingface/transformers-ci
+          ref: main
+          path: rerun-validator
+          persist-credentials: false
+
+      - name: Validate source revision
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pr_number }}
           HEAD_SHA: ${{ inputs.head_sha }}
           CORRELATION_ID: ${{ inputs.correlation_id }}
+          TESTED_SHA: ${{ inputs.tested_sha }}
+          SOURCE_RUN: ${{ inputs.source_run }}
+          LANE: cpu
         run: |
           set -euo pipefail
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]{0,9}$ ]] || { echo "bad PR number"; exit 1; }
           [[ "$CORRELATION_ID" =~ ^[0-9a-f]{16}-cpu$ ]] || { echo "bad correlation id"; exit 1; }
           [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "bad head sha"; exit 1; }
-          state=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '.state + " " + .head.sha')
-          echo "PR #$PR_NUMBER: $state"
-          [ "$state" = "open $HEAD_SHA" ] || { echo "PR is not open at $HEAD_SHA; refusing."; exit 1; }
+          python3 rerun-validator/src/transformersci/otel/rerun_revision.py
 
       - name: Plan jobs from the allowlist
         id: plan
@@ -157,20 +171,21 @@ jobs:
       HF_XET_LOG_DEST: /tmp/xet_logs/
       HF_METRICS_CACHE: /tmp/hf_metrics_cache
     steps:
-      # GITHUB_SHA is main on a workflow_dispatch run: check out the PR's merge
-      # commit, the same code PR CI tests, and refuse one built on another head.
+      # Pin the source attempt's merge, including its original base revision.
       - name: Checkout the PR merge commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          ref: refs/pull/${{ inputs.pr_number }}/merge
+          ref: ${{ inputs.tested_sha }}
           fetch-depth: 2
           persist-credentials: false
 
-      - name: Verify the merge is of the selected head
+      - name: Verify the exact tested merge and PR head
         env:
           HEAD_SHA: ${{ inputs.head_sha }}
+          TESTED_SHA: ${{ inputs.tested_sha }}
         run: |
           git config --global --add safe.directory '*'
+          [ "$(git rev-parse HEAD)" = "$TESTED_SHA" ] || { echo "Unexpected tested SHA; refusing."; exit 1; }
           merged=$(git rev-parse HEAD^2)
           echo "merge $(git rev-parse HEAD) of PR head $merged"
           [ "$merged" = "$HEAD_SHA" ] || { echo "PR moved to $merged; refusing."; exit 1; }

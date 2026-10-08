@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from transformersci.otel import rerun_actions, rerun_failed
+from transformersci.otel import rerun_actions, rerun_failed, rerun_revision
 from transformersci.otel import trace_exporter
 from transformersci.status import metrics as status_metrics
 
@@ -60,6 +60,8 @@ def _source(run_id: str, gpu: bool, status: str = "completed", **extra) -> dict:
         + "@main",
         "event": "issue_comment" if gpu else "pull_request",
         "status": status,
+        "run_attempt": 1,
+        "head_sha": "d" * 40 if gpu else HEAD,
         "conclusion": "failure" if status == "completed" else "",
         "html_url": f"https://github.com/huggingface/transformers/actions/runs/{run_id}",
         **extra,
@@ -484,6 +486,15 @@ class FakeGitHub:
         return 200, self.get(path)
 
     def get(self, path: str) -> object:
+        if path == "pulls/42":
+            return {"state": "open", "head": {"sha": HEAD}}
+        if path.startswith("commits/"):
+            return {
+                "sha": path.split("/")[1],
+                "parents": [{"sha": "e" * 40}, {"sha": HEAD}],
+            }
+        if "/attempts/" in path:
+            return _source(path.split("/")[2], path.split("/")[2] == "210")
         if path.startswith("actions/runs/"):
             return self.runs[path.rsplit("/", 1)[1]]
         if path.startswith("actions/workflows/"):
@@ -527,6 +538,8 @@ def test_action_cancels_confirmed_runs_then_dispatches_once(repo, tmp_path) -> N
     assert len(github.dispatched) == 1
     inputs = github.dispatched[0]["inputs"]
     assert inputs["pr_number"] == "42" and inputs["head_sha"] == HEAD
+    assert inputs["tested_sha"] == "a" * 40
+    assert inputs["source_run"] == "110:1"
     assert json.loads(inputs["selection"])["groups"][0]["tests"] == [NODE]
     assert done["lanes"]["cpu"]["run"]["id"] == "900"
     cancel_index = github.calls.index(("POST", "actions/runs/120/cancel"))
@@ -798,3 +811,235 @@ def test_repository_checks_explain_how_to_fix_them() -> None:
         rerun_failed._ineligible_reason("cpu", "tests_torch", "tests_torch", "cpu")
         == "job-level failure, not a single test"
     )
+
+
+@pytest.mark.parametrize("lane", ["cpu", "gpu"])
+def test_revision_validation_preserves_source_base(lane):
+    requested = []
+    tested = "a" * 40 if lane == "cpu" else "b" * 40
+
+    def api(path):
+        requested.append(path)
+        if path == "pulls/42":
+            return {
+                "state": "open",
+                "head": {"sha": HEAD},
+                "merge_commit_sha": "f" * 40,
+            }
+        if path == "actions/runs/110/attempts/2":
+            return _source("110", lane == "gpu", run_attempt=2)
+        if path == f"commits/{tested}":
+            return {"sha": tested, "parents": [{"sha": "e" * 40}, {"sha": HEAD}]}
+        raise AssertionError(path)
+
+    rerun_revision.validate(
+        api, pr="42", lane=lane, head_sha=HEAD, tested_sha=tested, source_run="110:2"
+    )
+    assert requested == ["pulls/42", "actions/runs/110/attempts/2", f"commits/{tested}"]
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "closed",
+        "new_head",
+        "wrong_attempt",
+        "wrong_id",
+        "active",
+        "wrong_workflow",
+        "wrong_event",
+        "wrong_pr",
+        "wrong_cpu_head",
+        "wrong_merge_parent",
+        "not_merge",
+        "wrong_commit",
+    ],
+)
+def test_revision_validation_rejects_bad_provenance(problem):
+    pull = {"state": "open", "head": {"sha": HEAD}}
+    run = _source("110", False)
+    commit = {"sha": "a" * 40, "parents": [{"sha": "e" * 40}, {"sha": HEAD}]}
+    if problem == "closed":
+        pull["state"] = "closed"
+    elif problem == "new_head":
+        pull["head"]["sha"] = "d" * 40
+    elif problem == "wrong_attempt":
+        run["run_attempt"] = 2
+    elif problem == "wrong_id":
+        run["id"] = 111
+    elif problem == "active":
+        run["status"] = "in_progress"
+    elif problem == "wrong_workflow":
+        run["path"] = ".github/workflows/other.yml"
+    elif problem == "wrong_event":
+        run["event"] = "push"
+    elif problem == "wrong_pr":
+        run["pull_requests"] = [{"number": 43}]
+    elif problem == "wrong_cpu_head":
+        run["head_sha"] = "d" * 40
+    elif problem == "wrong_merge_parent":
+        commit["parents"][1]["sha"] = "d" * 40
+    elif problem == "not_merge":
+        commit["parents"] = [{"sha": HEAD}]
+    elif problem == "wrong_commit":
+        commit["sha"] = "d" * 40
+    with pytest.raises(ValueError):
+        rerun_revision.validate(
+            lambda path: pull
+            if path.startswith("pulls/")
+            else run
+            if path.startswith("actions/")
+            else commit,
+            pr="42",
+            lane="cpu",
+            head_sha=HEAD,
+            tested_sha="a" * 40,
+            source_run="110:1",
+        )
+
+
+@pytest.mark.parametrize("shas", [[], [""], ["a" * 40, "b" * 40], ["a" * 40, ""]])
+def test_selection_rejects_missing_or_ambiguous_tested_commit(repo, shas):
+    snap = _snapshot(repo)
+    commits = rerun_failed.tested_commits(
+        "42",
+        lambda _: [{"metric": {"run_id": "110:1", "commit_sha": sha}} for sha in shas],
+    )
+    snap["lanes"]["cpu"]["source_run"]["commit"] = commits.get("110:1", "")
+    with pytest.raises(rerun_failed.SelectionError, match="unambiguous tested commit"):
+        rerun_failed.plan(snap, [snap["lanes"]["cpu"]["tests"][0]["key"]])
+
+
+def test_invalid_source_stops_before_cancellation(repo, tmp_path):
+    db = rerun_actions.Store(str(tmp_path / "actions.sqlite3"))
+    record = _record(repo, db)
+    github = FakeGitHub()
+    original = github.get
+    github.get = (
+        lambda path: {"state": "open", "head": {"sha": "d" * 40}}
+        if path == "pulls/42"
+        else original(path)
+    )
+    rerun_actions.run_action(record["id"], db=db, github=github, sleep=lambda _: None)
+    assert db.get(record["id"])["state"] == "failed"
+    assert github.calls == []
+
+
+def test_pr_moving_during_cancellation_prevents_dispatch(repo, tmp_path):
+    db = rerun_actions.Store(str(tmp_path / "actions.sqlite3"))
+    record = _record(repo, db)
+    github = FakeGitHub()
+    original = github.get
+    github.get = (
+        lambda path: {"state": "open", "head": {"sha": "d" * 40}}
+        if path == "pulls/42" and github.calls
+        else original(path)
+    )
+    rerun_actions.run_action(record["id"], db=db, github=github, sleep=lambda _: None)
+    assert db.get(record["id"])["state"] == "failed"
+    assert github.dispatched == []
+    assert github.calls == [("POST", "actions/runs/120/cancel")]
+
+
+def test_dispatch_keeps_distinct_cpu_gpu_source_revisions(repo, tmp_path):
+    snap = _snapshot(repo)
+    lanes = rerun_failed.plan(
+        snap, [snap["lanes"][lane]["tests"][0]["key"] for lane in ("cpu", "gpu")]
+    )
+    db = rerun_actions.Store(str(tmp_path / "actions.sqlite3"))
+    record = rerun_actions.new_record(
+        pr="42", actor="maintainer", idempotency_key="both", snap=snap, lanes=lanes
+    )
+    record["cancel"] = []
+    db.create(record)
+    github = FakeGitHub()
+    rerun_actions.run_action(record["id"], db=db, github=github, sleep=lambda _: None)
+    assert db.get(record["id"])["state"] == "completed"
+    assert [body["inputs"]["tested_sha"] for body in github.dispatched] == [
+        "a" * 40,
+        "b" * 40,
+    ]
+    assert [body["inputs"]["source_run"] for body in github.dispatched] == [
+        "110:1",
+        "210:1",
+    ]
+
+
+@pytest.mark.parametrize("lane", ["cpu", "gpu"])
+def test_workflows_checkout_original_merge_after_main_moves(lane, tmp_path):
+    import os
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+
+    def git(*args, cwd=origin):
+        return subprocess.check_output(["git", *args], cwd=cwd, text=True).strip()
+
+    git("init", "-b", "main")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.org")
+    (origin / "base").write_text("base")
+    git("add", ".")
+    git("commit", "-m", "base")
+    git("checkout", "-b", "pr")
+    (origin / "pr").write_text("PR")
+    git("add", ".")
+    git("commit", "-m", "PR")
+    head = git("rev-parse", "HEAD")
+    git("checkout", "main")
+    git("merge", "--no-ff", "pr", "-m", "original merge")
+    tested = git("rev-parse", "HEAD")
+    # Keep the original object available, but point the PR merge ref elsewhere.
+    git("update-ref", "refs/pull/42/merge", tested)
+    (origin / "main-new").write_text("main advanced")
+    git("add", ".")
+    git("commit", "-m", "new base")
+    current = git("rev-parse", "HEAD")
+    git("update-ref", "refs/pull/42/merge", current)
+    checkout = tmp_path / "checkout"
+    git("clone", str(origin), str(checkout), cwd=tmp_path)
+    workflow = yaml.safe_load(
+        (ROOT / f".github/workflows/rerun-failed-{lane}.yml").read_text()
+    )
+    steps = workflow["jobs"]["run"]["steps"]
+    if lane == "cpu":
+        assert steps[0]["with"]["ref"] == "${{ inputs.tested_sha }}"
+        # Match actions/checkout's SHA fetch with depth 2.
+        git("fetch", "--depth=2", "origin", tested, cwd=checkout)
+        git("checkout", "--detach", tested, cwd=checkout)
+        script = steps[1]["run"]
+    else:
+        script = steps[0]["run"]
+    result = subprocess.run(
+        ["bash", "-e", "-c", script],
+        cwd=checkout,
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig"),
+            "PR_NUMBER": "42",
+            "HEAD_SHA": head,
+            "TESTED_SHA": tested,
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert git("rev-parse", "HEAD", cwd=checkout) == tested != current
+    assert not (checkout / "main-new").exists()
+
+
+@pytest.mark.parametrize("lane", ["cpu", "gpu"])
+def test_caller_revision_contract(lane):
+    caller = yaml.safe_load(
+        (ROOT / f"docs/rerun-failed/transformers-rerun-failed-{lane}.yml").read_text()
+    )
+    reusable = yaml.safe_load(
+        (ROOT / f".github/workflows/rerun-failed-{lane}.yml").read_text()
+    )
+    # PyYAML's YAML 1.1 loader parses the key 'on' as True.
+    for name in ("head_sha", "tested_sha", "source_run"):
+        assert caller[True]["workflow_dispatch"]["inputs"][name]["required"]
+        assert reusable[True]["workflow_call"]["inputs"][name]["required"]
+        assert caller["jobs"]["rerun"]["with"][name] == "${{ inputs." + name + " }}"
+    assert caller["permissions"]["actions"] == "read"
+    assert caller["concurrency"]["cancel-in-progress"] is True

@@ -30,7 +30,7 @@ from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 from .. import github_app
-from . import rerun_failed
+from . import rerun_failed, rerun_revision
 
 OPEN_STATES = ("prepared", "cancelling", "dispatching")
 LIVE_STATES = (*OPEN_STATES, "dispatched")
@@ -485,7 +485,21 @@ def _find_run(github: GitHub, lane: dict) -> dict | None:
     return None
 
 
+def _validate_revisions(github: GitHub, record: dict) -> None:
+    for name, lane in record["lanes"].items():
+        source = lane.get("source_run") or {}
+        rerun_revision.validate(
+            github.get,
+            pr=record["pr"],
+            lane=name,
+            head_sha=record["head_sha"],
+            tested_sha=source.get("commit", ""),
+            source_run=source.get("run_id", ""),
+        )
+
+
 def _dispatch(db: Store, github: GitHub, record: dict, sleep: Callable) -> None:
+    _validate_revisions(github, record)
     failures = []
     for name, lane in sorted(record["lanes"].items()):
         if lane["dispatch"] == "requested" and lane["run"] is None:
@@ -508,6 +522,7 @@ def _dispatch(db: Store, github: GitHub, record: dict, sleep: Callable) -> None:
                 "inputs": {
                     "pr_number": record["pr"],
                     "head_sha": record["head_sha"],
+                    "tested_sha": (lane["source_run"] or {}).get("commit", ""),
                     "selection": lane["selection"],
                     "correlation_id": lane["correlation_id"],
                     "source_run": (lane["source_run"] or {}).get("run_id", ""),
@@ -584,6 +599,10 @@ def run_action(
         return
     github = github or default_github(record["actor"])
     try:
+        if record["state"] in OPEN_STATES:
+            # Validate every selected lane before cancelling any work. Repeat
+            # at dispatch because the PR can move while cancellation finishes.
+            _validate_revisions(github, record)
         if record["state"] == "prepared":
             record["state"] = "cancelling" if record["cancel"] else "dispatching"
             db.save(record)
