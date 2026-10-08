@@ -3,14 +3,13 @@ from __future__ import annotations
 import io
 import json
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 
-from transformersci.otel import github_app, rerun_actions, rerun_failed
+from transformersci.otel import rerun_actions, rerun_failed
 from transformersci.otel import trace_exporter
 from transformersci.status import metrics as status_metrics
 
@@ -374,59 +373,93 @@ def test_reruns_never_count_as_a_badge_stream() -> None:
     assert not trace_exporter.checks_out_own_commit("none")
 
 
-@pytest.mark.skipif(shutil.which("openssl") is None, reason="needs openssl")
-@pytest.mark.parametrize("pkcs8", [False, True])
-def test_app_jwt_signature_verifies_with_openssl(tmp_path: Path, pkcs8: bool) -> None:
-    raw = tmp_path / "raw.pem"
-    subprocess.run(
-        ["openssl", "genrsa", "-out", str(raw), "2048"], check=True, capture_output=True
-    )
-    key = tmp_path / "key.pem"
-    convert = (
-        ["openssl", "pkcs8", "-topk8", "-nocrypt"]
-        if pkcs8
-        else ["openssl", "rsa", "-traditional"]
-    )
-    converted = subprocess.run(
-        [*convert, "-in", str(raw), "-out", str(key)], capture_output=True
-    )
-    if converted.returncode and not pkcs8:  # LibreSSL: PKCS#1 is its default
-        subprocess.run(
-            ["openssl", "rsa", "-in", str(raw), "-out", str(key)],
-            check=True,
-            capture_output=True,
+class FakeSerge:
+    """serge's /dashboard/* API."""
+
+    def __init__(self, role: str = "write") -> None:
+        self.role = role
+        self.calls: list[tuple[str, dict]] = []
+        self.cancel_reply: tuple[int, dict] = (
+            200,
+            {"github_status": 202, "run_status": "in_progress"},
         )
-    pem = key.read_text()
-    assert ("BEGIN RSA PRIVATE KEY" in pem) != pkcs8
-    token = github_app.app_jwt("123", github_app.parse_private_key(pem), now=1000)
-    header, payload, signature = token.split(".")
-    claims = json.loads(github_app.base64.urlsafe_b64decode(payload + "=="))
-    assert claims == {"iat": 940, "exp": 1540, "iss": "123"}
-    pub = tmp_path / "pub.pem"
-    subprocess.run(
-        ["openssl", "rsa", "-in", str(key), "-pubout", "-out", str(pub)],
-        check=True,
-        capture_output=True,
+
+    def call(self, operation: str, body: dict) -> tuple[int, dict]:
+        self.calls.append((operation, body))
+        if operation == "permission":
+            return 200, {"can_write": self.role == "write"}
+        if operation == "runs/cancel":
+            return self.cancel_reply
+        if operation == "workflows/dispatch":
+            return 200, {"dispatched": True}
+        raise AssertionError(operation)
+
+
+def test_writes_go_through_serge_on_behalf_of_the_actor() -> None:
+    serge = FakeSerge()
+    reads = []
+    github = rerun_actions.GitHub(
+        "maintainer", serge, read=lambda path: reads.append(path) or (200, {"ok": 1})
     )
-    (tmp_path / "msg").write_bytes(f"{header}.{payload}".encode())
-    (tmp_path / "sig").write_bytes(
-        github_app.base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
+    assert github.get("pulls/42") == {"ok": 1} and reads == ["pulls/42"]
+    assert github.request("POST", "actions/runs/120/cancel") == (202, None)
+    serge.cancel_reply = (200, {"github_status": 409})
+    assert github.request("POST", "actions/runs/120/cancel") == (409, None)
+    # Already completed: serge made no call; the worker re-reads, as on a 409.
+    serge.cancel_reply = (200, {"github_status": None, "run_status": "completed"})
+    assert github.request("POST", "actions/runs/120/cancel") == (409, None)
+    serge.cancel_reply = (403, {"detail": "workflow_not_cancellable"})
+    assert github.request("POST", "actions/runs/120/cancel")[0] == 403
+    status, _ = github.request(
+        "POST",
+        "actions/workflows/rerun-failed-cpu.yml/dispatches",
+        {"ref": "main", "inputs": {"pr_number": "42"}},
     )
-    verified = subprocess.run(
-        [
-            "openssl",
-            "dgst",
-            "-sha256",
-            "-verify",
-            str(pub),
-            "-signature",
-            str(tmp_path / "sig"),
-            str(tmp_path / "msg"),
-        ],
-        capture_output=True,
-        text=True,
+    assert status == 204
+    assert serge.calls[0] == ("runs/cancel", {"actor": "maintainer", "run_id": "120"})
+    assert serge.calls[-1] == (
+        "workflows/dispatch",
+        {
+            "actor": "maintainer",
+            "workflow": "rerun-failed-cpu.yml",
+            "inputs": {"pr_number": "42"},
+        },
     )
-    assert verified.stdout.strip() == "Verified OK"
+    with pytest.raises(ValueError):
+        github.request("POST", "pulls/42/merge")
+    assert rerun_actions.can_write(serge, "maintainer")
+    assert not rerun_actions.can_write(FakeSerge(role="read"), "someone")
+
+
+def test_serge_client_sends_the_token_and_repository(monkeypatch) -> None:
+    sent = {}
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class Opener:
+        def open(self, request, timeout):
+            sent["url"] = request.full_url
+            sent["auth"] = request.get_header("Authorization")
+            sent["body"] = json.loads(request.data)
+            return Response(b'{"can_write": true}')
+
+    monkeypatch.setattr(rerun_actions, "build_opener", lambda *a: Opener())
+    status, payload = rerun_actions.Serge("http://serge.local", "s3cret").call(
+        "permission", {"actor": "maintainer"}
+    )
+    assert (status, payload) == (200, {"can_write": True})
+    assert sent == {
+        "url": "http://serge.local/dashboard/permission",
+        "auth": "Bearer s3cret",
+        "body": {"repository": "huggingface/transformers", "actor": "maintainer"},
+    }
 
 
 class FakeGitHub:
@@ -589,21 +622,11 @@ class _Handler(trace_exporter.MetricsHandler):
 @pytest.fixture
 def enabled(monkeypatch, tmp_path, repo):
     db = rerun_actions.Store(str(tmp_path / "actions.sqlite3"))
-    github = FakeGitHub()
-    github.request_permission = "write"
-    original = github.request
-
-    def request(method, path, body=None):
-        if "/permission" in path:
-            return 200, {"role_name": github.request_permission}
-        return original(method, path, body)
-
-    github.request = request
-    github.get = repo  # snapshot reads go to the fake repository
+    serge = FakeSerge()
     started: list[str] = []
     monkeypatch.setattr(rerun_actions, "dispatch_enabled", lambda: (True, ""))
     monkeypatch.setattr(rerun_actions, "store", lambda: db)
-    monkeypatch.setattr(rerun_actions, "default_github", lambda: github)
+    monkeypatch.setattr(rerun_actions, "default_serge", lambda: serge)
     monkeypatch.setattr(rerun_actions, "start", started.append)
     monkeypatch.setattr(
         trace_exporter.MetricsHandler,
@@ -613,7 +636,7 @@ def enabled(monkeypatch, tmp_path, repo):
     monkeypatch.setattr(
         trace_exporter.MetricsHandler, "_action_user", lambda self: "maintainer"
     )
-    return {"db": db, "github": github, "started": started, "snap": _snapshot(repo)}
+    return {"db": db, "serge": serge, "started": started, "snap": _snapshot(repo)}
 
 
 def _post(body: dict, headers: dict | None = None) -> _Handler:
@@ -662,7 +685,7 @@ def test_post_refuses_unsafe_requests(enabled) -> None:
         == "stale_selection"
     )
     assert _post(_body(snap, pr="x")).replies[-1][0] == 400
-    enabled["github"].request_permission = "read"
+    enabled["serge"].role = "read"
     assert _post(_body(snap)).replies[-1] == (403, {"status": "no_write_access"})
 
 
@@ -675,6 +698,14 @@ def test_post_refuses_a_pr_that_is_no_longer_open(enabled, repo) -> None:
 def test_post_is_off_until_enabled(monkeypatch) -> None:
     monkeypatch.delenv("PYTEST_TRACE_EXPORTER_RERUN_DISPATCH", raising=False)
     assert rerun_actions.dispatch_enabled()[0] is False
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_RERUN_DISPATCH", "1")
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_RERUN_DB", "/tmp/x.sqlite3")
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_SERGE_DASHBOARD_TOKEN", raising=False)
+    assert rerun_actions.dispatch_enabled() == (
+        False,
+        "The serge connection is not configured.",
+    )
+    monkeypatch.delenv("PYTEST_TRACE_EXPORTER_RERUN_DISPATCH")
     handler = _Handler({}, {"X-TCI-Action": "1"})
     handler._serve_rerun_failed_action()
     assert handler.replies[-1][1]["status"] == "disabled"

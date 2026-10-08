@@ -191,11 +191,14 @@ traceExporter:
     billTo: ""
     grafanaUrl: http://grafana:3000
   # "Re-run failed tests" on the PR page. The picker is always public; the
-  # action that cancels and dispatches runs needs dispatch: true AND the GitHub
-  # App keys (secrets.keys.rerunApp*) — either missing keeps it read-only.
-  # Actions are kept in a SQLite file on the run-store volume.
+  # action that cancels and dispatches runs needs dispatch: true AND the serge
+  # token (secrets.keys.sergeDashboardToken) — either missing keeps it
+  # read-only. serge makes the GitHub writes with its App (/dashboard/* on
+  # serge); the exporter holds no write credential. Actions are kept in a
+  # SQLite file on the run-store volume.
   rerunFailed:
     dispatch: false
+    sergeUrl: http://serge.serge.svc.cluster.local
   # Set to a commit SHA or other source identifier to trigger a rollout when
   # source code changes but the rendered Deployment would otherwise be unchanged.
   sourceRevision: ""
@@ -679,12 +682,9 @@ secrets:
     githubOauthClientSecret: grafana-github-oauth-client-secret
     # LLM API key for the exporter's WDYT? answers. Optional.
     llmApiKey: llm-api-key
-    # GitHub App the "Re-run failed tests" action dispatches and cancels with
-    # (Actions: write; Issues, Pull requests and Metadata: read; installed on
-    # huggingface/transformers only). Optional; absent = read-only picker.
-    rerunAppId: rerun-github-app-id
-    rerunAppInstallationId: rerun-github-app-installation-id
-    rerunAppPrivateKey: rerun-github-app-private-key
+    # Bearer token for serge's /dashboard/* API ("Re-run failed tests"); the
+    # same value is DASHBOARD_API_TOKEN in Infisical /serge. Optional.
+    sergeDashboardToken: serge-dashboard-token
   placeholder:
     # Only used when secrets.create is true
     traceApiKey: ""

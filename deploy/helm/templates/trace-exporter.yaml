@@ -151,14 +151,14 @@ spec:
             {{- end }}
             - name: PYTEST_TRACE_EXPORTER_RERUN_DISPATCH
               value: {{ ternary "1" "0" .Values.traceExporter.rerunFailed.dispatch | quote }}
-            {{- range $name, $key := dict "PYTEST_TRACE_EXPORTER_GITHUB_APP_ID" .Values.secrets.keys.rerunAppId "PYTEST_TRACE_EXPORTER_GITHUB_APP_INSTALLATION_ID" .Values.secrets.keys.rerunAppInstallationId "PYTEST_TRACE_EXPORTER_GITHUB_APP_PRIVATE_KEY" .Values.secrets.keys.rerunAppPrivateKey }}
-            - name: {{ $name }}
+            - name: PYTEST_TRACE_EXPORTER_SERGE_URL
+              value: {{ .Values.traceExporter.rerunFailed.sergeUrl | quote }}
+            - name: PYTEST_TRACE_EXPORTER_SERGE_DASHBOARD_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ $.Values.secrets.name }}
-                  key: {{ $key }}
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.sergeDashboardToken }}
                   optional: true
-            {{- end }}
             - name: PYTEST_GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:

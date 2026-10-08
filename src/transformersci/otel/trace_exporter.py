@@ -7166,6 +7166,13 @@ def render_run_html(
     return "".join(out)
 
 
+def _rerun_github_api(path: str) -> object:
+    """GET under the rerun repository's REST root, with the exporter's token."""
+    return _github_api_get(
+        f"https://api.github.com/repos/{rerun_failed.REPOSITORY}/{path}"
+    )
+
+
 class MetricsHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         self._request_started = time.monotonic()
@@ -7671,13 +7678,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._reply_json(400, {"status": "invalid_pr"})
             return
 
-        def api(path: str) -> object:
-            return _github_api_get(
-                f"https://api.github.com/repos/{rerun_failed.REPOSITORY}/{path}"
-            )
-
         try:
-            result = self._rerun_snapshot(pr, api)
+            result = self._rerun_snapshot(pr, _rerun_github_api)
         except Exception:
             self._reply_json(503, {"status": "source_unavailable"})
             return
@@ -7775,8 +7777,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                         },
                     )
                 return
-            github = rerun_actions.default_github()
-            if not rerun_actions.can_write(github, login):
+            if not rerun_actions.can_write(rerun_actions.default_serge(), login):
                 reply(403, {"status": "no_write_access"})
                 return
             hour_ago = time.time() - 3600
@@ -7788,7 +7789,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
             ):
                 reply(429, {"status": "rate_limited"})
                 return
-            snap = self._rerun_snapshot(pr, github.get)
+            snap = self._rerun_snapshot(pr, _rerun_github_api)
         except Exception:
             reply(503, {"status": "source_unavailable"})
             return

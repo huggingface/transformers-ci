@@ -1,6 +1,10 @@
 """Durable rerun actions: cancel the confirmed source runs, then dispatch at
 most one targeted workflow run per lane.
 
+The exporter holds no GitHub write credential: serge makes the writes with its
+App (``/dashboard/*`` on serge, behind a shared service token, checking the
+acting user's write access itself). GitHub reads use the exporter's own token.
+
 An action is a row in a SQLite database on the exporter's persistent volume, so
 a restart resumes it rather than repeating it. Two database rules carry the
 safety: an idempotency key is UNIQUE (a retried POST returns the first action),
@@ -23,10 +27,9 @@ import threading
 import time
 from collections.abc import Callable
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 from . import rerun_failed
-from .github_app import AppTokens
 
 OPEN_STATES = ("prepared", "cancelling", "dispatching")
 LIVE_STATES = (*OPEN_STATES, "dispatched")
@@ -47,28 +50,19 @@ class Busy(Exception):
 def dispatch_enabled() -> tuple[bool, str]:
     if os.getenv("PYTEST_TRACE_EXPORTER_RERUN_DISPATCH", "").strip() != "1":
         return False, "Dispatch is not enabled yet."
-    if tokens() is None:
-        return False, "Dispatch credentials are not configured."
+    if not (serge_url() and serge_token()):
+        return False, "The serge connection is not configured."
     if not database_path():
         return False, "No persistent store for rerun actions."
     return True, ""
 
 
-_tokens: AppTokens | None = None
-_tokens_loaded = False
-_tokens_lock = threading.Lock()
+def serge_url() -> str:
+    return os.getenv("PYTEST_TRACE_EXPORTER_SERGE_URL", "").strip().rstrip("/")
 
 
-def tokens() -> AppTokens | None:
-    global _tokens, _tokens_loaded
-    with _tokens_lock:
-        if not _tokens_loaded:
-            try:
-                _tokens = AppTokens.from_env(rerun_failed.REPOSITORY)
-            except ValueError:
-                _tokens = None
-            _tokens_loaded = True
-        return _tokens
+def serge_token() -> str:
+    return os.getenv("PYTEST_TRACE_EXPORTER_SERGE_DASHBOARD_TOKEN", "").strip()
 
 
 def database_path() -> str:
@@ -195,37 +189,110 @@ def store() -> Store:
         return _store
 
 
-class GitHub:
-    """Authenticated REST calls under the repository root."""
+class Serge:
+    """serge's dashboard API: the GitHub writes, made with serge's App."""
 
-    def __init__(self, token: Callable[[], str], repository: str) -> None:
-        self._token = token
-        self.root = f"https://api.github.com/repos/{repository}"
+    def __init__(self, url: str, token: str) -> None:
+        self.url = url
+        self.token = token
 
-    def request(
-        self, method: str, path: str, body: dict | None = None
-    ) -> tuple[int, object]:
+    def call(self, operation: str, body: dict) -> tuple[int, dict]:
         request = Request(
-            f"{self.root}/{path}",
-            data=None if body is None else json.dumps(body).encode(),
-            method=method,
+            f"{self.url}/dashboard/{operation}",
+            data=json.dumps({"repository": rerun_failed.REPOSITORY, **body}).encode(),
+            method="POST",
             headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {self._token()}",
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
                 "User-Agent": "transformersci-rerun-failed",
-                "X-GitHub-Api-Version": "2022-11-28",
             },
         )
         try:
-            with urlopen(request, timeout=15) as response:
+            # In-cluster Service: never through a proxy.
+            with build_opener(ProxyHandler({})).open(request, timeout=30) as response:
                 status, raw = response.status, response.read()
         except HTTPError as error:
             status, raw = error.code, error.read()
         try:
-            payload = json.loads(raw) if raw else None
+            payload = json.loads(raw) if raw else {}
         except ValueError:
-            payload = None
-        return status, payload
+            payload = {}
+        return status, payload if isinstance(payload, dict) else {}
+
+
+def _github_read(path: str) -> tuple[int, object]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "transformersci-rerun-failed",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.getenv("PYTEST_GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = Request(
+        f"https://api.github.com/repos/{rerun_failed.REPOSITORY}/{path}",
+        headers=headers,
+    )
+    try:
+        with urlopen(request, timeout=15) as response:
+            status, raw = response.status, response.read()
+    except HTTPError as error:
+        status, raw = error.code, error.read()
+    try:
+        return status, json.loads(raw) if raw else None
+    except ValueError:
+        return status, None
+
+
+class GitHub:
+    """The repository as one action's worker sees it: reads with the
+    exporter's token, the two writes through serge on behalf of ``actor``.
+    Writes answer in GitHub's own status codes, so the worker cannot tell the
+    difference: a cancel is 202 (accepted) or 409 (finishing or finished), a
+    dispatch 204."""
+
+    def __init__(
+        self,
+        actor: str,
+        serge: Serge,
+        read: Callable[[str], tuple[int, object]] = _github_read,
+    ) -> None:
+        self.actor = actor
+        self.serge = serge
+        self._read = read
+
+    def request(
+        self, method: str, path: str, body: dict | None = None
+    ) -> tuple[int, object]:
+        if method == "GET":
+            return self._read(path)
+        parts = path.split("/")
+        if (
+            method == "POST"
+            and parts[:2] == ["actions", "runs"]
+            and parts[3:] == ["cancel"]
+        ):
+            status, payload = self.serge.call(
+                "runs/cancel", {"actor": self.actor, "run_id": parts[2]}
+            )
+            if status != 200:
+                return status, payload
+            return payload.get("github_status") or 409, None
+        if (
+            method == "POST"
+            and parts[:2] == ["actions", "workflows"]
+            and parts[3:] == ["dispatches"]
+        ):
+            status, payload = self.serge.call(
+                "workflows/dispatch",
+                {
+                    "actor": self.actor,
+                    "workflow": parts[2],
+                    "inputs": (body or {}).get("inputs") or {},
+                },
+            )
+            return (204, None) if status == 200 else (status, payload)
+        raise ValueError(f"no write path for {method} {path}")
 
     def get(self, path: str) -> object:
         status, payload = self.request("GET", path)
@@ -234,21 +301,22 @@ class GitHub:
         return payload
 
 
-def default_github() -> GitHub:
-    app = tokens()
-    if app is None:
-        raise ValueError("dispatch credentials are not configured")
-    return GitHub(app.token, rerun_failed.REPOSITORY)
+def default_serge() -> Serge:
+    if not (serge_url() and serge_token()):
+        raise ValueError("the serge connection is not configured")
+    return Serge(serge_url(), serge_token())
 
 
-def can_write(github: GitHub, login: str) -> bool:
+def default_github(actor: str) -> GitHub:
+    return GitHub(actor, default_serge())
+
+
+def can_write(serge: Serge, login: str) -> bool:
     """Does ``login`` have write access to the repository? The same bar as
-    run-slow, which only maintainers and collaborators can trigger."""
-    status, payload = github.request("GET", f"collaborators/{login}/permission")
-    if status != 200 or not isinstance(payload, dict):
-        return False
-    role = payload.get("role_name") or payload.get("permission")
-    return role in WRITE_ROLES
+    run-slow, which only maintainers and collaborators can trigger. serge
+    answers with its App and enforces it again on every write."""
+    status, payload = serge.call("permission", {"actor": login})
+    return status == 200 and payload.get("can_write") is True
 
 
 def new_record(
@@ -510,10 +578,10 @@ def run_action(
 ) -> None:
     """Drive one action to a final state. Safe to call again after a crash."""
     db = db or store()
-    github = github or default_github()
     record = db.get(action_id)
     if record is None:
         return
+    github = github or default_github(record["actor"])
     try:
         if record["state"] == "prepared":
             record["state"] = "cancelling" if record["cancel"] else "dispatching"
