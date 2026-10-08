@@ -69,6 +69,7 @@ from urllib.request import Request, urlopen
 
 from transformersci.otel.pr_search import SEARCH_HTML
 from transformersci.otel import related_issues
+from transformersci.otel import rerun_failed
 from transformersci.otel import serge_actions
 from transformersci.otel import wdyt
 
@@ -7360,6 +7361,19 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 cache_control="no-store",
             )
             return
+        if parsed.path == "/rerun-failed/data":
+            self._request_route = "/rerun-failed/data"
+            self._serve_rerun_failed_data(parse_qs(parsed.query))
+            return
+        if parsed.path == "/rerun-failed":
+            self._request_route = "/rerun-failed"
+            self._send(
+                200,
+                "text/html; charset=utf-8",
+                rerun_failed.PAGE_HTML.encode(),
+                cache_control="no-store",
+            )
+            return
         if parsed.path == "/run":
             self._request_route = "/run"
             self._serve_run(parse_qs(parsed.query))
@@ -7607,6 +7621,45 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self._observe_response(302, 0)
+
+    def _serve_rerun_failed_data(self, params: dict[str, list[str]]) -> None:
+        if not self._action_user():
+            return
+        pr = (params.get("pr") or [""])[0].strip()
+        if not re.fullmatch(r"[1-9][0-9]*", pr):
+            self._reply_json(400, {"status": "invalid_pr"})
+            return
+        base_url = prometheus_base_url()
+        if not base_url:
+            self._reply_json(503, {"status": "prometheus_unavailable"})
+            return
+
+        def query(expr: str) -> list[dict]:
+            url = f"{base_url}/api/v1/query?{urlencode({'query': expr})}"
+            payload = _http_get_json(url, upstream="prometheus")
+            if not isinstance(payload, dict) or payload.get("status") != "success":
+                raise ValueError("Prometheus query failed")
+            data = payload.get("data")
+            if not isinstance(data, dict) or not isinstance(data.get("result"), list):
+                raise ValueError("Prometheus response incomplete")
+            return data["result"]
+
+        def get_run(run_id: str) -> dict:
+            payload = _github_api_get(
+                f"https://api.github.com/repos/{rerun_failed.REPOSITORY}/actions/runs/{run_id}"
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("GitHub run response incomplete")
+            return payload
+
+        try:
+            result = rerun_failed.snapshot(
+                pr, query=query, get_run=get_run, get_rows=gather_run_test_rows
+            )
+        except Exception:
+            self._reply_json(503, {"status": "source_unavailable"})
+            return
+        self._reply_json(200, {"status": "ok", **result})
 
     def _serve_run(self, params: dict[str, list[str]]) -> None:
         run_id = (params.get("run_id") or [""])[0].strip()
