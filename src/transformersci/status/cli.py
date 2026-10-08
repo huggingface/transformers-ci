@@ -28,6 +28,7 @@ import threading
 import time
 from collections.abc import Sequence
 
+from .. import github_app
 from .reconcile import GitHubClient, Reconciler, Settings
 from .server import Service, serve
 from .store import Store
@@ -139,11 +140,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         daemon=True,
         name="prune",
     ).start()
-    token = os.environ.get(args.github_token_env, "")
-    if token:
+    if github_app.configured() or os.environ.get(args.github_token_env, ""):
         reconciler = Reconciler(
             store,
-            GitHubClient(token),
+            GitHubClient(lambda: github_app.read_token((args.github_token_env,))),
             service.filters,
             Settings(
                 interval_seconds=args.reconcile_interval,
@@ -156,8 +156,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         ).start()
     else:
         print(
-            f"[ci-github-status] ${args.github_token_env} is empty: reconciliation is"
-            " off, so missed webhooks are not repaired",
+            f"[ci-github-status] no GitHub App and ${args.github_token_env} is empty:"
+            " reconciliation is off, so missed webhooks are not repaired",
             file=sys.stderr,
             flush=True,
         )
