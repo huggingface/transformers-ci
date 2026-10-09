@@ -6,6 +6,8 @@ the slot of Grafana's own "Search..." box (which only finds dashboard
 titles). This page is that iframe. It is same-origin with Grafana (the ingress
 routes ``/pr-search`` here), so it hides Grafana's box, sizes its own frame, and
 queries Prometheus through Grafana's ``/api/ds/query`` like any panel does.
+It also replaces Grafana's menu and breadcrumbs with the Hugging Face emoji
+and the current dashboard's navigation links.
 Until it loads the frame is 0x0, so a down exporter leaves Grafana's box alone.
 """
 
@@ -78,11 +80,93 @@ a.row.sel,a.row:hover{background:var(--hover)}
       "' stroke-width='2'><circle cx='11' cy='11' r='7'/><path d='m20 20-3.5-3.5'/></svg>\\")";
   }
 
+  // Keep this customization in the shared loader rather than each dashboard.
+  // Clone dashboard links: moving React-owned nodes breaks later renders.
+  function header() {
+    var h = pd.querySelector('header'), crumbs = h && h.querySelector('nav[aria-label="Breadcrumbs"]');
+    if (!crumbs) return;
+    if (!pd.getElementById('tci-header-style')) {
+      var style = pd.createElement('style');
+      style.id = 'tci-header-style';
+      style.textContent = '.main-view:has(#tci-header-nav) main{padding-left:0!important}' +
+        'header:has(#tci-header-nav){left:0!important;width:100%!important}' +
+        '[data-testid="data-testid navigation mega-menu"],button[aria-label="Open menu"],' +
+        'button[aria-label="Toggle menu"],button[aria-label="Close menu"],button[aria-label="Main menu"],' +
+        'header nav[aria-label="Breadcrumbs"],body:has(#tci-header-nav) [data-testid="data-testid Dashboard link"]{display:none!important}' +
+        'body:has(#tci-header-nav) [data-testid="data-testid new share link-button"],' +
+        '[data-tci-empty-controls="true"]{display:none!important}' +
+        'body:has(#tci-header-nav) [data-testid="data-testid Sidebar container"]{display:none!important}' +
+        'body:has(#tci-header-nav) [data-testid="data-testid DashboardSidebarSplitter primary body"]{padding-right:0!important}' +
+        '#tci-header-nav{display:flex;align-items:center;gap:8px;min-width:0;overflow-x:auto;white-space:nowrap}' +
+        '#tci-header-nav a{display:inline-flex;align-items:center;box-sizing:border-box;height:32px;flex:none;color:inherit;text-decoration:none;border:1px solid rgba(128,128,128,.4);border-radius:4px;padding:0 8px;font:600 12px/18px Inter,system-ui,sans-serif}' +
+        '#tci-header-nav a:hover{background:rgba(128,128,128,.15)}' +
+        '#tci-header-nav a:focus-visible{outline:2px solid #6e9fff;outline-offset:-2px}' +
+        '#tci-header-nav a[aria-current="page"]{border-color:#6e9fff}' +
+        '#tci-header-nav .tci-home{display:flex;align-items:center;gap:8px;font-size:14px;border:0;padding:0 4px;line-height:32px}' +
+        '#tci-header-nav .tci-home .tci-emoji{font-size:26px}' +
+        '@media(max-width:1250px){header:has(#tci-header-nav){height:128px!important}' +
+        '.main-view:has(#tci-header-nav)>div:not([data-testid="data-testid navigation mega-menu"]){padding-top:128px!important}' +
+        '#tci-header-nav{position:absolute;top:44px;left:16px;right:16px;max-width:none}' +
+        '#tci-header-nav .tci-home{position:fixed;top:4px;left:16px}' +
+        'header img[alt="Grafana"]{display:none!important}}';
+      pd.head.appendChild(style);
+    }
+    var nav = pd.getElementById('tci-header-nav');
+    if (!nav) {
+      nav = pd.createElement('nav');
+      nav.id = 'tci-header-nav';
+      nav.setAttribute('aria-label', 'CI dashboards');
+      crumbs.parentNode.insertBefore(nav, crumbs);
+    }
+    var links = Array.from(pd.querySelectorAll('[data-testid="data-testid Dashboard link"]'));
+    var signature = JSON.stringify(links.map(function (a) { return [a.textContent, a.getAttribute('href')]; }));
+    if (nav.dataset.links !== signature) {
+      nav.dataset.links = signature;
+      nav.replaceChildren();
+      var home = pd.createElement('a');
+      home.href = '/';
+      home.className = 'tci-home';
+      var emoji = pd.createElement('span');
+      emoji.className = 'tci-emoji';
+      emoji.textContent = '\\uD83E\\uDD17';
+      emoji.setAttribute('aria-hidden', 'true');
+      home.appendChild(emoji);
+      home.appendChild(pd.createTextNode('Transformers CI'));
+      home.setAttribute('aria-label', 'Transformers CI home');
+      nav.appendChild(home);
+      links.forEach(function (a) {
+        var copy = pd.createElement('a');
+        copy.href = a.getAttribute('href');
+        copy.textContent = a.textContent;
+        copy.title = a.title || a.textContent;
+        if (a.target) copy.target = a.target;
+        if (a.rel) copy.rel = a.rel;
+        if (a.pathname === parent.location.pathname) copy.setAttribute('aria-current', 'page');
+        nav.appendChild(copy);
+      });
+    }
+    // Remove the empty controls row, but retain rows with variables or time controls.
+    var controls = pd.querySelector('[data-testid="data-testid dashboard controls"]');
+    if (controls && controls.parentElement) {
+      var keep = Array.from(controls.querySelectorAll('button,input,select,[role="combobox"]')).some(function (el) {
+        return !el.closest('[data-testid="data-testid new share link-button"],[data-testid="data-testid Dashboard link container"]');
+      });
+      controls.parentElement.dataset.tciEmptyControls = keep ? 'false' : 'true';
+    }
+  }
+
   // Follow Grafana's header: gone in kiosk mode and on pages without one.
   function place() {
+    header();
     var h = pd.querySelector("header"), show = !!(h && h.getBoundingClientRect().height > 0);
     fe.style.display = show ? "block" : "none";
-    fe.style.width = Math.min(WIDTH, Math.max(160, parent.innerWidth - 380)) + "px";
+    var narrow = parent.innerWidth <= 1250;
+    var nav = pd.getElementById('tci-header-nav');
+    fe.style.top = narrow ? '88px' : (nav ? nav.getBoundingClientRect().top : 8) + 'px';
+    fe.style.left = narrow ? '16px' : 'auto';
+    fe.style.right = narrow ? 'auto' : '160px';
+    fe.style.transform = 'none';
+    fe.style.width = Math.min(WIDTH, Math.max(160, parent.innerWidth - (narrow ? 32 : 850))) + "px";
     if (!list.classList.contains("open")) fe.style.height = "32px";
   }
   function grow() {
