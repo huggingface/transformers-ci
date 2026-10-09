@@ -23,14 +23,7 @@
   },
   "editable": true,
   "graphTooltip": 0,
-  "links": [
-    {
-      "targetBlank": false,
-      "title": "Back to Overview",
-      "type": "link",
-      "url": "/d/pytest-observability/pytest-observability"
-    }
-  ],
+  "links": [],
   "refresh": "10s",
   "panels": [
     {

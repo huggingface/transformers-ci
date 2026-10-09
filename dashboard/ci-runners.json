@@ -5,14 +5,7 @@
   "editable": true,
   "graphTooltip": 0,
   "id": null,
-  "links": [
-    {
-      "targetBlank": false,
-      "title": "Back to Overview",
-      "type": "link",
-      "url": "/d/pytest-observability/overview"
-    }
-  ],
+  "links": [],
   "panels": [
     {
       "id": 1,

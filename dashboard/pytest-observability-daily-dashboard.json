@@ -969,12 +969,6 @@
   "links": [
     {
       "targetBlank": false,
-      "title": "Back to overview",
-      "type": "link",
-      "url": "/d/pytest-observability/overview"
-    },
-    {
-      "targetBlank": false,
       "title": "Main health",
       "type": "link",
       "url": "/d/pytest-test-health/test-health"
