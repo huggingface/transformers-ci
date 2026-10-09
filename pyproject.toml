@@ -63,6 +63,7 @@ dev = [
 [project.scripts]
 configure-ci-otel = "transformersci.otel.cli:main"
 report-ci-failure = "transformersci.otel.report_failure:main"
+report-killed-jobs = "transformersci.otel.report_killed_jobs:main"
 report-ci-start = "transformersci.otel.report_start:main"
 pytest-trace-exporter = "transformersci.otel.trace_exporter:main"
 ci-github-status = "transformersci.status.cli:main"
