@@ -80,6 +80,71 @@ a.row.sel,a.row:hover{background:var(--hover)}
       "' stroke-width='2'><circle cx='11' cy='11' r='7'/><path d='m20 20-3.5-3.5'/></svg>\\")";
   }
 
+  function easterEgg(emoji) {
+    var timer;
+    emoji.addEventListener('mouseenter', function () {
+      parent.clearTimeout(timer);
+      timer = parent.setTimeout(explode, 30000);
+    });
+    emoji.addEventListener('mouseleave', function () { parent.clearTimeout(timer); });
+    function explode() {
+      if (!emoji.isConnected || parent.matchMedia('(prefers-reduced-motion: reduce)').matches ||
+          pd.getElementById('tci-emoji-burst')) return;
+      var canvas = pd.createElement('canvas');
+      canvas.id = 'tci-emoji-burst';
+      canvas.setAttribute('aria-hidden', 'true');
+      canvas.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:2000';
+      var width = parent.innerWidth, height = parent.innerHeight, ratio = Math.min(parent.devicePixelRatio || 1, 2);
+      canvas.width = width * ratio;
+      canvas.height = height * ratio;
+      pd.body.appendChild(canvas);
+      var ctx = canvas.getContext('2d');
+      if (!ctx) { canvas.remove(); return; }
+      ctx.scale(ratio, ratio);
+      var rect = emoji.getBoundingClientRect(), x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+      var colors = ['#ffd21e', '#ff9d24', '#fff3a6', '#ff6644', '#ffffff'];
+      var particles = Array.from({length: 180}, function (_, i) {
+        var life = 2.4 + Math.random() * 1.4;
+        return {emoji: i < 30, life: life, vx: (Math.random() * width * 1.3 - x) / life,
+          vy: (Math.random() * height - y) / life - 150, spin: Math.random() * 6 - 3,
+          size: 18 + Math.random() * 18, color: colors[i % colors.length]};
+      });
+      var start = parent.performance.now();
+      function frame(now) {
+        var t = (now - start) / 1000;
+        ctx.clearRect(0, 0, width, height);
+        particles.forEach(function (p) {
+          if (t >= p.life) return;
+          var px = x + p.vx * t, py = y + p.vy * t + 80 * t * t;
+          ctx.globalAlpha = Math.min(1, (p.life - t) * 2);
+          if (p.emoji) {
+            ctx.save();
+            ctx.translate(px, py);
+            ctx.rotate(p.spin * t);
+            ctx.font = p.size + 'px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('\\uD83E\\uDD17', 0, 0);
+            ctx.restore();
+          } else {
+            ctx.strokeStyle = p.color;
+            ctx.shadowColor = p.color;
+            ctx.shadowBlur = 8;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(px, py);
+            ctx.lineTo(px - p.vx * .035, py - (p.vy + 160 * t) * .035);
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+          }
+        });
+        if (t < 4) parent.requestAnimationFrame(frame);
+        else canvas.remove();
+      }
+      parent.requestAnimationFrame(frame);
+    }
+  }
+
   // Keep this customization in the shared loader rather than each dashboard.
   // Clone dashboard links: moving React-owned nodes breaks later renders.
   function header() {
@@ -97,7 +162,9 @@ a.row.sel,a.row:hover{background:var(--hover)}
         'body:has(#tci-header-nav) [data-testid="data-testid new share link-button"],' +
         '[data-tci-empty-controls="true"]{display:none!important}' +
         'body:has(#tci-header-nav) [data-testid="data-testid Sidebar container"]{display:none!important}' +
-        'body:has(#tci-header-nav) [data-testid="data-testid DashboardSidebarSplitter primary body"]{padding-right:0!important}' +
+        'body:has(#tci-header-nav) [data-testid="data-testid Edit dashboard button"],' +
+        'body:has(#tci-header-nav) [data-testid="data-testid Mark as favorite"]{display:none!important}' +
+        'body:has(#tci-header-nav) [data-testid="data-testid DashboardSidebarSplitter primary body"]{padding-right:0!important;padding-top:4px}' +
         '#tci-header-nav{display:flex;align-items:center;gap:8px;min-width:0;overflow-x:auto;white-space:nowrap}' +
         '#tci-header-nav a{display:inline-flex;align-items:center;box-sizing:border-box;height:32px;flex:none;color:inherit;text-decoration:none;border:1px solid rgba(128,128,128,.4);border-radius:4px;padding:0 8px;font:600 12px/18px Inter,system-ui,sans-serif}' +
         '#tci-header-nav a:hover{background:rgba(128,128,128,.15)}' +
@@ -132,6 +199,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
       emoji.textContent = '\\uD83E\\uDD17';
       emoji.setAttribute('aria-hidden', 'true');
       home.appendChild(emoji);
+      easterEgg(emoji);
       home.appendChild(pd.createTextNode('Transformers CI'));
       home.setAttribute('aria-label', 'Transformers CI home');
       nav.appendChild(home);
@@ -150,7 +218,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
     var controls = pd.querySelector('[data-testid="data-testid dashboard controls"]');
     if (controls && controls.parentElement) {
       var keep = Array.from(controls.querySelectorAll('button,input,select,[role="combobox"]')).some(function (el) {
-        return !el.closest('[data-testid="data-testid new share link-button"],[data-testid="data-testid Dashboard link container"]');
+        return !el.closest('[data-testid="data-testid new share link-button"],[data-testid="data-testid Dashboard link container"],[data-testid="data-testid Edit dashboard button"],[data-testid="data-testid Mark as favorite"]');
       });
       controls.parentElement.dataset.tciEmptyControls = keep ? 'false' : 'true';
     }

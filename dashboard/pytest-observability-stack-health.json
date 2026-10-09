@@ -26,12 +26,6 @@
  "links": [
   {
    "targetBlank": false,
-   "title": "Back to Overview",
-   "type": "link",
-   "url": "/d/pytest-observability/overview"
-  },
-  {
-   "targetBlank": false,
    "title": "Daily runs",
    "type": "link",
    "url": "/d/pytest-observability-daily/daily"
@@ -2731,15 +2725,15 @@
     "name": "dashboard_version",
     "type": "constant",
     "label": "Dashboard version",
-    "query": "0.2.2",
+    "query": "0.2.3",
     "current": {
-     "text": "0.2.2",
-     "value": "0.2.2"
+     "text": "0.2.3",
+     "value": "0.2.3"
     },
     "options": [
      {
-      "text": "0.2.2",
-      "value": "0.2.2",
+      "text": "0.2.3",
+      "value": "0.2.3",
       "selected": true
      }
     ],

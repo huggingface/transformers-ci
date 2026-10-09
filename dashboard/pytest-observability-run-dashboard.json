@@ -26,12 +26,6 @@
   "links": [
     {
       "targetBlank": false,
-      "title": "Back to Overview",
-      "type": "link",
-      "url": "/d/pytest-observability/overview"
-    },
-    {
-      "targetBlank": false,
       "title": "Back to PR",
       "type": "link",
       "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr}"
