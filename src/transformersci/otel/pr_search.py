@@ -92,6 +92,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
         'header:has(#tci-header-nav){left:0!important;width:100%!important}' +
         '[data-testid="data-testid navigation mega-menu"],button[aria-label="Open menu"],' +
         'button[aria-label="Toggle menu"],button[aria-label="Close menu"],button[aria-label="Main menu"],' +
+        'header:has(#tci-header-nav) [data-testid="data-testid Home breadcrumb"],' +
         'header nav[aria-label="Breadcrumbs"],body:has(#tci-header-nav) [data-testid="data-testid Dashboard link"]{display:none!important}' +
         'body:has(#tci-header-nav) [data-testid="data-testid new share link-button"],' +
         '[data-tci-empty-controls="true"]{display:none!important}' +
