@@ -142,7 +142,7 @@ jobs:
 
       - name: Install kernels from source
         working-directory: /transformers
-        run: pip install git+https://github.com/huggingface/kernels
+        run: pip install git+https://github.com/huggingface/kernels#subdirectory=kernels
 
       # Install the CI observability wrapper (provides `configure-ci-otel`,
       # `report-ci-start` and the `transformersci_otel` pytest plugin). Kept as a
