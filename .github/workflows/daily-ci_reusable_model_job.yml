@@ -140,6 +140,10 @@ jobs:
         working-directory: /transformers
         run: python3 -m pip uninstall -y transformers && python3 -m pip install -e .
 
+      - name: Install kernels from source
+        working-directory: /transformers
+        run: pip install git+https://github.com/huggingface/kernels
+
       # Install the CI observability wrapper (provides `configure-ci-otel`,
       # `report-ci-start` and the `transformersci_otel` pytest plugin). Kept as a
       # runtime install so an incident in transformers-ci can be hot-fixed
