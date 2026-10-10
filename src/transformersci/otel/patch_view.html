@@ -28,6 +28,7 @@ header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weig
 .comment-thread{border:1px solid var(--border);border-radius:4px;margin-bottom:12px;background:var(--bg)}.comment-thread>summary{padding:9px 10px;font-weight:600;font-size:12px;cursor:pointer;background:var(--card)}.comment-thread .comment-card{border:0;border-top:1px solid var(--border);border-radius:0;margin:0}.comment-thread .comment-reply{border-left:2px solid var(--border);margin-left:10px}.thread-filter-note{font-size:10px;color:var(--muted);margin:8px 0 0}.comment-context-label{font-size:10px;color:var(--muted);margin-top:4px}
 .comment-meta{display:flex;align-items:baseline;gap:8px;justify-content:space-between;flex-wrap:wrap}.comment-author{font-weight:600}.comment-time{font-size:10px;color:var(--muted)}.comment-kind{font-size:10px;color:var(--muted);margin-top:4px}.comment-location{font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere;margin:8px 0;color:var(--link)}.comment-body{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;margin:8px 0;max-height:300px;overflow:auto}.comment-link{font-size:11px}
 @media(max-width:850px){.layout{grid-template-columns:minmax(0,1fr)}.comments-sidebar{position:static;max-height:600px}}
+.loading-progress{display:block;width:calc(100% - 24px);height:8px;margin:0 12px 12px;accent-color:var(--link)}.loading-progress[hidden]{display:none}
 </style></head><body>
 <header><a id="source" target="_blank" rel="noopener"></a><button id="reload">Refresh</button><button id="collapse">Collapse all</button></header>
 <div class="file-filters" role="group" aria-label="Filter changed files">
@@ -39,7 +40,7 @@ header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weig
   <label class="filter-check"><input type="checkbox" id="hide-module-headers" checked>Hide module headers</label>
 </div>
 <main class="layout">
-  <section class="diff-column" aria-label="Unified diff"><div id="message" role="status">Loading diff…</div><div id="patch-view"></div></section>
+  <section class="diff-column" aria-label="Unified diff"><div id="message" role="status">Loading diff…</div><progress id="diff-progress" class="loading-progress" aria-label="Loading diff"></progress><div id="patch-view"></div></section>
   <aside class="comments-sidebar" aria-label="PR comments">
     <div class="comments-heading"><h2>Comments <span id="comment-count"></span></h2>
       <div class="comment-filters" role="group" aria-label="Filter comments">
@@ -51,7 +52,7 @@ header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weig
       <label class="filter-check bot-filter"><input type="checkbox" id="maintainers-only">Maintainers only</label>
       <p class="thread-filter-note">Filters select threads. Replies stay visible for context.</p>
     </div>
-    <div id="comments-status" class="comments-status" role="status">Loading comments…</div><div id="comments-list"></div>
+    <div id="comments-status" class="comments-status" role="status">Loading comments…</div><progress id="comments-progress" class="loading-progress" aria-label="Loading comments"></progress><div id="comments-list"></div>
   </aside>
 </main>
 <button id="back-to-top" class="back-to-top" aria-label="Back to top">↑ Back to top</button>
@@ -67,6 +68,8 @@ header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weig
     if (params.get('theme') === 'light' || (parent.grafanaBootData && parent.grafanaBootData.user.lightTheme)) document.documentElement.classList.add('light');
   } catch (_) {}
   const source = document.getElementById('source'), message = document.getElementById('message'), reload = document.getElementById('reload');
+  const diffProgress = document.getElementById('diff-progress'), commentsProgress = document.getElementById('comments-progress');
+  const paintLoading = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   let currentPatch = '';
   const hideTests = document.getElementById('hide-tests'), onlyPython = document.getElementById('only-python'), hideBots = document.getElementById('hide-bots'), onlyModels = document.getElementById('only-models'), hideResolved = document.getElementById('hide-resolved'), hideGenerated = document.getElementById('hide-generated'), hideCommands = document.getElementById('hide-commands'), maintainersOnly = document.getElementById('maintainers-only'), hideCommentLines = document.getElementById('hide-comment-lines'), hideModuleHeaders = document.getElementById('hide-module-headers');
   function renderDiff() {
@@ -83,17 +86,19 @@ header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weig
   if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) && /^[1-9][0-9]*$/.test(pr)) source.href = 'https://github.com/' + repository + '/pull/' + pr + '/files';
   async function loadDiff() {
     currentPatch = '';
+    diffProgress.hidden = false; diffProgress.removeAttribute('value');
     message.hidden = false; message.className = ''; message.textContent = 'Loading diff…';
     document.getElementById('patch-view').replaceChildren();
     try {
-      const r = await fetch('/patch-view/data?' + new URLSearchParams({pr, repository}), {cache:'no-store'});
-      const text = await r.text();
-      if (!r.ok) throw Error(text);
+      const text = await TCIPatch.fetchText('/patch-view/data?' + new URLSearchParams({pr, repository}), diffProgress, message, 'diff');
       if (!text.trim()) { message.textContent = 'This PR has no changes.'; return; }
+      message.textContent = 'Rendering diff…'; diffProgress.removeAttribute('value');
+      await paintLoading();
       currentPatch = text; renderDiff();
       message.hidden = true;
       document.getElementById('collapse').textContent = 'Collapse all';
     } catch (e) { message.className = 'error'; message.textContent = e.message; }
+    finally { diffProgress.hidden = true; }
   }
   let comments = [], filter = 'review';
   const commentStatus = document.getElementById('comments-status'), commentList = document.getElementById('comments-list');
@@ -188,18 +193,21 @@ header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weig
   hideCommands.onchange = renderComments;
   maintainersOnly.onchange = renderComments;
   async function loadComments() {
+    commentsProgress.hidden = false; commentsProgress.removeAttribute('value');
     commentStatus.hidden = false; commentStatus.className = 'comments-status'; commentStatus.textContent = 'Loading comments…'; commentList.replaceChildren();
     try {
-      const r = await fetch('/patch-view/comments?' + new URLSearchParams({pr, repository}), {cache:'no-store'});
-      if (!r.ok) throw Error(await r.text());
-      const data = await r.json(); comments = data.comments.slice().sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.id - a.id);
+      const text = await TCIPatch.fetchText('/patch-view/comments?' + new URLSearchParams({pr, repository}), commentsProgress, commentStatus, 'comments');
+      commentStatus.textContent = 'Preparing comments…'; commentsProgress.removeAttribute('value');
+      await paintLoading();
+      const data = JSON.parse(text); comments = data.comments.slice().sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.id - a.id);
       hideResolved.disabled = !data.resolution_available;
       hideResolved.title = data.resolution_available ? '' : 'GitHub review-thread status is unavailable.';
       if (hideResolved.disabled) hideResolved.checked = false;
       commentStatus.hidden = !data.truncated;
       commentStatus.textContent = 'Showing the first 500 entries in each category. View the full conversation on GitHub.';
       renderComments();
-    } catch(e) { comments = []; document.getElementById('comment-count').textContent = ''; commentStatus.className = 'comments-status error'; commentStatus.textContent = 'Could not load comments: ' + e.message; }
+    } catch(e) { comments = []; document.getElementById('comment-count').textContent = ''; commentStatus.hidden = false; commentStatus.className = 'comments-status error'; commentStatus.textContent = 'Could not load comments: ' + e.message; }
+    finally { commentsProgress.hidden = true; }
   }
   document.querySelectorAll('[data-filter]').forEach(button => { button.onclick = () => {
     filter = button.dataset.filter;

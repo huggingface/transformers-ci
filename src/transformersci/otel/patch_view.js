@@ -156,5 +156,29 @@
     rows[0].tabIndex = -1; rows[0].focus({preventScroll:true}); rows[0].scrollIntoView({behavior:'smooth', block:'center', inline:'nearest'});
     return true;
   }
-  globalThis.TCIPatch = {parse, render, isTestFile, isGeneratedFile, showLines, isCommentLine, moduleHeaderRows};
+  async function fetchText(url, progress, status, label) {
+    const response = await fetch(url, {cache:'no-store'});
+    if (!response.ok) throw Error(await response.text());
+    if (!response.body) return response.text();
+    // Fetch streams decoded bytes; compressed Content-Length is not comparable.
+    const length = response.headers.get('Content-Encoding') ? 0 : Number(response.headers.get('Content-Length'));
+    const total = Number.isFinite(length) && length > 0 ? length : 0;
+    const reader = response.body.getReader(), decoder = new TextDecoder(), chunks = [];
+    let loaded = 0, lastUpdate = 0;
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      loaded += value.byteLength;
+      chunks.push(decoder.decode(value, {stream:true}));
+      if (total) { progress.max = total; progress.value = Math.min(loaded, total); }
+      if (performance.now() - lastUpdate > 200) {
+        status.textContent = 'Loading ' + label + '… ' + (total ? Math.min(100, Math.floor(loaded / total * 100)) + '%' : Math.ceil(loaded / 1024).toLocaleString() + ' KB');
+        lastUpdate = performance.now();
+      }
+    }
+    chunks.push(decoder.decode());
+    return chunks.join('');
+  }
+
+  globalThis.TCIPatch = {parse, render, isTestFile, isGeneratedFile, showLines, isCommentLine, moduleHeaderRows, fetchText};
 })();
