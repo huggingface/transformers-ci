@@ -74,7 +74,11 @@ header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weig
     TCIPatch.render(document.getElementById('patch-view'), currentPatch, {hideTests:hideTests.checked, onlyPython:onlyPython.checked, onlyModels:onlyModels.checked, hideGenerated:hideGenerated.checked, hideComments:hideCommentLines.checked, hideModuleHeaders:hideModuleHeaders.checked});
     document.getElementById('collapse').textContent = 'Collapse all';
   }
-  hideTests.onchange = renderDiff; onlyPython.onchange = renderDiff; onlyModels.onchange = renderDiff; hideGenerated.onchange = renderDiff; hideCommentLines.onchange = renderDiff; hideModuleHeaders.onchange = renderDiff;
+  onlyPython.onchange = () => {
+    if (!onlyPython.checked) onlyModels.checked = false;
+    renderDiff();
+  };
+  hideTests.onchange = renderDiff; onlyModels.onchange = renderDiff; hideGenerated.onchange = renderDiff; hideCommentLines.onchange = renderDiff; hideModuleHeaders.onchange = renderDiff;
   source.textContent = repository + ' · PR #' + pr;
   if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) && /^[1-9][0-9]*$/.test(pr)) source.href = 'https://github.com/' + repository + '/pull/' + pr + '/files';
   async function loadDiff() {
