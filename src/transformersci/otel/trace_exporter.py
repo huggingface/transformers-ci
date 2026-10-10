@@ -74,6 +74,7 @@ from transformersci.otel import rerun_actions
 from transformersci.otel import rerun_failed
 from transformersci.otel import serge_actions
 from transformersci.otel import wdyt
+from transformersci.otel import patch_view
 
 from transformersci.emojize import emojize as _emojize
 from transformersci.runners import ATTRIBUTE_PREFIX as RUNNER_ATTRIBUTE_PREFIX
@@ -7402,6 +7403,83 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self._request_route = "notfound"
         self._request_cache = "none"
         parsed = urlparse(self.path)
+        if parsed.path in {
+            "/patch-view",
+            "/patch-view/script.js",
+            "/patch-view/data",
+            "/patch-view/comments",
+        }:
+            self._request_route = parsed.path
+            if parsed.path == "/patch-view":
+                self._send(
+                    200,
+                    "text/html; charset=utf-8",
+                    patch_view.PAGE_HTML.encode(),
+                    cache_control="no-store",
+                )
+            elif parsed.path == "/patch-view/script.js":
+                self._send(
+                    200,
+                    "text/javascript; charset=utf-8",
+                    patch_view.SCRIPT.encode(),
+                    cache_control="no-store",
+                )
+            else:
+                params = parse_qs(parsed.query)
+                repository = (params.get("repository") or ["huggingface/transformers"])[
+                    0
+                ]
+                pr = (params.get("pr") or [""])[0]
+                try:
+                    if repository not in public_repositories():
+                        raise ValueError(
+                            "This repository is not available on this dashboard."
+                        )
+                    if parsed.path == "/patch-view/comments":
+                        comments = patch_view.fetch_comments(
+                            repository, pr, github_api_token()
+                        )
+                        self._send(
+                            200,
+                            "application/json; charset=utf-8",
+                            json.dumps(comments).encode(),
+                            cache_control="no-store",
+                        )
+                        return
+                    diff = patch_view.fetch_diff(repository, pr, github_api_token())
+                    self._send(
+                        200,
+                        "text/plain; charset=utf-8",
+                        diff.encode(),
+                        cache_control="no-store",
+                    )
+                except ValueError as exc:
+                    self._send(
+                        400,
+                        "text/plain; charset=utf-8",
+                        str(exc).encode(),
+                        cache_control="no-store",
+                    )
+                except HTTPError as exc:
+                    message = (
+                        "PR not found."
+                        if exc.code == 404
+                        else "GitHub could not return this diff. Try again or open it on GitHub."
+                    )
+                    self._send(
+                        404 if exc.code == 404 else 502,
+                        "text/plain; charset=utf-8",
+                        message.encode(),
+                        cache_control="no-store",
+                    )
+                except OSError:
+                    self._send(
+                        502,
+                        "text/plain; charset=utf-8",
+                        b"Could not reach GitHub. Try again.",
+                        cache_control="no-store",
+                    )
+            return
         if parsed.path == "/badge/pr":
             self._request_route = "/badge/pr"
             self._serve_pr_badge(parse_qs(parsed.query))

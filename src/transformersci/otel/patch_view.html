@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PR diff</title>
+<style>
+:root{color-scheme:dark;--bg:#111217;--card:#181b1f;--fg:#d8d9da;--muted:#9fa3a9;--border:#34363c;--add:#173326;--del:#3d2227;--hunk:#192c42;--link:#8ab8ff}
+:root.light{color-scheme:light;--bg:#fff;--card:#f6f8fa;--fg:#24292f;--muted:#6e7781;--border:#d0d7de;--add:#e6ffec;--del:#ffebe9;--hunk:#ddf4ff;--link:#0969da}
+*{box-sizing:border-box}body{margin:0;padding:12px;background:var(--bg);color:var(--fg);font:13px/1.5 Inter,system-ui,sans-serif}
+.back-to-top{position:fixed;bottom:16px;left:16px;z-index:10;box-shadow:0 2px 8px #0004}body{padding-bottom:64px}
+a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
+header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weight:600}button{font:inherit;background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:4px 10px;cursor:pointer}button:disabled{opacity:.5;cursor:wait}#message{color:var(--muted);padding:14px 0}#message.error{color:#f2495c}
+.patch-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:12px 0;flex-wrap:wrap;color:var(--muted)}
+.patch-file{border:1px solid var(--border);border-radius:4px;margin-bottom:12px;overflow:hidden}
+.patch-file-header{padding:8px 12px;background:var(--card);cursor:pointer;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+.patch-counts{float:right;margin-left:16px;color:var(--muted)}.patch-scroll{overflow-x:auto}
+.patch-table{border-collapse:collapse;width:100%;font:12px/21px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.patch-number{min-width:48px;width:48px;text-align:right;padding:0 10px;color:var(--muted);border-right:1px solid var(--border);user-select:none}
+.patch-code{padding:0 12px;white-space:pre;tab-size:4}.patch-line.add{background:var(--add)}.patch-line.del{background:var(--del)}.patch-line.hunk{background:var(--hunk);color:var(--link)}.patch-line.meta{color:var(--muted);background:var(--card)}
+.patch-raw summary{cursor:pointer;color:var(--muted)}.patch-raw pre{overflow:auto;font-size:12px}
+.file-filters{display:flex;gap:16px;flex-wrap:wrap;margin-top:12px;color:var(--muted);font-size:12px}.filter-check{display:inline-flex;align-items:center;gap:6px;cursor:pointer}.filter-check input{accent-color:var(--link)}.bot-filter{font-size:11px;color:var(--muted);margin-top:10px}
+.patch-line.line-highlight{outline:1px solid #ffb357;outline-offset:-1px;background:#6b4b2040}.comment-context{margin:12px;border:1px solid var(--link);padding:10px;border-radius:4px}.comment-context p{margin-top:0;color:var(--link);overflow-wrap:anywhere}.comment-navigation-status{font-size:11px;color:var(--muted);margin-top:6px}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start;margin-top:12px}.diff-column{min-width:0}
+.comments-sidebar{position:sticky;top:12px;border:1px solid var(--border);border-radius:5px;background:var(--card);max-height:calc(100vh - 24px);display:flex;flex-direction:column;min-height:180px}
+.comments-heading{padding:12px;border-bottom:1px solid var(--border)}.comments-heading h2{font-size:14px;margin:0 0 10px}.comment-filters{display:flex;gap:6px;flex-wrap:wrap}.comment-filters button{font-size:11px;padding:3px 8px}.comment-filters button[aria-pressed=true]{border-color:var(--link);color:var(--link);background:var(--hunk)}
+#comments-list{overflow-y:auto;padding:12px;min-height:0}.comments-status{color:var(--muted);padding:12px}.comments-status.error{color:#f2495c}
+.comment-card{border:1px solid var(--border);border-radius:4px;padding:10px;margin-bottom:10px;background:var(--bg)}.comment-card:last-child{margin-bottom:0}
+.comment-card.review-approved{background:var(--add);border-color:#3d8656}.comment-card.review-changes-requested{background:var(--del);border-color:#b7656e}
+.comment-thread{border:1px solid var(--border);border-radius:4px;margin-bottom:12px;background:var(--bg)}.comment-thread>summary{padding:9px 10px;font-weight:600;font-size:12px;cursor:pointer;background:var(--card)}.comment-thread .comment-card{border:0;border-top:1px solid var(--border);border-radius:0;margin:0}.comment-thread .comment-reply{border-left:2px solid var(--border);margin-left:10px}.thread-filter-note{font-size:10px;color:var(--muted);margin:8px 0 0}.comment-context-label{font-size:10px;color:var(--muted);margin-top:4px}
+.comment-meta{display:flex;align-items:baseline;gap:8px;justify-content:space-between;flex-wrap:wrap}.comment-author{font-weight:600}.comment-time{font-size:10px;color:var(--muted)}.comment-kind{font-size:10px;color:var(--muted);margin-top:4px}.comment-location{font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere;margin:8px 0;color:var(--link)}.comment-body{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;margin:8px 0;max-height:300px;overflow:auto}.comment-link{font-size:11px}
+@media(max-width:850px){.layout{grid-template-columns:minmax(0,1fr)}.comments-sidebar{position:static;max-height:600px}}
+</style></head><body>
+<header><a id="source" target="_blank" rel="noopener"></a><button id="reload">Refresh</button><button id="collapse">Collapse all</button></header>
+<div class="file-filters" role="group" aria-label="Filter changed files">
+  <label class="filter-check"><input type="checkbox" id="hide-tests" checked>Hide test changes</label>
+  <label class="filter-check"><input type="checkbox" id="only-python" checked>Only .py changes</label>
+  <label class="filter-check"><input type="checkbox" id="only-models" checked>Only model changes</label>
+  <label class="filter-check"><input type="checkbox" id="hide-generated" checked>Hide generated files</label>
+  <label class="filter-check"><input type="checkbox" id="hide-comment-lines" checked>Hide comment lines</label>
+  <label class="filter-check"><input type="checkbox" id="hide-module-headers" checked>Hide module headers</label>
+</div>
+<main class="layout">
+  <section class="diff-column" aria-label="Unified diff"><div id="message" role="status">Loading diff…</div><div id="patch-view"></div></section>
+  <aside class="comments-sidebar" aria-label="PR comments">
+    <div class="comments-heading"><h2>Comments <span id="comment-count"></span></h2>
+      <div class="comment-filters" role="group" aria-label="Filter comments">
+        <button data-filter="all" aria-pressed="false">All</button><button data-filter="discussion" aria-pressed="false">Discussion</button><button data-filter="review" aria-pressed="true">Reviews</button><button data-filter="inline" aria-pressed="false">Inline</button>
+      </div>
+      <label class="filter-check bot-filter"><input type="checkbox" id="hide-bots" checked>Hide bot comments</label>
+      <label class="filter-check bot-filter"><input type="checkbox" id="hide-resolved" checked disabled>Hide resolved</label>
+      <label class="filter-check bot-filter"><input type="checkbox" id="hide-commands" checked>Hide command comments</label>
+      <label class="filter-check bot-filter"><input type="checkbox" id="maintainers-only">Maintainers only</label>
+      <p class="thread-filter-note">Filters select threads. Replies stay visible for context.</p>
+    </div>
+    <div id="comments-status" class="comments-status" role="status">Loading comments…</div><div id="comments-list"></div>
+  </aside>
+</main>
+<button id="back-to-top" class="back-to-top" aria-label="Back to top">↑ Back to top</button>
+<script src="/patch-view/script.js"></script>
+<script>
+(() => {
+  document.getElementById('back-to-top').onclick = () => {
+    window.scrollTo({top:0, behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'});
+  };
+  const params = new URLSearchParams(location.search);
+  const pr = params.get('pr') || '', repository = params.get('repository') || 'huggingface/transformers';
+  try {
+    if (params.get('theme') === 'light' || (parent.grafanaBootData && parent.grafanaBootData.user.lightTheme)) document.documentElement.classList.add('light');
+  } catch (_) {}
+  const source = document.getElementById('source'), message = document.getElementById('message'), reload = document.getElementById('reload');
+  let currentPatch = '';
+  const hideTests = document.getElementById('hide-tests'), onlyPython = document.getElementById('only-python'), hideBots = document.getElementById('hide-bots'), onlyModels = document.getElementById('only-models'), hideResolved = document.getElementById('hide-resolved'), hideGenerated = document.getElementById('hide-generated'), hideCommands = document.getElementById('hide-commands'), maintainersOnly = document.getElementById('maintainers-only'), hideCommentLines = document.getElementById('hide-comment-lines'), hideModuleHeaders = document.getElementById('hide-module-headers');
+  function renderDiff() {
+    if (!currentPatch) return;
+    TCIPatch.render(document.getElementById('patch-view'), currentPatch, {hideTests:hideTests.checked, onlyPython:onlyPython.checked, onlyModels:onlyModels.checked, hideGenerated:hideGenerated.checked, hideComments:hideCommentLines.checked, hideModuleHeaders:hideModuleHeaders.checked});
+    document.getElementById('collapse').textContent = 'Collapse all';
+  }
+  hideTests.onchange = renderDiff; onlyPython.onchange = renderDiff; onlyModels.onchange = renderDiff; hideGenerated.onchange = renderDiff; hideCommentLines.onchange = renderDiff; hideModuleHeaders.onchange = renderDiff;
+  source.textContent = repository + ' · PR #' + pr;
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) && /^[1-9][0-9]*$/.test(pr)) source.href = 'https://github.com/' + repository + '/pull/' + pr + '/files';
+  async function loadDiff() {
+    currentPatch = '';
+    message.hidden = false; message.className = ''; message.textContent = 'Loading diff…';
+    document.getElementById('patch-view').replaceChildren();
+    try {
+      const r = await fetch('/patch-view/data?' + new URLSearchParams({pr, repository}), {cache:'no-store'});
+      const text = await r.text();
+      if (!r.ok) throw Error(text);
+      if (!text.trim()) { message.textContent = 'This PR has no changes.'; return; }
+      currentPatch = text; renderDiff();
+      message.hidden = true;
+      document.getElementById('collapse').textContent = 'Collapse all';
+    } catch (e) { message.className = 'error'; message.textContent = e.message; }
+  }
+  let comments = [], filter = 'review';
+  const commentStatus = document.getElementById('comments-status'), commentList = document.getElementById('comments-list');
+  function node(tag, cls, text) {
+    const el = document.createElement(tag); el.className = cls; el.textContent = text; return el;
+  }
+  function isMaintainer(comment) {
+    return comment.is_maintainer === true || ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(comment.author_association);
+  }
+  function matchesComment(c) {
+      const body = (c.body || '').trimStart().toLowerCase();
+      const author = (c.author || '').toLowerCase();
+      const bot = c.is_bot || author.endsWith('[bot]') || author === 'huggingfacedocbuilderdev';
+      return (filter === 'all' || c.kind === filter) && (!hideBots.checked || !bot) && (!hideResolved.checked || c.resolved !== true) && (!hideCommands.checked || !(body.startsWith('run-slow:') || body.startsWith('@askserge'))) && (!maintainersOnly.checked || isMaintainer(c));
+  }
+  function groupComments() {
+    const byId = new Map(comments.filter(c => c.kind === 'inline').map(c => [c.id, c]));
+    const groups = new Map();
+    for (const c of comments) {
+      let root = c;
+      const seen = new Set();
+      while (root.kind === 'inline' && byId.has(root.reply_to) && !seen.has(root.id)) {
+        seen.add(root.id); root = byId.get(root.reply_to);
+      }
+      const key = c.kind === 'inline' ? 'inline:' + (c.thread_id || root.thread_id || root.reply_to || root.id) : c.kind + ':' + c.id;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(c);
+    }
+    const ascending = (a, b) => (a.created_at || '').localeCompare(b.created_at || '') || a.id - b.id;
+    return [...groups.values()].map(group => group.sort(ascending)).sort((a, b) => ascending(b[b.length-1], a[a.length-1]));
+  }
+  function renderComments() {
+    commentList.replaceChildren();
+    const visible = groupComments().filter(group => group.some(matchesComment));
+    const count = visible.reduce((n, group) => n + group.length, 0);
+    document.getElementById('comment-count').textContent = '(' + count + (count !== comments.length ? '/' + comments.length : '') + ')';
+    if (!visible.length) commentList.append(node('p', 'comments-status', comments.length ? 'No comments match these filters.' : 'No comments yet.'));
+    for (const group of visible) {
+      if (group.length === 1) { commentList.append(buildCommentCard(group[0])); continue; }
+      const thread = node('details', 'comment-thread', ''); thread.open = true;
+      thread.dataset.threadId = group[0].thread_id || group[0].id;
+      thread.append(node('summary', '', 'Thread · ' + group.length + ' comments'));
+      group.forEach((c, i) => thread.append(buildCommentCard(c, {reply:i > 0, context:!matchesComment(c)})));
+      commentList.append(thread);
+    }
+  }
+  function buildCommentCard(c, options = {}) {
+      const card = node('article', 'comment-card', '');
+      if (c.kind === 'review' && c.state === 'APPROVED') card.classList.add('review-approved');
+      if (c.kind === 'review' && c.state === 'CHANGES_REQUESTED') card.classList.add('review-changes-requested');
+      card.dataset.commentId = c.id;
+      if (options.reply) card.classList.add('comment-reply');
+      const meta = node('div', 'comment-meta', '');
+      const date = new Date(c.created_at);
+      const time = node('time', 'comment-time', isNaN(date) ? '' : date.toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}));
+      time.dateTime = c.created_at; time.title = c.created_at;
+      const author = node('span', 'comment-author', c.author);
+      if (isMaintainer(c)) {
+        const crown = node('span', 'maintainer-crown', ' 👑'); crown.title = 'Maintainer · ' + (c.author_association || 'repository access').toLowerCase(); crown.setAttribute('aria-label', 'Maintainer'); author.append(crown);
+      }
+      meta.append(author, time);
+      card.append(meta, node('div', 'comment-kind', ({discussion:'Discussion', review:'Review', inline:'Inline comment'})[c.kind] + (c.state ? ' · ' + c.state.toLowerCase().replaceAll('_', ' ') : '') + (c.reply_to ? ' · Reply' : '')));
+      if (options.context) card.append(node('div', 'comment-context-label', 'Included for thread context'));
+      if (c.path) card.append(node('div', 'comment-location', c.path + (c.line ? ':' + (c.start_line && c.start_line !== c.line ? c.start_line + '–' : '') + c.line : '') + (c.outdated ? ' · Outdated' : '') + (c.resolved === true ? ' · Resolved' : '')));
+      card.append(node('div', 'comment-body', c.body));
+      if (c.path && c.line) {
+        const show = node('button', 'comment-link', 'Show the line(s)');
+        const status = node('div', 'comment-navigation-status', ''); status.setAttribute('role','status');
+        show.onclick = () => {
+          const container = document.getElementById('patch-view');
+          const exists = [...container.querySelectorAll('.patch-file')].some(file => file.dataset.path === c.path);
+          let adjusted = false;
+          if (!exists && currentPatch) {
+            // Reveal a comment's file when a file filter currently excludes it.
+            const files = TCIPatch.parse(currentPatch), file = files.find(f => f.name === c.path);
+            if (file) {
+              if (hideTests.checked && TCIPatch.isTestFile(c.path)) { hideTests.checked = false; adjusted = true; }
+              if (onlyPython.checked && !c.path.endsWith('.py')) { onlyPython.checked = false; adjusted = true; }
+              if (onlyModels.checked && (!c.path.startsWith('src/transformers/models/') || TCIPatch.isGeneratedFile(file, files))) { onlyModels.checked = false; adjusted = true; }
+              if (hideGenerated.checked && TCIPatch.isGeneratedFile(file, files)) { hideGenerated.checked = false; adjusted = true; }
+              if (adjusted) renderDiff();
+            }
+          }
+          status.textContent = TCIPatch.showLines(container, c) ? (adjusted ? 'File filters adjusted to show this comment.' : '') : 'These lines are not available in the saved diff context.';
+        };
+        card.append(show, status);
+      }
+      return card;
+  }
+  hideBots.onchange = renderComments;
+  hideResolved.onchange = renderComments;
+  hideCommands.onchange = renderComments;
+  maintainersOnly.onchange = renderComments;
+  async function loadComments() {
+    commentStatus.hidden = false; commentStatus.className = 'comments-status'; commentStatus.textContent = 'Loading comments…'; commentList.replaceChildren();
+    try {
+      const r = await fetch('/patch-view/comments?' + new URLSearchParams({pr, repository}), {cache:'no-store'});
+      if (!r.ok) throw Error(await r.text());
+      const data = await r.json(); comments = data.comments.slice().sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '') || b.id - a.id);
+      hideResolved.disabled = !data.resolution_available;
+      hideResolved.title = data.resolution_available ? '' : 'GitHub review-thread status is unavailable.';
+      if (hideResolved.disabled) hideResolved.checked = false;
+      commentStatus.hidden = !data.truncated;
+      commentStatus.textContent = 'Showing the first 500 entries in each category. View the full conversation on GitHub.';
+      renderComments();
+    } catch(e) { comments = []; document.getElementById('comment-count').textContent = ''; commentStatus.className = 'comments-status error'; commentStatus.textContent = 'Could not load comments: ' + e.message; }
+  }
+  document.querySelectorAll('[data-filter]').forEach(button => { button.onclick = () => {
+    filter = button.dataset.filter;
+    document.querySelectorAll('[data-filter]').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
+    renderComments();
+  }; });
+  async function load() {
+    reload.disabled = true;
+    await Promise.all([loadDiff(), loadComments()]);
+    reload.disabled = false;
+  }
+  reload.onclick = load;
+  document.getElementById('collapse').onclick = e => {
+    const open = e.target.textContent === 'Expand all';
+    document.querySelectorAll('.patch-file').forEach(file => { file.open = open; });
+    e.target.textContent = open ? 'Collapse all' : 'Expand all';
+  };
+  load();
+})();
+</script></body></html>
