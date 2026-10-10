@@ -15,6 +15,40 @@ It includes:
 - `pytest-test-dashboard.json`: per-test view (metadata + embedded Tempo trace view when failed)
 - `data/`: shared local data directory for resource metrics
 
+## PR diff panel
+
+The Branch panel has a **Patch | Tests** switch next to **Re-run failed tests**.
+Tests is the default view; choosing Patch replaces the panels below Branch with
+a single diff panel and loads the iframe on demand. The selection is kept in
+the URL. The Tests button animates while the selected PR has queued or running
+jobs, using the `pytest_run_job_active` metric (polled every 30 seconds).
+
+The PR dashboard embeds `/patch-view` in an iframe and passes the selected PR and
+repository. The trace exporter serves the unified diff and a sidebar of discussion,
+review summaries, and inline review threads. File filters hide tests, generated
+modular outputs, copyright headers, and Python comment lines; comment filters hide
+bots, resolved threads, and command comments. **Show the line(s)** highlights the
+current code or displays saved context for an outdated comment. Icon controls
+refresh, collapse/expand, and download the full patch. The comments sidebar starts
+level with the patch filters and scrolls independently. Separate progress bars
+track diff and comment loading.
+
+GitHub responses are cached for one minute. Diffs and individual API responses
+are limited to 4 MiB; comment pagination stops at 500 entries per category and
+shows a truncation notice. Resolved status uses GitHub GraphQL and requires the
+dashboard's GitHub token. Only configured public repositories can be requested.
+
+To iterate locally with Grafana listening on port 3301:
+
+```bash
+PYTHONPATH=src .venv/bin/python deploy/scripts/preview-patch-view.py
+```
+
+Open `http://localhost:8765/patch-view?pr=43451` for the panel alone. The preview
+reloads UI assets on each request. To use downloaded snapshots, pass
+`--fixture-dir /path/to/snapshots`, with `<PR>/pr.diff` and `<PR>/comments.json`
+inside that directory.
+
 ## Architecture
 
 Traces are ingested and stored by a single Grafana Tempo service (no separate
