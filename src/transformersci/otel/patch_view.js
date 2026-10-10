@@ -99,13 +99,24 @@
     const wrapper = el("div", "patch-view");
     const toolbar = el("div", "patch-toolbar");
     toolbar.append(el("span", "", `${files.length === allFiles.length ? files.length : files.length + ' of ' + allFiles.length} file${files.length === 1 ? "" : "s"} · +${files.reduce((n, f) => n + f.additions, 0)} −${files.reduce((n, f) => n + f.deletions, 0)}`));
-    const download = el("a", "secondary nav-link", "Download full patch");
+    const download = el("a", "patch-download");
+    download.title = "Download full patch";
+    download.setAttribute("aria-label", "Download full patch");
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    icon.setAttribute("width", "16"); icon.setAttribute("height", "16");
+    icon.setAttribute("viewBox", "0 0 24 24"); icon.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5");
+    path.setAttribute("fill", "none"); path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "2"); path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round"); icon.append(path); download.append(icon);
     const url = URL.createObjectURL(new Blob([patch], {type: "text/plain"}));
     const previous = container.dataset.patchUrl;
     if (previous) URL.revokeObjectURL(previous);
     container.dataset.patchUrl = url;
     download.href = url; download.download = "pr.diff";
-    toolbar.append(download);
+    if (options.downloadContainer) options.downloadContainer.replaceChildren(download);
+    else toolbar.append(download);
     wrapper.append(toolbar);
     if (!files.length) wrapper.append(el('p', 'comments-status', 'No files match these filters.'));
     for (const file of files) {

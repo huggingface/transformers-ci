@@ -8,7 +8,7 @@
 *{box-sizing:border-box}body{margin:0;padding:12px;background:var(--bg);color:var(--fg);font:13px/1.5 Inter,system-ui,sans-serif}
 .back-to-top{position:fixed;bottom:16px;left:16px;z-index:10;box-shadow:0 2px 8px #0004}body{padding-bottom:64px}
 a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
-header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weight:600}button{font:inherit;background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:4px 10px;cursor:pointer}button:disabled{opacity:.5;cursor:wait}#message{color:var(--muted);padding:14px 0}#message.error{color:#f2495c}
+header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;color:var(--muted);font-size:11px}.patch-actions{display:flex;gap:8px;align-items:center;flex-shrink:0}header button{display:inline-flex;align-items:center;justify-content:center;width:30px;height:28px;padding:0}.patch-download{display:inline-flex;align-items:center;justify-content:center;width:30px;height:28px;border:1px solid var(--border);border-radius:4px;background:var(--card)}.patch-download:hover{background:var(--hunk)}.patch-download:focus-visible{outline:2px solid var(--link);outline-offset:2px}button{font:inherit;background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:4px 10px;cursor:pointer}button:disabled{opacity:.5;cursor:wait}#message{color:var(--muted);padding:14px 0}#message.error{color:#f2495c}
 .patch-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:12px 0;flex-wrap:wrap;color:var(--muted)}
 .patch-file{border:1px solid var(--border);border-radius:4px;margin-bottom:12px;overflow:hidden}
 .patch-file-header{padding:8px 12px;background:var(--card);cursor:pointer;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
@@ -17,20 +17,22 @@ header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weig
 .patch-number{min-width:48px;width:48px;text-align:right;padding:0 10px;color:var(--muted);border-right:1px solid var(--border);user-select:none}
 .patch-code{padding:0 12px;white-space:pre;tab-size:4}.patch-line.add{background:var(--add)}.patch-line.del{background:var(--del)}.patch-line.hunk{background:var(--hunk);color:var(--link)}.patch-line.meta{color:var(--muted);background:var(--card)}
 .patch-raw summary{cursor:pointer;color:var(--muted)}.patch-raw pre{overflow:auto;font-size:12px}
-.file-filters{display:flex;gap:16px;flex-wrap:wrap;margin-top:12px;color:var(--muted);font-size:12px}.filter-check{display:inline-flex;align-items:center;gap:6px;cursor:pointer}.filter-check input{accent-color:var(--link)}.bot-filter{font-size:11px;color:var(--muted);margin-top:10px}
+.file-filters{display:contents}.file-filters .filter-check{gap:5px}.file-filters input{margin:0}.filter-check{display:inline-flex;align-items:center;gap:6px;cursor:pointer}.filter-check input{accent-color:var(--link)}.bot-filter{font-size:11px;color:var(--muted);margin-top:10px}
 .patch-line.line-highlight{outline:1px solid #ffb357;outline-offset:-1px;background:#6b4b2040}.comment-context{margin:12px;border:1px solid var(--link);padding:10px;border-radius:4px}.comment-context p{margin-top:0;color:var(--link);overflow-wrap:anywhere}.comment-navigation-status{font-size:11px;color:var(--muted);margin-top:6px}
-.layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start;margin-top:12px}.diff-column{min-width:0}
-.comments-sidebar{position:sticky;top:12px;border:1px solid var(--border);border-radius:5px;background:var(--card);max-height:calc(100vh - 24px);display:flex;flex-direction:column;min-height:180px}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}.diff-column{min-width:0}
+.comments-sidebar{position:sticky;top:12px;border:1px solid var(--border);border-radius:5px;background:var(--card);height:var(--comments-height,calc(100dvh - 24px));display:flex;flex-direction:column;min-height:180px}
 .comments-heading{padding:12px;border-bottom:1px solid var(--border)}.comments-heading h2{font-size:14px;margin:0 0 10px}.comment-filters{display:flex;gap:6px;flex-wrap:wrap}.comment-filters button{font-size:11px;padding:3px 8px}.comment-filters button[aria-pressed=true]{border-color:var(--link);color:var(--link);background:var(--hunk)}
-#comments-list{overflow-y:auto;padding:12px;min-height:0}.comments-status{color:var(--muted);padding:12px}.comments-status.error{color:#f2495c}
+#comments-list{flex:1;overflow-y:auto;padding:12px;min-height:0}.comments-status{color:var(--muted);padding:12px}.comments-status.error{color:#f2495c}
 .comment-card{border:1px solid var(--border);border-radius:4px;padding:10px;margin-bottom:10px;background:var(--bg)}.comment-card:last-child{margin-bottom:0}
 .comment-card.review-approved{background:var(--add);border-color:#3d8656}.comment-card.review-changes-requested{background:var(--del);border-color:#b7656e}
 .comment-thread{border:1px solid var(--border);border-radius:4px;margin-bottom:12px;background:var(--bg)}.comment-thread>summary{padding:9px 10px;font-weight:600;font-size:12px;cursor:pointer;background:var(--card)}.comment-thread .comment-card{border:0;border-top:1px solid var(--border);border-radius:0;margin:0}.comment-thread .comment-reply{border-left:2px solid var(--border);margin-left:10px}.thread-filter-note{font-size:10px;color:var(--muted);margin:8px 0 0}.comment-context-label{font-size:10px;color:var(--muted);margin-top:4px}
 .comment-meta{display:flex;align-items:baseline;gap:8px;justify-content:space-between;flex-wrap:wrap}.comment-author{font-weight:600}.comment-time{font-size:10px;color:var(--muted)}.comment-kind{font-size:10px;color:var(--muted);margin-top:4px}.comment-location{font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere;margin:8px 0;color:var(--link)}.comment-body{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;margin:8px 0;max-height:300px;overflow:auto}.comment-link{font-size:11px}
-@media(max-width:850px){.layout{grid-template-columns:minmax(0,1fr)}.comments-sidebar{position:static;max-height:600px}}
+@media(max-width:850px){.layout{grid-template-columns:minmax(0,1fr)}.comments-sidebar{position:static;height:600px;max-height:75dvh}}
 .loading-progress{display:block;width:calc(100% - 24px);height:8px;margin:0 12px 12px;accent-color:var(--link)}.loading-progress[hidden]{display:none}
 </style></head><body>
-<header><a id="source" target="_blank" rel="noopener"></a><button id="reload">Refresh</button><button id="collapse">Collapse all</button></header>
+<main class="layout">
+  <section class="diff-column" aria-label="Unified diff">
+<header>
 <div class="file-filters" role="group" aria-label="Filter changed files">
   <label class="filter-check"><input type="checkbox" id="hide-tests" checked>Hide test changes</label>
   <label class="filter-check"><input type="checkbox" id="only-python" checked>Only .py changes</label>
@@ -39,8 +41,9 @@ header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weig
   <label class="filter-check"><input type="checkbox" id="hide-comment-lines" checked>Hide comment lines</label>
   <label class="filter-check"><input type="checkbox" id="hide-module-headers" checked>Hide module headers</label>
 </div>
-<main class="layout">
-  <section class="diff-column" aria-label="Unified diff"><div id="message" role="status">Loading diff…</div><progress id="diff-progress" class="loading-progress" aria-label="Loading diff"></progress><div id="patch-view"></div></section>
+<div class="patch-actions"><button id="reload" title="Refresh" aria-label="Refresh"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></svg></button><button id="collapse" data-action="collapse" title="Collapse all" aria-label="Collapse all"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 4 5 5 5-5M4 12h16m-13 8 5-5 5 5"/></svg></button><span id="patch-download"></span></div>
+</header>
+<div id="message" role="status">Loading diff…</div><progress id="diff-progress" class="loading-progress" aria-label="Loading diff"></progress><div id="patch-view"></div></section>
   <aside class="comments-sidebar" aria-label="PR comments">
     <div class="comments-heading"><h2>Comments <span id="comment-count"></span></h2>
       <div class="comment-filters" role="group" aria-label="Filter comments">
@@ -62,30 +65,51 @@ header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weig
   document.getElementById('back-to-top').onclick = () => {
     window.scrollTo({top:0, behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'});
   };
+  const sidebar = document.querySelector('.comments-sidebar');
+  let sidebarFrame = false;
+  function sizeSidebar() {
+    if (sidebarFrame) return;
+    sidebarFrame = true;
+    requestAnimationFrame(() => {
+      sidebarFrame = false;
+      const top = Math.max(12, sidebar.getBoundingClientRect().top);
+      sidebar.style.setProperty('--comments-height', Math.max(180, innerHeight - top - 12) + 'px');
+    });
+  }
+  addEventListener('resize', sizeSidebar);
+  addEventListener('scroll', sizeSidebar, {passive:true});
+  new ResizeObserver(sizeSidebar).observe(document.querySelector('header'));
+  sizeSidebar();
+  function setCollapseAction(open) {
+    const button = document.getElementById('collapse');
+    const label = open ? 'Collapse all' : 'Expand all';
+    button.dataset.action = open ? 'collapse' : 'expand';
+    button.title = label; button.setAttribute('aria-label', label);
+    button.querySelector('path').setAttribute('d', open ? 'm7 4 5 5 5-5M4 12h16m-13 8 5-5 5 5' : 'm7 8 5-5 5 5M4 12h16m-13 4 5 5 5-5');
+  }
   const params = new URLSearchParams(location.search);
   const pr = params.get('pr') || '', repository = params.get('repository') || 'huggingface/transformers';
   try {
     if (params.get('theme') === 'light' || (parent.grafanaBootData && parent.grafanaBootData.user.lightTheme)) document.documentElement.classList.add('light');
   } catch (_) {}
-  const source = document.getElementById('source'), message = document.getElementById('message'), reload = document.getElementById('reload');
+  const message = document.getElementById('message'), reload = document.getElementById('reload');
   const diffProgress = document.getElementById('diff-progress'), commentsProgress = document.getElementById('comments-progress');
   const paintLoading = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   let currentPatch = '';
   const hideTests = document.getElementById('hide-tests'), onlyPython = document.getElementById('only-python'), hideBots = document.getElementById('hide-bots'), onlyModels = document.getElementById('only-models'), hideResolved = document.getElementById('hide-resolved'), hideGenerated = document.getElementById('hide-generated'), hideCommands = document.getElementById('hide-commands'), maintainersOnly = document.getElementById('maintainers-only'), hideCommentLines = document.getElementById('hide-comment-lines'), hideModuleHeaders = document.getElementById('hide-module-headers');
   function renderDiff() {
     if (!currentPatch) return;
-    TCIPatch.render(document.getElementById('patch-view'), currentPatch, {hideTests:hideTests.checked, onlyPython:onlyPython.checked, onlyModels:onlyModels.checked, hideGenerated:hideGenerated.checked, hideComments:hideCommentLines.checked, hideModuleHeaders:hideModuleHeaders.checked});
-    document.getElementById('collapse').textContent = 'Collapse all';
+    TCIPatch.render(document.getElementById('patch-view'), currentPatch, {hideTests:hideTests.checked, onlyPython:onlyPython.checked, onlyModels:onlyModels.checked, hideGenerated:hideGenerated.checked, hideComments:hideCommentLines.checked, hideModuleHeaders:hideModuleHeaders.checked, downloadContainer:document.getElementById('patch-download')});
+    setCollapseAction(true);
   }
   onlyPython.onchange = () => {
     if (!onlyPython.checked) onlyModels.checked = false;
     renderDiff();
   };
   hideTests.onchange = renderDiff; onlyModels.onchange = renderDiff; hideGenerated.onchange = renderDiff; hideCommentLines.onchange = renderDiff; hideModuleHeaders.onchange = renderDiff;
-  source.textContent = repository + ' · PR #' + pr;
-  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) && /^[1-9][0-9]*$/.test(pr)) source.href = 'https://github.com/' + repository + '/pull/' + pr + '/files';
   async function loadDiff() {
     currentPatch = '';
+    document.getElementById('patch-download').replaceChildren();
     diffProgress.hidden = false; diffProgress.removeAttribute('value');
     message.hidden = false; message.className = ''; message.textContent = 'Loading diff…';
     document.getElementById('patch-view').replaceChildren();
@@ -96,7 +120,7 @@ header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weig
       await paintLoading();
       currentPatch = text; renderDiff();
       message.hidden = true;
-      document.getElementById('collapse').textContent = 'Collapse all';
+      setCollapseAction(true);
     } catch (e) { message.className = 'error'; message.textContent = e.message; }
     finally { diffProgress.hidden = true; }
   }
@@ -221,9 +245,9 @@ header{display:flex;gap:12px;align-items:center;flex-wrap:wrap}#source{font-weig
   }
   reload.onclick = load;
   document.getElementById('collapse').onclick = e => {
-    const open = e.target.textContent === 'Expand all';
+    const open = e.currentTarget.dataset.action === 'expand';
     document.querySelectorAll('.patch-file').forEach(file => { file.open = open; });
-    e.target.textContent = open ? 'Collapse all' : 'Expand all';
+    setCollapseAction(open);
   };
   load();
 })();

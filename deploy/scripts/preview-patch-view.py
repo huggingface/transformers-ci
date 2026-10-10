@@ -55,6 +55,9 @@ class PreviewHandler(MetricsHandler):
                 Path(patch_view.__file__).with_suffix(".html").read_text()
             )
             patch_view.SCRIPT = Path(patch_view.__file__).with_suffix(".js").read_text()
+            patch_view.PR_VIEW_SCRIPT = (
+                Path(patch_view.__file__).with_name("pr_view.js").read_text()
+            )
             return super().do_GET()
         request = Request(
             "http://127.0.0.1:3301" + self.path,

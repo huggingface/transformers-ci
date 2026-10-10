@@ -207,6 +207,7 @@ def test_http_routes_serve_assets_and_enforce_public_repository(monkeypatch):
         for path, content_type in (
             ("/patch-view", "text/html"),
             ("/patch-view/script.js", "text/javascript"),
+            ("/patch-view/pr-view.js", "text/javascript"),
             ("/patch-view/data?repository=owner/repo&pr=12", "text/plain"),
             ("/patch-view/comments?repository=owner/repo&pr=12", "application/json"),
         ):

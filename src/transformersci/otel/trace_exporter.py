@@ -7406,6 +7406,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path in {
             "/patch-view",
             "/patch-view/script.js",
+            "/patch-view/pr-view.js",
             "/patch-view/data",
             "/patch-view/comments",
         }:
@@ -7417,11 +7418,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
                     patch_view.PAGE_HTML.encode(),
                     cache_control="no-store",
                 )
-            elif parsed.path == "/patch-view/script.js":
+            elif parsed.path in {"/patch-view/script.js", "/patch-view/pr-view.js"}:
                 self._send(
                     200,
                     "text/javascript; charset=utf-8",
-                    patch_view.SCRIPT.encode(),
+                    (
+                        patch_view.PR_VIEW_SCRIPT
+                        if parsed.path == "/patch-view/pr-view.js"
+                        else patch_view.SCRIPT
+                    ).encode(),
                     cache_control="no-store",
                 )
             else:

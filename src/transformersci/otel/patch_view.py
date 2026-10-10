@@ -16,6 +16,7 @@ from transformersci.agentic.github_api import gh_headers
 
 PAGE_HTML = Path(__file__).with_suffix(".html").read_text()
 SCRIPT = Path(__file__).with_suffix(".js").read_text()
+PR_VIEW_SCRIPT = Path(__file__).with_name("pr_view.js").read_text()
 MAX_BYTES = 4 * 1024 * 1024
 _cache: OrderedDict[tuple[str, str], tuple[float, str]] = OrderedDict()
 _lock = threading.Lock()
