@@ -78,7 +78,9 @@ a.row.sel,a.row:hover{background:var(--hover)}
     return !!(user && user.isSignedIn === false);
   }
   function overview() {
-    return parent.location.pathname === '/' || parent.location.pathname.indexOf('/d/pytest-observability/') === 0;
+    // Grafana gives its configured home dashboard a synthetic UID.
+    var path = parent.location.pathname, parts = path.split('/');
+    return path === '/' || (parts[1] === 'd' && (parts[2] === 'pytest-observability' || parts[2] === 'default-home-dashboard'));
   }
   function scope(prs) {
     if (!overview()) return;
