@@ -28,7 +28,18 @@ header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px
 .comment-thread{border:1px solid var(--border);border-radius:4px;margin-bottom:12px;background:var(--bg)}.comment-thread>summary{padding:9px 10px;font-weight:600;font-size:12px;cursor:pointer;background:var(--card)}.comment-thread .comment-card{border:0;border-top:1px solid var(--border);border-radius:0;margin:0}.comment-thread .comment-reply{border-left:2px solid var(--border);margin-left:10px}.thread-filter-note{font-size:10px;color:var(--muted);margin:8px 0 0}.comment-context-label{font-size:10px;color:var(--muted);margin-top:4px}
 .comment-meta{display:flex;align-items:baseline;gap:8px;justify-content:space-between;flex-wrap:wrap}.comment-author{font-weight:600}.comment-time{font-size:10px;color:var(--muted)}.comment-kind{font-size:10px;color:var(--muted);margin-top:4px}.comment-location{font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere;margin:8px 0;color:var(--link)}.comment-body{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;margin:8px 0;max-height:300px;overflow:auto}.comment-link{font-size:11px}
 @media(max-width:850px){.layout{grid-template-columns:minmax(0,1fr)}.comments-sidebar{position:static;height:600px;max-height:75dvh}}
-.loading-progress{display:block;width:calc(100% - 24px);height:8px;margin:0 12px 12px;accent-color:var(--link)}.loading-progress[hidden]{display:none}
+.loading-track{position:relative;height:8px;margin:0 12px 12px;border-radius:999px;overflow:hidden;background:var(--border)}
+.loading-track:has(.loading-progress[hidden]){display:none}
+.loading-progress{display:block;width:100%;height:100%;margin:0;border:0;border-radius:inherit;appearance:none;background:transparent;accent-color:var(--link)}
+.loading-progress::-webkit-progress-bar{background:transparent}
+.loading-progress::-webkit-progress-value{background:var(--link);border-radius:999px;transition:width .2s ease}
+.loading-progress::-moz-progress-bar{background:var(--link);border-radius:999px}
+.loading-progress:indeterminate::-webkit-progress-value{background:transparent}
+.loading-progress:indeterminate::-moz-progress-bar{background:transparent}
+.loading-sweep{position:absolute;inset:0 auto 0 0;width:40%;background:linear-gradient(90deg,transparent,var(--link),transparent);animation:patch-loading-sweep 1.4s ease-in-out infinite;pointer-events:none}
+.loading-progress:not(:indeterminate)+.loading-sweep{display:none}
+@keyframes patch-loading-sweep{from{transform:translateX(-100%)}to{transform:translateX(350%)}}
+@media(prefers-reduced-motion:reduce){.loading-sweep{animation:none;transform:translateX(75%)}.loading-progress::-webkit-progress-value{transition:none}}
 </style></head><body>
 <main class="layout">
   <section class="diff-column" aria-label="Unified diff">
@@ -43,7 +54,7 @@ header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px
 </div>
 <div class="patch-actions"><button id="reload" title="Refresh" aria-label="Refresh"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></svg></button><button id="collapse" data-action="collapse" title="Collapse all" aria-label="Collapse all"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 4 5 5 5-5M4 12h16m-13 8 5-5 5 5"/></svg></button><span id="patch-download"></span></div>
 </header>
-<div id="message" role="status">Loading diff…</div><progress id="diff-progress" class="loading-progress" aria-label="Loading diff"></progress><div id="patch-view"></div></section>
+<div id="message" role="status">Loading diff…</div><div class="loading-track"><progress id="diff-progress" class="loading-progress" aria-label="Loading diff"></progress><span class="loading-sweep" aria-hidden="true"></span></div><div id="patch-view"></div></section>
   <aside class="comments-sidebar" aria-label="PR comments">
     <div class="comments-heading"><h2>Comments <span id="comment-count"></span></h2>
       <div class="comment-filters" role="group" aria-label="Filter comments">
@@ -56,7 +67,7 @@ header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px
       <label class="filter-check bot-filter"><input type="checkbox" id="maintainers-only">Maintainers only</label>
       <p class="thread-filter-note">Filters select threads. Replies stay visible for context.</p>
     </div>
-    <div id="comments-status" class="comments-status" role="status">Loading comments…</div><progress id="comments-progress" class="loading-progress" aria-label="Loading comments"></progress><div id="comments-list"></div>
+    <div id="comments-status" class="comments-status" role="status">Loading comments…</div><div class="loading-track"><progress id="comments-progress" class="loading-progress" aria-label="Loading comments"></progress><span class="loading-sweep" aria-hidden="true"></span></div><div id="comments-list"></div>
   </aside>
 </main>
 <button id="back-to-top" class="back-to-top" aria-label="Back to top">↑ Back to top</button>
