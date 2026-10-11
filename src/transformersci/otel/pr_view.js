@@ -38,7 +38,8 @@ function installPrView() {
     const controller = new host.AbortController(); activityRequest = controller;
     const timeout = host.setTimeout(() => controller.abort(), 10000);
     try {
-      const response = await host.fetch('/api/ds/query', {method:'POST', credentials:'same-origin', signal:controller.signal, headers:{'Content-Type':'application/json'}, body:JSON.stringify({from:'now-5m', to:'now', queries:[{refId:'PRTestsActive', datasource:{type:'prometheus',uid:'prometheus'}, expr:'max(pytest_run_job_active{pr=' + JSON.stringify(pr) + ',repository=' + JSON.stringify(repository) + '}) or vector(0)', instant:true, range:false, maxDataPoints:1, intervalMs:30000}]})});
+      // Active-job series have no repository label; scope them through run identity.
+      const response = await host.fetch('/api/ds/query', {method:'POST', credentials:'same-origin', signal:controller.signal, headers:{'Content-Type':'application/json'}, body:JSON.stringify({from:'now-5m', to:'now', queries:[{refId:'PRTestsActive', datasource:{type:'prometheus',uid:'prometheus'}, expr:'max(pytest_run_job_active{pr=' + JSON.stringify(pr) + '} and on(pr,run_id) ci_github_run_info{pr=' + JSON.stringify(pr) + ',repository=' + JSON.stringify(repository) + '}) or vector(0)', instant:true, range:false, maxDataPoints:1, intervalMs:30000}]})});
       if (!response.ok) throw Error('Live status unavailable');
       const result = (await response.json()).results?.PRTestsActive;
       if (!result || result.error) throw Error('Live status unavailable');
