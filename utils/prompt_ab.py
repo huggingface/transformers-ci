@@ -114,16 +114,16 @@ GROUPS: dict[str, dict] = {
             }
         ],
     },
-    # transformers#49336, as the triage really builds it: the CI dataset's
-    # "(line N)  AssertionError" trace leaves terminal_exc "other", which before
-    # routing_exc sent this expectation group the CRASH guidance ("do not edit
-    # the test") and so no rule on which Expectations key to write.
+    # transformers#49336, as the triage builds it since 2026-10-12. Before that,
+    # the CI dataset's "(line N)  AssertionError" trace left terminal_exc
+    # "other" and the mode `other`, so this expectation group got the CRASH
+    # guidance ("do not edit the test") and no rule on which key to write.
     "ministral3-line-prefixed-assertion": {
         "kind": "model_failures",
-        "label": "2 integration tests for model `ministral3` failing with `other`",
+        "label": "2 integration tests for model `ministral3` failing with `output_mismatch`",
         "model": "ministral3",
-        "failure_mode": "other",
-        "terminal_exc": "other",
+        "failure_mode": "output_mismatch",
+        "terminal_exc": "AssertionError",
         "failures": [
             {
                 "test": (
@@ -131,7 +131,7 @@ GROUPS: dict[str, dict] = {
                     "::Ministral3IntegrationTest::test_model_3b_generation"
                 ),
                 "gpu": "multi-gpu",
-                "failure_mode": "other",
+                "failure_mode": "output_mismatch",
                 "latest_trace": (
                     "(line 130)  AssertionError: 'My favourite condiment is 100% "
                     "pure oliv[64 chars] can' != \"My favourite condiment is 100% "

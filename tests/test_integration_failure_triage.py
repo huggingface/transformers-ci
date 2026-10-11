@@ -156,6 +156,28 @@ class TerminalExceptionTest(unittest.TestCase):
     def test_none_when_no_exception(self):
         self.assertEqual(itf.terminal_exception("just a plain line"), (None, ""))
 
+    def test_ci_dataset_line_prefix(self):
+        """Every trace in the CI dataset's model_results.json reads
+        "(line N)  <Exc>: msg" (all 376 integration failures on 2026-10-10)."""
+        self.assertEqual(
+            itf.terminal_exception("(line 130)  AssertionError: 'a' != 'b'"),
+            ("AssertionError", "'a' != 'b'"),
+        )
+        self.assertEqual(
+            itf.terminal_exception(
+                "(line 88)  torch.OutOfMemoryError: CUDA out of memory"
+            ),
+            ("OutOfMemoryError", "CUDA out of memory"),
+        )
+
+    def test_line_prefixed_assertion_is_an_output_mismatch(self):
+        # 86 of the 222 AssertionErrors on 2026-10-10 classified `other`, so
+        # those groups were sent the crash guidance.
+        self.assertEqual(
+            itf.classify("(line 130)  AssertionError: 'x' != 'y'"), "output_mismatch"
+        )
+        self.assertEqual(itf.classify("(line 5)  ValueError: bad shape"), "other")
+
     def test_crash_site_is_raising_frame(self):
         self.assertEqual(
             itf.crash_site(_TRACE_UNBOUND_CRASH),
@@ -552,6 +574,24 @@ class PriorAttemptsTest(unittest.TestCase):
         }
         prior = itf.classify_prior_attempts([pr], [self.FP], {t})
         self.assertEqual(prior, itf.PriorAttempts())
+
+    def test_pre_rekey_closed_pr_keeps_its_rejection_by_test(self):
+        """The 2026-10-12 parser fix changed most fingerprints; a PR closed
+        before it can only be found by its tests (big_bird #48437)."""
+        t = "tests/models/x/test_modeling_x.py::XIntegrationTest::test_a"
+        old = {
+            "number": 48437,
+            "state": "closed",
+            "created_at": "2026-08-31T10:00:00Z",
+            "body": f"- `{t}` [single-gpu]",
+            "head": {"ref": "serge/fix/itf-aaaaaaaaaaaa-1"},
+        }
+        prior = itf.classify_prior_attempts([old], [self.FP], {t})
+        self.assertEqual(prior.rejected, (48437,))
+        newer = {**old, "number": 50000, "created_at": "2026-10-20T10:00:00Z"}
+        self.assertEqual(
+            itf.classify_prior_attempts([newer], [self.FP], {t}).rejected, ()
+        )
 
     def test_test_overlap_ignores_non_itf_branches(self):
         t = "tests/models/x/test_modeling_x.py::XIntegrationTest::test_a"
@@ -2835,29 +2875,18 @@ class InstructionAddendumTest(unittest.TestCase):
             self.assertIn(protected, text)
 
     def test_line_prefixed_assertion_gets_the_mismatch_guidance(self):
-        """The CI dataset writes "(line 130)  AssertionError: ...", which
-        terminal_exception() does not parse, so real groups carry
-        terminal_exc "other" (transformers#49336). Before routing_exc they got
-        the CRASH block and no rule about which key to write."""
-        target = _target("other", exc="other")
-        target["failures"][0]["latest_trace"] = (
-            "(line 130)  AssertionError: 'My favourite condiment is' != 'olive oil'"
-        )
-        self.assertEqual(itf.routing_exc(target), "AssertionError")
+        """The CI dataset writes "(line 130)  AssertionError: ...". Before
+        2026-10-12 terminal_exception() could not parse that, so real groups
+        carried terminal_exc "other" and got the CRASH block (transformers#49336).
+        Built through cluster_failures/pick_targets, as the nightly builds it."""
+        trace = "(line 130)  AssertionError: 'My favourite condiment is' != 'olive oil'"
+        f = _failure("ministral3", "multi", "tests/models/ministral3/t.py::T::t", trace)
+        f.pop("failure_mode", None)
+        targets = itf.pick_targets(itf.cluster_failures([f], None, attribution={}))
+        target = next(t for t in targets if t.get("kind") == "model_failures")
+        self.assertEqual(target["terminal_exc"], "AssertionError")
+        self.assertEqual(target["failure_mode"], "output_mismatch")
         self.assertEqual(itf.instruction_addendum(target), itf._MISMATCH_GUIDANCE)
-        self.assertEqual(itf.dispatch_category(target), "output_mismatch")
-
-    def test_line_prefixed_crash_keeps_the_crash_guidance(self):
-        target = _target("other", exc="other")
-        target["failures"][0]["latest_trace"] = "(line 88)  ValueError: bad shape"
-        self.assertEqual(itf.routing_exc(target), "ValueError")
-        self.assertNotIn("#48198", itf.instruction_addendum(target))
-
-    def test_mixed_exceptions_do_not_route_as_an_assertion(self):
-        target = _target("other", exc="other", n=2)
-        target["failures"][0]["latest_trace"] = "(line 1)  AssertionError: x"
-        target["failures"][1]["latest_trace"] = "(line 2)  ValueError: y"
-        self.assertEqual(itf.routing_exc(target), "other")
 
     def test_the_convention_stays_out_of_a_crash_group(self):
         """A crash never got as far as comparing values, so "add a device key"

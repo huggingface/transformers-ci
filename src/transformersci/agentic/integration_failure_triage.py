@@ -569,7 +569,14 @@ _IMPORT_CFG_PAT = re.compile(
 _E_EXC_PAT = re.compile(
     r"^\s*E\s+(?:[\w.]+\.)?([A-Za-z_]\w*(?:Error|Exception)):?(.*)$"
 )
-_BARE_EXC_PAT = re.compile(r"^(?:[\w.]+\.)?([A-Za-z_]\w*(?:Error|Exception)):?(.*)$")
+# The CI dataset's ``model_results.json`` writes each failure as
+# ``(line 130)  AssertionError: …`` — the failing line, then the exception. Until
+# 2026-10-11 that prefix defeated this pattern on every trace, so every group's
+# terminal exception came out "other" and assertions were classified by symptom
+# text alone (86 of 222 on 2026-10-10 ended up `other`).
+_BARE_EXC_PAT = re.compile(
+    r"^(?:\(line \d+\)\s+)?(?:[\w.]+\.)?([A-Za-z_]\w*(?:Error|Exception)):?(.*)$"
+)
 # The location pytest prints for the raising frame: ``path/to/file.py:123: ExcType``.
 _CRASH_SITE_PAT = re.compile(
     r"^([\w./-]+\.py):(\d+):\s+[A-Za-z_]\w*(?:Error|Exception)\b"
@@ -1226,32 +1233,6 @@ def pick_targets(report: dict) -> list[dict]:
     return targets
 
 
-# The CI dataset writes each failure as ``(line 130)  AssertionError: …``, a
-# form :func:`terminal_exception` does not parse, so in production every group's
-# ``terminal_exc`` is "other" (all 376 integration failures on 2026-10-10,
-# 222 of them AssertionErrors). The two routing decisions below that ask "is
-# this really an assertion?" read the exception from that prefix instead. The
-# grouping and the fingerprint still use ``terminal_exc``; changing those would
-# re-key every open group, so it is a separate change.
-_LINE_PREFIXED_EXC = re.compile(
-    r"^\(line \d+\)\s+(?:[\w.]+\.)?([A-Za-z_]\w*(?:Error|Exception))\b"
-)
-
-
-def routing_exc(target: dict) -> str:
-    """The group's terminal exception for routing: ``terminal_exc`` when it was
-    parsed, else the exception every failure's ``(line N)`` trace names."""
-    exc = target.get("terminal_exc") or ""
-    if exc not in ("", "other"):
-        return exc
-    seen = set()
-    for f in target.get("failures") or []:
-        trace = (f.get("latest_trace") or f.get("trace") or "").strip()
-        m = _LINE_PREFIXED_EXC.match(trace)
-        seen.add(m.group(1) if m else None)
-    return seen.pop() or exc if len(seen) == 1 else exc
-
-
 def dispatch_category(target: dict) -> str:
     """The category a group is really in, for selection diversity.
 
@@ -1265,7 +1246,7 @@ def dispatch_category(target: dict) -> str:
     if target.get("kind") != "model_failures":
         return "cluster"
     mode = target.get("failure_mode") or "other"
-    if mode in _CRASH_MODES and routing_exc(target) == "AssertionError":
+    if mode in _CRASH_MODES and target.get("terminal_exc") == "AssertionError":
         return "output_mismatch"
     return mode
 
@@ -2347,6 +2328,15 @@ def target_tests(target: dict) -> set[str]:
     return {f["test"] for f in target.get("failures") or [] if f.get("test")}
 
 
+# Fixing `_BARE_EXC_PAT` for the CI dataset's "(line N)" traces (2026-10-12)
+# reclassified about a fifth of the groups (other → output_mismatch), which
+# changed their labels and so their fingerprints: 68 of 110 on the 2026-10-11
+# window. A closed PR opened before that date can only be found by the tests it
+# lists, so it matches by test overlap, which keeps its rejection and the
+# maintainer feedback attached to it (big_bird's #48437, "do not record <unk>").
+FINGERPRINT_REKEY_DATE = "2026-10-12"
+
+
 def _pr_matches(pr: dict, markers: list[str], prefixes: list[str]) -> bool:
     body = pr.get("body") or ""
     head_ref = (pr.get("head") or {}).get("ref") or ""
@@ -2371,8 +2361,9 @@ def classify_prior_attempts(
     tests…", a test flaking on one runner). Each move minted a new fingerprint and
     so a second PR for the same test: on 2026-10-11 six failure groups had two
     open serge PRs each. So an open ITF PR whose body lists any of the group's tests is
-    its existing PR too, and the group gets a follow-up on it. Closed PRs still
-    match by fingerprint only, so the rejection count keeps its meaning.
+    its existing PR too, and the group gets a follow-up on it. Closed PRs match
+    by fingerprint only, so the rejection count keeps its meaning, except those
+    opened before :data:`FINGERPRINT_REKEY_DATE`, which also match by test.
 
     A PR serge closed at this triage's request (:data:`SERGE_CLOSE_MARKERS`) is
     ignored: retiring a stale or duplicate PR is not a maintainer rejecting a
@@ -2384,8 +2375,12 @@ def classify_prior_attempts(
     rejected: list[int] = []
     for pr in pulls:
         is_open = (pr.get("state") or "") != "closed"
+        pre_rekey = (pr.get("created_at") or "9999") < FINGERPRINT_REKEY_DATE
         if not _pr_matches(pr, markers, prefixes) and not (
-            tests and is_open and is_itf_pr(pr) and tests & pr_target_tests(pr)
+            tests
+            and (is_open or pre_rekey)
+            and is_itf_pr(pr)
+            and tests & pr_target_tests(pr)
         ):
             continue
         if not is_open and serge_closed_reason(pr):
@@ -4673,7 +4668,7 @@ def instruction_addendum(target: dict) -> str:
     if mode in _CRASH_MODES:
         # An `AssertionError` reaching us as `other` is still an assertion, so it
         # gets the mismatch guidance rather than "this is a library bug".
-        if routing_exc(target) == "AssertionError":
+        if target.get("terminal_exc") == "AssertionError":
             return _MISMATCH_GUIDANCE
         # A crash raised inside the weight-conversion step is a loading/placement
         # problem, not a library bug to hunt — see `_CONVERSION_PAT`. Checked only
