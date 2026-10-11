@@ -164,6 +164,60 @@ def dispatch_to_serge(
         return _post_task(serge_url, fresh, payload, timeout)
 
 
+def _post_close(
+    serge_url: str, token: str, repo: str, number: int, body: dict, timeout: int
+) -> dict:
+    url = f"{serge_url.rstrip('/')}/tasks/{repo}/pulls/{number}/close"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8")
+            return json.loads(text) if text else {}
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        raise SergeDispatchError(
+            f"Serge close #{number} failed: {e.code} {e.reason}\n{detail}",
+            status=e.code,
+        )
+    except urllib.error.URLError as e:
+        raise SergeDispatchError(f"could not reach Serge at {url}: {e.reason}")
+
+
+def close_serge_pr(
+    serge_url: str,
+    token: str,
+    repo: str,
+    number: int,
+    reason: str,
+    comment: str,
+    timeout: int = 30,
+) -> dict:
+    """Ask Serge to comment on and close one of its own PRs
+    (``POST /tasks/{repo}/pulls/{number}/close``, same OIDC bearer as
+    ``POST /tasks``). ``reason`` is ``stale`` or ``superseded``; Serge refuses
+    any PR that is not on its own ``serge/`` branch. Returns Serge's reply
+    (``{"closed": bool, ...}``); re-mints the bearer once on a 401, like
+    :func:`dispatch_to_serge`."""
+    body = {"reason": reason, "comment": comment}
+    try:
+        return _post_close(serge_url, token, repo, number, body, timeout)
+    except SergeDispatchError as e:
+        if e.status != 401:
+            raise
+        fresh = mint_serge_oidc_token()
+        if not fresh or fresh == token:
+            raise
+        return _post_close(serge_url, fresh, repo, number, body, timeout)
+
+
 def poll_serge_status(
     serge_url: str, token: str, repo: str, job_id: str, timeout: int = 15
 ) -> str | None:

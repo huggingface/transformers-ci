@@ -528,6 +528,198 @@ class PriorAttemptsTest(unittest.TestCase):
         )
         self.assertEqual(prior.rejected, (7,))
 
+    def test_open_itf_pr_matches_by_test_when_fingerprint_moved(self):
+        """The label/GPU set moved, so the fingerprint did; the test did not."""
+        t = "tests/models/nemotron/test_modeling_nemotron.py::NemotronIntegrationTest::test_a"
+        pr = {
+            "number": 47639,
+            "state": "open",
+            "body": f"- `{t}` [multi-gpu] (output_mismatch, seen 20/21)\n"
+            + itf.fingerprint_marker("f" * 64),
+            "head": {"ref": "serge/fix/itf-ffffffffffff-1"},
+        }
+        self.assertIsNone(itf.classify_prior_attempts([pr], [self.FP]).open_pr)
+        prior = itf.classify_prior_attempts([pr], [self.FP], {t})
+        self.assertEqual(prior.open_pr, 47639)
+
+    def test_test_overlap_never_creates_a_rejection(self):
+        t = "tests/models/x/test_modeling_x.py::XIntegrationTest::test_a"
+        pr = {
+            "number": 5,
+            "state": "closed",
+            "body": f"- `{t}` [multi-gpu]",
+            "head": {"ref": "serge/fix/itf-aaaaaaaaaaaa-1"},
+        }
+        prior = itf.classify_prior_attempts([pr], [self.FP], {t})
+        self.assertEqual(prior, itf.PriorAttempts())
+
+    def test_test_overlap_ignores_non_itf_branches(self):
+        t = "tests/models/x/test_modeling_x.py::XIntegrationTest::test_a"
+        pr = {"number": 5, "state": "open", "body": f"`{t}`", "head": {"ref": "fix-x"}}
+        self.assertIsNone(itf.classify_prior_attempts([pr], [self.FP], {t}).open_pr)
+
+    def test_serge_retired_pr_is_not_a_rejection(self):
+        pr = self._pr(8, "closed")
+        pr["body"] += "\n\n" + itf.SERGE_CLOSE_MARKERS["stale"]
+        prior = itf.classify_prior_attempts([pr, self._pr(9, "closed")], [self.FP])
+        self.assertEqual(prior.rejected, (9,))
+
+
+T_A = "tests/models/alpha/test_modeling_alpha.py::AlphaIntegrationTest::test_a"
+T_B = "tests/models/alpha/test_modeling_alpha.py::AlphaIntegrationTest::test_b"
+T_GEN = "tests/generation/test_utils.py::GenerationIntegrationTests::test_x"
+
+
+def _itf_pr(number, tests, state="open", ref=None, marker=True):
+    """A serge ITF PR. ``marker=False`` is the pre-2026-10-11 shape: the body
+    shows the first failure only, with no whole-group marker."""
+    body = "## Original CI failure\n" + "".join(
+        f"- `{t}` [multi-gpu] (other, seen 3/3)\n" for t in tests[:1]
+    )
+    if marker and tests:
+        body += f"\n<!-- serge-tests: {' '.join(tests)} -->"
+    return {
+        "number": number,
+        "state": state,
+        "body": body,
+        "head": {"ref": ref or f"serge/fix/itf-{number:012d}-1"},
+    }
+
+
+def _day(failing=(), healthy=("models_alpha", "generation"), crashed=()):
+    mr = {}
+    for key in set(healthy) | set(crashed):
+        mr[key] = {
+            "error": key in crashed,
+            "success": 0 if key in crashed else 10,
+            "failures": {},
+        }
+    for t in failing:
+        key = itf.results_key_for_test(t)
+        mr.setdefault(key, {"error": False, "success": 10, "failures": {}})
+        mr[key]["failures"].setdefault("multi", []).append({"line": t, "trace": "x"})
+    return {"model_results": mr}
+
+
+class RetireSergePRsTest(unittest.TestCase):
+    def test_results_key_for_test(self):
+        self.assertEqual(itf.results_key_for_test(T_A), "models_alpha")
+        self.assertEqual(itf.results_key_for_test(T_GEN), "generation")
+
+    def test_stale_when_every_test_passed_for_quiet_days(self):
+        daily = {
+            "2026-10-07": _day(failing=[T_A]),
+            "2026-10-08": _day(),
+            "2026-10-09": _day(),
+            "2026-10-10": _day(),
+        }
+        stale = itf.find_stale_prs([_itf_pr(1, [T_A, T_GEN])], daily, quiet_days=3)
+        self.assertEqual([s["number"] for s in stale], [1])
+        self.assertEqual(stale[0]["days"], ["2026-10-08", "2026-10-09", "2026-10-10"])
+
+    def test_not_stale_if_a_test_failed_in_the_window(self):
+        daily = {"d1": _day(), "d2": _day(failing=[T_B]), "d3": _day()}
+        self.assertEqual(
+            itf.find_stale_prs([_itf_pr(1, [T_A, T_B])], daily, quiet_days=3), []
+        )
+
+    def test_marker_lists_the_whole_group(self):
+        pr = _itf_pr(1, [T_A, T_B])
+        self.assertEqual(itf.pr_target_tests(pr), {T_A, T_B})
+        self.assertEqual(
+            itf.pr_target_tests(_itf_pr(1, [T_A, T_B], marker=False)), {T_A}
+        )
+
+    def test_legacy_pr_needs_its_whole_test_file_quiet(self):
+        """Without the marker the body shows one test of the group, so another
+        failure in the same file may be one this PR also targets."""
+        daily = {"d1": _day(), "d2": _day(failing=[T_B]), "d3": _day()}
+        legacy = _itf_pr(1, [T_A], marker=False)
+        self.assertEqual(itf.find_stale_prs([legacy], daily), [])
+        self.assertEqual(
+            [s["number"] for s in itf.find_stale_prs([_itf_pr(2, [T_A])], daily)], [2]
+        )
+
+    def test_crashed_job_is_not_evidence_of_a_pass(self):
+        daily = {
+            "d1": _day(),
+            "d2": _day(healthy=("generation",), crashed=("models_alpha",)),
+            "d3": _day(),
+        }
+        self.assertEqual(itf.find_stale_prs([_itf_pr(1, [T_A])], daily), [])
+
+    def test_too_few_days_or_no_tests_keeps_the_pr(self):
+        daily = {"d1": _day(), "d2": _day()}
+        self.assertEqual(itf.find_stale_prs([_itf_pr(1, [T_A])], daily), [])
+        daily["d3"] = _day()
+        self.assertEqual(itf.find_stale_prs([_itf_pr(2, [])], daily), [])
+
+    def test_ignores_closed_and_non_itf_prs(self):
+        daily = {"d1": _day(), "d2": _day(), "d3": _day()}
+        pulls = [
+            _itf_pr(1, [T_A], state="closed"),
+            _itf_pr(2, [T_A], ref="contributor/fix"),
+        ]
+        self.assertEqual(itf.find_stale_prs(pulls, daily), [])
+
+    def test_superseded_needs_full_coverage_by_a_newer_pr(self):
+        pulls = [
+            _itf_pr(10, [T_A]),
+            _itf_pr(20, [T_A, T_B]),
+            _itf_pr(5, [T_B, T_GEN]),  # partial overlap with #20: kept
+        ]
+        sup = itf.find_superseded_prs(pulls)
+        self.assertEqual([(s["number"], s["by"]) for s in sup], [(10, 20)])
+
+    def test_retire_calls_serge_and_updates_the_listing(self):
+        daily = {"d1": _day(), "d2": _day(), "d3": _day(failing=[T_B])}
+        pulls = [_itf_pr(1, [T_A]), _itf_pr(2, [T_B]), _itf_pr(3, [T_B])]
+        calls = []
+
+        def fake_close(url, token, repo, number, reason, comment, timeout=30):
+            calls.append((number, reason))
+            return {"closed": True}
+
+        with patch.object(itf, "close_serge_pr", fake_close):
+            closed = itf.retire_serge_prs(
+                pulls, daily, repo="o/r", serge_url="https://s", token="t"
+            )
+        self.assertEqual(calls, [(1, "stale"), (2, "superseded")])
+        self.assertEqual(closed, [1, 2])
+        self.assertEqual(pulls[0]["state"], "closed")
+        self.assertIn(itf.SERGE_CLOSE_MARKERS["stale"], pulls[0]["body"])
+        # The retired PRs no longer count as anyone's open PR or rejection.
+        prior = itf.classify_prior_attempts(pulls, ["0" * 64], {T_B})
+        self.assertEqual(prior, itf.PriorAttempts(open_pr=3))
+
+    def test_dry_run_closes_nothing(self):
+        daily = {"d1": _day(), "d2": _day(), "d3": _day()}
+        with patch.object(itf, "close_serge_pr") as close:
+            closed = itf.retire_serge_prs(
+                [_itf_pr(1, [T_A])],
+                daily,
+                repo="o/r",
+                serge_url="https://s",
+                token="t",
+                dry_run=True,
+            )
+        close.assert_not_called()
+        self.assertEqual(closed, [])
+
+    def test_a_refusal_does_not_stop_the_run(self):
+        daily = {"d1": _day(), "d2": _day(), "d3": _day()}
+        err = itf.SergeDispatchError("403 not a serge branch", status=403)
+        with patch.object(itf, "close_serge_pr", side_effect=err):
+            closed = itf.retire_serge_prs(
+                [_itf_pr(1, [T_A])], daily, repo="o/r", serge_url="u", token="t"
+            )
+        self.assertEqual(closed, [])
+
+    def test_merge_pull_listings_adds_missing_open_prs(self):
+        recent = [{"number": 1}, {"number": 2}]
+        merged = itf.merge_pull_listings(recent, [{"number": 2}, {"number": 3}])
+        self.assertEqual([p["number"] for p in merged], [1, 2, 3])
+
 
 class RejectedAttemptsReasonTest(unittest.TestCase):
     def test_defers_at_the_threshold(self):

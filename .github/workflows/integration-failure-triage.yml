@@ -197,6 +197,11 @@ jobs:
           # a per-test dashboard link built here (Serge holds no Grafana config —
           # see src/transformersci/agentic/pr_evidence.py). Unset = no links.
           ITF_GRAFANA_URL: ${{ vars.ITF_GRAFANA_URL || 'https://transformers-ci.huggingface.cool' }}
+          # Ask serge to close its PRs whose target tests passed on main in the
+          # last ITF_STALE_QUIET_DAYS nightlies, or that a newer serge PR covers
+          # (retire_serge_prs). Set the variable to 0 on the caller repo to stop it.
+          ITF_CLOSE_STALE_PRS: ${{ vars.ITF_CLOSE_STALE_PRS || '1' }}
+          ITF_STALE_QUIET_DAYS: ${{ vars.ITF_STALE_QUIET_DAYS || '3' }}
           SERGE_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
           GITHUB_TOKEN: ${{ github.token }}
           # Hand the tracking issue to a human and (by default) auto-close the

@@ -96,6 +96,7 @@ from . import prometheus_api
 from .serge_dispatch import (
     SergeDispatchError,
     build_task_payload as _build_serge_payload,
+    close_serge_pr,
     dispatch_to_serge,
     mint_serge_oidc_token,
     poll_serge_task,
@@ -2273,6 +2274,53 @@ class PriorAttempts:
         return (1 if self.open_pr else 0) + len(self.merged) + len(self.rejected)
 
 
+# Every PR this triage dispatches lives on a branch under this prefix.
+ITF_BRANCH_NAMESPACE = "serge/fix/itf-"
+
+# serge appends one of these to a PR body when it closes the PR on this triage's
+# request (serge reviewbot/task_pr_close.py — the two lists must match). A PR
+# closed that way was retired by the machinery, not rejected by a maintainer, so
+# it must not count towards ``--max-rejected-attempts``.
+SERGE_CLOSE_MARKERS = {
+    "stale": "<!-- serge-closed:stale -->",
+    "superseded": "<!-- serge-closed:superseded -->",
+}
+
+# Every node-id of the PR's failure group, which serge writes at the end of
+# the body (serge reviewbot/tasks.py GROUP_TESTS_MARKER). PRs opened before
+# 2026-10-11 lack it and only show the one representative failure under
+# "Original CI failure", in backticks.
+_PR_TESTS_MARKER_RE = re.compile(r"<!-- serge-tests: (.*?) -->")
+_PR_TEST_RE = re.compile(r"`(tests/[^`\s]+?\.py::[^`\s]+)`")
+
+
+def pr_lists_whole_group(pr: dict) -> bool:
+    return bool(_PR_TESTS_MARKER_RE.search(pr.get("body") or ""))
+
+
+def pr_target_tests(pr: dict) -> set[str]:
+    """The test node-ids an ITF PR targets: the whole group when serge wrote
+    the marker, else only the failures its body shows."""
+    body = pr.get("body") or ""
+    m = _PR_TESTS_MARKER_RE.search(body)
+    if m:
+        return set(m.group(1).split())
+    return set(_PR_TEST_RE.findall(body))
+
+
+def is_itf_pr(pr: dict) -> bool:
+    return ((pr.get("head") or {}).get("ref") or "").startswith(ITF_BRANCH_NAMESPACE)
+
+
+def serge_closed_reason(pr: dict) -> str | None:
+    body = pr.get("body") or ""
+    return next((r for r, m in SERGE_CLOSE_MARKERS.items() if m in body), None)
+
+
+def target_tests(target: dict) -> set[str]:
+    return {f["test"] for f in target.get("failures") or [] if f.get("test")}
+
+
 def _pr_matches(pr: dict, markers: list[str], prefixes: list[str]) -> bool:
     body = pr.get("body") or ""
     head_ref = (pr.get("head") or {}).get("ref") or ""
@@ -2282,21 +2330,39 @@ def _pr_matches(pr: dict, markers: list[str], prefixes: list[str]) -> bool:
 
 
 def classify_prior_attempts(
-    pulls: list[dict], fingerprints: list[str]
+    pulls: list[dict], fingerprints: list[str], tests: set[str] | None = None
 ) -> PriorAttempts:
     """Bucket every PR in ``pulls`` that tracks any of ``fingerprints``.
 
     ``pulls`` should come from :func:`list_recent_pulls` (all states). Given only
     open PRs this degrades to the previous behaviour — an open PR or nothing —
     which is the safe direction: a missing history means "dispatch", never
-    "skip"."""
+    "skip".
+
+    ``tests`` (the group's node-ids) widens the *open* match. The fingerprint
+    hashes the group's label and its GPU set, both of which move from night to
+    night for an unchanged failure ("1/1: 2 integration tests…" vs "2 integration
+    tests…", a test flaking on one runner). Each move minted a new fingerprint and
+    so a second PR for the same test: on 2026-10-11 six failure groups had two
+    open serge PRs each. So an open ITF PR whose body lists any of the group's tests is
+    its existing PR too, and the group gets a follow-up on it. Closed PRs still
+    match by fingerprint only, so the rejection count keeps its meaning.
+
+    A PR serge closed at this triage's request (:data:`SERGE_CLOSE_MARKERS`) is
+    ignored: retiring a stale or duplicate PR is not a maintainer rejecting a
+    fix."""
     markers = [fingerprint_marker(fp) for fp in fingerprints]
     prefixes = [task_branch_prefix(fp) for fp in fingerprints]
     open_pr: int | None = None
     merged: list[int] = []
     rejected: list[int] = []
     for pr in pulls:
-        if not _pr_matches(pr, markers, prefixes):
+        is_open = (pr.get("state") or "") != "closed"
+        if not _pr_matches(pr, markers, prefixes) and not (
+            tests and is_open and is_itf_pr(pr) and tests & pr_target_tests(pr)
+        ):
+            continue
+        if not is_open and serge_closed_reason(pr):
             continue
         number = int(pr["number"])
         # Only an EXPLICIT "closed" can produce a rejection. A payload without a
@@ -2322,7 +2388,9 @@ def resolve_prior_attempts(
 ) -> dict[str, PriorAttempts]:
     """Map each target's current fingerprint to its :class:`PriorAttempts`."""
     return {
-        target_fingerprint(t): classify_prior_attempts(pulls, fingerprint_candidates(t))
+        target_fingerprint(t): classify_prior_attempts(
+            pulls, fingerprint_candidates(t), target_tests(t)
+        )
         for t in targets
     }
 
@@ -2805,10 +2873,192 @@ def resolve_existing_prs(
     matched against an already-fetched ``pulls`` list."""
     return {
         target_fingerprint(t): classify_prior_attempts(
-            pulls, fingerprint_candidates(t)
+            pulls, fingerprint_candidates(t), target_tests(t)
         ).open_pr
         for t in targets
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Retiring serge PRs that are no longer needed. The triage opens a PR per group
+# and, before this, nothing ever closed one: on 2026-10-11, 14 of the 47 open
+# serge PRs targeted tests already passing on main and 3 duplicated a newer PR,
+# all sitting in the maintainers' review queue. The triage decides; serge does
+# the close with its own App (``POST /tasks/{repo}/pulls/{n}/close``), because
+# this workflow's token can only read pull requests.
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEFAULT_STALE_QUIET_DAYS = 3
+
+
+def merge_pull_listings(recent: list[dict], open_pulls: list[dict]) -> list[dict]:
+    """``recent`` plus every open PR it lacks. The recent listing is capped and
+    sorted by last update, so an open PR nobody touched for a while falls out
+    of it, and with it out of the dedupe and the retirement check."""
+    seen = {int(p["number"]) for p in recent}
+    return recent + [p for p in open_pulls if int(p["number"]) not in seen]
+
+
+def results_key_for_test(test: str) -> str:
+    """The ``model_results.json`` key whose job runs ``test``:
+    ``tests/models/bert/…`` → ``models_bert``, ``tests/generation/…`` →
+    ``generation``."""
+    parts = test.split("::", 1)[0].split("/")
+    if len(parts) > 2 and parts[1] == "models":
+        return f"models_{parts[2]}"
+    return parts[1] if len(parts) > 1 else ""
+
+
+def _failing_and_healthy(model_results: dict) -> tuple[set[str], set[str]]:
+    """One day's failing node-ids, and the job keys that really ran. A crashed
+    job reports ``error: true`` and drops its tests from the failure list, so
+    absence from that list proves nothing unless the job ran."""
+    failing: set[str] = set()
+    healthy: set[str] = set()
+    for key, entry in model_results.items():
+        if not isinstance(entry, dict):
+            continue
+        if not entry.get("error") and (entry.get("success") or 0) > 0:
+            healthy.add(key)
+        for items in (entry.get("failures") or {}).values():
+            for it in items or []:
+                failing.add((it.get("line") or "").split(" ", 1)[0])
+    return failing, healthy
+
+
+def find_stale_prs(
+    pulls: list[dict],
+    daily: dict[str, dict | None],
+    *,
+    quiet_days: int = DEFAULT_STALE_QUIET_DAYS,
+) -> list[dict]:
+    """Open ITF PRs whose every target test passed on main in each of the
+    newest ``quiet_days`` nightlies: absent from the failure list while its job
+    ran. A PR whose body lists no test, or a day whose job crashed, is never
+    called stale: no evidence means keep it.
+
+    A PR without serge's whole-group marker shows one failure of a group that
+    can hold several (#49304 shows 1 of 6), so for it the bar is the whole test
+    FILE: nothing in that file may have failed, not just the test it shows."""
+    days = sorted(d for d, p in daily.items() if p and p.get("model_results"))
+    days = days[-quiet_days:] if quiet_days > 0 else []
+    if not days or len(days) < quiet_days:
+        return []
+    views = [_failing_and_healthy(daily[d]["model_results"]) for d in days]
+    out = []
+    for pr in pulls:
+        if (pr.get("state") or "") == "closed" or not is_itf_pr(pr):
+            continue
+        tests = pr_target_tests(pr)
+        whole = pr_lists_whole_group(pr)
+        if tests and all(
+            results_key_for_test(t) in healthy
+            and (
+                t not in failing
+                if whole
+                else not any(
+                    f.split("::", 1)[0] == t.split("::", 1)[0] for f in failing
+                )
+            )
+            for failing, healthy in views
+            for t in tests
+        ):
+            out.append(
+                {"number": int(pr["number"]), "tests": sorted(tests), "days": days}
+            )
+    return out
+
+
+def find_superseded_prs(pulls: list[dict]) -> list[dict]:
+    """Open ITF PRs every one of whose tests a NEWER open ITF PR also targets.
+    The newest wins, as in dispatch; a partial overlap closes nothing, since
+    the older PR still carries a test the newer one does not."""
+    open_itf = sorted(
+        (
+            (int(p["number"]), pr_target_tests(p))
+            for p in pulls
+            if (p.get("state") or "") != "closed" and is_itf_pr(p)
+        ),
+        reverse=True,
+    )
+    out = []
+    for i, (number, tests) in enumerate(open_itf):
+        newer = next((n for n, t in open_itf[:i] if tests and tests <= t), None)
+        if newer is not None:
+            out.append({"number": number, "by": newer, "tests": sorted(tests)})
+    return out
+
+
+def _test_list(tests: list[str]) -> str:
+    return "\n".join(f"- `{t}`" for t in tests)
+
+
+def stale_close_comment(stale: dict) -> str:
+    days = stale["days"]
+    return (
+        f"Closing: the test(s) this PR targets passed on `main` in each of the "
+        f"last {len(days)} nightly CI runs ({days[0]} to {days[-1]}), so this fix "
+        f"is no longer needed.\n\n{_test_list(stale['tests'])}\n\n"
+        "If one starts failing again, the nightly triage will open a new PR."
+    )
+
+
+def superseded_close_comment(sup: dict) -> str:
+    return (
+        f"Closing as superseded by #{sup['by']}, which targets the same "
+        f"test(s):\n\n{_test_list(sup['tests'])}"
+    )
+
+
+def retire_serge_prs(
+    pulls: list[dict],
+    daily: dict[str, dict | None],
+    *,
+    repo: str,
+    serge_url: str | None,
+    token: str | None,
+    quiet_days: int = DEFAULT_STALE_QUIET_DAYS,
+    dry_run: bool = False,
+) -> list[int]:
+    """Ask serge to close its stale and superseded ITF PRs. Returns the PRs
+    closed. Best-effort: a refusal or an unreachable serge is logged and the
+    run carries on. A closed PR is updated in ``pulls`` in place (state and
+    body marker), so this run's dedupe sees what GitHub now holds."""
+    stale = find_stale_prs(pulls, daily, quiet_days=quiet_days)
+    stale_numbers = {s["number"] for s in stale}
+    plans = [("stale", s["number"], stale_close_comment(s)) for s in stale]
+    plans += [
+        ("superseded", s["number"], superseded_close_comment(s))
+        for s in find_superseded_prs(
+            [p for p in pulls if int(p["number"]) not in stale_numbers]
+        )
+    ]
+    if not plans:
+        return []
+    by_number = {int(p["number"]): p for p in pulls}
+    closed: list[int] = []
+    for reason, number, comment in plans:
+        if dry_run or not serge_url or not token:
+            why = "dry run" if dry_run else "no serge URL/token"
+            print(f"      would close #{number} as {reason} ({why})", flush=True)
+            continue
+        try:
+            result = close_serge_pr(serge_url, token, repo, number, reason, comment)
+        except SergeDispatchError as e:
+            print(f"      warning: could not close #{number}: {e}", flush=True)
+            continue
+        if result.get("closed"):
+            closed.append(number)
+            pr = by_number[number]
+            pr["state"] = "closed"
+            pr["body"] = f"{pr.get('body') or ''}\n\n{SERGE_CLOSE_MARKERS[reason]}"
+        print(
+            f"      closed #{number} as {reason}"
+            if result.get("closed")
+            else f"      #{number} was already closed",
+            flush=True,
+        )
+    return closed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5036,6 +5286,23 @@ def build_parser() -> argparse.ArgumentParser:
         "(one contents call per dispatched model group)",
     )
     p.add_argument(
+        "--no-close-stale-prs",
+        dest="close_stale_prs",
+        action="store_false",
+        default=_env_bool("ITF_CLOSE_STALE_PRS", True),
+        help="do not ask serge to close its PRs whose tests pass on main, or that a "
+        "newer serge PR covers (default: close them; env ITF_CLOSE_STALE_PRS=0)",
+    )
+    p.add_argument(
+        "--stale-quiet-days",
+        type=int,
+        default=int(
+            os.environ.get("ITF_STALE_QUIET_DAYS", str(DEFAULT_STALE_QUIET_DAYS))
+        ),
+        help="a serge PR is stale once its tests passed in this many consecutive "
+        f"nightlies (default {DEFAULT_STALE_QUIET_DAYS})",
+    )
+    p.add_argument(
         "--pr-lookback-days",
         type=int,
         default=int(os.environ.get("ITF_PR_LOOKBACK_DAYS", "90")),
@@ -5156,9 +5423,20 @@ def main(argv: list[str] | None = None) -> int:
     # agent again (see rejected_attempts_reason). Fetched once here, before the
     # partition, and reused for the tracking-issue links further down.
     gh_token = os.environ.get("GITHUB_TOKEN")
-    recent_pulls = list_recent_pulls(
-        args.repo, gh_token, lookback_days=args.pr_lookback_days
+    recent_pulls = merge_pull_listings(
+        list_recent_pulls(args.repo, gh_token, lookback_days=args.pr_lookback_days),
+        list_open_pulls(args.repo, gh_token),
     )
+    if args.close_stale_prs:
+        retire_serge_prs(
+            recent_pulls,
+            daily,
+            repo=args.repo,
+            serge_url=args.serge_url,
+            token=os.environ.get("SERGE_OIDC_TOKEN"),
+            quiet_days=args.stale_quiet_days,
+            dry_run=args.dry_run,
+        )
     priors = resolve_prior_attempts(targets, recent_pulls)
     # Hold back groups no minimal patch can fix (runner OOM, missing dependency)
     # or that a human has already rejected repeatedly, BEFORE the --max-groups
