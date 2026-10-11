@@ -27,7 +27,9 @@ The PR dashboard embeds `/patch-view` in an iframe and passes the selected PR an
 repository. The trace exporter serves the unified diff and a sidebar of discussion,
 review summaries, and inline review threads. File filters hide tests, generated
 modular outputs, copyright headers, and Python comment lines; comment filters hide
-bots, resolved threads, and command comments. **Show the line(s)** highlights the
+bots, resolved and outdated threads, and command comments. Filter choices are
+remembered in this browser using local storage. Only model changes is off by
+default; Hide outdated comments is on. **Show the line(s)** highlights the
 current code or displays saved context for an outdated comment. Icon controls
 refresh, collapse/expand, and download the full patch. The comments sidebar starts
 level with the patch filters and scrolls independently. Separate progress bars

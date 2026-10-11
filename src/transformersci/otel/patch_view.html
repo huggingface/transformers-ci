@@ -36,7 +36,7 @@ header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px
 <div class="file-filters" role="group" aria-label="Filter changed files">
   <label class="filter-check"><input type="checkbox" id="hide-tests" checked>Hide test changes</label>
   <label class="filter-check"><input type="checkbox" id="only-python" checked>Only .py changes</label>
-  <label class="filter-check"><input type="checkbox" id="only-models" checked>Only model changes</label>
+  <label class="filter-check"><input type="checkbox" id="only-models">Only model changes</label>
   <label class="filter-check"><input type="checkbox" id="hide-generated" checked>Hide generated files</label>
   <label class="filter-check"><input type="checkbox" id="hide-comment-lines" checked>Hide comment lines</label>
   <label class="filter-check"><input type="checkbox" id="hide-module-headers" checked>Hide module headers</label>
@@ -51,6 +51,7 @@ header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px
       </div>
       <label class="filter-check bot-filter"><input type="checkbox" id="hide-bots" checked>Hide bot comments</label>
       <label class="filter-check bot-filter"><input type="checkbox" id="hide-resolved" checked disabled>Hide resolved</label>
+      <label class="filter-check bot-filter"><input type="checkbox" id="hide-outdated" checked>Hide outdated comments</label>
       <label class="filter-check bot-filter"><input type="checkbox" id="hide-commands" checked>Hide command comments</label>
       <label class="filter-check bot-filter"><input type="checkbox" id="maintainers-only">Maintainers only</label>
       <p class="thread-filter-note">Filters select threads. Replies stay visible for context.</p>
@@ -96,7 +97,7 @@ header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px
   const diffProgress = document.getElementById('diff-progress'), commentsProgress = document.getElementById('comments-progress');
   const paintLoading = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   let currentPatch = '';
-  const hideTests = document.getElementById('hide-tests'), onlyPython = document.getElementById('only-python'), hideBots = document.getElementById('hide-bots'), onlyModels = document.getElementById('only-models'), hideResolved = document.getElementById('hide-resolved'), hideGenerated = document.getElementById('hide-generated'), hideCommands = document.getElementById('hide-commands'), maintainersOnly = document.getElementById('maintainers-only'), hideCommentLines = document.getElementById('hide-comment-lines'), hideModuleHeaders = document.getElementById('hide-module-headers');
+  const hideTests = document.getElementById('hide-tests'), onlyPython = document.getElementById('only-python'), hideBots = document.getElementById('hide-bots'), onlyModels = document.getElementById('only-models'), hideResolved = document.getElementById('hide-resolved'), hideOutdated = document.getElementById('hide-outdated'), hideGenerated = document.getElementById('hide-generated'), hideCommands = document.getElementById('hide-commands'), maintainersOnly = document.getElementById('maintainers-only'), hideCommentLines = document.getElementById('hide-comment-lines'), hideModuleHeaders = document.getElementById('hide-module-headers');
   function renderDiff() {
     if (!currentPatch) return;
     TCIPatch.render(document.getElementById('patch-view'), currentPatch, {hideTests:hideTests.checked, onlyPython:onlyPython.checked, onlyModels:onlyModels.checked, hideGenerated:hideGenerated.checked, hideComments:hideCommentLines.checked, hideModuleHeaders:hideModuleHeaders.checked, downloadContainer:document.getElementById('patch-download')});
@@ -125,6 +126,23 @@ header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px
     finally { diffProgress.hidden = true; }
   }
   let comments = [], filter = 'review';
+  const filterKey = 'tci-patch-filters-v1';
+  const savedChecks = [hideTests, onlyPython, onlyModels, hideGenerated, hideCommentLines, hideModuleHeaders, hideBots, hideResolved, hideOutdated, hideCommands, maintainersOnly];
+  try {
+    const saved = JSON.parse(localStorage.getItem(filterKey));
+    if (saved && typeof saved === 'object') {
+      for (const checkbox of savedChecks) if (typeof saved[checkbox.id] === 'boolean') checkbox.checked = saved[checkbox.id];
+      if (['all', 'discussion', 'review', 'inline'].includes(saved.commentKind)) filter = saved.commentKind;
+      if (!onlyPython.checked) onlyModels.checked = false;
+    }
+  } catch (_) {}
+  document.querySelectorAll('[data-filter]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.filter === filter)));
+  function saveFilters() {
+    const values = Object.fromEntries(savedChecks.map(checkbox => [checkbox.id, checkbox.checked]));
+    values.commentKind = filter;
+    try { localStorage.setItem(filterKey, JSON.stringify(values)); } catch (_) {}
+  }
+  document.addEventListener('change', event => { if (savedChecks.includes(event.target)) saveFilters(); });
   const commentStatus = document.getElementById('comments-status'), commentList = document.getElementById('comments-list');
   function node(tag, cls, text) {
     const el = document.createElement(tag); el.className = cls; el.textContent = text; return el;
@@ -136,7 +154,7 @@ header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px
       const body = (c.body || '').trimStart().toLowerCase();
       const author = (c.author || '').toLowerCase();
       const bot = c.is_bot || author.endsWith('[bot]') || author === 'huggingfacedocbuilderdev';
-      return (filter === 'all' || c.kind === filter) && (!hideBots.checked || !bot) && (!hideResolved.checked || c.resolved !== true) && (!hideCommands.checked || !(body.startsWith('run-slow:') || body.startsWith('@askserge'))) && (!maintainersOnly.checked || isMaintainer(c));
+      return (filter === 'all' || c.kind === filter) && (!hideBots.checked || !bot) && (!hideResolved.checked || c.resolved !== true) && (!hideOutdated.checked || c.outdated !== true) && (!hideCommands.checked || !(body.startsWith('run-slow:') || body.startsWith('@askserge'))) && (!maintainersOnly.checked || isMaintainer(c));
   }
   function groupComments() {
     const byId = new Map(comments.filter(c => c.kind === 'inline').map(c => [c.id, c]));
@@ -213,7 +231,7 @@ header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px
       return card;
   }
   hideBots.onchange = renderComments;
-  hideResolved.onchange = renderComments;
+  hideResolved.onchange = renderComments; hideOutdated.onchange = renderComments;
   hideCommands.onchange = renderComments;
   maintainersOnly.onchange = renderComments;
   async function loadComments() {
@@ -235,6 +253,7 @@ header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px
   }
   document.querySelectorAll('[data-filter]').forEach(button => { button.onclick = () => {
     filter = button.dataset.filter;
+    saveFilters();
     document.querySelectorAll('[data-filter]').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
     renderComments();
   }; });

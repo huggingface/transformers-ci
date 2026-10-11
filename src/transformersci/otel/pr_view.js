@@ -1,6 +1,6 @@
 /* PR dashboard view switch. Loaded by the Branch panel's same-origin iframe. */
-(() => {
-  const host = window.parent, doc = host.document;
+function installPrView() {
+  const host = window, doc = host.document;
   if (host.tciPrView) { host.tciPrView.sync(); return; }
   const style = doc.createElement('style');
   style.textContent = `
@@ -118,4 +118,15 @@
   host.addEventListener('popstate', schedule);
   host.setInterval(() => checkActivity(), 30000);
   sync();
+}
+
+// Grafana replaces the loader iframe when Branch metadata refreshes. Install in
+// the dashboard window so observers, timers, and animation callbacks survive it.
+(() => {
+  const host = window.parent;
+  if (host.tciPrView) { host.tciPrView.sync(); return; }
+  const script = host.document.createElement('script');
+  script.textContent = '(' + installPrView.toString() + ')();';
+  host.document.head.append(script);
+  script.remove();
 })();
