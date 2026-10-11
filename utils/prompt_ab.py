@@ -114,6 +114,32 @@ GROUPS: dict[str, dict] = {
             }
         ],
     },
+    # transformers#49336, as the triage really builds it: the CI dataset's
+    # "(line N)  AssertionError" trace leaves terminal_exc "other", which before
+    # routing_exc sent this expectation group the CRASH guidance ("do not edit
+    # the test") and so no rule on which Expectations key to write.
+    "ministral3-line-prefixed-assertion": {
+        "kind": "model_failures",
+        "label": "2 integration tests for model `ministral3` failing with `other`",
+        "model": "ministral3",
+        "failure_mode": "other",
+        "terminal_exc": "other",
+        "failures": [
+            {
+                "test": (
+                    "tests/models/ministral3/test_modeling_ministral3.py"
+                    "::Ministral3IntegrationTest::test_model_3b_generation"
+                ),
+                "gpu": "multi-gpu",
+                "failure_mode": "other",
+                "latest_trace": (
+                    "(line 130)  AssertionError: 'My favourite condiment is 100% "
+                    "pure oliv[64 chars] can' != \"My favourite condiment is 100% "
+                    'pure oliv[46 chars]t in"'
+                ),
+            }
+        ],
+    },
     # The flex_olmo case: a drift within an EXISTING ("cuda", 8) key, which the
     # convention in #105 does not cover (it tells you to ADD a key).
     "flex-olmo-drift": {
@@ -240,7 +266,9 @@ def main() -> int:
         before, before_add = _render_at_ref(target, args.before)
         sides["before"] = before
         print(f"=== {args.group}: prompt at {args.before} ===")
-        print(f"  instruction {len(before):,} chars · addendum {len(before_add):,} chars")
+        print(
+            f"  instruction {len(before):,} chars · addendum {len(before_add):,} chars"
+        )
         if not before_add:
             print("  (empty addendum — trunk alone)")
         only_now = sorted(
@@ -287,7 +315,9 @@ def main() -> int:
             (args.agent_brief / f"brief-{name}.md").write_text(
                 BRIEF.format(worktree=wt, out=out, prompt=prompt + "\n" + ctx)
             )
-            print(f"\n{name}: worktree {wt}\n  brief {args.agent_brief}/brief-{name}.md")
+            print(
+                f"\n{name}: worktree {wt}\n  brief {args.agent_brief}/brief-{name}.md"
+            )
         print(
             "\nRun one FRESH agent per brief — a context that has already seen the "
             "answer cannot test the prompt — then diff the two answers."

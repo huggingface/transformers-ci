@@ -2799,8 +2799,8 @@ class InstructionAddendumTest(unittest.TestCase):
         """
         text = itf.build_instruction(_target("output_mismatch"))
         self.assertIn("#48198", text)
-        self.assertIn("Add a device key", text)
-        self.assertIn("do not overwrite the value that is there", text)
+        self.assertIn("Write only the CI runner's key", text)
+        self.assertIn("Every other key keeps its value", text)
         # The shape itself, so the agent copies a form rather than a slogan.
         self.assertIn("(None, None)", text)
         self.assertIn('("cuda", 8)', text)
@@ -2822,6 +2822,42 @@ class InstructionAddendumTest(unittest.TestCase):
         self.assertIn("~9.36 absolute", text)
         # Refusing has to be named as a success, or the agent optimises for a PR.
         self.assertIn("Producing no patch is a correct outcome", text)
+
+    def test_mismatch_names_the_runner_key_and_the_protected_ones(self):
+        """Of the serge PRs opened in Sept-Oct 2026, value updates on the
+        runner's ("cuda", 8) entry merged 3/3; the one that overwrote
+        ("cuda", None) merged wrong (#48580), and the open queue overwrote
+        (None, None) and XPU values."""
+        text = itf.build_instruction(_target("output_mismatch"))
+        self.assertIn("NVIDIA A10G", text)
+        self.assertIn('("cuda", (8, 6))', text)
+        for protected in ('`(None, None)`, `("cuda", None)`', '`"xpu"`', '`"rocm"`'):
+            self.assertIn(protected, text)
+
+    def test_line_prefixed_assertion_gets_the_mismatch_guidance(self):
+        """The CI dataset writes "(line 130)  AssertionError: ...", which
+        terminal_exception() does not parse, so real groups carry
+        terminal_exc "other" (transformers#49336). Before routing_exc they got
+        the CRASH block and no rule about which key to write."""
+        target = _target("other", exc="other")
+        target["failures"][0]["latest_trace"] = (
+            "(line 130)  AssertionError: 'My favourite condiment is' != 'olive oil'"
+        )
+        self.assertEqual(itf.routing_exc(target), "AssertionError")
+        self.assertEqual(itf.instruction_addendum(target), itf._MISMATCH_GUIDANCE)
+        self.assertEqual(itf.dispatch_category(target), "output_mismatch")
+
+    def test_line_prefixed_crash_keeps_the_crash_guidance(self):
+        target = _target("other", exc="other")
+        target["failures"][0]["latest_trace"] = "(line 88)  ValueError: bad shape"
+        self.assertEqual(itf.routing_exc(target), "ValueError")
+        self.assertNotIn("#48198", itf.instruction_addendum(target))
+
+    def test_mixed_exceptions_do_not_route_as_an_assertion(self):
+        target = _target("other", exc="other", n=2)
+        target["failures"][0]["latest_trace"] = "(line 1)  AssertionError: x"
+        target["failures"][1]["latest_trace"] = "(line 2)  ValueError: y"
+        self.assertEqual(itf.routing_exc(target), "other")
 
     def test_the_convention_stays_out_of_a_crash_group(self):
         """A crash never got as far as comparing values, so "add a device key"

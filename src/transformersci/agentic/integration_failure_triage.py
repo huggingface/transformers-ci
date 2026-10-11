@@ -1226,6 +1226,32 @@ def pick_targets(report: dict) -> list[dict]:
     return targets
 
 
+# The CI dataset writes each failure as ``(line 130)  AssertionError: …``, a
+# form :func:`terminal_exception` does not parse, so in production every group's
+# ``terminal_exc`` is "other" (all 376 integration failures on 2026-10-10,
+# 222 of them AssertionErrors). The two routing decisions below that ask "is
+# this really an assertion?" read the exception from that prefix instead. The
+# grouping and the fingerprint still use ``terminal_exc``; changing those would
+# re-key every open group, so it is a separate change.
+_LINE_PREFIXED_EXC = re.compile(
+    r"^\(line \d+\)\s+(?:[\w.]+\.)?([A-Za-z_]\w*(?:Error|Exception))\b"
+)
+
+
+def routing_exc(target: dict) -> str:
+    """The group's terminal exception for routing: ``terminal_exc`` when it was
+    parsed, else the exception every failure's ``(line N)`` trace names."""
+    exc = target.get("terminal_exc") or ""
+    if exc not in ("", "other"):
+        return exc
+    seen = set()
+    for f in target.get("failures") or []:
+        trace = (f.get("latest_trace") or f.get("trace") or "").strip()
+        m = _LINE_PREFIXED_EXC.match(trace)
+        seen.add(m.group(1) if m else None)
+    return seen.pop() or exc if len(seen) == 1 else exc
+
+
 def dispatch_category(target: dict) -> str:
     """The category a group is really in, for selection diversity.
 
@@ -1239,7 +1265,7 @@ def dispatch_category(target: dict) -> str:
     if target.get("kind") != "model_failures":
         return "cluster"
     mode = target.get("failure_mode") or "other"
-    if mode in _CRASH_MODES and target.get("terminal_exc") == "AssertionError":
+    if mode in _CRASH_MODES and routing_exc(target) == "AssertionError":
         return "output_mismatch"
     return mode
 
@@ -4199,15 +4225,21 @@ _MISMATCH_GUIDANCE = (
     "  - Take a genuinely changed value from the reproduced traceback in the "
     "report (the actual-vs-expected diff), not from your own arithmetic, and put "
     "it where the test keeps its expectations.\n"
-    "  - **Add a device key; do not overwrite the value that is there.** This is "
-    "how maintainers do it — transformers PR #48198 (`table_transformer`) moved "
-    "the existing entry to the generic key and added one for the CI runner, i.e. "
-    '`("cuda", None): [[-6.7329, ...]]` became `(None, None): [[-6.7329, ...]]` '
-    'plus `("cuda", 8): [[-6.7667, ...]]`.\n'
-    "    The old value keeps working where it already worked and the reviewer can "
-    "see what the new hardware changed; overwriting destroys both. If the block is "
-    "a plain literal rather than an `Expectations({...})`, convert it to one with "
-    "the existing value under `(None, None)`.\n"
+    "  - **Write only the CI runner's key.** The runners are NVIDIA A10G "
+    '(compute capability 8.6), so the key is `("cuda", 8)`, or `("cuda", (8, 6))` '
+    "when the block already keys by (major, minor). Update that entry if it "
+    "exists, otherwise add it. Every other key keeps its value: never overwrite "
+    '`(None, None)`, `("cuda", None)`, another CUDA generation, `"xpu"` or '
+    '`"rocm"`. Those record hardware this run never saw.\n'
+    "    The one allowed move is how maintainers do it in transformers PR #48198 "
+    "(`table_transformer`): move an existing broad value, unchanged, to the "
+    'generic key and add the runner key beside it. `("cuda", None): [[-6.7329, '
+    '...]]` became `(None, None): [[-6.7329, ...]]` plus `("cuda", 8): '
+    "[[-6.7667, ...]]`. The old value keeps working where it already worked, and "
+    "the reviewer can see what the new hardware changed. If the expectation is a "
+    "plain literal rather than an `Expectations({...})`, convert it to one with "
+    'the existing value under `(None, None)` and the new one under `("cuda", 8)`. '
+    "serge checks this mechanically and sends back a patch that breaks it.\n"
     "  - **Do not invent a tolerance.** You may set `atol`/`rtol` to a value that "
     "ALREADY appears in a comparable test (same file, sibling model, shared tester "
     "mixin) — name that precedent (file and value) in the PR body and do not "
@@ -4641,7 +4673,7 @@ def instruction_addendum(target: dict) -> str:
     if mode in _CRASH_MODES:
         # An `AssertionError` reaching us as `other` is still an assertion, so it
         # gets the mismatch guidance rather than "this is a library bug".
-        if target.get("terminal_exc") == "AssertionError":
+        if routing_exc(target) == "AssertionError":
             return _MISMATCH_GUIDANCE
         # A crash raised inside the weight-conversion step is a loading/placement
         # problem, not a library bug to hunt — see `_CONVERSION_PAT`. Checked only
