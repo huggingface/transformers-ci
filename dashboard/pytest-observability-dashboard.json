@@ -1320,6 +1320,18 @@
   "templating": {
     "list": [
       {
+        "name": "pr_scope",
+        "label": "PR scope",
+        "type": "textbox",
+        "hide": 2,
+        "query": "[0-9]+",
+        "current": {
+          "text": "[0-9]+",
+          "value": "[0-9]+"
+        },
+        "options": []
+      },
+      {
         "name": "top_prs",
         "label": "Last 10 PRs",
         "type": "query",
@@ -1330,10 +1342,10 @@
         },
         "query": {
           "qryType": 3,
-          "query": "query_result(topk(10, max by (pr) (label_replace(max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d]))))), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"[0-9]+\"})), \"src\", \"github\", \"\", \"\"))))",
+          "query": "query_result(topk(10, max by (pr) (label_replace(max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"${pr_scope:raw}\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"${pr_scope:raw}\"}[7d]))))), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"${pr_scope:raw}\"})), \"src\", \"github\", \"\", \"\"))))",
           "refId": "Prometheus-top_prs-Variable-Query"
         },
-        "definition": "query_result(topk(10, max by (pr) (label_replace(max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"[0-9]+\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"[0-9]+\"}[7d]))))), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"[0-9]+\"})), \"src\", \"github\", \"\", \"\"))))",
+        "definition": "query_result(topk(10, max by (pr) (label_replace(max by (pr) ((max without (instance) (last_over_time(pytest_run_end_time_seconds{pr=~\"${pr_scope:raw}\"}[7d])) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{test_job=~\".*\",pr=~\"${pr_scope:raw}\"}[7d]))))), \"src\", \"trace\", \"\", \"\") or label_replace(max by (pr) ((ci_github_run_completed_timestamp_seconds or ci_github_run_started_timestamp_seconds or ci_github_run_created_timestamp_seconds) * on (repository, run_id) group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{pr=~\"${pr_scope:raw}\"})), \"src\", \"github\", \"\", \"\"))))",
         "regex": "/pr=\"([0-9]+)\"/",
         "refresh": 2,
         "includeAll": true,

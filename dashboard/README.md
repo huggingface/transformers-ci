@@ -15,6 +15,23 @@ It includes:
 - `pytest-test-dashboard.json`: per-test view (metadata + embedded Tempo trace view when failed)
 - `data/`: shared local data directory for resource metrics
 
+## My Stuff
+
+The **My Stuff** switch sits to the left of the header's PR search. Turning it
+on refreshes **Last 10 PRs** to show PRs you authored, commented on, reviewed,
+or were asked to review. The existing ordering by latest CI activity applies
+after this filter. Turning it off restores the full list. The switch is saved
+in this browser's local storage and remains visible when signed out; clicking
+it then starts GitHub sign-in and returns to the dashboard with My Stuff on.
+
+`/pr-search/mine` verifies the Grafana session and searches only configured
+public repositories using the signed-in GitHub username. It considers up to
+100 recently updated PRs per interaction type, merges duplicate PRs, and caches
+the result for five minutes per account. Concurrent lookups share the same
+request; the cache holds at most 64 accounts. The header refreshes the lookup
+every five minutes. An empty result shows no PRs, and lookup errors appear in
+the switch tooltip with a retry by toggling off and on.
+
 ## PR diff panel
 
 The Branch panel has a **Patch | Tests** switch next to **Re-run failed tests**.

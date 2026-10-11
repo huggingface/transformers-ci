@@ -67,6 +67,7 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+from transformersci.otel import my_stuff
 from transformersci.otel.pr_search import SEARCH_HTML
 from transformersci import github_app
 from transformersci.otel import related_issues
@@ -1639,15 +1640,17 @@ def _github_api_get(api_url: str, timeout: float = 5.0) -> object:
     return json.loads(body)
 
 
-def search_github_issues(query: str) -> list:
+def search_github_issues(query: str, *, sort: str = "created", limit: int = 20) -> list:
     """GitHub issue/PR search, newest first (one page)."""
     api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip(
         "/"
     )
-    params = urlencode({"q": query, "sort": "created", "order": "desc", "per_page": 20})
+    params = urlencode({"q": query, "sort": sort, "order": "desc", "per_page": limit})
     data = _github_api_get(f"{api_base_url}/search/issues?{params}")
     if not isinstance(data, dict) or not isinstance(data.get("items"), list):
         raise ValueError("Invalid GitHub search response")
+    if data.get("incomplete_results"):
+        raise ValueError("GitHub search is temporarily incomplete")
     return data["items"]
 
 
@@ -7551,6 +7554,27 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/run":
             self._request_route = "/run"
             self._serve_run(parse_qs(parsed.query))
+            return
+        if parsed.path == "/pr-search/mine":
+            self._request_route = "/pr-search/mine"
+            login = self._action_user()
+            if not login:
+                return
+            try:
+                prs = my_stuff.candidates(
+                    login,
+                    public_repositories(),
+                    lambda query: search_github_issues(
+                        query, sort="updated", limit=100
+                    ),
+                )
+                self._reply_json(200, {"login": login, "prs": prs})
+            except ValueError as error:
+                self._reply_json(502, {"error": str(error)})
+            except Exception:
+                self._reply_json(
+                    502, {"error": "Could not load your PR activity. Try again."}
+                )
             return
         if parsed.path == "/pr-search":
             self._request_route = "/pr-search"

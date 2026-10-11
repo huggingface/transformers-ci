@@ -108,7 +108,7 @@ spec:
                 port:
                   number: 8000
           - path: /pr-search
-            pathType: Exact
+            pathType: Prefix
             backend:
               service:
                 name: trace-exporter
