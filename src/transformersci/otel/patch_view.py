@@ -10,7 +10,7 @@ import re
 import threading
 import time
 from urllib.request import Request, urlopen
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from transformersci.agentic.github_api import gh_headers
 
@@ -18,6 +18,8 @@ PAGE_HTML = Path(__file__).with_suffix(".html").read_text()
 SCRIPT = Path(__file__).with_suffix(".js").read_text()
 PR_VIEW_SCRIPT = Path(__file__).with_name("pr_view.js").read_text()
 MAX_BYTES = 4 * 1024 * 1024
+# GitHub's /pulls/N/files lists at most 3000 files, 100 per page.
+MAX_FILE_PAGES = 30
 _cache: OrderedDict[tuple[str, str], tuple[float, str]] = OrderedDict()
 _lock = threading.Lock()
 _comments_cache: OrderedDict[tuple[str, str], tuple[float, dict]] = OrderedDict()
@@ -138,8 +140,15 @@ def fetch_diff(repository: str, pr: str, token: str | None = None) -> str:
     request = Request(
         f"https://api.github.com/repos/{repository}/pulls/{pr}", headers=headers
     )
-    with urlopen(request, timeout=30) as response:
-        payload = response.read(MAX_BYTES + 1)
+    try:
+        with urlopen(request, timeout=30) as response:
+            payload = response.read(MAX_BYTES + 1)
+    except HTTPError as exc:
+        # The diff media type refuses any PR over 20,000 lines with 406
+        # "too_large"; the per-file listing has no such limit.
+        if exc.code != 406:
+            raise
+        payload = _diff_from_files(repository, pr, token).encode()
     if len(payload) > MAX_BYTES:
         raise ValueError("This diff is too large to display. Open it on GitHub.")
     diff = payload.decode("utf-8", errors="replace")
@@ -149,6 +158,53 @@ def fetch_diff(repository: str, pr: str, token: str | None = None) -> str:
         while len(_cache) > 16:
             _cache.popitem(last=False)
     return diff
+
+
+def _diff_from_files(repository: str, pr: str, token: str | None) -> str:
+    """Rebuild a unified diff from the per-file patches of /pulls/N/files.
+
+    GitHub omits ``patch`` for a file too large to diff; that file keeps its
+    header and says so instead of reading as an empty change.
+    """
+    parts = []
+    size = 0
+    for page in range(1, MAX_FILE_PAGES + 1):
+        request = Request(
+            f"https://api.github.com/repos/{repository}/pulls/{pr}/files?per_page=100&page={page}",
+            headers={**gh_headers(token), "User-Agent": "transformers-ci-dashboard"},
+        )
+        with urlopen(request, timeout=30) as response:
+            payload = response.read(MAX_BYTES + 1)
+        if len(payload) > MAX_BYTES:
+            raise ValueError("This diff is too large to display. Open it on GitHub.")
+        batch = json.loads(payload)
+        for item in batch:
+            new = item["filename"]
+            old = item.get("previous_filename") or new
+            status = item.get("status")
+            lines = [
+                f"diff --git a/{old} b/{new}",
+                "--- /dev/null" if status == "added" else f"--- a/{old}",
+                "+++ /dev/null" if status == "removed" else f"+++ b/{new}",
+            ]
+            patch = item.get("patch")
+            if patch:
+                lines.append(patch)
+            elif item.get("changes"):
+                lines.append(
+                    f"GitHub does not show this file's diff ({item.get('additions', 0)} "
+                    f"additions, {item.get('deletions', 0)} deletions). Open it on GitHub."
+                )
+            part = "\n".join(lines) + "\n"
+            size += len(part)
+            if size > MAX_BYTES:
+                raise ValueError(
+                    "This diff is too large to display. Open it on GitHub."
+                )
+            parts.append(part)
+        if len(batch) < 100:
+            return "".join(parts)
+    raise ValueError("This diff has too many files to display. Open it on GitHub.")
 
 
 def fetch_comments(repository: str, pr: str, token: str | None = None) -> dict:
