@@ -202,11 +202,15 @@ jobs:
           with open('/tmp/pr_files.json') as f:
               pr_files = json.load(f)
 
-          SHELL_TESTS = re.compile(r'^B60[1-79]$')
+          # Shell injection, plus the MEDIUM-severity calls a CI exfiltration payload is made
+          # of and that a HIGH-only rule waves through: fetching a URL (B310), turning TLS
+          # verification off (B323), and running a string as code (B102 exec, B307 eval),
+          # the usual way to hide the rest from this check.
+          BLOCKED_TESTS = re.compile(r'^(B60[1-79]|B102|B307|B310|B323)$')
 
           findings = [
               r for r in report.get('results', [])
-              if r['issue_severity'] == 'HIGH' or SHELL_TESTS.match(r['test_id'])
+              if r['issue_severity'] == 'HIGH' or BLOCKED_TESTS.match(r['test_id'])
           ]
           if not findings:
               print("No issues found")
@@ -281,17 +285,25 @@ jobs:
           **Possible reasons:**
           - The PR touches 50 or more files — only PRs with fewer than 50 changed files are automatically approved
           - A changed file is outside the allowed directories (\`src/\`, \`tests/\`, \`docs/\`, \`utils/\`), has a disallowed extension (only \`.py\`, \`.txt\`, \`.md\` permitted outside \`tests/\` and \`docs/\`), or is not \`.md\`/\`.yml\` inside \`docs/\` — this covers files the PR deletes or renames, not only the ones it edits
-          - A new high-severity security issue was detected in the changed Python files (Bandit check)
+          - A new security issue was detected in the changed Python files (Bandit check) — a high-severity one, shell execution, \`exec\`/\`eval\`, a URL fetch, or disabled TLS verification
           - The PR touches a path this repository protects from untrusted PRs, such as the file that decides who reviews it — a maintainer must make that change in a separate PR
 
           See the [workflow run]($RUN_URL) for the exact violations.
 
           A maintainer can review and manually approve CI if a finding is a false positive."
 
+  # Once approved, PR CI runs the PR's own code — test files, and the repository scripts its
+  # checks call — on self-hosted runners. Passing the checks above says nothing about whether
+  # that code is safe to run, so they are not enough on their own to approve it: only an author
+  # who already has a commit merged here (CONTRIBUTOR) is approved automatically. A first-time
+  # or unknown author waits for a maintainer to approve the run, however clean the checks came
+  # out. `author_association` is set by GitHub, not by the PR. MEMBER/OWNER/COLLABORATOR are
+  # listed so a caller that also gates them gets the same answer it did before.
   approve-pr-ci:
     needs: [get-changed-files, bandit-check]
     if: >-
       always() &&
+      contains(fromJSON('["CONTRIBUTOR","COLLABORATOR","MEMBER","OWNER"]'), github.event.pull_request.author_association) &&
       needs.get-changed-files.result == 'success' &&
       (needs.bandit-check.result == 'success' || needs.bandit-check.result == 'skipped')
     runs-on: ubuntu-22.04
@@ -317,3 +329,39 @@ jobs:
             sleep 5
           done
           echo "No pending PR CI run found after retries — skipping"
+
+  post-approval-needed-comment:
+    needs: [get-changed-files, bandit-check]
+    # The checks passed but the author is not trusted for automatic approval (see
+    # approve-pr-ci): tell them CI is waiting on a maintainer rather than leave the PR silent.
+    if: >-
+      always() &&
+      !contains(fromJSON('["CONTRIBUTOR","COLLABORATOR","MEMBER","OWNER"]'), github.event.pull_request.author_association) &&
+      needs.get-changed-files.result == 'success' &&
+      (needs.bandit-check.result == 'success' || needs.bandit-check.result == 'skipped')
+    runs-on: ubuntu-22.04
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post maintainer-approval comment on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+        run: |
+          echo "Author association is $AUTHOR_ASSOCIATION — PR CI left for a maintainer to approve"
+          # Once per PR: every push re-runs the gate, and the answer does not change between them
+          existing=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.body | contains("CI Security Gate — waiting for maintainer approval")) | .id' \
+            | head -1)
+          if [ -n "$existing" ]; then
+            echo "Comment already posted — skipping"
+            exit 0
+          fi
+
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "Thank you for your contribution 🤗!
+
+          ## CI Security Gate — waiting for maintainer approval
+
+          CI is approved automatically only for authors who already have a contribution merged in this repository. A maintainer will review this PR and approve CI to run on it."
