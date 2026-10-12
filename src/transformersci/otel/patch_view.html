@@ -6,7 +6,7 @@
 :root{color-scheme:dark;--bg:#111217;--card:#181b1f;--fg:#d8d9da;--muted:#9fa3a9;--border:#34363c;--add:#173326;--del:#3d2227;--hunk:#192c42;--link:#8ab8ff}
 :root.light{color-scheme:light;--bg:#fff;--card:#f6f8fa;--fg:#24292f;--muted:#6e7781;--border:#d0d7de;--add:#e6ffec;--del:#ffebe9;--hunk:#ddf4ff;--link:#0969da}
 *{box-sizing:border-box}body{margin:0;padding:12px;background:var(--bg);color:var(--fg);font:13px/1.5 Inter,system-ui,sans-serif}
-.back-to-top{position:fixed;bottom:16px;left:16px;z-index:10;box-shadow:0 2px 8px #0004}body{padding-bottom:64px}
+.back-to-top{position:fixed;bottom:16px;left:16px;z-index:10;box-shadow:0 2px 8px #0004}.back-to-top[hidden]{display:none}body{padding-bottom:64px}
 a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
 header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;color:var(--muted);font-size:11px}.patch-actions{display:flex;gap:8px;align-items:center;flex-shrink:0}header button{display:inline-flex;align-items:center;justify-content:center;width:30px;height:28px;padding:0}.patch-download{display:inline-flex;align-items:center;justify-content:center;width:30px;height:28px;border:1px solid var(--border);border-radius:4px;background:var(--card)}.patch-download:hover{background:var(--hunk)}.patch-download:focus-visible{outline:2px solid var(--link);outline-offset:2px}button{font:inherit;background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:4px 10px;cursor:pointer}button:disabled{opacity:.5;cursor:wait}#message{color:var(--muted);padding:14px 0}#message.error{color:#f2495c}
 .patch-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:12px 0;flex-wrap:wrap;color:var(--muted)}
@@ -70,12 +70,44 @@ header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px
     <div id="comments-status" class="comments-status" role="status">Loading comments…</div><div class="loading-track"><progress id="comments-progress" class="loading-progress" aria-label="Loading comments"></progress><span class="loading-sweep" aria-hidden="true"></span></div><div id="comments-list"></div>
   </aside>
 </main>
-<button id="back-to-top" class="back-to-top" aria-label="Back to top">↑ Back to top</button>
+<button id="back-to-top" class="back-to-top" aria-label="Back to top" hidden>↑ Back to top</button>
 <script src="/patch-view/script.js"></script>
 <script>
 (() => {
-  document.getElementById('back-to-top').onclick = () => {
-    window.scrollTo({top:0, behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'});
+  const toTop = document.getElementById('back-to-top');
+  // This page is a fixed-height Grafana panel taller than the visible page, so
+  // `bottom:16px` alone sits below the fold until Grafana's own page scrolls.
+  // Keep the button inside the part of the frame that is actually on screen.
+  let toTopFrame = false;
+  function placeToTop() {
+    if (toTopFrame) return;
+    toTopFrame = true;
+    requestAnimationFrame(() => {
+      toTopFrame = false;
+      let bottom = 16;
+      try {
+        const below = frameElement ? frameElement.getBoundingClientRect().bottom - parent.innerHeight : 0;
+        if (below > 0) bottom += Math.min(below, innerHeight - 64);
+      } catch (_) {}
+      toTop.style.bottom = bottom + 'px';
+      toTop.hidden = scrollY < 200;
+    });
+  }
+  addEventListener('scroll', placeToTop, {passive:true});
+  addEventListener('resize', placeToTop);
+  try {
+    parent.addEventListener('resize', placeToTop);
+    parent.document.addEventListener('scroll', placeToTop, {capture:true, passive:true});
+  } catch (_) {}
+  placeToTop();
+  toTop.onclick = () => {
+    const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
+    window.scrollTo({top:0, behavior});
+    // Also bring the dashboard back up to the PR header above this panel.
+    try {
+      for (let el = frameElement && frameElement.parentElement; el; el = el.parentElement) if (el.scrollTop > 0) el.scrollTo({top:0, behavior});
+      parent.scrollTo({top:0, behavior});
+    } catch (_) {}
   };
   const sidebar = document.querySelector('.comments-sidebar');
   let sidebarFrame = false;
