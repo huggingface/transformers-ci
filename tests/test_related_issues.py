@@ -93,7 +93,7 @@ def test_dedup_ranking_limit_and_safe_links(monkeypatch):
 @pytest.mark.parametrize(
     "payload,version",
     [
-        ({"hits": []}, "0.3.18"),
+        ({"hits": []}, "0.0.0"),
         ({"hits": []}, None),
         ({"error": "broken"}, ri.WIRE_VERSION),
         ({"hits": [None]}, ri.WIRE_VERSION),

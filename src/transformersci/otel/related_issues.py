@@ -17,7 +17,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 REPOSITORY = "huggingface/transformers"
-WIRE_VERSION = "0.3.17"
+WIRE_VERSION = "0.3.18"
 MAX_RESPONSE_BYTES = 512 * 1024
 _cache: OrderedDict[tuple[str, str, str], tuple[float, dict]] = OrderedDict()
 _inflight: dict[tuple[str, str, str], threading.Event] = {}
