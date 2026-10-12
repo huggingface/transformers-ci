@@ -28,10 +28,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           # Pre-check: changed_files on the PR object may reflect the true count before the
           # REST file-listing endpoint's 3000-file cap kicks in (not officially documented)
-          changed_files_count=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.changed_files')
+          pr_json=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
+          current_head=$(echo "$pr_json" | jq -r '.head.sha')
+          if [ "$current_head" != "$HEAD_SHA" ]; then
+            echo "::error::PR head ($current_head) does not match the event head ($HEAD_SHA) — refusing to check a different commit than the one that would be approved."
+            exit 1
+          fi
+          changed_files_count=$(echo "$pr_json" | jq -r '.changed_files')
           echo "Total files changed: $changed_files_count"
           if [ "$changed_files_count" -ge 50 ]; then
             echo "::error::PR touches $changed_files_count files — only PRs with fewer than 50 changed files are automatically approved. A maintainer must review and approve CI manually."
@@ -40,6 +47,12 @@ jobs:
 
           # Save full API response (includes patches) and extract non-deleted filenames
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" | jq -s 'add' > /tmp/pr_files.json
+          # Re-verify the head did not move while the file list was fetched
+          current_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+          if [ "$current_head" != "$HEAD_SHA" ]; then
+            echo "::error::PR head changed during file listing ($current_head != $HEAD_SHA) — refusing to approve."
+            exit 1
+          fi
           jq -r '.[] | select(.status != "removed") | .filename' /tmp/pr_files.json > /tmp/changed_files.txt
           echo "Changed files:"
           cat /tmp/changed_files.txt
@@ -315,12 +328,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           for i in $(seq 1 12); do
             run_id=$(gh api \
               "repos/$REPO/actions/runs?event=pull_request&head_sha=$HEAD_SHA&status=action_required" \
               --jq '.workflow_runs[] | select(.name == "PR CI") | .id' | head -1)
             if [ -n "$run_id" ]; then
+              current_head=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
+              if [ "$current_head" != "$HEAD_SHA" ]; then
+                echo "::error::PR head ($current_head) no longer matches the checked commit ($HEAD_SHA) — not approving."
+                exit 1
+              fi
               gh api --method POST "repos/$REPO/actions/runs/$run_id/approve"
               echo "Approved run $run_id"
               exit 0
