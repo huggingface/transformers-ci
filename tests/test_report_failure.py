@@ -48,6 +48,87 @@ def test_parse_crashed_nodeids_none():
     assert report_failure.parse_crashed_nodeids("all good, nothing crashed") == []
 
 
+# Serial `pytest -v` output as `script` captures it (CRLF), cut off by a SIGKILL
+# while the last test runs. Captured log lines may sit between a nodeid and its
+# outcome.
+KILLED_LOG = (
+    "tests/models/foo/test_bar.py::FooTest::test_a PASSED"
+    "                                [ 97%]\r\n"
+    "tests/models/foo/test_bar.py::FooTest::test_b SKIPPED (not on GPU)"
+    "                  [ 98%]\r\n"
+    "tests/models/foo/test_bar.py::FooIntegrationTest::test_export \r\n"
+    "WARNING  transformers.foo:logging.py:340 ERROR-ish message\r\n"
+)
+
+
+def test_parse_running_nodeid_killed_mid_test():
+    assert (
+        report_failure.parse_running_nodeid(KILLED_LOG)
+        == "tests/models/foo/test_bar.py::FooIntegrationTest::test_export"
+    )
+
+
+def test_parse_running_nodeid_killed_between_tests():
+    text = KILLED_LOG.replace(
+        "test_export \r\n", "test_export FAILED                         [ 99%]\r\n"
+    )
+    assert report_failure.parse_running_nodeid(text) is None
+
+
+def test_parse_running_nodeid_session_finished():
+    # A finished session lists nodeids in its summaries; none of them is running.
+    text = (
+        "tests/x.py::T::test_one PASSED                                [100%]\n"
+        "=============================== warnings summary ==============================\n"
+        "tests/x.py::T::test_one\n"
+        "  some warning\n"
+        "===================== 1 passed, 1 warning in 3.21s =====================\n"
+    )
+    assert report_failure.parse_running_nodeid(text) is None
+
+
+def test_parse_running_nodeid_no_test_started():
+    assert (
+        report_failure.parse_running_nodeid("collecting ... collected 3 items\n")
+        is None
+    )
+
+
+# `pytest -n 8 -v` output, as a PR-CI shard prints it, cut off by a SIGKILL:
+# each worker names a test when it starts it, and gives its outcome later.
+XDIST_KILLED_LOG = (
+    "tests/models/a/test_a.py::ATest::test_done <- tests/test_mixin.py \n"
+    "tests/models/b/test_b.py::BTest::test_rerun \n"
+    "tests/models/c/test_c.py::CTest::test_running <- tests/test_mixin.py \n"
+    "[gw0] [  5%] PASSED tests/models/a/test_a.py::ATest::test_done "
+    "<- tests/test_mixin.py tests/models/a/test_a.py::ATest::test_done\n"
+    "[gw1] [  5%] RERUN tests/models/b/test_b.py::BTest::test_rerun\n"
+    "tests/models/b/test_b.py::BTest::test_rerun \n"
+    "tests/models/d/test_d.py::DTest::test_running \n"
+    "[gw2] [  6%] SKIPPED tests/models/e/test_e.py::ETest::test_skipped\n"
+)
+
+
+def test_parse_running_nodeids_xdist_lists_every_unfinished_test():
+    # The rerun counts from its second start.
+    assert report_failure.parse_running_nodeids(XDIST_KILLED_LOG) == [
+        "tests/models/c/test_c.py::CTest::test_running",
+        "tests/models/b/test_b.py::BTest::test_rerun",
+        "tests/models/d/test_d.py::DTest::test_running",
+    ]
+
+
+def test_parse_running_nodeids_xdist_session_finished():
+    text = XDIST_KILLED_LOG + "========== 3 passed in 12.34s ==========\n"
+    assert report_failure.parse_running_nodeids(text) == []
+
+
+def test_parse_running_nodeids_serial():
+    assert report_failure.parse_running_nodeids(KILLED_LOG) == [
+        "tests/models/foo/test_bar.py::FooIntegrationTest::test_export"
+    ]
+
+
 def test_resolve_job_precedence():
     assert (
         report_failure.resolve_job("explicit", {"TRANSFORMERS_TEST_OTEL_JOB": "x"})
@@ -188,6 +269,49 @@ def test_main_oom_killed_kind(monkeypatch):
     rc = report_failure.main(["--job", "tests_processors", "--kind", "oom_killed"])
     assert rc == 0
     assert recorded == [("tests_processors::oom_killed", "OOMKilled")]
+
+
+def test_main_oom_killed_names_running_test(monkeypatch, tmp_path):
+    # --kind oom_killed + a `pytest -v` log -> the span names the killed test.
+    log = tmp_path / "test_outputs.txt"
+    log.write_text(KILLED_LOG, encoding="utf-8")
+    recorded: list[tuple[str, str]] = []
+
+    class FakeStep:
+        def __init__(self, nodeid):
+            self.nodeid = nodeid
+
+        def set_exit_code(
+            self, rc, *, command=None, output=None, exception_type="CheckFailed"
+        ):
+            recorded.append((self.nodeid, exception_type))
+
+    class FakeRun:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def step(self, nodeid, attributes=None):
+            from contextlib import contextmanager
+
+            @contextmanager
+            def cm():
+                yield FakeStep(nodeid)
+
+            return cm()
+
+    monkeypatch.setattr(report_failure.instrument, "is_configured", lambda env: True)
+    monkeypatch.setattr(report_failure.instrument, "run", lambda job: FakeRun())
+
+    rc = report_failure.main(
+        ["--job", "run_models_gpu", "--kind", "oom_killed", "--crash-log", str(log)]
+    )
+    assert rc == 0
+    assert recorded == [
+        ("tests/models/foo/test_bar.py::FooIntegrationTest::test_export", "OOMKilled")
+    ]
 
 
 if __name__ == "__main__":

@@ -675,6 +675,68 @@ jobs:
       use_dev_image:       ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
     secrets: inherit
 
+  # A test shard whose pod is OOM-killed (exit 137) loses its whole container,
+  # so none of its own steps can report the tests it died in, and the dashboards
+  # would show it with no failure. Report them from here, from its GitHub log.
+  # Not a need of `ci_passed`: the killed shard already fails the run.
+  report_killed_jobs:
+    permissions:
+      contents: read
+      # Job logs. The caller must grant it too (fork PRs get it read-only).
+      actions: read
+    name: "Report killed test jobs"
+    needs:
+      - tests_torch
+      - tests_generate
+      - tests_tokenization
+      - tests_processors
+      - pipelines_torch
+      - tests_custom_tokenizers
+      - examples_torch
+      - tests_exotic_models
+      - tests_repo_utils
+      - tests_non_model
+      - tests_training_ci
+      - tests_tensor_parallel_ci
+      - tests_fsdp_ci
+      - tests_peft_integration
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
+    # A self-hosted runner, for the OTEL endpoint it injects.
+    runs-on:
+      group: aws-m8i-l-cache
+    container:
+      image: huggingface/transformers-quality
+    steps:
+      - name: Resolve PR number for merge_group events
+        if: github.event_name == 'merge_group'
+        run: |
+          PR_NUM=$(echo "$GITHUB_REF" | grep -oP '(?<=pr-)\d+' || echo "")
+          echo "TRANSFORMERS_TEST_OTEL_PR=$PR_NUM" >> "$GITHUB_ENV"
+
+      - name: Install observability wrapper (transformers-ci[otel])
+        run: uv pip install 'transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@main'
+
+      - name: Report killed test jobs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TRANSFORMERS_TEST_OTEL_PR: ${{ env.TRANSFORMERS_TEST_OTEL_PR || github.event.pull_request.number }}
+        run: |
+          if [ -z "$OTEL_EXPORTER_OTLP_ENDPOINT" ]; then
+            echo "No OTEL endpoint on this runner; nothing to report."
+            exit 0
+          fi
+          report-killed-jobs \
+            --repo "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --attempt "$GITHUB_RUN_ATTEMPT" \
+            -- configure-ci-otel \
+              --service-name pytest-observability \
+              --protocol http \
+              --otlp-endpoint "$OTEL_EXPORTER_OTLP_ENDPOINT" \
+              --token "$OTEL_TOKEN" \
+              --staging-endpoint 10.90.52.50:5317 \
+              --staging-protocol grpc
+
   # ---------------------------------------------------------------------------
   # ===========================================================================
   # Stage 3 — Collection (equivalent of EmptyJob with job_name="collection_job")

@@ -617,6 +617,48 @@ jobs:
           name: ${{ env.machine_type }}_run_kernels_gpu_test_reports
           path: /transformers/reports/${{ env.machine_type }}_run_kernels_gpu_test_reports
 
+  # A model job whose pod is OOM-killed (exit 137) loses its whole container, so
+  # none of its own steps can report the test it died in, and the dashboards
+  # would show it with no failure. Report it from here, from its GitHub log.
+  report_killed_jobs:
+    permissions:
+      contents: read
+    if: ${{ always() && (needs.run_models_gpu.result == 'failure' || needs.run_trainer_and_fsdp_gpu.result == 'failure') }}
+    name: Report killed model jobs
+    needs: [run_models_gpu, run_trainer_and_fsdp_gpu]
+    # A self-hosted runner, for the OTEL endpoint it injects.
+    runs-on:
+      group: aws-m8i-l-cache
+    container:
+      image: huggingface/transformers-quality
+    steps:
+      - name: Install observability wrapper (transformers-ci[otel])
+        run: uv pip install 'transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@main'
+
+      - name: Report killed model jobs
+        env:
+          # Job logs need `actions: read`, which the caller does not grant this
+          # workflow's GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ secrets.ACCESS_REPO_INFO_TOKEN }}
+          CI_EVENT: ${{ inputs.ci_event }}
+        run: |
+          if [ -z "$OTEL_EXPORTER_OTLP_ENDPOINT" ]; then
+            echo "No OTEL endpoint on this runner; nothing to report."
+            exit 0
+          fi
+          report-killed-jobs \
+            --repo "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" \
+            --attempt "$GITHUB_RUN_ATTEMPT" \
+            --ci-event "$CI_EVENT" \
+            -- configure-ci-otel \
+              --service-name pytest-observability \
+              --protocol http \
+              --otlp-endpoint "$OTEL_EXPORTER_OTLP_ENDPOINT" \
+              --token "$OTEL_TOKEN" \
+              --staging-endpoint 10.90.52.50:5317 \
+              --staging-protocol grpc
+
   run_extract_warnings:
     permissions:
       contents: read
