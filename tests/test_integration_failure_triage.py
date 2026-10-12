@@ -1211,10 +1211,51 @@ class PriorFeedbackTest(unittest.TestCase):
         self.assertIn("requested changes", block)
 
     def test_a_long_comment_is_truncated_not_dropped(self):
-        long = {**self.C_48223, "body": "x" * 2000}
+        long = {**self.C_48223, "body": "x" * 5000}
         block = "\n".join(itf.prior_feedback_lines([long]))
         self.assertIn("[…]", block)
-        self.assertLess(len(block), 1200)
+        self.assertIn(f"({5000 - itf._FEEDBACK_BODY_CHARS} more characters cut", block)
+        self.assertLess(len(block), itf._FEEDBACK_BODY_CHARS + 1200)
+
+    def test_a_close_reason_keeps_its_conclusion(self):
+        """#48534: ~1,900 characters, background first, the verdict last. At the
+        old 400-character cut the agent got only the background and re-read the
+        PR 16 times through relore to find the rest."""
+        background = (
+            "## ⚠️ Post-hoc GPU verification: `not_fixed` — closing, but the "
+            "patch is partly right\n\nThis PR was opened **without the GPU verify "
+            "gate running**. " + "Background about the re-verification. " * 35
+        )
+        verdict = (
+            "**The config fix itself looks worth keeping** — if someone picks "
+            "the `blt` group up, this branch is a reasonable starting point, and "
+            "the remaining work is the `cuda:0`/`cuda:1` index mismatch."
+        )
+        body = background + "\n\n" + verdict
+        self.assertGreater(len(" ".join(body.split())), 1500)
+        item = {
+            "pr": 48534,
+            "author": "tarekziade",
+            "state": "",
+            "body": body,
+            "path": "",
+            "line": None,
+        }
+        block = "\n".join(itf.prior_feedback_lines([item]))
+        self.assertIn("cuda:0`/`cuda:1` index mismatch", block)
+        self.assertNotIn("[…]", block)
+
+    def test_the_block_has_a_total_budget_newest_first(self):
+        items = [
+            {**self.C_48223, "body": f"comment {n} " + "y" * 2300} for n in range(5)
+        ]
+        block = "\n".join(itf.prior_feedback_lines(items))
+        # The newest comments are quoted; the rest are counted, not silently lost.
+        self.assertIn("comment 0", block)
+        self.assertIn("comment 1", block)
+        self.assertNotIn("comment 4", block)
+        self.assertIn("older comment(s) omitted", block)
+        self.assertLess(len(block), itf._FEEDBACK_BLOCK_CHARS + 2000)
 
     def test_nothing_to_say_renders_nothing(self):
         self.assertEqual(itf.prior_feedback_lines([]), [])
