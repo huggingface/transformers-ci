@@ -1977,6 +1977,13 @@ def failure_context(trace: dict | None, test_nodeid: str) -> dict[str, str]:
     }
 
 
+class DependencyChange(NamedTuple):
+    dependency: str
+    # "" when the commit created the file (no earlier version recorded).
+    from_version: str
+    to_version: str
+
+
 class CommitDetails(NamedTuple):
     """What the exporter keeps from one ``GET /repos/{repo}/commits/{sha}``."""
 
@@ -1987,6 +1994,32 @@ class CommitDetails(NamedTuple):
     committed_at_ms: int = 0
     # PR number from the subject's ``(#NNNNN)`` suffix, or "".
     pr: str = ""
+    dependency_changes: tuple[DependencyChange, ...] = ()
+
+
+# Files whose version line marks a major dependency change, and the pattern
+# that pulls the version out of a ``+``/``-`` patch line. torch comes from the
+# GPU CI image (what the GPU panels run), not the dependency table's floor.
+DEPENDENCY_VERSION_FILES: dict[str, tuple[str, re.Pattern[str]]] = {
+    "docker/transformers-all-latest-gpu/Dockerfile": (
+        "torch",
+        re.compile(r"""^([-+])ARG PYTORCH=['"]?([^'"\s]+)"""),
+    ),
+    ".python-version": ("python", re.compile(r"^([-+])\s*(\d[\w.]*)\s*$")),
+}
+
+
+def dependency_change_from_patch(
+    dependency: str, pattern: re.Pattern[str], patch: str
+) -> DependencyChange | None:
+    versions = {"-": "", "+": ""}
+    for line in patch.splitlines():
+        match = pattern.match(line)
+        if match:
+            versions[match.group(1)] = match.group(2)
+    if not versions["+"] or versions["+"] == versions["-"]:
+        return None
+    return DependencyChange(dependency, versions["-"], versions["+"])
 
 
 _ADDED_MODEL_INIT = re.compile(r"^src/transformers/models/([^/]+)/__init__\.py$")
@@ -2009,11 +2042,21 @@ def commit_details_from_payload(payload: object) -> CommitDetails:
         str(committer.get("date") or "") if isinstance(committer, dict) else ""
     )
     added_models = set()
+    dependency_changes = []
     files = payload.get("files")
     for entry in files if isinstance(files, list) else []:
-        if not isinstance(entry, dict) or entry.get("status") != "added":
+        if not isinstance(entry, dict):
             continue
-        match = _ADDED_MODEL_INIT.match(str(entry.get("filename", "")))
+        filename = str(entry.get("filename", ""))
+        watched = DEPENDENCY_VERSION_FILES.get(filename)
+        # GitHub omits ``patch`` for very large diffs; no patch, no marker.
+        if watched and isinstance(entry.get("patch"), str):
+            change = dependency_change_from_patch(*watched, entry["patch"])
+            if change:
+                dependency_changes.append(change)
+        if entry.get("status") != "added":
+            continue
+        match = _ADDED_MODEL_INIT.match(filename)
         if match:
             added_models.add(match.group(1))
     return CommitDetails(
@@ -2021,6 +2064,7 @@ def commit_details_from_payload(payload: object) -> CommitDetails:
         added_models=tuple(sorted(added_models)),
         committed_at_ms=int(committed_at * 1000) if committed_at is not None else 0,
         pr=pr_match.group(1) if pr_match else "",
+        dependency_changes=tuple(dependency_changes),
     )
 
 
@@ -3265,6 +3309,22 @@ def extract_run_info_metrics(
     return lines
 
 
+def _upstream_main_commit_shas(
+    extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]],
+) -> list[str]:
+    shas: set[str] = set()
+    for trace_info, rows in extracted:
+        if not rows or str(trace_info.get("pr", "")) != "main":
+            continue
+        repository = str(trace_info.get("repository", ""))
+        commit_sha = str(trace_info.get("commit_sha", ""))
+        # The file layouts read off these commits are upstream's; a fork's main
+        # adding a folder is not a model landing in Transformers.
+        if repository == MODEL_ADDED_REPOSITORY and commit_sha:
+            shas.add(commit_sha)
+    return sorted(shas)
+
+
 class ModelAdded(NamedTuple):
     model: str
     commit_sha: str
@@ -3356,19 +3416,8 @@ def extract_model_added_metrics(
     commit_fetcher = _commit_fetcher or fetch_github_commit_details_cached
     registry = _models_added if _registry is None else _registry
 
-    shas: set[str] = set()
-    for trace_info, rows in extracted:
-        if not rows or str(trace_info.get("pr", "")) != "main":
-            continue
-        repository = str(trace_info.get("repository", ""))
-        commit_sha = str(trace_info.get("commit_sha", ""))
-        # The models/<name>/__init__.py layout is upstream's; a fork's main
-        # adding a folder is not a model landing in Transformers.
-        if repository == MODEL_ADDED_REPOSITORY and commit_sha:
-            shas.add(commit_sha)
-
     found: list[ModelAdded] = []
-    for commit_sha in sorted(shas):
+    for commit_sha in _upstream_main_commit_shas(extracted):
         details = commit_fetcher(MODEL_ADDED_REPOSITORY, commit_sha)
         if not details.committed_at_ms:
             continue
@@ -3400,6 +3449,146 @@ def extract_model_added_metrics(
         }
         lines.append(
             f"pytest_model_added_info{metric_labels(labels)} {entry.committed_at_ms}"
+        )
+    return lines
+
+
+class DependencyChanged(NamedTuple):
+    change: DependencyChange
+    commit_sha: str
+    pr: str
+    committed_at_ms: int
+
+
+# Every GPU-image torch bump in 2026 and the commit that created .python-version
+# (CPU CI to 3.11; the GPU image still runs 3.10), read off GitHub by hand
+# (docs/plans/model-added-markers-2026-10-13.md in transformers-ci-playbooks).
+DEPENDENCY_CHANGE_SEED: tuple[DependencyChanged, ...] = tuple(
+    DependencyChanged(
+        DependencyChange(dependency, from_version, to_version),
+        sha,
+        pr,
+        int((parse_github_timestamp(date) or 0) * 1000),
+    )
+    for dependency, from_version, to_version, sha, pr, date in (
+        (
+            "torch",
+            "2.9.0",
+            "2.10.0",
+            "c0fe6164d0d74e021aab9bfa0342a0f59ff59b16",
+            "44712",
+            "2026-03-14T20:29:02Z",
+        ),
+        (
+            "torch",
+            "2.10.0",
+            "2.11.0",
+            "499ef1d7b8fcaf946be6503e01c717f238838d0e",
+            "45243",
+            "2026-04-04T18:48:43Z",
+        ),
+        (
+            "torch",
+            "2.11.0",
+            "2.13.0",
+            "d79d0c1ed3e8fc3f4742cc34aee46d92abd0ea44",
+            "47738",
+            "2026-08-03T15:19:10Z",
+        ),
+        (
+            "torch",
+            "2.13.0",
+            "2.14.0",
+            "a2c15b30764b7c6cb0632ac6aed6eac227edc674",
+            "48750",
+            "2026-09-13T14:45:22Z",
+        ),
+        (
+            "python",
+            "",
+            "3.11",
+            "422bd07ed84ce385dc13e7f94738e7c04f7e62ca",
+            "49311",
+            "2026-10-06T09:50:38Z",
+        ),
+    )
+)
+
+# Same reason as _models_added: keep each marker's series continuous.
+_dependency_changes_lock = threading.Lock()
+_dependency_changes: dict[tuple[str, str, str], DependencyChanged] = {}
+
+
+def extract_dependency_change_metrics(
+    traces: list[dict] | None = None,
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
+    _commit_fetcher: Callable[[str, str], CommitDetails] | None = None,
+    _registry: dict[tuple[str, str, str], DependencyChanged] | None = None,
+    _seed: tuple[DependencyChanged, ...] = DEPENDENCY_CHANGE_SEED,
+) -> list[str]:
+    """Emit one ``pytest_dependency_change_info`` series per major dependency
+    change merged to main (see ``DEPENDENCY_VERSION_FILES``).
+
+    Read off the same cached commit lookup as ``pytest_model_added_info``; the
+    value is the merge time in epoch milliseconds. A GPU-image change only
+    reaches the runs once the image is rebuilt, so the marker can lead them.
+    """
+    extracted = (
+        _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
+    )
+    commit_fetcher = _commit_fetcher or fetch_github_commit_details_cached
+    registry = _dependency_changes if _registry is None else _registry
+
+    found: list[DependencyChanged] = []
+    for commit_sha in _upstream_main_commit_shas(extracted):
+        details = commit_fetcher(MODEL_ADDED_REPOSITORY, commit_sha)
+        if not details.committed_at_ms:
+            continue
+        for change in details.dependency_changes:
+            found.append(
+                DependencyChanged(
+                    change, commit_sha, details.pr, details.committed_at_ms
+                )
+            )
+
+    with _dependency_changes_lock:
+        for entry in (*_seed, *found):
+            key = (entry.change.dependency, entry.change.to_version, entry.commit_sha)
+            registry.setdefault(key, entry)
+        entries = sorted(
+            registry.values(), key=lambda e: (e.committed_at_ms, e.change.dependency)
+        )
+
+    lines = [
+        "# HELP pytest_dependency_change_info A major dependency version change merged to Transformers main; value is the merge time in epoch ms.",
+        "# TYPE pytest_dependency_change_info gauge",
+    ]
+    for entry in entries:
+        change = entry.change
+        html_url = (
+            f"https://github.com/{MODEL_ADDED_REPOSITORY}/pull/{entry.pr}"
+            if entry.pr
+            else github_commit_html_url(MODEL_ADDED_REPOSITORY, entry.commit_sha)
+        )
+        labels = {
+            # Preformatted for the annotation title, which cannot branch on an
+            # empty from_version.
+            "change": (
+                f"{change.from_version} → {change.to_version}"
+                if change.from_version
+                else f"→ {change.to_version}"
+            ),
+            "commit_sha": entry.commit_sha,
+            "dependency": change.dependency,
+            "from_version": change.from_version or "none",
+            "html_url": html_url,
+            "pr": entry.pr or "none",
+            "to_version": change.to_version,
+        }
+        lines.append(
+            f"pytest_dependency_change_info{metric_labels(labels)} {entry.committed_at_ms}"
         )
     return lines
 
@@ -5251,6 +5440,10 @@ def _iter_metric_lines() -> Iterator[str]:
         (
             "model_added",
             lambda: extract_model_added_metrics(_extracted=rollup_extracted),
+        ),
+        (
+            "dependency_change",
+            lambda: extract_dependency_change_metrics(_extracted=rollup_extracted),
         ),
         ("pr_info", lambda: extract_pr_info_metrics([], _extracted=extracted)),
         ("run_active", lambda: extract_run_active_metrics(_extracted=extracted)),

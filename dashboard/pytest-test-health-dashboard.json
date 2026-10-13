@@ -40,6 +40,28 @@
             6
           ]
         }
+      },
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "orange",
+        "name": "Dependency change",
+        "expr": "max by (dependency, change, pr, commit_sha, html_url) (max_over_time(pytest_dependency_change_info[$__interval]))",
+        "step": "1h",
+        "useValueForTime": true,
+        "titleFormat": "{{dependency}} {{change}}",
+        "textFormat": "{{html_url}}",
+        "tagKeys": "",
+        "filter": {
+          "exclude": false,
+          "ids": [
+            6
+          ]
+        }
       }
     ]
   },

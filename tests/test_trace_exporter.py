@@ -6245,3 +6245,140 @@ def test_model_added_seed_matches_the_github_merge_times() -> None:
     assert series[0].endswith(" 1789985396000")
     assert 'model="molmo2"' in series[-1]
     assert series[-1].endswith(" 1791552118000")
+
+
+TORCH_BUMP_SHA = "a2c15b30764b7c6cb0632ac6aed6eac227edc674"
+
+
+def torch_bump_commit_payload() -> dict:
+    """Trimmed from the real GET /repos/huggingface/transformers/commits/a2c15b3."""
+    return {
+        "commit": {
+            "message": "Switch daily CI to torch 2.14 — update expected outputs (#48750)",
+            "committer": {"date": "2026-09-13T14:45:22Z"},
+        },
+        "files": [
+            {
+                "filename": "docker/transformers-all-latest-gpu/Dockerfile",
+                "status": "modified",
+                "patch": "@@ -9,7 +9,7 @@\n ARG REF=main\n-ARG PYTORCH='2.13.0'\n+ARG PYTORCH='2.14.0'\n # Example: `cu102`",
+            },
+            {
+                "filename": "tests/models/llama/test_modeling_llama.py",
+                "status": "modified",
+                "patch": "-ARG PYTORCH='1.0'\n+ARG PYTORCH='9.9'",
+            },
+        ],
+    }
+
+
+def test_commit_details_reads_the_gpu_image_torch_bump() -> None:
+    details = trace_exporter.commit_details_from_payload(torch_bump_commit_payload())
+
+    # Only the watched file counts, not a look-alike line elsewhere.
+    assert details.dependency_changes == (
+        trace_exporter.DependencyChange("torch", "2.13.0", "2.14.0"),
+    )
+    assert details.pr == "48750"
+
+
+def test_commit_details_reads_a_created_python_version_file() -> None:
+    details = trace_exporter.commit_details_from_payload(
+        {
+            "commit": {"message": "Move CI to Python 3.11 (#49311)"},
+            "files": [
+                {
+                    "filename": ".python-version",
+                    "status": "added",
+                    "patch": "@@ -0,0 +1 @@\n+3.11",
+                }
+            ],
+        }
+    )
+
+    assert details.dependency_changes == (
+        trace_exporter.DependencyChange("python", "", "3.11"),
+    )
+
+
+def test_commit_details_ignores_an_untouched_version_or_missing_patch() -> None:
+    dockerfile = "docker/transformers-all-latest-gpu/Dockerfile"
+    details = trace_exporter.commit_details_from_payload(
+        {
+            "commit": {"message": "Edit the Dockerfile"},
+            "files": [
+                # Version line only moved (same value removed and re-added).
+                {
+                    "filename": dockerfile,
+                    "status": "modified",
+                    "patch": "-ARG PYTORCH='2.14.0'\n+ARG PYTORCH='2.14.0'",
+                },
+                # GitHub drops ``patch`` on very large diffs.
+                {"filename": ".python-version", "status": "modified"},
+            ],
+        }
+    )
+
+    assert details.dependency_changes == ()
+
+
+def test_extract_dependency_change_metrics_emits_a_main_commit_change() -> None:
+    def fetcher(repository: str, sha: str) -> trace_exporter.CommitDetails:
+        return trace_exporter.commit_details_from_payload(torch_bump_commit_payload())
+
+    trace = main_run_trace()
+    lines = trace_exporter.extract_dependency_change_metrics(
+        [trace], _commit_fetcher=fetcher, _registry={}, _seed=()
+    )
+
+    assert metric_lines(lines, "pytest_dependency_change_info") == [
+        "pytest_dependency_change_info{"
+        'change="2.13.0 → 2.14.0",'
+        f'commit_sha="{MOLMO2_SHA}",'
+        'dependency="torch",from_version="2.13.0",'
+        'html_url="https://github.com/huggingface/transformers/pull/48750",'
+        'pr="48750",to_version="2.14.0"} 1789310722000'
+    ]
+
+
+def test_extract_dependency_change_metrics_ignores_pr_runs() -> None:
+    def fetcher(repository: str, sha: str) -> trace_exporter.CommitDetails:
+        raise AssertionError("no GitHub call for a PR run")
+
+    lines = trace_exporter.extract_dependency_change_metrics(
+        [main_run_trace(pr="48750")], _commit_fetcher=fetcher, _registry={}, _seed=()
+    )
+
+    assert metric_lines(lines, "pytest_dependency_change_info") == []
+
+
+def test_dependency_change_seed_and_live_detection_do_not_duplicate() -> None:
+    def fetcher(repository: str, sha: str) -> trace_exporter.CommitDetails:
+        return trace_exporter.commit_details_from_payload(torch_bump_commit_payload())
+
+    trace = make_trace(
+        trace_id="trace-torch",
+        run_id="run-torch",
+        job="run_models_gpu",
+        pr="main",
+        commit_sha=TORCH_BUMP_SHA,
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_a.py::T::test_a",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    lines = trace_exporter.extract_dependency_change_metrics(
+        [trace], _commit_fetcher=fetcher, _registry={}
+    )
+    series = metric_lines(lines, "pytest_dependency_change_info")
+
+    # 4 torch bumps + python 3.11; the live sighting of a seeded commit is not a 6th.
+    assert len(series) == 5
+    assert sum('to_version="2.14.0"' in line for line in series) == 1
+    python = [line for line in series if 'dependency="python"' in line]
+    assert len(python) == 1
+    assert 'change="→ 3.11"' in python[0] and 'from_version="none"' in python[0]
