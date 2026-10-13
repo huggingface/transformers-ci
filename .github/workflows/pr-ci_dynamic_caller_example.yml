@@ -54,7 +54,6 @@ jobs:
       run_tests_processors:      ${{ steps.check.outputs.run_tests_processors }}
       run_pipelines_torch:       ${{ steps.check.outputs.run_pipelines_torch }}
       run_tests_custom_tokenizers: ${{ steps.check.outputs.run_tests_custom_tokenizers }}
-      run_examples_torch:        ${{ steps.check.outputs.run_examples_torch }}
       run_tests_exotic_models:   ${{ steps.check.outputs.run_tests_exotic_models }}
       run_tests_repo_utils:      ${{ steps.check.outputs.run_tests_repo_utils }}
       run_tests_non_model:       ${{ steps.check.outputs.run_tests_non_model }}
@@ -147,7 +146,7 @@ jobs:
         id: check
         run: |
           for job in tests_torch tests_generate tests_tokenization tests_processors \
-                     pipelines_torch tests_custom_tokenizers examples_torch \
+                     pipelines_torch tests_custom_tokenizers \
                      tests_exotic_models tests_repo_utils tests_non_model \
                      tests_training_ci tests_tensor_parallel_ci tests_fsdp_ci tests_peft_integration; do
             FILE="test_preparation/${job}_test_list.txt"
@@ -161,7 +160,7 @@ jobs:
       - name: Debug — print test list file sizes
         run: |
           for job in tests_torch tests_generate tests_tokenization tests_processors \
-                     pipelines_torch tests_custom_tokenizers examples_torch \
+                     pipelines_torch tests_custom_tokenizers \
                      tests_exotic_models tests_repo_utils tests_non_model \
                      tests_training_ci tests_tensor_parallel_ci tests_fsdp_ci tests_peft_integration; do
             FILE="test_preparation/${job}_test_list.txt"
@@ -554,22 +553,6 @@ jobs:
       use_dev_image:          ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
     secrets: inherit
 
-  # Origin: examples_torch_job in .circleci/create_circleci_config.py
-  # NOTE: job_name has no "tests_" prefix ("examples" in name).
-  examples_torch:
-    needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_examples_torch == 'true' }}
-    uses: ./.github/workflows/pr-ci_reusable_test_job.yml
-    with:
-      job_name:           "examples_torch"
-      docker_image:       "huggingface/transformers-examples-torch"
-      install_steps:      "uv pip install -e . && uv pip install -r examples/pytorch/_tests_requirements.txt"
-      pytest_num_workers: 4
-      omp_num_threads:    8
-      use_dev_image:      ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
-    secrets: inherit
-
   # Origin: exotic_models_job in .circleci/create_circleci_config.py
   tests_exotic_models:
     needs: [test-preparation, quality_gate]
@@ -694,7 +677,6 @@ jobs:
       - tests_processors
       - pipelines_torch
       - tests_custom_tokenizers
-      - examples_torch
       - tests_exotic_models
       - tests_repo_utils
       - tests_non_model
@@ -769,7 +751,6 @@ jobs:
       - tests_processors
       - pipelines_torch
       - tests_custom_tokenizers
-      - examples_torch
       - tests_exotic_models
       - tests_repo_utils
       - tests_non_model
