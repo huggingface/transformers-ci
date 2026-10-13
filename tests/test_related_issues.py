@@ -230,9 +230,11 @@ def test_route_shell_validation_and_selected_trace(server, monkeypatch):
     with urlopen(server + "/related-issues?view=summary") as response:
         summary = response.read().decode()
         assert 'class="tci-meta"' in summary
-        assert summary.index("Reproduce locally") < summary.index(
-            "Potential related issues"
-        )
+        assert "Reproduce locally" in summary
+        # The related issues are their own panel now, beside the failure.
+        assert "Searching related issues" not in summary
+        assert "fetch(url" not in summary
+        assert summary.count("<body>") == 1 and summary.endswith("</body></html>")
     assert fetched == []  # shell returns before any upstream work
     params = urlencode({"format": "json", "trace_id": TRACE, "test_nodeid": NODE})
     with urlopen(server + "/related-issues?" + params) as response:

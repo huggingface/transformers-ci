@@ -46,7 +46,7 @@
   "panels": [
     {
       "gridPos": {
-        "h": 11,
+        "h": 6,
         "w": 18,
         "x": 0,
         "y": 0
@@ -58,6 +58,22 @@
       },
       "pluginVersion": "12.0.0",
       "title": "Summary",
+      "type": "text"
+    },
+    {
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 5,
+      "options": {
+        "mode": "html",
+        "content": "<iframe title=\"Serge actions\" style=\"width:100%;height:100%;border:0\" src=\"/serge-actions?trace_id=${trace_id:percentencode}&amp;latest_trace=${latest_trace:percentencode}&amp;test_nodeid=${test_nodeid:percentencode}&amp;status=${status_code:percentencode}&amp;module=${test_module:percentencode}&amp;job=${test_job:percentencode}&amp;pr=${pr:percentencode}&amp;run_id=${run_id:percentencode}\"></iframe>"
+      },
+      "title": "✨🦄 Serge Actions",
+      "description": "Hand this failure to Serge: write an issue, open a fix PR, or get a quick opinion.",
       "type": "text"
     },
     {
@@ -103,9 +119,9 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 0
+        "w": 12,
+        "x": 0,
+        "y": 6
       },
       "id": 2,
       "options": {
@@ -168,24 +184,6 @@
       "description": "How long this test took, and when the run it failed in started."
     },
     {
-      "gridPos": {
-        "h": 24,
-        "w": 24,
-        "x": 0,
-        "y": 11
-      },
-      "id": 3,
-      "pluginVersion": "12.0.0",
-      "repeat": "failure_indicator",
-      "repeatDirection": "v",
-      "title": "${exception_type:raw}",
-      "type": "text",
-      "options": {
-        "mode": "html",
-        "content": "<iframe title=\"traceback\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var t='${trace_id}'||'${latest_trace}';if(!/^[0-9a-f]{8,}$/i.test(t)){t='';}var n='${test_nodeid}';var u=parent.location.protocol+'//'+parent.location.host+'/failure?trace_id='+encodeURIComponent(t);if(n){u+='&test_nodeid='+encodeURIComponent(n);}location.replace(u);</script>\"></iframe>"
-      }
-    },
-    {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -219,10 +217,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 3,
-        "w": 6,
-        "x": 18,
-        "y": 4
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 6
       },
       "id": 4,
       "options": {
@@ -271,19 +269,39 @@
     },
     {
       "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 7
+        "h": 24,
+        "w": 12,
+        "x": 0,
+        "y": 10
       },
-      "id": 5,
+      "id": 3,
+      "pluginVersion": "12.0.0",
+      "repeat": "failure_indicator",
+      "repeatDirection": "v",
+      "title": "${exception_type:raw}",
+      "type": "text",
       "options": {
         "mode": "html",
-        "content": "<iframe title=\"Serge actions\" style=\"width:100%;height:100%;border:0\" src=\"/serge-actions?trace_id=${trace_id:percentencode}&amp;latest_trace=${latest_trace:percentencode}&amp;test_nodeid=${test_nodeid:percentencode}&amp;status=${status_code:percentencode}&amp;module=${test_module:percentencode}&amp;job=${test_job:percentencode}&amp;pr=${pr:percentencode}&amp;run_id=${run_id:percentencode}\"></iframe>"
+        "content": "<iframe title=\"traceback\" style=\"width:100%;height:78vh;border:0;border-radius:6px\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e}</style><script>var t='${trace_id}'||'${latest_trace}';if(!/^[0-9a-f]{8,}$/i.test(t)){t='';}var n='${test_nodeid}';var u=parent.location.protocol+'//'+parent.location.host+'/failure?trace_id='+encodeURIComponent(t);if(n){u+='&test_nodeid='+encodeURIComponent(n);}location.replace(u);</script>\"></iframe>"
+      }
+    },
+    {
+      "gridPos": {
+        "h": 24,
+        "w": 12,
+        "x": 12,
+        "y": 10
       },
-      "title": "✨🦄 Serge Actions",
-      "description": "Hand this failure to Serge: write an issue, open a fix PR, or get a quick opinion.",
-      "type": "text"
+      "id": 6,
+      "pluginVersion": "12.0.0",
+      "repeat": "failure_indicator",
+      "repeatDirection": "v",
+      "title": "Potential related issues",
+      "type": "text",
+      "options": {
+        "mode": "html",
+        "content": "<iframe title=\"related issues\" style=\"width:100%;height:100%;border:0\" src=\"/related-issues?trace_id=${trace_id:percentencode}&amp;latest_trace=${latest_trace:percentencode}&amp;test_nodeid=${test_nodeid:percentencode}\"></iframe>"
+      }
     }
   ],
   "schemaVersion": 41,
