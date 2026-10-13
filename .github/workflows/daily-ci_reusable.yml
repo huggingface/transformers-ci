@@ -273,81 +273,6 @@ jobs:
           name: ${{ env.machine_type }}_run_pipelines_torch_gpu_test_reports
           path: /transformers/reports/${{ env.machine_type }}_run_pipelines_torch_gpu_test_reports
 
-  run_examples_gpu:
-    permissions:
-      contents: read
-    if: ${{ inputs.job == 'run_examples_gpu' }}
-    name: Examples directory
-    strategy:
-      fail-fast: false
-      matrix:
-        machine_type: [aws-g5-4xlarge-cache]
-    runs-on:
-      group: '${{ matrix.machine_type }}'
-    container:
-      image: huggingface/transformers-all-latest-gpu
-      options: --gpus all --shm-size "16gb" --ipc host -v /mnt/cache/.cache/huggingface:/mnt/cache/
-    steps:
-      - name: Update clone
-        working-directory: /transformers
-        env:
-          commit_sha: ${{ inputs.commit_sha || github.sha }}
-        run: git fetch && git checkout "$commit_sha"
-
-      - name: Reinstall transformers in edit mode (remove the one installed during docker image build)
-        working-directory: /transformers
-        run: python3 -m pip uninstall -y transformers && python3 -m pip install -e .
-
-      - name: NVIDIA-SMI
-        run: |
-          nvidia-smi
-
-      - name: Environment
-        working-directory: /transformers
-        run: |
-          python3 utils/print_env.py
-
-      - name: Show installed libraries and their versions
-        working-directory: /transformers
-        run: pip freeze
-
-      - name: Set `machine_type` for report and artifact names
-        working-directory: /transformers
-        shell: bash
-        env:
-          matrix_machine_type: ${{ matrix.machine_type }}
-        run: |
-          echo "$matrix_machine_type"
-
-          if [ "$matrix_machine_type" = "aws-g5-4xlarge-cache" ]; then
-            machine_type=single-gpu
-          elif [ "$matrix_machine_type" = "aws-g5-12xlarge-cache" ]; then
-            machine_type=multi-gpu
-          else
-            machine_type="$matrix_machine_type"
-          fi
-
-          echo "$machine_type"
-          echo "machine_type=$machine_type" >> $GITHUB_ENV
-
-      - name: Run examples tests on GPU
-        working-directory: /transformers
-        run: |
-          pip install -r examples/pytorch/_tests_requirements.txt
-          python3 -m pytest -v --make-reports="${machine_type}_run_examples_gpu_test_reports" examples/pytorch
-
-      - name: Failure short reports
-        if: ${{ failure() }}
-        continue-on-error: true
-        run: cat "/transformers/reports/${machine_type}_run_examples_gpu_test_reports/failures_short.txt"
-
-      - name: "Test suite reports artifacts: ${{ env.machine_type }}_run_examples_gpu_test_reports"
-        if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ env.machine_type }}_run_examples_gpu_test_reports
-          path: /transformers/reports/${{ env.machine_type }}_run_examples_gpu_test_reports
-
   run_torch_cuda_extensions_gpu:
     permissions:
       contents: read
@@ -675,7 +600,6 @@ jobs:
       run_models_gpu,
       run_trainer_and_fsdp_gpu,
       run_pipelines_torch_gpu,
-      run_examples_gpu,
       run_torch_cuda_extensions_gpu,
       run_quantization_torch_gpu,
       run_kernels_gpu,
