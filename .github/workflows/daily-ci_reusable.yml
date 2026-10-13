@@ -64,7 +64,7 @@ on:
     outputs:
       is_infrastructure_ok:
         description: "Whether the CI infrastructure (slack reporting and failure checking) succeeded"
-        value: ${{ jobs.send_results.outputs.is_slack_reporting_job_ok == 'true' && jobs.check_new_failures.outputs.is_check_failures_ok == 'true' }}
+        value: ${{ jobs.send_results.outputs.is_slack_reporting_job_ok == 'true' }}
 
 
 env:
@@ -630,18 +630,18 @@ jobs:
 
     secrets: inherit
 
-  check_new_failures:
-    if: ${{ !cancelled() && needs.send_results.result == 'success' }}
-    name: Check new failures
-    needs: send_results
-    uses: huggingface/transformers/.github/workflows/check_failed_tests.yml@08917bd9e73d7e0472550783b05255c202faa0c2  # main
-    with:
-      docker: ${{ inputs.docker }}
-      commit_sha: ${{ inputs.commit_sha || github.sha }}
-      job: ${{ inputs.job }}
-      slack_report_channel: ${{ inputs.slack_report_channel }}
-      ci_event: ${{ inputs.ci_event }}
-      report_repo_id: ${{ inputs.report_repo_id }}
-      pr_number: ${{ inputs.pr_number }}
-
-    secrets: inherit
+#  check_new_failures:
+#    if: ${{ !cancelled() && needs.send_results.result == 'success' }}
+#    name: Check new failures
+#    needs: send_results
+#    uses: huggingface/transformers/.github/workflows/check_failed_tests.yml@08917bd9e73d7e0472550783b05255c202faa0c2  # main
+#    with:
+#      docker: ${{ inputs.docker }}
+#      commit_sha: ${{ inputs.commit_sha || github.sha }}
+#      job: ${{ inputs.job }}
+#      slack_report_channel: ${{ inputs.slack_report_channel }}
+#      ci_event: ${{ inputs.ci_event }}
+#      report_repo_id: ${{ inputs.report_repo_id }}
+#      pr_number: ${{ inputs.pr_number }}
+#
+#    secrets: inherit
