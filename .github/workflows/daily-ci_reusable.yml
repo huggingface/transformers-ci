@@ -224,6 +224,9 @@ jobs:
         working-directory: /transformers
         run: python3 -m pip uninstall -y transformers && python3 -m pip install -e .
 
+      - name: Install kernels from source
+        run: pip install git+https://github.com/huggingface/kernels#subdirectory=kernels && pip install -U urllib3
+
       - name: NVIDIA-SMI
         run: |
           nvidia-smi
@@ -297,6 +300,9 @@ jobs:
       - name: Reinstall transformers in edit mode (remove the one installed during docker image build)
         working-directory: ${{ inputs.working-directory-prefix }}/transformers
         run: python3 -m pip uninstall -y transformers && python3 -m pip install -e .
+
+      - name: Install kernels from source
+        run: pip install git+https://github.com/huggingface/kernels#subdirectory=kernels && pip install -U urllib3
 
       - name: Update / Install some packages (for Past CI)
         if: ${{ contains(inputs.docker, '-past-') && contains(inputs.docker, '-pytorch-') }}
@@ -414,6 +420,9 @@ jobs:
       - name: Reinstall transformers in edit mode (remove the one installed during docker image build)
         working-directory: /transformers
         run: python3 -m pip uninstall -y transformers && python3 -m pip install -e .
+
+      - name: Install kernels from source
+        run: pip install git+https://github.com/huggingface/kernels#subdirectory=kernels && pip install -U urllib3
 
       - name: NVIDIA-SMI
         run: |
