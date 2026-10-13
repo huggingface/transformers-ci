@@ -46,7 +46,30 @@
     ]
   },
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "purple",
+        "name": "Model added",
+        "expr": "max by (model, pr, commit_sha, html_url) (max_over_time(pytest_model_added_info[$__interval]))",
+        "step": "1h",
+        "useValueForTime": true,
+        "titleFormat": "New model: {{model}}",
+        "textFormat": "{{html_url}}",
+        "tagKeys": "",
+        "filter": {
+          "exclude": false,
+          "ids": [
+            14
+          ]
+        }
+      }
+    ]
   },
   "panels": [
     {
