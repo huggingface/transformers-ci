@@ -196,7 +196,7 @@
                 "value": [
                   {
                     "title": "View test failure",
-                    "url": "/d/pytest-test/pytest-test?var-trace_id=${__data.fields[\"Last Failure\"]}&var-test_nodeid=${__data.fields[\"test_nodeid\"]}&var-test_job=${__data.fields[\"Job\"]}&var-pr=main&var-exception_type=${__value.raw}",
+                    "url": "/d/pytest-test/pytest-test?var-trace_id=${__data.fields[\"Last Failure\"]}&var-test_nodeid=${__data.fields[\"test_nodeid\"]}&var-test_job=${__data.fields[\"Job\"]}&var-run_id=${__data.fields[\"run_id\"]}&var-gh_run_id=${__data.fields[\"gh_run_id\"]}&var-pr=main&var-exception_type=${__value.raw}",
                     "targetBlank": false
                   }
                 ]
@@ -281,6 +281,30 @@
                 "value": 130
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "run_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "gh_run_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
           }
         ]
       },
@@ -317,7 +341,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "topk by (test_nodeid, test_job) (1, ((last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) * on (run_id) group_left() (max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range])))) and on (test_nodeid, test_job) (topk(25, (count by (test_nodeid, test_job) (max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) > 1) + (max by (test_nodeid, test_job) ((max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) * on (run_id) group_left() (max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range]))))) / 1000000000000))) * 1000",
+          "expr": "label_replace(topk by (test_nodeid, test_job) (1, ((last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) * on (run_id) group_left() (max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range])))) and on (test_nodeid, test_job) (topk(25, (count by (test_nodeid, test_job) (max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) > 1) + (max by (test_nodeid, test_job) ((max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job!~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) * on (run_id) group_left() (max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range]))))) / 1000000000000))) * 1000, \"gh_run_id\", \"$1\", \"run_id\", \"(\\\\d+).*\")",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -356,8 +380,7 @@
               "provider": true,
               "service_name": true,
               "test_class": true,
-              "test_module": true,
-              "run_id": true
+              "test_module": true
             },
             "indexByName": {
               "test_job": 0,
@@ -442,7 +465,7 @@
                 "value": [
                   {
                     "title": "View test failure",
-                    "url": "/d/pytest-test/pytest-test?var-trace_id=${__data.fields[\"Last Failure\"]}&var-test_nodeid=${__data.fields[\"test_nodeid\"]}&var-test_job=${__data.fields[\"Job\"]}&var-pr=main&var-exception_type=${__value.raw}",
+                    "url": "/d/pytest-test/pytest-test?var-trace_id=${__data.fields[\"Last Failure\"]}&var-test_nodeid=${__data.fields[\"test_nodeid\"]}&var-test_job=${__data.fields[\"Job\"]}&var-run_id=${__data.fields[\"run_id\"]}&var-gh_run_id=${__data.fields[\"gh_run_id\"]}&var-pr=main&var-exception_type=${__value.raw}",
                     "targetBlank": false
                   }
                 ]
@@ -527,6 +550,30 @@
                 "value": 130
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "run_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "gh_run_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
           }
         ]
       },
@@ -563,7 +610,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "topk by (test_nodeid, test_job) (1, ((last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) * on (run_id) group_left() (max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range])))) and on (test_nodeid, test_job) (topk(25, (count by (test_nodeid, test_job) (max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) > 1) + (max by (test_nodeid, test_job) ((max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) * on (run_id) group_left() (max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range]))))) / 1000000000000))) * 1000",
+          "expr": "label_replace(topk by (test_nodeid, test_job) (1, ((last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range])) * on (run_id) group_left() (max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range])))) and on (test_nodeid, test_job) (topk(25, (count by (test_nodeid, test_job) (max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) > 1) + (max by (test_nodeid, test_job) ((max by (test_nodeid, test_job, run_id) (last_over_time(pytest_test_last_failure_info{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\"}[$__range]))) * on (run_id) group_left() (max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[$__range]))))) / 1000000000000))) * 1000, \"gh_run_id\", \"$1\", \"run_id\", \"(\\\\d+).*\")",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -602,8 +649,7 @@
               "provider": true,
               "service_name": true,
               "test_class": true,
-              "test_module": true,
-              "run_id": true
+              "test_module": true
             },
             "indexByName": {
               "test_job": 0,
