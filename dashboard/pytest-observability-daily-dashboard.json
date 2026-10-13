@@ -60,7 +60,7 @@
         "step": "1h",
         "useValueForTime": true,
         "titleFormat": "New model: {{model}}",
-        "textFormat": "{{html_url}}",
+        "textFormat": "<a href=\"/d/pytest-observability-by-pr/pytest-observability-branch?var-pr={{pr}}&from=now-90d&to=now\">PR #{{pr}}</a>",
         "tagKeys": "",
         "filter": {
           "exclude": false,
@@ -82,7 +82,7 @@
         "step": "1h",
         "useValueForTime": true,
         "titleFormat": "{{dependency}} {{change}}",
-        "textFormat": "{{html_url}}",
+        "textFormat": "<a href=\"/d/pytest-observability-by-pr/pytest-observability-branch?var-pr={{pr}}&from=now-90d&to=now\">PR #{{pr}}</a>",
         "tagKeys": "",
         "filter": {
           "exclude": false,
