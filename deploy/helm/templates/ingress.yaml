@@ -70,8 +70,16 @@ spec:
           # (both embedded as iframes in dashboards); /pr-search is the "Find a PR" box
           # every dashboard mounts in Grafana's top bar; /page-view counts the
           # dashboard views its loader panel reports; /related-issues and
-          # /serge-actions are the Test page's Summary and actions; /badge and
-          # /summary serve PR status integrations.
+          # /serge-actions are the Test page's Summary and actions; /test is the
+          # Test page rendered whole by the exporter; /badge and /summary serve
+          # PR status integrations.
+          - path: /test
+            pathType: Exact
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
           - path: /failure
             pathType: Prefix
             backend:

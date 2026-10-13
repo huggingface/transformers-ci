@@ -76,6 +76,7 @@ from transformersci.otel import rerun_failed
 from transformersci.otel import serge_actions
 from transformersci.otel import wdyt
 from transformersci.otel import patch_view
+from transformersci.otel import test_page
 
 from transformersci.emojize import emojize as _emojize
 from transformersci.runners import ATTRIBUTE_PREFIX as RUNNER_ATTRIBUTE_PREFIX
@@ -1908,6 +1909,53 @@ def failure_context_trace(trace_id: str) -> dict | None:
     if trace is not None:
         return trace
     return recent_trace_processes(trace_id) or fetch_failure_trace(trace_id)
+
+
+def test_span_facts(trace: dict | None, test_nodeid: str) -> dict[str, object]:
+    """What the Test page shows from the test's own span: status, duration,
+    start time and device memory. With several spans for the node (reruns),
+    a failing one wins, then the latest. Missing values are simply absent."""
+    best: tuple[int, int, dict] | None = None
+    spans = (trace or {}).get("spans")
+    for span in spans if isinstance(spans, list) else []:
+        if not isinstance(span, dict):
+            continue
+        tags = tag_map(span.get("tags", []))
+        if tags.get("pytest.span_type") != "test":
+            continue
+        if (tags.get("pytest.nodeid") or str(span.get("operationName", ""))) != (
+            test_nodeid
+        ):
+            continue
+        failed = 1 if tags.get("otel.status_code") == "ERROR" else 0
+        start = int(span.get("startTime", 0) or 0)
+        if best is None or (failed, start) > best[:2]:
+            best = (failed, start, {"span": span, "tags": tags})
+    if best is None:
+        return {}
+    span, tags = best[2]["span"], best[2]["tags"]
+    facts: dict[str, object] = {"status": tags.get("otel.status_code", "UNSET")}
+    try:
+        facts["duration_seconds"] = (
+            float(tags["pytest.worker_duration_seconds"])
+            if "pytest.worker_duration_seconds" in tags
+            else int(span.get("duration", 0)) / 1_000_000
+        )
+    except (TypeError, ValueError):
+        pass
+    if best[1]:
+        facts["started_at"] = best[1] / 1_000_000
+    for tag, key in (
+        ("pytest.cuda_inherited_bytes", "cuda_inherited_bytes"),
+        ("pytest.cuda_retained_bytes", "cuda_retained_bytes"),
+        ("pytest.cuda_delta_bytes", "cuda_delta_bytes"),
+    ):
+        try:
+            if tag in tags:
+                facts[key] = float(tags[tag])
+        except (TypeError, ValueError):
+            pass
+    return facts
 
 
 def github_job_html_url(repository: str, run_id: str, job_id: str) -> str:
@@ -7882,6 +7930,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._request_route = "/summary/pr"
             self._serve_pr_summary(parse_qs(parsed.query))
             return
+        if parsed.path == "/test":
+            self._request_route = "/test"
+            self._serve_test_page(parse_qs(parsed.query))
+            return
         if parsed.path == "/failure":
             self._request_route = "/failure"
             self._serve_failure(parse_qs(parsed.query))
@@ -8145,6 +8197,64 @@ class MetricsHandler(BaseHTTPRequestHandler):
             "text/html; charset=utf-8",
             render_failure_html(trace_id, details).encode("utf-8"),
             cache_control="public, max-age=300",
+        )
+
+    def _serve_test_page(self, params: dict[str, list[str]]) -> None:
+        def param(name: str) -> str:
+            return (params.get(name) or [""])[0].strip()
+
+        nodeid = param("test_nodeid")
+        trace_id = param("trace_id") or param("latest_trace")
+        if (
+            not nodeid
+            or len(nodeid) > 2048
+            or any(ord(c) < 32 for c in nodeid)
+            or (trace_id and not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id))
+        ):
+            self._send(
+                400,
+                "text/plain; charset=utf-8",
+                b"/test needs a test_nodeid and, optionally, a 32-hex trace_id",
+            )
+            return
+        trace = fetch_failure_trace(trace_id) if trace_id else None
+        context = failure_context(trace, nodeid) if trace else {}
+        details = extract_failure_details(trace, nodeid) if trace else []
+        if trace and details:
+            annotate_github_links(trace, details)
+            for detail in details:
+                detail["job_log_url"] = context.get("job_url", "")
+                detail["run_url"] = context.get("run_url", "")
+        job = ""
+        for process in ((trace or {}).get("processes") or {}).values():
+            if isinstance(process, dict):
+                tags = tag_map(process.get("tags", []))
+                job = tags.get(
+                    "transformers.test.job", tags.get("transformers.test.suite", "")
+                )
+                if job:
+                    break
+        # The trace wins; the URL's values fill in what it lacks.
+        data: dict[str, object] = {
+            "trace_id": trace_id,
+            "test_nodeid": nodeid,
+            "status": param("status"),
+            "job": job or param("job"),
+            "pr": param("pr"),
+            "run_id": param("run_id"),
+            "module": split_pytest_nodeid(nodeid)["test_module"],
+            "has_trace": trace is not None,
+            "details": details,
+        }
+        for key, value in context.items():
+            if value and not (key == "pr" and value == "none"):
+                data[key] = value
+        data.update(test_span_facts(trace, nodeid) if trace else {})
+        self._send(
+            200,
+            "text/html; charset=utf-8",
+            test_page.render_test_page(data).encode("utf-8"),
+            cache_control="public, max-age=300" if trace else "no-store",
         )
 
     def _serve_failure_context(self, params: dict[str, list[str]]) -> None:
