@@ -1977,13 +1977,55 @@ def failure_context(trace: dict | None, test_nodeid: str) -> dict[str, str]:
     }
 
 
-def fetch_github_commit_message(repository: str, sha: str) -> str:
-    """Return the first line (subject) of a commit's message from GitHub.
+class CommitDetails(NamedTuple):
+    """What the exporter keeps from one ``GET /repos/{repo}/commits/{sha}``."""
 
-    Mirrors :func:`fetch_github_pr_info` but hits the commits endpoint so the
-    overview's main-branch run table can show a human-readable commit subject
-    instead of a bare run id. Returns "" when the lookup fails.
-    """
+    message: str = ""
+    # Model folders whose ``__init__.py`` this commit added, sorted.
+    added_models: tuple[str, ...] = ()
+    # Committer date in epoch milliseconds (the merge time for a commit on main).
+    committed_at_ms: int = 0
+    # PR number from the subject's ``(#NNNNN)`` suffix, or "".
+    pr: str = ""
+
+
+_ADDED_MODEL_INIT = re.compile(r"^src/transformers/models/([^/]+)/__init__\.py$")
+_SUBJECT_PR_SUFFIX = re.compile(r"\(#(\d+)\)\s*$")
+
+
+def commit_details_from_payload(payload: object) -> CommitDetails:
+    if not isinstance(payload, dict):
+        return CommitDetails()
+    commit = payload.get("commit")
+    commit = commit if isinstance(commit, dict) else {}
+    message = commit.get("message")
+    subject = ""
+    if isinstance(message, str) and message.strip():
+        # Commit messages are multi-line (subject + body); keep the first line.
+        subject = message.strip().splitlines()[0]
+    pr_match = _SUBJECT_PR_SUFFIX.search(subject)
+    committer = commit.get("committer")
+    committed_at = parse_github_timestamp(
+        str(committer.get("date") or "") if isinstance(committer, dict) else ""
+    )
+    added_models = set()
+    files = payload.get("files")
+    for entry in files if isinstance(files, list) else []:
+        if not isinstance(entry, dict) or entry.get("status") != "added":
+            continue
+        match = _ADDED_MODEL_INIT.match(str(entry.get("filename", "")))
+        if match:
+            added_models.add(match.group(1))
+    return CommitDetails(
+        message=_emojize(subject) if subject else "",
+        added_models=tuple(sorted(added_models)),
+        committed_at_ms=int(committed_at * 1000) if committed_at is not None else 0,
+        pr=pr_match.group(1) if pr_match else "",
+    )
+
+
+def fetch_github_commit_details(repository: str, sha: str) -> CommitDetails:
+    """Fetch one commit from GitHub; an empty ``CommitDetails`` on failure."""
     api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip(
         "/"
     )
@@ -1994,38 +2036,46 @@ def fetch_github_commit_message(repository: str, sha: str) -> str:
     try:
         payload = _github_api_get(api_url)
     except Exception:
-        return ""
-    if not isinstance(payload, dict):
-        return ""
-    commit = payload.get("commit")
-    message = commit.get("message") if isinstance(commit, dict) else ""
-    if not isinstance(message, str):
-        return ""
-    # Commit messages are multi-line (subject + body); the table only wants the
-    # subject, so keep the first non-empty line.
-    return _emojize(message.strip().splitlines()[0]) if message.strip() else ""
+        return CommitDetails()
+    return commit_details_from_payload(payload)
 
 
-_commit_msg_cache_lock = threading.Lock()
-_cached_commit_msg: dict[tuple[str, str], tuple[float, str]] = {}
+def fetch_github_commit_message(repository: str, sha: str) -> str:
+    """Return the first line (subject) of a commit's message from GitHub.
+
+    Mirrors :func:`fetch_github_pr_info` but hits the commits endpoint so the
+    overview's main-branch run table can show a human-readable commit subject
+    instead of a bare run id. Returns "" when the lookup fails.
+    """
+    return fetch_github_commit_details(repository, sha).message
 
 
-def fetch_github_commit_message_cached(repository: str, sha: str) -> str:
+_commit_details_cache_lock = threading.Lock()
+_cached_commit_details: dict[tuple[str, str], tuple[float, CommitDetails]] = {}
+
+
+def fetch_github_commit_details_cached(repository: str, sha: str) -> CommitDetails:
     key = (repository, sha)
     ttl = github_cache_ttl_seconds()
     now = time.monotonic()
-    with _commit_msg_cache_lock:
-        cached = _cached_commit_msg.get(key)
+    with _commit_details_cache_lock:
+        cached = _cached_commit_details.get(key)
         if cached is not None and ttl > 0:
-            cached_at, message = cached
+            cached_at, details = cached
             if now - cached_at < ttl:
-                return message
+                return details
 
-    message = fetch_github_commit_message(repository, sha)
+    details = fetch_github_commit_details(repository, sha)
 
-    with _commit_msg_cache_lock:
-        _cached_commit_msg[key] = (now, message)
-    return message
+    with _commit_details_cache_lock:
+        _cached_commit_details[key] = (now, details)
+    return details
+
+
+def fetch_github_commit_message_cached(repository: str, sha: str) -> str:
+    # Shares the details cache, so the run table's subject and the model-added
+    # markers cost one GitHub call per commit between them.
+    return fetch_github_commit_details_cached(repository, sha).message
 
 
 def latest_trace(traces: list[dict]) -> dict | None:
@@ -3212,6 +3262,145 @@ def extract_run_info_metrics(
             "service_name": service_name,
         }
         lines.append(f"pytest_run_info{metric_labels(labels)} 1")
+    return lines
+
+
+class ModelAdded(NamedTuple):
+    model: str
+    commit_sha: str
+    pr: str
+    committed_at_ms: int
+
+
+MODEL_ADDED_REPOSITORY = "huggingface/transformers"
+
+# Models merged to main between 2026-09-13 and 2026-10-13, read off GitHub by
+# hand (docs/plans/model-added-markers-2026-10-13.md in transformers-ci-playbooks):
+# detection only sees merges from the exporter's deploy onward, and these give
+# the markers real data without a backfill.
+MODEL_ADDED_SEED: tuple[ModelAdded, ...] = tuple(
+    ModelAdded(model, sha, pr, int((parse_github_timestamp(date) or 0) * 1000))
+    for model, sha, pr, date in (
+        (
+            "minicpmv4_7",
+            "c210bb39664fbd432d9753bd43393bd53c62f7fe",
+            "48979",
+            "2026-09-21T10:09:56Z",
+        ),
+        (
+            "nemotron3_diarization",
+            "8f080cb5aa480f794283c6e8618f917cc9a6506d",
+            "49056",
+            "2026-09-23T16:29:35Z",
+        ),
+        (
+            "nemotron_h_omni",
+            "4b28d51d0d5f17ec20c23a187d0475a8e68810c8",
+            "46509",
+            "2026-09-24T06:01:26Z",
+        ),
+        (
+            "gte",
+            "57296d1c69d793f7efcaee7b9bd12f401c0f3a38",
+            "48416",
+            "2026-09-30T16:22:30Z",
+        ),
+        (
+            "embedding_gemma2",
+            "92cd495f2720c064bc78eb2d93e28704c5bce51f",
+            "49364",
+            "2026-10-06T16:17:31Z",
+        ),
+        (
+            "pp_doclayout_v4",
+            "e233d3f7d2d02541ae50a30b7d9a304741b3a43c",
+            "48387",
+            "2026-10-08T11:53:39Z",
+        ),
+        (
+            "molmo2",
+            "f27b9b1456273cbe7c3abe9fb4830e425d4b2119",
+            "43451",
+            "2026-10-09T13:21:58Z",
+        ),
+    )
+)
+
+# Every model seen added since the exporter started. A run leaves the rolling
+# window within minutes; keeping the marker here keeps its series continuous
+# so a coarse annotation step cannot fall between two scrapes of it.
+_models_added_lock = threading.Lock()
+_models_added: dict[str, ModelAdded] = {}
+
+
+def extract_model_added_metrics(
+    traces: list[dict] | None = None,
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
+    _commit_fetcher: Callable[[str, str], CommitDetails] | None = None,
+    _registry: dict[str, ModelAdded] | None = None,
+    _seed: tuple[ModelAdded, ...] = MODEL_ADDED_SEED,
+) -> list[str]:
+    """Emit one ``pytest_model_added_info`` series per model merged to main.
+
+    A main run's head commit is looked up through the same cached GitHub call
+    as ``pytest_run_info``; a model counts as added when the commit adds its
+    ``src/transformers/models/<name>/__init__.py``. The value is the merge time
+    in epoch milliseconds, for a Grafana annotation that uses the series value
+    as its timestamp.
+    """
+    extracted = (
+        _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
+    )
+    commit_fetcher = _commit_fetcher or fetch_github_commit_details_cached
+    registry = _models_added if _registry is None else _registry
+
+    shas: set[str] = set()
+    for trace_info, rows in extracted:
+        if not rows or str(trace_info.get("pr", "")) != "main":
+            continue
+        repository = str(trace_info.get("repository", ""))
+        commit_sha = str(trace_info.get("commit_sha", ""))
+        # The models/<name>/__init__.py layout is upstream's; a fork's main
+        # adding a folder is not a model landing in Transformers.
+        if repository == MODEL_ADDED_REPOSITORY and commit_sha:
+            shas.add(commit_sha)
+
+    found: list[ModelAdded] = []
+    for commit_sha in sorted(shas):
+        details = commit_fetcher(MODEL_ADDED_REPOSITORY, commit_sha)
+        if not details.committed_at_ms:
+            continue
+        for model in details.added_models:
+            found.append(
+                ModelAdded(model, commit_sha, details.pr, details.committed_at_ms)
+            )
+
+    with _models_added_lock:
+        for entry in (*_seed, *found):
+            registry.setdefault(entry.model, entry)
+        entries = sorted(registry.values(), key=lambda e: (e.committed_at_ms, e.model))
+
+    lines = [
+        "# HELP pytest_model_added_info A model added to Transformers main; value is the merge time in epoch ms.",
+        "# TYPE pytest_model_added_info gauge",
+    ]
+    for entry in entries:
+        html_url = (
+            f"https://github.com/{MODEL_ADDED_REPOSITORY}/pull/{entry.pr}"
+            if entry.pr
+            else github_commit_html_url(MODEL_ADDED_REPOSITORY, entry.commit_sha)
+        )
+        labels = {
+            "commit_sha": entry.commit_sha,
+            "html_url": html_url,
+            "model": entry.model,
+            "pr": entry.pr or "none",
+        }
+        lines.append(
+            f"pytest_model_added_info{metric_labels(labels)} {entry.committed_at_ms}"
+        )
     return lines
 
 
@@ -5059,6 +5248,10 @@ def _iter_metric_lines() -> Iterator[str]:
             ),
         ),
         ("run_info", lambda: extract_run_info_metrics(_extracted=rollup_extracted)),
+        (
+            "model_added",
+            lambda: extract_model_added_metrics(_extracted=rollup_extracted),
+        ),
         ("pr_info", lambda: extract_pr_info_metrics([], _extracted=extracted)),
         ("run_active", lambda: extract_run_active_metrics(_extracted=extracted)),
         (

@@ -6062,3 +6062,186 @@ def test_live_test_counts_sums_replicas_and_errors(monkeypatch) -> None:
     # Cached: a polling page does not re-query every 30 s per viewer.
     trace_exporter.live_test_counts("9:1", "tests_torch")
     assert len(seen) == 1
+
+
+MOLMO2_SHA = "f27b9b1456273cbe7c3abe9fb4830e425d4b2119"
+
+
+def molmo2_commit_payload() -> dict:
+    """Trimmed from the real GET /repos/huggingface/transformers/commits/f27b9b1."""
+    return {
+        "commit": {
+            "message": "Add Molmo2 (#43451)\n\n* body",
+            "committer": {"date": "2026-10-09T13:21:58Z"},
+        },
+        "files": [
+            {
+                "filename": "src/transformers/models/molmo2/__init__.py",
+                "status": "added",
+            },
+            {
+                "filename": "src/transformers/models/molmo2/modeling_molmo2.py",
+                "status": "added",
+            },
+            {"filename": "tests/models/molmo2/__init__.py", "status": "added"},
+            {
+                "filename": "src/transformers/models/auto/__init__.py",
+                "status": "modified",
+            },
+            {
+                "filename": "src/transformers/models/renamed/__init__.py",
+                "status": "renamed",
+            },
+            {
+                "filename": "src/transformers/models/molmo2/sub/__init__.py",
+                "status": "added",
+            },
+        ],
+    }
+
+
+def test_commit_details_reads_added_models_pr_and_merge_time() -> None:
+    details = trace_exporter.commit_details_from_payload(molmo2_commit_payload())
+
+    assert details.message == "Add Molmo2 (#43451)"
+    # Only an added top-level model __init__.py counts: not tests/, not a
+    # modified or renamed one, not a nested package.
+    assert details.added_models == ("molmo2",)
+    assert details.pr == "43451"
+    assert details.committed_at_ms == 1791552118000
+
+
+def test_commit_details_tolerates_a_bad_payload() -> None:
+    assert trace_exporter.commit_details_from_payload(None) == (
+        trace_exporter.CommitDetails()
+    )
+    details = trace_exporter.commit_details_from_payload(
+        {"commit": {"message": "Smthn smthn"}, "files": "nope"}
+    )
+    assert details.message == "Smthn smthn"
+    assert details.added_models == ()
+    assert details.pr == ""
+    assert details.committed_at_ms == 0
+
+
+def test_commit_message_and_details_share_one_github_call() -> None:
+    import json as _json
+
+    payload = FakeResponse(_json.dumps(molmo2_commit_payload()))
+    with (
+        patch.dict(trace_exporter._cached_commit_details, {}, clear=True),
+        patch(
+            "transformersci.otel.trace_exporter.urlopen", side_effect=[payload]
+        ) as mocked_urlopen,
+    ):
+        message = trace_exporter.fetch_github_commit_message_cached(
+            "huggingface/transformers", MOLMO2_SHA
+        )
+        details = trace_exporter.fetch_github_commit_details_cached(
+            "huggingface/transformers", MOLMO2_SHA
+        )
+
+    assert message == "Add Molmo2 (#43451)"
+    assert details.added_models == ("molmo2",)
+    assert mocked_urlopen.call_count == 1
+
+
+def main_run_trace(
+    *, pr: str = "main", repository: str = "huggingface/transformers"
+) -> dict:
+    return make_trace(
+        trace_id=f"trace-{pr}-{repository}",
+        run_id="run-1",
+        job="run_models_gpu",
+        pr=pr,
+        repository=repository,
+        commit_sha=MOLMO2_SHA,
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/models/molmo2/test_modeling_molmo2.py::T::test_a",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+
+
+def test_extract_model_added_metrics_emits_a_main_commit_model() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fetcher(repository: str, sha: str) -> trace_exporter.CommitDetails:
+        calls.append((repository, sha))
+        return trace_exporter.commit_details_from_payload(molmo2_commit_payload())
+
+    lines = trace_exporter.extract_model_added_metrics(
+        [main_run_trace()], _commit_fetcher=fetcher, _registry={}, _seed=()
+    )
+
+    assert calls == [("huggingface/transformers", MOLMO2_SHA)]
+    series = metric_lines(lines, "pytest_model_added_info")
+    assert series == [
+        "pytest_model_added_info{"
+        f'commit_sha="{MOLMO2_SHA}",'
+        'html_url="https://github.com/huggingface/transformers/pull/43451",'
+        'model="molmo2",pr="43451"} 1791552118000'
+    ]
+
+
+def test_extract_model_added_metrics_ignores_pr_and_fork_runs() -> None:
+    def fetcher(repository: str, sha: str) -> trace_exporter.CommitDetails:
+        raise AssertionError("no GitHub call for a PR or fork run")
+
+    lines = trace_exporter.extract_model_added_metrics(
+        [
+            main_run_trace(pr="43451"),
+            main_run_trace(repository="someone/transformers"),
+        ],
+        _commit_fetcher=fetcher,
+        _registry={},
+        _seed=(),
+    )
+
+    assert metric_lines(lines, "pytest_model_added_info") == []
+
+
+def test_extract_model_added_metrics_keeps_a_marker_after_its_run_leaves() -> None:
+    registry: dict[str, trace_exporter.ModelAdded] = {}
+
+    def fetcher(repository: str, sha: str) -> trace_exporter.CommitDetails:
+        return trace_exporter.commit_details_from_payload(molmo2_commit_payload())
+
+    trace_exporter.extract_model_added_metrics(
+        [main_run_trace()], _commit_fetcher=fetcher, _registry=registry, _seed=()
+    )
+    # The run has left the rolling window; the series must not vanish with it.
+    lines = trace_exporter.extract_model_added_metrics(
+        [], _commit_fetcher=fetcher, _registry=registry, _seed=()
+    )
+
+    assert len(metric_lines(lines, "pytest_model_added_info")) == 1
+
+
+def test_extract_model_added_metrics_skips_a_failed_lookup() -> None:
+    lines = trace_exporter.extract_model_added_metrics(
+        [main_run_trace()],
+        _commit_fetcher=lambda repository, sha: trace_exporter.CommitDetails(),
+        _registry={},
+        _seed=(),
+    )
+
+    assert metric_lines(lines, "pytest_model_added_info") == []
+
+
+def test_model_added_seed_matches_the_github_merge_times() -> None:
+    lines = trace_exporter.extract_model_added_metrics(
+        [], _commit_fetcher=lambda repository, sha: None, _registry={}
+    )
+    series = metric_lines(lines, "pytest_model_added_info")
+
+    assert len(series) == 7
+    # Sorted by merge time, valued in epoch ms (2026-09-21T10:09:56Z).
+    assert 'model="minicpmv4_7"' in series[0]
+    assert series[0].endswith(" 1789985396000")
+    assert 'model="molmo2"' in series[-1]
+    assert series[-1].endswith(" 1791552118000")
