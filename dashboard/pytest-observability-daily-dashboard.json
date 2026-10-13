@@ -54,7 +54,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Average failed-test count per scheduled run on main, by hardware.",
+      "description": "Failed tests in the latest complete full daily run_models_gpu run, by hardware. The Flash Attn daily run and runs still in progress are left out.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -134,7 +134,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "avg by (hardware) (sum by (run_id, hardware) (max by (run_id, test_job, hardware) (max_over_time(pytest_run_job_failed_tests{ci_event=\"daily\", pr=\"main\", hardware=~\"gpu|single-gpu|multi-gpu\"}[1d]))))",
+          "expr": "max by (hardware) ((last_over_time(pytest_run_job_failed_tests{pr=\"main\", ci_event=\"daily\", test_job=\"run_models_gpu\"}[26h]) and on (run_id, hardware) (last_over_time(pytest_run_job_total_tests{pr=\"main\", ci_event=\"daily\", test_job=\"run_models_gpu\"}[26h]) >= on (hardware) group_left() (0.95 * max by (hardware) (max_over_time(pytest_run_job_total_tests{pr=\"main\", ci_event=\"daily\", test_job=\"run_models_gpu\"}[7d]))))) and on (run_id, hardware) topk by (hardware) (1, ((last_over_time(pytest_run_job_failed_tests{pr=\"main\", ci_event=\"daily\", test_job=\"run_models_gpu\"}[26h]) and on (run_id, hardware) (last_over_time(pytest_run_job_total_tests{pr=\"main\", ci_event=\"daily\", test_job=\"run_models_gpu\"}[26h]) >= on (hardware) group_left() (0.95 * max by (hardware) (max_over_time(pytest_run_job_total_tests{pr=\"main\", ci_event=\"daily\", test_job=\"run_models_gpu\"}[7d])))))) * 0 + on (run_id) group_left() max by (run_id) (last_over_time(pytest_run_start_time_seconds{pr=\"main\"}[26h]))))",
           "format": "time_series",
           "instant": false,
           "legendFormat": "{{hardware}}",

@@ -45,7 +45,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Failed GPU tests on main per commit, over a rolling 24 hours, by hardware.",
+      "description": "Percent of GPU tests failing in the run_models_gpu runs triggered by merges to main, over a rolling 24 hours. Gaps are days with no merge runs.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -93,7 +93,8 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "percent",
+          "decimals": 2
         },
         "overrides": []
       },
@@ -125,7 +126,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (hardware) (max by (run_id, test_job, hardware) (max_over_time(pytest_run_job_failed_tests{pr=\"main\", test_job=~\".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci\", hardware=~\"gpu|single-gpu|multi-gpu\"}[1d]))) / ignoring(hardware) group_left() clamp_min(count(count by (commit_sha) (max_over_time(pytest_run_info{pr=\"main\", commit_sha!=\"\", commit_sha!=\"main\"}[1d]))), 1)",
+          "expr": "100 * sum by (hardware) (max by (run_id, hardware) (max_over_time(pytest_run_job_failed_tests{pr=\"main\", ci_event=\"push\", test_job=\"run_models_gpu\"}[1d]))) / sum by (hardware) (max by (run_id, hardware) (max_over_time(pytest_run_job_total_tests{pr=\"main\", ci_event=\"push\", test_job=\"run_models_gpu\"}[1d])))",
           "format": "time_series",
           "instant": false,
           "legendFormat": "{{hardware}}",
@@ -133,7 +134,7 @@
           "refId": "A"
         }
       ],
-      "title": "GPU failed tests per commit over time",
+      "title": "GPU failure rate on merges",
       "type": "timeseries"
     },
     {
