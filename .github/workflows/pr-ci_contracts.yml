@@ -56,9 +56,11 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           start=$SECONDS
           uv pip install -e .
-          uv pip install "transformers-mic @ git+https://github.com/huggingface/transformers-mic@${{ inputs.tmic_sha }}"
+          uv pip install "transformers-mic @ git+https://github.com/huggingface/transformers-mic@${INPUTS_TMIC_SHA}"
           uv pip install timm jsonschema "git+https://github.com/huggingface/doc-builder@$DOC_BUILDER_SHA"
           echo "Installed in $((SECONDS - start)) s on $(lscpu | sed -n 's/^Model name: *//p'), $(nproc) cores"
+        env:
+          INPUTS_TMIC_SHA: ${{ inputs.tmic_sha }}
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
