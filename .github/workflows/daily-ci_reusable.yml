@@ -606,7 +606,7 @@ jobs:
       run_extract_warnings
     ]
     if: always() && !cancelled()
-    uses: huggingface/transformers/.github/workflows/slack-report.yml@main
+    uses: huggingface/transformers/.github/workflows/slack-report.yml@08917bd9e73d7e0472550783b05255c202faa0c2  # main
     with:
       job: ${{ inputs.job }}
       # This would be `skipped` if `setup` is skipped.
@@ -625,7 +625,7 @@ jobs:
     if: ${{ !cancelled() && needs.send_results.result == 'success' }}
     name: Check new failures
     needs: send_results
-    uses: huggingface/transformers/.github/workflows/check_failed_tests.yml@main
+    uses: huggingface/transformers/.github/workflows/check_failed_tests.yml@08917bd9e73d7e0472550783b05255c202faa0c2  # main
     with:
       docker: ${{ inputs.docker }}
       commit_sha: ${{ inputs.commit_sha || github.sha }}
