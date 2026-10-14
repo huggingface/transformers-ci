@@ -183,7 +183,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
     var timer;
     emoji.addEventListener('mouseenter', function () {
       parent.clearTimeout(timer);
-      timer = parent.setTimeout(explode, 30000);
+      timer = parent.setTimeout(explode, 5000);
     });
     emoji.addEventListener('mouseleave', function () { parent.clearTimeout(timer); });
     function explode() {
