@@ -132,14 +132,16 @@ def test_render_full_failure_page():
         "Oct 13<span class='sep'>·</span><span data-ts='1791897922' "
         "title='2026-10-13 13:25 UTC'>" in page
     )
-    assert "<span class='sep'>·</span>1.1 s</div>" in page
+    assert "<span class='sep'>·</span>1.1 s</dd>" in page
     # Net change -91.5 KiB: no leak, readings in the tooltip.
-    assert "<div class='v good'>No</div>" in page
+    assert "<dt>Memory leak</dt><dd class='good'" in page and ">No</dd>" in page
     assert (
         "inherited 16.3 MiB · left for next test 16.3 MiB · net change -91.5 KiB"
         in page
     )
-    assert "Serge Actions</div><iframe" in page
+    # Serge Actions sits above the related issues, with Serge's logo.
+    assert page.index("id='serge'") < page.index("id='issues'")
+    assert "<img src='/serge-actions/logo.png' alt=''>Serge Actions</h2><iframe" in page
     for text in (
         "aws-g5-12xlarge-cache · xGPU",
         "pytest -svx &#x27;" + NODE + "&#x27;",
@@ -173,7 +175,7 @@ def test_memory_leak_cell():
     # No reading (CPU job, older plugin) is unknown, never "No".
     assert tp.memory_leak({})[:2] == ("—", "unknown")
     page = tp.render_test_page({"test_nodeid": NODE, "cuda_delta_bytes": 4096.0})
-    assert "<div class='v bad'>+4.0 KiB</div>" in page
+    assert "<dd class='bad'" in page and ">+4.0 KiB</dd>" in page
 
 
 def test_compact_ago():

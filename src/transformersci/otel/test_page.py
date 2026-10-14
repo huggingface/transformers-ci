@@ -39,7 +39,13 @@ a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
 .gh{vertical-align:-1px;margin-left:3px}
 .page{max-width:1800px;margin:0 auto;padding:16px 16px 24px}
 .card{min-width:0}
-.head{padding:0 0 14px;border-bottom:1px solid var(--line)}
+.head{display:flex;gap:16px;align-items:flex-start;padding:0 0 14px;margin:0 0 16px;border-bottom:1px solid var(--line)}
+.head-main{flex:1 1 auto;min-width:0}
+.facts{flex:none;display:grid;grid-template-columns:auto auto;gap:4px 14px;align-items:baseline;margin:0;padding:8px 12px;border:1px solid var(--line);border-radius:5px;font-size:12px}
+.facts dt{color:var(--muted)}.facts dd{margin:0;font-weight:500;white-space:nowrap}
+.facts .sep{color:var(--muted);margin:0 5px}
+.facts .bad{color:var(--red)}.facts .good{color:var(--green)}.facts .unknown{color:var(--muted)}
+@media (max-width:900px){.head{flex-direction:column}}
 h1{font:600 18px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px;overflow-wrap:anywhere}
 h2{font:600 14px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px}
 .chips{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
@@ -55,18 +61,15 @@ border-radius:4px;background:rgba(204,204,220,.04);font:13px/1.45 ui-monospace,S
 white-space:pre-wrap;overflow-wrap:anywhere}
 button{background:#242b35;color:var(--text);border:1px solid #657083;border-radius:4px;
 padding:4px 12px;cursor:pointer;font:inherit}
-.stats{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,2fr);padding:12px 0;margin:0 0 16px;border-bottom:1px solid var(--line)}
-@media (max-width:900px){.stats{grid-template-columns:minmax(0,1fr)}.stats .stat+.stat{border-left:0;padding-left:0;border-top:1px solid var(--line);margin-top:10px;padding-top:10px}}
-.stat{min-width:0;padding:0 16px 0 0}.stat+.stat{border-left:1px solid var(--line);padding-left:16px}
-.stat .k{color:var(--muted);font-size:11px}.stat .v{font-size:18px;font-weight:500;margin-top:2px}
-.stat .v .sep{color:var(--muted);margin:0 6px}
-.stat .v.bad{color:var(--red)}.stat .v.good{color:var(--green)}.stat .v.unknown{color:var(--muted)}
 .grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;align-items:start}
-#issues{position:sticky;top:12px;display:flex;flex-direction:column;min-height:180px;max-height:calc(100dvh - 24px);border:1px solid var(--line);border-radius:5px;background:var(--panel)}
-#issues h2{margin:0;padding:12px;border-bottom:1px solid var(--line)}
+.side{position:sticky;top:12px;display:flex;flex-direction:column;gap:12px;max-height:calc(100dvh - 24px);min-width:0}
+.box{border:1px solid var(--line);border-radius:5px;background:var(--panel);min-width:0}
+.box h2{display:flex;align-items:center;gap:8px;margin:0;padding:10px 12px;border-bottom:1px solid var(--line)}
+.box h2 img{width:20px;height:20px}
+#issues{display:flex;flex-direction:column;flex:1 1 auto;min-height:180px}
 #issues .status{margin:0;padding:12px}
 #issues ul{flex:1;overflow-y:auto;min-height:0;padding:12px}
-@media (max-width:1100px){.grid{grid-template-columns:minmax(0,1fr)}#issues{position:static;max-height:75dvh}}
+@media (max-width:1100px){.grid{grid-template-columns:minmax(0,1fr)}.side{position:static;max-height:none}#issues{max-height:75dvh}}
 .exc{color:var(--amber);font:600 15px/1.3 Inter,system-ui,sans-serif;margin:0 0 2px}
 .where{color:var(--muted);font-size:12px;margin:0 0 4px;overflow-wrap:anywhere}
 .label{margin:14px 0 4px;color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
@@ -83,7 +86,7 @@ pre.msg{color:#ff8a80;max-height:none}
 #issues .meta{color:var(--muted);font-size:12px;margin:1px 0}
 #issues .snippet{color:#aeb7c2;font-size:12px;overflow-wrap:anywhere;display:-webkit-box;
 -webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-iframe.serge{width:100%;height:84px;border:0;display:block;margin-top:2px}
+iframe.serge{width:100%;height:64px;border:0;display:block}
 """
 
 SCRIPT = r"""
@@ -323,7 +326,9 @@ def render_test_page(data: dict) -> str:
         f"<style>{STYLE}</style></head><body><div class='page'>",
     ]
     # Header: identity, links, reproduce.
-    out.append(f"<section class='card head'><h1>{esc(node) or 'No test selected'}</h1>")
+    out.append(
+        f"<section class='head'><div class='head-main'><h1>{esc(node) or 'No test selected'}</h1>"
+    )
     chip_html = [
         f"<li class='{'status-' + esc(status) if key == 'status' else ''}'>"
         f"<span class='k'>{esc(label)}</span>{value}</li>"
@@ -338,10 +343,9 @@ def render_test_page(data: dict) -> str:
             f"<code id='command'>{esc(reproduce_command(node))}</code>"
             "<button id='copy' type='button' aria-label='Copy command'>Copy</button></div>"
         )
-    out.append("</section>")
+    out.append("</div>")
 
-    # One row: when and how long, whether it leaked device memory, Serge Actions.
-    out.append("<section class='stats'>")
+    # Top right: when and how long it ran, and whether it leaked device memory.
     when = []
     started = data.get("started_at")
     if started:
@@ -353,32 +357,13 @@ def render_test_page(data: dict) -> str:
             f"{esc(compact_ago(time.time() - float(started)))}</span>"
         )
     when.append(esc(format_duration(data.get("duration_seconds"))))
-    out.append(
-        "<div class='stat'><div class='k'>Duration</div><div class='v'>"
-        + "<span class='sep'>·</span>".join(when)
-        + "</div></div>"
-    )
     leak, leak_class, leak_title = memory_leak(data)
     out.append(
-        f"<div class='stat' title='{esc(leak_title)}'><div class='k'>Memory leak</div>"
-        f"<div class='v {leak_class}'>{esc(leak)}</div></div>"
-    )
-    serge_query = urlencode(
-        {
-            "trace_id": trace_id,
-            "latest_trace": "",
-            "test_nodeid": node,
-            "status": status,
-            "module": str(data.get("module") or ""),
-            "job": job,
-            "pr": pr,
-            "run_id": run_id,
-        }
-    )
-    out.append(
-        "<div class='stat'><div class='k'>✨🦄 Serge Actions</div>"
-        f"<iframe class='serge' title='Serge actions' src='/serge-actions?{esc(serge_query)}'></iframe>"
-        "</div>"
+        "<dl class='facts'><dt>Duration</dt><dd>"
+        + "<span class='sep'>·</span>".join(when)
+        + "</dd>"
+        f"<dt>Memory leak</dt><dd class='{leak_class}' title='{esc(leak_title)}'>"
+        f"{esc(leak)}</dd></dl>"
     )
     out.append("</section>")
 
@@ -430,10 +415,26 @@ def render_test_page(data: dict) -> str:
     else:
         out.append("<p class='passed'>This test passed in this run.</p>")
     out.append("</section>")
+    serge_query = urlencode(
+        {
+            "trace_id": trace_id,
+            "latest_trace": "",
+            "test_nodeid": node,
+            "status": status,
+            "module": str(data.get("module") or ""),
+            "job": job,
+            "pr": pr,
+            "run_id": run_id,
+        }
+    )
     out.append(
-        "<section class='card' id='issues'><h2>Potential related issues</h2>"
+        "<aside class='side'><section class='box' id='serge'>"
+        "<h2><img src='/serge-actions/logo.png' alt=''>Serge Actions</h2>"
+        f"<iframe class='serge' title='Serge actions' src='/serge-actions?{esc(serge_query)}'></iframe>"
+        "</section>"
+        "<section class='box' id='issues'><h2>Potential related issues</h2>"
         "<p class='status empty' role='status' aria-live='polite'>Searching related issues…</p>"
-        "<ul></ul></section>"
+        "<ul></ul></section></aside>"
     )
     out.append("</div></div>")
     context = {"trace_id": trace_id, "test_nodeid": node}

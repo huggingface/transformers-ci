@@ -7963,6 +7963,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._request_route = "/serge-actions/fix-prs"
             self._serve_fix_prs(parse_qs(parsed.query))
             return
+        if parsed.path == "/serge-actions/logo.png":
+            self._request_route = "/serge-actions/logo.png"
+            self._send(
+                200,
+                "image/png",
+                serge_actions.LOGO_PNG,
+                cache_control="public, max-age=86400",
+            )
+            return
         if parsed.path == "/serge-actions":
             self._request_route = "/serge-actions"
             self._send(

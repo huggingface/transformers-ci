@@ -263,12 +263,20 @@ def test_serge_actions_shell(server):
     with urlopen(server + "/serge-actions") as response:
         page = response.read().decode()
         assert response.headers["Cache-Control"] == "no-store"
-    assert "__ACTIONS__" not in page and "__NYAN__" not in page
-    assert 'class="nyan"' in page
+    assert "__ACTIONS__" not in page and "__LOCK__" not in page
+    # No animations, no pixel art.
+    assert "nyan" not in page and "@keyframes" not in page and "animation" not in page
     for label in ("New issue", "Fix it!", "WDYT?"):
         assert label in page
+    # Signed in: the wired actions only. Signed out: every button, locked,
+    # sending the viewer to the Grafana sign-in and back.
     assert "b.disabled=!enabled" in page
+    assert "b.classList.add('locked')" in page and "b.onclick=signIn" in page
+    assert "'/login?redirectTo='+encodeURIComponent(back)" in page
     assert "fetch('/api/user'" in page
+    with urlopen(server + "/serge-actions/logo.png") as response:
+        assert response.headers["Content-Type"] == "image/png"
+        assert response.read()[:8] == b"\x89PNG\r\n\x1a\n"
     assert "/serge-actions/fix-prs?test_nodeid=" in page
 
 
