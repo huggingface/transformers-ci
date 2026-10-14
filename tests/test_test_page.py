@@ -148,14 +148,10 @@ def test_render_full_failure_page():
         "/serge-actions?",
     ):
         assert text in page, text
-    # Grafana pages open in the top window (the page will run in an iframe).
-    assert (
-        "href='/d/pytest-observability-by-run/pytest-observability-run?var-run_id=38401932908%3A1' target='_top'"
-        in page
-    )
-    assert "/failure/job-page?" in page
-    # Like the Grafana page's PR link, main opens the Branch page for main.
-    assert "pytest-observability-branch?var-pr=main' target='_top'" in page
+    # No Run/Job/PR buttons: in Grafana the dashboard's own link bar has them.
+    assert "pytest-observability-run?" not in page
+    # The Job chip opens the Job page in the top window (the page runs in an iframe).
+    assert "/failure/job-page?" in page and "target='_top'" in page
 
 
 def test_render_passed_and_missing_trace():

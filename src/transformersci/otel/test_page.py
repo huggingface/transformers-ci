@@ -38,10 +38,6 @@ html,body{margin:0;background:var(--bg);color:var(--text);font:13px/1.5 Inter,sy
 a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
 .gh{vertical-align:-1px;margin-left:3px}
 .page{max-width:1800px;margin:0 auto;padding:12px 16px 24px}
-.nav{display:flex;gap:6px;margin:0 0 12px}
-.nav a{padding:4px 10px;border:1px solid var(--line);border-radius:4px;color:var(--text);
-background:var(--panel);font-size:12px}
-.nav a:hover{text-decoration:none;border-color:#4a5160}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px 16px}
 h1{font:600 18px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px;overflow-wrap:anywhere}
 h2{font:600 14px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px}
@@ -267,26 +263,6 @@ def render_test_page(data: dict) -> str:
         if job and run_id
         else ""
     )
-    nav = []
-    if run_id:
-        nav.append(
-            (
-                "Run",
-                "/d/pytest-observability-by-run/pytest-observability-run?"
-                + urlencode({"var-run_id": run_id}),
-            )
-        )
-    if job_page:
-        nav.append(("Job", job_page))
-    if pr and pr != "none":
-        nav.append(
-            (
-                "PR",
-                "/d/pytest-observability-by-pr/pytest-observability-branch?"
-                + urlencode({"var-pr": pr}),
-            )
-        )
-
     runner = " · ".join(
         part
         for part in (
@@ -340,13 +316,6 @@ def render_test_page(data: dict) -> str:
         f"<title>{esc(node.split('::')[-1] or 'Test')} · Test</title>",
         f"<style>{STYLE}</style></head><body><div class='page'>",
     ]
-    if nav:
-        out.append("<nav class='nav'>")
-        out.extend(
-            f"<a href='{esc(url)}' target='_top'>{esc(label)}</a>" for label, url in nav
-        )
-        out.append("</nav>")
-
     # Header: identity, links, reproduce.
     out.append(f"<section class='card'><h1>{esc(node) or 'No test selected'}</h1>")
     chip_html = [
