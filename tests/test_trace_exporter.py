@@ -1487,6 +1487,59 @@ def test_pr_category_prefers_labels_and_uses_title_when_unlabelled() -> None:
     assert classify([], "TP embeddings") == "Other"
 
 
+def test_fetch_github_pr_info_classifies_github_only_changes() -> None:
+    pr_payload = {"title": "Housekeeping", "changed_files": 2}
+    with patch(
+        "transformersci.otel.trace_exporter._github_api_get",
+        side_effect=[
+            pr_payload,
+            [],
+            [
+                {"filename": ".github/workflows/check.yml"},
+                {"filename": ".github/CODEOWNERS"},
+            ],
+        ],
+    ) as github_get:
+        metadata = trace_exporter.fetch_github_pr_info("huggingface/transformers", "42")
+    assert metadata["category"] == "CI/infra"
+    assert (
+        github_get.call_args_list[-1]
+        .args[0]
+        .endswith("/pulls/42/files?per_page=100&page=1")
+    )
+
+
+def test_pr_changes_only_in_github_requires_every_changed_path() -> None:
+    check = trace_exporter.pr_changes_only_in_github
+    with patch("transformersci.otel.trace_exporter._github_api_get") as github_get:
+        github_get.return_value = [
+            {"filename": ".github/workflows/check.yml"},
+            {"filename": "src/model.py"},
+        ]
+        assert not check("huggingface/transformers", "42", 2)
+        github_get.return_value = [
+            {
+                "filename": ".github/workflows/check.yml",
+                "previous_filename": "ci/check.yml",
+            }
+        ]
+        assert not check("huggingface/transformers", "42", 1)
+        github_get.return_value = []
+        assert not check("huggingface/transformers", "42", 0)
+
+
+def test_pr_changes_only_in_github_checks_all_pages() -> None:
+    first_page = [{"filename": f".github/workflows/{i}.yml"} for i in range(100)]
+    with patch(
+        "transformersci.otel.trace_exporter._github_api_get",
+        side_effect=[first_page, [{"filename": ".github/CODEOWNERS"}]],
+    ) as github_get:
+        assert trace_exporter.pr_changes_only_in_github(
+            "huggingface/transformers", "42", 101
+        )
+    assert github_get.call_count == 2
+
+
 def test_fetch_github_pr_info_carries_merged_flag() -> None:
     pr_payload = FakeResponse(
         '{"html_url": "https://github.com/huggingface/transformers/pull/4321", '

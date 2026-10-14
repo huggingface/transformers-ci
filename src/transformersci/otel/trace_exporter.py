@@ -1753,6 +1753,14 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
             seen.add(login)
             merged.append(login)
     reviewers = ",".join(merged)
+    category = pr_category(labels, title if isinstance(title, str) else "")
+    if category == "Other":
+        try:
+            if pr_changes_only_in_github(repository, pr, payload.get("changed_files")):
+                category = "CI/infra"
+        except Exception:
+            # File metadata is optional; a failed lookup should not hide the PR.
+            pass
 
     return {
         "author": author if isinstance(author, str) else "",
@@ -1763,7 +1771,7 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
         else github_pr_html_url(repository, pr),
         "merged": "true" if is_merged else "false",
         "new_model": "true" if new_model else "false",
-        "category": pr_category(labels, title if isinstance(title, str) else ""),
+        "category": category,
         "labels_json": json.dumps(labels, separators=(",", ":")),
         "reviewers": reviewers,
         "state": state if isinstance(state, str) else "",
@@ -1824,6 +1832,47 @@ def pr_category(labels: list[dict[str, str]], title: str) -> str:
     ):
         return "Refactor"
     return "Other"
+
+
+def pr_changes_only_in_github(repository: str, pr: str, changed_files: object) -> bool:
+    """Confirm that every changed path in a PR is under .github/."""
+    if isinstance(changed_files, int) and not isinstance(changed_files, bool):
+        if not 0 < changed_files <= 3000:
+            return False
+    else:
+        changed_files = None
+
+    api_base = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
+    files_url = (
+        f"{api_base}/repos/{quote(repository, safe='/')}/pulls/"
+        f"{quote(pr, safe='')}/files"
+    )
+    seen = 0
+    for page in range(1, 31):
+        payload = _github_api_get(f"{files_url}?per_page=100&page={page}")
+        if not isinstance(payload, list) or not payload or len(payload) > 100:
+            return False
+        for file in payload:
+            if not isinstance(file, dict):
+                return False
+            path = file.get("filename")
+            previous_path = file.get("previous_filename")
+            if not isinstance(path, str) or not path.startswith(".github/"):
+                return False
+            if previous_path is not None and (
+                not isinstance(previous_path, str)
+                or not previous_path.startswith(".github/")
+            ):
+                return False
+        seen += len(payload)
+        if changed_files is not None:
+            if seen == changed_files:
+                return True
+            if seen > changed_files:
+                return False
+        if len(payload) < 100:
+            return changed_files is None
+    return False
 
 
 _pr_info_cache_lock = threading.Lock()
