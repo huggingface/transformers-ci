@@ -7790,7 +7790,12 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._reply_json(404, {"status": "invalid"})
             return
         details = extract_failure_details(trace, nodeid)
-        self._reply_json(200, who_can_help.suggest(login, trace_id, nodeid, details))
+        self._reply_json(
+            200,
+            who_can_help.suggest(
+                login, trace_id, nodeid, details, github_get=_github_api_get
+            ),
+        )
 
     def _serve_wdyt(self) -> None:
         reply = self._reply_json

@@ -262,6 +262,40 @@ async function whoCanHelp(){
   view.finish(result);
 }
 
+function helperRefs(doc,parent,value,evidenceUrl,prLinks){
+  const text=String(value||'');
+  const pattern=/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:pull|issues)\/\d+|[\w.-]+\/[\w.-]+#\d+|(?:pull request|PR|issues?)\s*#\d+|@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?|#\d{1,7}\b/gi;
+  let last=0;
+  for(const match of text.matchAll(pattern)){
+    const ref=match[0],at=match.index;
+    if(at>last)parent.append(doc.createTextNode(text.slice(last,at)));
+    let url='';
+    if(ref.startsWith('https://github.com/')){
+      const pr=ref.match(/^https:\/\/github\.com\/huggingface\/transformers\/pull\/(\d+)$/i);
+      url=pr&&prLinks?.[pr[1]]||ref;
+    }
+    else if(ref.startsWith('@'))url='https://github.com/'+ref.slice(1);
+    else if(/^[\w.-]+\/[\w.-]+#\d+$/.test(ref)){
+      const [repo,number]=ref.split('#');
+      url=repo.toLowerCase()==='huggingface/transformers'&&prLinks?.[number]||
+        (String(evidenceUrl||'').endsWith('/'+number)?evidenceUrl:
+          'https://github.com/'+repo+'/issues/'+number);
+    }
+    else{
+      const number=ref.match(/#(\d+)$/)?.[1];
+      const route=/^(?:PR|pull request)/i.test(ref)?'pull':'issues';
+      const isIssue=/^issues?\s/i.test(ref);
+      url=!isIssue&&prLinks?.[number]||
+        (ref.startsWith('#')&&String(evidenceUrl||'').endsWith('/'+number)?evidenceUrl:
+          'https://github.com/huggingface/transformers/'+route+'/'+number);
+    }
+    const link=doc.createElement('a');link.href=url;link.target='_blank';
+    link.rel='noopener noreferrer';link.textContent=ref;parent.append(link);
+    last=at+ref.length;
+  }
+  if(last<text.length)parent.append(doc.createTextNode(text.slice(last)));
+}
+
 function helpersPopup(){
   let doc=document,host=document.body;
   for(let w=window;w.parent!==w;){
@@ -295,9 +329,13 @@ function helpersPopup(){
         const link=el('a','@'+person.login);
         link.href='https://github.com/'+encodeURIComponent(person.login);
         link.target='_blank';link.rel='noopener noreferrer';
-        const evidence=el('a',person.evidence);evidence.href=person.url;
+        const evidence=el('a',person.evidence);
+        const pr=String(person.url||'').match(/^https:\/\/github\.com\/huggingface\/transformers\/pull\/(\d+)$/i);
+        evidence.href=pr&&data.pr_links?.[pr[1]]||person.url;
         evidence.target='_blank';evidence.rel='noopener noreferrer';
-        item.append(link,' — '+person.why,' (',evidence,')');list.append(item);
+        item.append(link,' — ');
+        helperRefs(doc,item,person.why,person.url,data.pr_links);
+        item.append(' (',evidence,')');list.append(item);
       }
       content.append(list);
     }else{

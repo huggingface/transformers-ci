@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 from transformersci.otel import who_can_help as helpers
 
@@ -167,3 +168,33 @@ def test_suggest_caches_result_and_limits_names(monkeypatch):
     assert first["people"][0]["login"] == "author"
     assert helpers.suggest("bob", TRACE, NODE, DETAILS) == first
     assert calls == [("src/transformers/models/foo/modeling_foo.py", 91)]
+
+
+def test_recent_pr_links_use_dashboard_only_for_confirmed_recent_prs():
+    now = datetime(2026, 10, 14, tzinfo=timezone.utc)
+    people = [
+        {
+            "why": "Review PR #12, issue #13, and PR #14",
+            "evidence": "reviewed PR #15",
+            "url": "https://github.com/huggingface/transformers/pull/16",
+        }
+    ]
+    dates = {
+        "12": now - timedelta(days=89),
+        "13": now - timedelta(days=1),
+        "14": now - timedelta(days=90),
+        "15": now + timedelta(days=1),
+    }
+
+    def get(url):
+        number = url.rsplit("/", 1)[-1]
+        if number == "16":
+            raise OSError("GitHub unavailable")
+        payload = {"created_at": dates[number].isoformat()}
+        if number != "13":
+            payload["pull_request"] = {"url": "https://api.github.com/pull"}
+        return payload
+
+    assert helpers.recent_pr_links(people, get, now=now) == {
+        "12": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=12"
+    }

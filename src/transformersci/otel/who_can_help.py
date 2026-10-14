@@ -8,16 +8,19 @@ import re
 import threading
 import time
 from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
+from typing import Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen, ProxyHandler, build_opener
 
-from transformersci.otel import related_issues, wdyt
+from transformersci.otel import pr_search, related_issues, wdyt
 
 _FRAME = re.compile(
     r'(?:File ["\'](?:[^"\'\n]*/)?|^\s*)(?P<path>(?:src/|tests/)[\w./-]+\.py)["\s,:]+(?:line\s+)?(?P<line>\d+)',
     re.M,
 )
 _LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
+_PR_REF = re.compile(r"(?:#|/(?:pull|issues)/)(\d{1,7})\b")
 _cache: OrderedDict[tuple[str, str], tuple[float, dict]] = OrderedDict()
 _inflight: dict[tuple[str, str], threading.Event] = {}
 _asked: dict[str, list[float]] = {}
@@ -171,7 +174,49 @@ def explain(
     return result
 
 
-def suggest(login: str, trace_id: str, nodeid: str, details: list[dict]) -> dict:
+def recent_pr_links(
+    people: list[dict],
+    github_get: Callable[[str], object],
+    *,
+    now: datetime | None = None,
+) -> dict[str, str]:
+    """Only confirmed PRs less than 90 days old get a dashboard link."""
+    now = now or datetime.now(timezone.utc)
+    refs = dict.fromkeys(
+        number
+        for person in people
+        for field in ("why", "evidence", "url")
+        for number in _PR_REF.findall(str(person.get(field) or ""))
+    )
+    api_base = os.getenv("PYTEST_GITHUB_API_URL", "https://api.github.com").rstrip("/")
+    links = {}
+    for number in list(refs)[:8]:
+        try:
+            issue = github_get(
+                f"{api_base}/repos/{related_issues.REPOSITORY}/issues/{number}"
+            )
+            if not isinstance(issue, dict) or not isinstance(
+                issue.get("pull_request"), dict
+            ):
+                continue
+            created = datetime.fromisoformat(
+                str(issue["created_at"]).replace("Z", "+00:00")
+            )
+            age = now - created
+            if timedelta(0) <= age < timedelta(days=90):
+                links[number] = f"{pr_search.PR_DASHBOARD_URL}?var-pr={number}"
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return links
+
+
+def suggest(
+    login: str,
+    trace_id: str,
+    nodeid: str,
+    details: list[dict],
+    github_get: Callable[[str], object] | None = None,
+) -> dict:
     key = (trace_id, nodeid)
     with _lock:
         cached = _cache.get(key)
@@ -223,6 +268,8 @@ def suggest(login: str, trace_id: str, nodeid: str, details: list[dict]) -> dict
             else:
                 result = {"status": "no_people"}
             result["location"] = f"{location[0]}:{location[1]}"
+            if result["status"] == "ok" and github_get is not None:
+                result["pr_links"] = recent_pr_links(result["people"], github_get)
             ttl = 3600
         except (OSError, ValueError, KeyError, IndexError, TypeError):
             result, ttl = {"status": "unavailable"}, 30

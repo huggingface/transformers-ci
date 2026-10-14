@@ -295,8 +295,8 @@ def test_who_can_help_route_uses_only_selected_trace(server, monkeypatch):
     monkeypatch.setattr(
         who_can_help,
         "suggest",
-        lambda *args: (
-            seen.append(args)
+        lambda *args, **kwargs: (
+            seen.append((args, kwargs))
             or {"status": "no_people", "location": "tests/trainer/test_trainer.py:12"}
         ),
     )
@@ -313,7 +313,9 @@ def test_who_can_help_route_uses_only_selected_trace(server, monkeypatch):
         200,
         {"status": "no_people", "location": "tests/trainer/test_trainer.py:12"},
     )
-    assert seen == [("octocat", TRACE, NODE, DETAILS)]
+    assert seen == [
+        (("octocat", TRACE, NODE, DETAILS), {"github_get": te._github_api_get})
+    ]
 
 
 def test_cache_clear_route(server, monkeypatch):
