@@ -104,6 +104,10 @@
                     "targetBlank": false
                   }
                 ]
+              },
+              {
+                "id": "custom.width",
+                "value": 290
               }
             ]
           },
@@ -186,7 +190,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 120
+                "value": 108
               }
             ]
           },
@@ -204,7 +208,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 46
+                "value": 64
               },
               {
                 "id": "custom.align",
@@ -254,7 +258,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 120
+                "value": 108
               }
             ]
           },

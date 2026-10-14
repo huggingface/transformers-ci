@@ -7515,7 +7515,7 @@ def render_run_html(
         "th,td{text-align:left;padding:5px 8px;border-bottom:1px solid #24262b;"
         "white-space:nowrap}"
         "th:first-child,td:first-child{width:102px}"
-        "th:nth-child(3),td:nth-child(3){width:115px;overflow-wrap:anywhere}"
+        "th:nth-child(3),td:nth-child(3){width:150px;overflow-wrap:anywhere}"
         "th:nth-child(4),td:nth-child(4){width:92px}"
         "th:nth-child(5),td:nth-child(5){width:82px}"
         "td:nth-child(3){white-space:normal}"
