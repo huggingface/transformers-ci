@@ -23,6 +23,7 @@ DETAILS = [
 
 def setup_function():
     helpers._cache.clear()
+    helpers._modifier_cache.clear()
     helpers._inflight.clear()
     helpers._asked.clear()
 
@@ -214,10 +215,79 @@ def test_suggest_caches_result_and_limits_names(monkeypatch):
         "Reading Relore history for the failing line",
         "Searching related issues and PRs",
         "Finding reviewers and thread participants",
-        "Asking the model where each person can help",
+        "Asking the model where each person can help (slow)",
     ]
     assert helpers.suggest("bob", TRACE, NODE, DETAILS) == first
     assert calls == [("src/transformers/models/foo/modeling_foo.py", 91)]
+
+
+def test_missing_relore_people_use_most_frequent_recent_test_modifier(monkeypatch):
+    monkeypatch.setattr(helpers, "why", lambda *args: {})
+    monkeypatch.setattr(helpers.related_issues, "lookup", lambda *args: {"hits": []})
+    monkeypatch.setattr(
+        helpers,
+        "explain",
+        lambda *args: [
+            {"person": args[3][0], "why": "Can inspect recent test changes"}
+        ],
+    )
+    commits = [
+        {"author": {"login": login}, "sha": f"{index:040x}"}
+        for index, login in enumerate(
+            [
+                "alice",
+                "bob",
+                "bob",
+                "alice",
+                "bob",
+                "alice",
+                "bob",
+                "alice",
+                "bob",
+                "alice",
+            ]
+        )
+    ]
+    urls = []
+
+    def get(url):
+        urls.append(url)
+        if "/commits?" in url:
+            return commits
+        return {}
+
+    events = []
+    result = helpers.suggest("caller", TRACE, NODE, DETAILS, get, events.append)
+    assert result["status"] == "ok"
+    assert result["people"][0]["login"] == "alice"
+    assert "5 of its last 10 commits" in result["people"][0]["evidence"]
+    assert "path=tests%2Fmodels%2Ffoo%2Ftest_modeling_foo.py&per_page=10" in urls[0]
+    assert "Checking recent changes to the test file" in [
+        event["text"] for event in events
+    ]
+    assert helpers.frequent_test_modifier(NODE, get)[0]["login"] == "alice"
+    assert len([url for url in urls if "/commits?" in url]) == 1
+
+
+def test_missing_trace_line_still_uses_test_commit_fallback(monkeypatch):
+    monkeypatch.setattr(helpers.related_issues, "lookup", lambda *args: {"hits": []})
+    monkeypatch.setattr(
+        helpers,
+        "explain",
+        lambda *args: [{"person": args[3][0], "why": "Can inspect the test"}],
+    )
+
+    def get(url):
+        if "/commits?" in url:
+            return [{"author": {"login": "alice"}, "sha": "f" * 40}]
+        return {}
+
+    result = helpers.suggest(
+        "caller", TRACE, NODE, [{"exception_stacktrace": "truncated"}], get
+    )
+    assert result["status"] == "ok"
+    assert result["location"] == "tests/models/foo/test_modeling_foo.py"
+    assert result["people"][0]["login"] == "alice"
 
 
 def test_recent_pr_links_use_dashboard_only_for_confirmed_recent_prs():

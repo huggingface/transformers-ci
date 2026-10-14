@@ -40,6 +40,7 @@ TEMPLATE = """body:
 
 def setup_function():
     new_issue._drafts.clear()
+    new_issue._draft_cache.clear()
     new_issue._asked.clear()
 
 
@@ -97,7 +98,8 @@ def test_template_and_draft_keep_required_sections_and_trace(monkeypatch):
         "Locating the failing test in the repository",
         "Reading Relore history for the failing line",
         "Searching related issues and PRs",
-        "Asking the model to draft the report",
+        "Checking recent changes to the test file",
+        "Asking the model to draft the report (slow)",
         "Preparing the editable issue form",
     ]
     assert draft["title"] == "Streamer fails in CI"
@@ -106,6 +108,83 @@ def test_template_and_draft_keep_required_sections_and_trace(monkeypatch):
     assert "### Expected behavior" in draft["body"]
     assert "- [ ] Official examples" in draft["body"]
     assert "bad stream" in draft["body"] and "var-trace_id=" + TRACE in draft["body"]
+
+
+def test_cached_draft_reuses_model_output_with_distinct_publish_ids(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        new_issue,
+        "bug_template",
+        lambda *args: [
+            {
+                "id": "reproduction",
+                "type": "textarea",
+                "label": "Reproduction",
+                "required": True,
+            }
+        ],
+    )
+    monkeypatch.setattr(new_issue.who_can_help, "source_line", lambda *args: None)
+    monkeypatch.setattr(
+        new_issue.who_can_help, "frequent_test_modifier", lambda *args: []
+    )
+    monkeypatch.setattr(new_issue.related_issues, "lookup", lambda *args: {"hits": []})
+
+    def draft(*args):
+        calls.append(1)
+        return {"title": "Failure", "sections": {"reproduction": "Steps"}}
+
+    monkeypatch.setattr(new_issue, "model_draft", draft)
+    first = new_issue.prepare("alice", TRACE, NODE, [{}], lambda url: {})
+    events = []
+    second = new_issue.prepare("bob", TRACE, NODE, [{}], lambda url: {}, events.append)
+    assert first["status"] == second["status"] == "ok"
+    assert first["draft_id"] != second["draft_id"]
+    assert first["body"] == second["body"]
+    assert calls == [1]
+    assert events == [
+        {"event": "step", "text": "Using an earlier draft for this failure"}
+    ]
+    assert new_issue._drafts[first["draft_id"]][1] == "alice"
+    assert new_issue._drafts[second["draft_id"]][1] == "bob"
+
+
+def test_draft_uses_recent_test_modifier_when_relore_has_no_people(monkeypatch):
+    monkeypatch.setattr(
+        new_issue,
+        "bug_template",
+        lambda *args: [
+            {
+                "id": "reproduction",
+                "type": "textarea",
+                "label": "Reproduction",
+                "required": True,
+            }
+        ],
+    )
+    monkeypatch.setattr(new_issue.who_can_help, "source_line", lambda *args: None)
+    monkeypatch.setattr(new_issue.related_issues, "lookup", lambda *args: {"hits": []})
+    monkeypatch.setattr(
+        new_issue.who_can_help,
+        "frequent_test_modifier",
+        lambda *args: [
+            {
+                "login": "alice",
+                "evidence": "recent edits",
+                "url": "https://github.com/x",
+            }
+        ],
+    )
+    seen = []
+
+    def draft(*args):
+        seen.extend(args[5])
+        return {"title": "Failure", "sections": {"reproduction": "Steps"}}
+
+    monkeypatch.setattr(new_issue, "model_draft", draft)
+    result = new_issue.prepare("alice", TRACE, NODE, [{}], lambda url: {})
+    assert result["status"] == "ok"
+    assert seen[0]["login"] == "alice"
 
 
 def test_publish_uses_edited_text_once_and_checks_login():

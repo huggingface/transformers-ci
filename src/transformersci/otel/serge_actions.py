@@ -358,7 +358,7 @@ function issuePopup(){
     }
     const form=el('form');form.id='tci-new-issue-form';form.style.margin='0';
     publish.setAttribute('form',form.id);
-    const note=el('p','Draft based on the Transformers bug report template. Edit both fields before publishing. The dashboard GitHub account will create the issue.');
+    const note=el('p','Draft based on the Transformers bug report template. Edit both fields before publishing. The connected GitHub account will create the issue.');
     note.style.cssText='color:#aeb7c2;margin:0 0 12px';
     const titleLabel=el('label','Title');titleLabel.style.display='block';
     const titleInput=el('input');titleInput.type='text';titleInput.value=data.title;
