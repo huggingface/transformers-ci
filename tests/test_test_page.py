@@ -254,3 +254,21 @@ def test_route_rejects_bad_input(server, query):
     with pytest.raises(HTTPError) as err:
         urlopen(server + "/test?" + urlencode(query))
     assert err.value.code == 400
+
+
+@pytest.mark.parametrize(
+    "path,size",
+    [
+        ("/favicon.ico", 32),
+        ("/public/build/img/fav32.png", 32),
+        ("/public/build/img/apple-touch-icon.png", 180),
+    ],
+)
+def test_favicon_routes(server, path, size):
+    with urlopen(server + path) as response:
+        body = response.read()
+        assert response.headers["Content-Type"] == "image/png"
+    assert body[:8] == b"\x89PNG\r\n\x1a\n"
+    # IHDR width/height, big-endian, at bytes 16-24.
+    assert int.from_bytes(body[16:20], "big") == size
+    assert int.from_bytes(body[20:24], "big") == size

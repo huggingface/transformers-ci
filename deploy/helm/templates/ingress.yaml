@@ -73,6 +73,29 @@ spec:
           # /serge-actions are the Test page's Summary and actions; /test is the
           # Test page rendered whole by the exporter; /badge and /summary serve
           # PR status integrations.
+          # The 🤗 favicon for every page: exporter pages fall back to
+          # /favicon.ico, and Grafana's own icon paths are taken over here.
+          - path: /favicon.ico
+            pathType: Exact
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
+          - path: /public/build/img/fav32.png
+            pathType: Exact
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
+          - path: /public/build/img/apple-touch-icon.png
+            pathType: Exact
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
           - path: /test
             pathType: Exact
             backend:

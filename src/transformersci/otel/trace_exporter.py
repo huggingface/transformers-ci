@@ -1911,6 +1911,19 @@ def failure_context_trace(trace_id: str) -> dict | None:
     return recent_trace_processes(trace_id) or fetch_failure_trace(trace_id)
 
 
+# The Hugging Face 🤗 (huggingface.co's logo artwork) as every page's icon:
+# browsers ask exporter pages for /favicon.ico, and the ingress sends Grafana's
+# own icon paths here too, so Grafana and exporter tabs look the same.
+_ICON_DIR = Path(__file__).parent
+FAVICONS: dict[str, bytes] = {
+    "/favicon.ico": (_ICON_DIR / "favicon-32.png").read_bytes(),
+    "/public/build/img/fav32.png": (_ICON_DIR / "favicon-32.png").read_bytes(),
+    "/public/build/img/apple-touch-icon.png": (
+        _ICON_DIR / "favicon-180.png"
+    ).read_bytes(),
+}
+
+
 def test_span_facts(trace: dict | None, test_nodeid: str) -> dict[str, object]:
     """What the Test page shows from the test's own span: status, duration,
     start time and device memory. With several spans for the node (reruns),
@@ -7929,6 +7942,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/summary/pr":
             self._request_route = "/summary/pr"
             self._serve_pr_summary(parse_qs(parsed.query))
+            return
+        if parsed.path in FAVICONS:
+            self._request_route = "/favicon"
+            self._send(
+                200,
+                "image/png",
+                FAVICONS[parsed.path],
+                cache_control="public, max-age=86400",
+            )
             return
         if parsed.path == "/test":
             self._request_route = "/test"
