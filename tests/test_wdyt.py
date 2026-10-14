@@ -13,6 +13,7 @@ from transformersci.otel import related_issues as ri
 from transformersci.otel import trace_exporter as te
 from transformersci.otel import wdyt
 from transformersci.otel import who_can_help
+from transformersci.otel import new_issue
 
 NODE = "tests/trainer/test_trainer.py::TrainerIntegrationTest::test_end_to_end_example"
 TRACE = "e48b720b8543e9950d7766d80011338b"
@@ -316,6 +317,55 @@ def test_who_can_help_route_uses_only_selected_trace(server, monkeypatch):
     assert seen == [
         (("octocat", TRACE, NODE, DETAILS), {"github_get": te._github_api_get})
     ]
+
+
+def test_new_issue_draft_uses_selected_trace_and_publish_uses_draft(
+    server, monkeypatch
+):
+    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: "octocat")
+    monkeypatch.setattr(te, "get_trace", lambda trace: {"trace": trace})
+    monkeypatch.setattr(te, "trace_repository", lambda trace: ri.REPOSITORY)
+    monkeypatch.setattr(te, "extract_failure_details", lambda trace, node: DETAILS)
+    seen = []
+    monkeypatch.setattr(
+        new_issue,
+        "prepare",
+        lambda *args: seen.append(args)
+        or {"status": "ok", "draft_id": "f" * 32, "title": "Draft", "body": "Body"},
+    )
+    draft_url = server + "/serge-actions/new-issue/draft"
+    assert post(draft_url, {"trace_id": TRACE, "test_nodeid": NODE}, {})[0] == 403
+    assert (
+        post(
+            draft_url, {"trace_id": TRACE, "test_nodeid": NODE}, {"X-TCI-Action": "1"}
+        )[1]["status"]
+        == "ok"
+    )
+    assert seen == [("octocat", TRACE, NODE, DETAILS, te._github_api_get)]
+    monkeypatch.setattr(te, "extract_failure_details", lambda trace, node: [])
+    assert post(
+        draft_url,
+        {"trace_id": TRACE, "test_nodeid": NODE},
+        {"X-TCI-Action": "1"},
+    ) == (404, {"status": "invalid"})
+    monkeypatch.setattr(
+        new_issue,
+        "publish",
+        lambda *args: seen.append(args) or {"status": "ok", "number": 7},
+    )
+    published = post(
+        server + "/serge-actions/new-issue/publish",
+        {"draft_id": "f" * 32, "title": "Edited", "body": "Edited body"},
+        {"X-TCI-Action": "1"},
+    )
+    assert published == (200, {"status": "ok", "number": 7})
+    assert seen[-1] == (
+        "octocat",
+        "f" * 32,
+        "Edited",
+        "Edited body",
+        te._github_create_issue,
+    )
 
 
 def test_cache_clear_route(server, monkeypatch):

@@ -265,8 +265,10 @@ def test_serge_actions_shell(server):
         page = response.read().decode()
         assert response.headers["Cache-Control"] == "no-store"
     assert "__ACTIONS__" not in page and "__LOCK__" not in page
-    # No animations, no pixel art.
-    assert "nyan" not in page and "@keyframes" not in page and "animation" not in page
+    # Only the two loading buttons animate, with reduced-motion support.
+    assert "nyan" not in page
+    assert "button.thinking:is(#who-can-help,#new-issue)::before" in page
+    assert "prefers-reduced-motion:reduce" in page
     for label in ("New issue", "Fix it!", "WDYT?"):
         assert label in page
     # Signed in: the wired actions only. Signed out: every button, locked,

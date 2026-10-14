@@ -76,6 +76,7 @@ from transformersci.otel import rerun_failed
 from transformersci.otel import serge_actions
 from transformersci.otel import wdyt
 from transformersci.otel import who_can_help
+from transformersci.otel import new_issue
 from transformersci.otel import patch_view
 from transformersci.otel import probable_fix
 from transformersci.otel import test_page
@@ -1641,6 +1642,28 @@ def _github_api_get(api_url: str, timeout: float = 5.0) -> object:
         raise
     _observe_upstream_request("github", "ok", time.monotonic() - started, len(body))
     return json.loads(body)
+
+
+def _github_create_issue(title: str, body: str) -> object:
+    # The dashboard App is read-only. Use the separately configured PAT for writes.
+    token = os.getenv("PYTEST_GITHUB_TOKEN", "").strip()
+    if not token:
+        raise ValueError("GitHub write token unavailable")
+    api_base = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
+    request = Request(
+        f"{api_base}/repos/{related_issues.REPOSITORY}/issues",
+        data=json.dumps({"title": title, "body": body, "labels": ["bug"]}).encode(),
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "transformersci-trace-exporter",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:
+        return json.loads(response.read(64 * 1024))
 
 
 def search_github_issues(query: str, *, sort: str = "created", limit: int = 20) -> list:
@@ -7697,6 +7720,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
             "/serge-actions/wdyt/cache",
             "/serge-actions/wdyt/cost",
             "/serge-actions/who-can-help",
+            "/serge-actions/new-issue/draft",
+            "/serge-actions/new-issue/publish",
             "/rerun-failed",
         ):
             self._send(404, JSON_CONTENT_TYPE, b'{"error":"not found"}')
@@ -7710,6 +7735,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._serve_wdyt_cost(parse_qs(urlparse(self.path).query))
         elif path == "/serge-actions/who-can-help":
             self._serve_who_can_help()
+        elif path == "/serge-actions/new-issue/draft":
+            self._serve_new_issue_draft()
+        elif path == "/serge-actions/new-issue/publish":
+            self._serve_new_issue_publish()
         else:
             self._serve_wdyt()
 
@@ -7794,6 +7823,73 @@ class MetricsHandler(BaseHTTPRequestHandler):
             200,
             who_can_help.suggest(
                 login, trace_id, nodeid, details, github_get=_github_api_get
+            ),
+        )
+
+    def _serve_new_issue_draft(self) -> None:
+        if not self._action_allowed():
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length)) if 0 < length <= 8192 else None
+        except (ValueError, TypeError):
+            body = None
+        if not isinstance(body, dict):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        trace_id = str(body.get("trace_id") or "").strip()
+        nodeid = str(body.get("test_nodeid") or "").strip()
+        if (
+            not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id)
+            or not re.fullmatch(
+                r"tests/[\w./-]+\.py(?:::[^\x00-\x1f]{1,1800})?", nodeid
+            )
+            or ".." in nodeid.split("::", 1)[0].split("/")
+        ):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        login = self._action_user()
+        if not login:
+            return
+        trace = get_trace(trace_id)
+        if not trace or trace_repository(trace) != related_issues.REPOSITORY:
+            self._reply_json(404, {"status": "invalid"})
+            return
+        details = extract_failure_details(trace, nodeid)
+        if not details:
+            self._reply_json(404, {"status": "invalid"})
+            return
+        self._reply_json(
+            200, new_issue.prepare(login, trace_id, nodeid, details, _github_api_get)
+        )
+
+    def _serve_new_issue_publish(self) -> None:
+        if not self._action_allowed():
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length)) if 0 < length <= 35000 else None
+        except (ValueError, TypeError):
+            body = None
+        if not isinstance(body, dict):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        login = self._action_user()
+        if not login:
+            return
+        if any(
+            not isinstance(body.get(key), str) for key in ("draft_id", "title", "body")
+        ):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        self._reply_json(
+            200,
+            new_issue.publish(
+                login,
+                body["draft_id"],
+                body["title"],
+                body["body"],
+                _github_create_issue,
             ),
         )
 

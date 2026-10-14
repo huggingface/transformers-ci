@@ -17,7 +17,7 @@ from collections.abc import Callable
 
 # (id, label, what Serge will do, wired yet). Rendered with textContent only.
 ACTIONS = (
-    ("new-issue", "New issue", "Serge writes a GitHub issue for this failure.", False),
+    ("new-issue", "New issue", "Draft a GitHub issue for this failure.", True),
     ("fix-it", "Fix it!", "Serge reproduces the failure and opens a fix PR.", False),
     ("wdyt", "WDYT?", "Serge takes a quick look and tells you what it thinks.", True),
     (
@@ -114,6 +114,11 @@ button:disabled{opacity:.55;cursor:not-allowed}
 p{margin:6px 0 0;color:#8e9197;font-size:12px}a{color:#6ab0ff;text-decoration:none}
 button.locked{color:#aeb7c2}
 button.thinking{border-color:#6ab0ff;color:#6ab0ff}
+button.thinking:is(#who-can-help,#new-issue)::before{content:'';display:inline-block;
+width:10px;height:10px;margin-right:6px;border:2px solid #657083;border-top-color:#6ab0ff;
+border-radius:50%;vertical-align:-2px;animation:serge-spin .8s linear infinite}
+@keyframes serge-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){button.thinking::before{animation:none}}
 </style></head><body>
 <div class="row" id="actions"></div>
 <p id="fix" hidden></p>
@@ -156,7 +161,8 @@ function render(signedIn){
     const b=buttons[id];b.replaceChildren();
     if(signedIn){
       b.textContent=label;b.title=help;b.disabled=!enabled;b.classList.remove('locked');
-      b.onclick=id==='wdyt'?wdyt:id==='who-can-help'?whoCanHelp:null;
+      b.onclick=id==='wdyt'?wdyt:id==='who-can-help'?whoCanHelp:
+        id==='new-issue'?newIssue:null;
     }else{
       b.insertAdjacentHTML('afterbegin',LOCK);b.append(label);
       b.title='Sign in to use Serge. '+help;b.disabled=false;b.classList.add('locked');
@@ -260,6 +266,105 @@ async function whoCanHelp(){
   }catch(error){}
   button.classList.remove('thinking');button.textContent='Who can help';helpersRun=false;
   view.finish(result);
+}
+
+let issueRun=false;
+async function newIssue(){
+  if(issueRun)return;
+  issueRun=true;
+  const button=buttons['new-issue'],view=issuePopup();
+  button.classList.add('thinking');button.textContent='Drafting…';
+  let result={status:'unavailable'};
+  try{
+    const response=await fetch('/serge-actions/new-issue/draft',{
+      method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
+      body:JSON.stringify({trace_id:context.get('trace_id')||'',
+        test_nodeid:context.get('test_nodeid')||''})});
+    result=await response.json();
+  }catch(error){}
+  button.classList.remove('thinking');button.textContent='New issue';issueRun=false;
+  view.finish(result);
+}
+
+function issuePopup(){
+  let doc=document,host=document.body;
+  for(let w=window;w.parent!==w;){
+    try{w=w.parent;if(w.document.body){doc=w.document;host=doc.body;}}catch(error){break;}
+  }
+  doc.getElementById('tci-new-issue')?.remove();
+  const el=(tag,text)=>{const n=doc.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
+  const overlay=el('div');overlay.id='tci-new-issue';
+  overlay.style.cssText='position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.55);'+
+    'display:flex;align-items:center;justify-content:center;padding:16px';
+  const box=el('div');box.style.cssText='background:#181b1f;color:#d8d9da;'+
+    'border:1px solid #657083;border-radius:6px;max-width:760px;width:100%;'+
+    'max-height:85vh;overflow:auto;padding:16px 20px;font:14px/1.5 system-ui,sans-serif';
+  box.setAttribute('role','dialog');box.setAttribute('aria-modal','true');
+  box.setAttribute('aria-label','New issue');
+  const title=el('h2','New issue');title.style.margin='0 0 8px';
+  const content=el('div','Reading the failure, repository history, and bug report template…');
+  const actions=el('div');actions.style.cssText='display:flex;gap:8px;justify-content:flex-end;margin-top:14px';
+  const close=el('button','Close');close.type='button';
+  const publish=el('button','Publish issue');publish.type='submit';publish.hidden=true;
+  for(const button of [close,publish])button.style.cssText='background:#242b35;color:#d8d9da;'+
+    'border:1px solid #657083;border-radius:4px;padding:6px 12px;font:inherit;cursor:pointer';
+  actions.append(close,publish);box.append(title,content,actions);overlay.append(box);host.append(overlay);
+  const hide=()=>{overlay.remove();doc.removeEventListener('keydown',onKey);};
+  const onKey=event=>{if(event.key==='Escape')hide();};
+  doc.addEventListener('keydown',onKey);close.onclick=hide;
+  overlay.onclick=event=>{if(event.target===overlay)hide();};close.focus();
+  return {finish(data){
+    content.replaceChildren();
+    if(data.status!=='ok'){
+      const messages={invalid:'The selected failure is unavailable.',
+        unauthorized:'Your Grafana session expired. Sign in again.',
+        rate_limited:'You asked a lot this hour. Try again later.',
+        busy:'Serge is busy. Try again shortly.',
+        unavailable:'Could not draft the issue right now. Try again shortly.'};
+      content.textContent=messages[data.status]||messages.unavailable;return;
+    }
+    const form=el('form');form.id='tci-new-issue-form';form.style.margin='0';
+    publish.setAttribute('form',form.id);
+    const note=el('p','Draft based on the Transformers bug report template. Edit both fields before publishing. The dashboard GitHub account will create the issue.');
+    note.style.cssText='color:#aeb7c2;margin:0 0 12px';
+    const titleLabel=el('label','Title');titleLabel.style.display='block';
+    const titleInput=el('input');titleInput.type='text';titleInput.value=data.title;
+    titleInput.maxLength=200;titleInput.style.cssText='display:block;box-sizing:border-box;width:100%;'+
+      'margin:4px 0 12px;padding:8px;background:#242b35;color:#d8d9da;border:1px solid #657083';
+    titleLabel.append(titleInput);
+    const bodyLabel=el('label','Body (Markdown)');bodyLabel.style.display='block';
+    const bodyInput=el('textarea');bodyInput.value=data.body;bodyInput.maxLength=30000;
+    bodyInput.rows=18;bodyInput.style.cssText='display:block;box-sizing:border-box;width:100%;'+
+      'margin:4px 0 12px;padding:8px;background:#242b35;color:#d8d9da;'+
+      'border:1px solid #657083;font:12px/1.5 ui-monospace,monospace;resize:vertical';
+    bodyLabel.append(bodyInput);
+    const status=el('p','');status.setAttribute('role','status');
+    form.append(note,titleLabel,bodyLabel,status);content.append(form);
+    publish.hidden=false;titleInput.focus();
+    form.onsubmit=async event=>{
+      event.preventDefault();
+      if(!titleInput.value.trim()||!bodyInput.value.trim()){
+        status.textContent='Title and body are required.';return;
+      }
+      publish.disabled=true;publish.textContent='Publishing…';status.textContent='';
+      try{
+        const response=await fetch('/serge-actions/new-issue/publish',{
+          method:'POST',credentials:'same-origin',
+          headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
+          body:JSON.stringify({draft_id:data.draft_id,title:titleInput.value,body:bodyInput.value})});
+        const result=await response.json();
+        if(result.status==='ok'){
+          const link=el('a','Issue #'+result.number);link.href=result.url;
+          link.target='_blank';link.rel='noopener noreferrer';
+          content.replaceChildren(el('p','Published '),link);publish.hidden=true;return;
+        }
+        status.textContent=result.status==='invalid'?'Draft expired. Create a new draft.':
+          'Could not publish the issue. Check GitHub permissions and try again.';
+      }catch(error){status.textContent='Could not publish the issue. Try again.';}
+      publish.disabled=false;publish.textContent='Publish issue';
+    };
+  }};
 }
 
 function helperRefs(doc,parent,value,evidenceUrl,prLinks){
