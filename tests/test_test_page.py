@@ -127,13 +127,22 @@ def test_render_full_failure_page():
         }
     )
 
+    # Duration cell: date · relative · duration; the exact time is the tooltip.
+    assert (
+        "Oct 13<span class='sep'>·</span><span data-ts='1791897922' "
+        "title='2026-10-13 13:25 UTC'>" in page
+    )
+    assert "<span class='sep'>·</span>1.1 s</div>" in page
+    # Net change -91.5 KiB: no leak, readings in the tooltip.
+    assert "<div class='v good'>No</div>" in page
+    assert (
+        "inherited 16.3 MiB · left for next test 16.3 MiB · net change -91.5 KiB"
+        in page
+    )
+    assert "Serge Actions</div><iframe" in page
     for text in (
         "aws-g5-12xlarge-cache · xGPU",
         "pytest -svx &#x27;" + NODE + "&#x27;",
-        "1.1 s",
-        "16.3 MiB",
-        "-91.5 KiB",
-        "2026-10-13 13:25 UTC",
         "ImportError",
         "Potential related issues",
         "/serge-actions?",
@@ -160,6 +169,22 @@ def test_render_passed_and_missing_trace():
     missing = tp.render_test_page({"test_nodeid": NODE, "trace_id": TRACE})
     assert "Trace not found." in missing
     assert "No trace selected." in tp.render_test_page({"test_nodeid": NODE})
+
+
+def test_memory_leak_cell():
+    assert tp.memory_leak({"cuda_delta_bytes": 2 * 1024**2})[:2] == ("+2.0 MiB", "bad")
+    assert tp.memory_leak({"cuda_delta_bytes": 0.0})[:2] == ("No", "good")
+    # No reading (CPU job, older plugin) is unknown, never "No".
+    assert tp.memory_leak({})[:2] == ("—", "unknown")
+    page = tp.render_test_page({"test_nodeid": NODE, "cuda_delta_bytes": 4096.0})
+    assert "<div class='v bad'>+4.0 KiB</div>" in page
+
+
+def test_compact_ago():
+    assert tp.compact_ago(10) == "just now"
+    assert tp.compact_ago(16 * 3600 + 5) == "16h ago"
+    assert tp.compact_ago(3 * 86400) == "3d ago"
+    assert tp.compact_ago(200 * 86400) == "6mo ago"
 
 
 def test_reproduce_command_and_formatting():
