@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import os
 import re
 import threading
@@ -29,7 +30,7 @@ _slots = threading.BoundedSemaphore(2)
 
 
 def failure_line(nodeid: str, details: list[dict]) -> tuple[str, int] | None:
-    """Use the innermost repository frame; fall back to the test's own frame."""
+    """Use the innermost repository frame in the recorded traceback."""
     path = nodeid.split("::", 1)[0]
     if not re.fullmatch(r"tests/[\w./-]+\.py", path) or ".." in path.split("/"):
         return None
@@ -42,6 +43,60 @@ def failure_line(nodeid: str, details: list[dict]) -> tuple[str, int] | None:
         candidate = match.group("path")
         if ".." not in candidate.split("/"):
             return candidate, int(match.group("line"))
+    return None
+
+
+def source_line(
+    nodeid: str, details: list[dict], github_get: Callable[[str], object] | None
+) -> tuple[str, int] | None:
+    """Use the test's class declaration when a truncated trace has no frame.
+
+    An inherited test method may live in a shared test file, while its model
+    class is the useful line to ask Relore about for this particular failure.
+    """
+    frame = failure_line(nodeid, details)
+    if frame or github_get is None:
+        return frame
+    parts = nodeid.split("::")
+    path = parts[0]
+    if not re.fullmatch(r"tests/[\w./-]+\.py", path) or ".." in path.split("/"):
+        return None
+    base = os.getenv("PYTEST_GITHUB_API_URL", "https://api.github.com").rstrip("/")
+    try:
+        item = github_get(f"{base}/repos/{related_issues.REPOSITORY}/contents/{path}")
+        if not isinstance(item, dict) or item.get("encoding") != "base64":
+            return None
+        raw = base64.b64decode(item["content"])
+        if len(raw) > 1024 * 1024:
+            return None
+        lines = raw.decode("utf-8").splitlines()
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        return None
+    if len(parts) > 2:
+        class_name, method = parts[1], parts[-1].split("[", 1)[0]
+        if not re.fullmatch(r"[A-Za-z_]\w*", class_name) or not re.fullmatch(
+            r"[A-Za-z_]\w*", method
+        ):
+            return None
+        class_pattern = re.compile(r"^class\s+" + re.escape(class_name) + r"\b")
+        method_pattern = re.compile(r"^\s+def\s+" + re.escape(method) + r"\s*\(")
+        class_line = None
+        for number, line in enumerate(lines, 1):
+            if class_pattern.match(line):
+                class_line = number
+            elif class_line is not None:
+                if re.match(r"^(?:class|def)\s+", line):
+                    break
+                if method_pattern.match(line):
+                    return path, number
+        return (path, class_line) if class_line is not None else None
+    if len(parts) == 2:
+        method = parts[1].split("[", 1)[0]
+        if re.fullmatch(r"[A-Za-z_]\w*", method):
+            pattern = re.compile(r"^def\s+" + re.escape(method) + r"\s*\(")
+            for number, line in enumerate(lines, 1):
+                if pattern.match(line):
+                    return path, number
     return None
 
 
@@ -216,38 +271,56 @@ def suggest(
     nodeid: str,
     details: list[dict],
     github_get: Callable[[str], object] | None = None,
+    emit: Callable[[dict], None] = lambda event: None,
 ) -> dict:
     key = (trace_id, nodeid)
     with _lock:
         cached = _cache.get(key)
-        if cached and cached[0] > time.monotonic():
-            return cached[1]
-        pending = _inflight.get(key)
-        if pending is None:
+        fresh = cached and cached[0] > time.monotonic()
+        pending = _inflight.get(key) if not fresh else None
+        if not fresh and pending is None:
             now = time.monotonic()
             recent = [at for at in _asked.get(login, []) if now - at < 3600]
             if len(recent) >= 10:
                 return {"status": "rate_limited"}
             _asked[login] = recent + [now]
             done = _inflight[key] = threading.Event()
+    if fresh:
+        emit({"event": "step", "text": "Using earlier suggestions for this failure"})
+        return cached[1]
     if pending is not None:
+        emit(
+            {"event": "step", "text": "Waiting for the current lookup of this failure"}
+        )
         pending.wait(85)
         with _lock:
             cached = _cache.get(key)
         return cached[1] if cached else {"status": "busy"}
-    location = failure_line(nodeid, details)
+    emit({"event": "step", "text": "Locating the failing test in the repository"})
+    location = source_line(nodeid, details, github_get)
     if location is None:
         result, ttl = {"status": "no_line"}, 30
     elif not _slots.acquire(timeout=10):
         result, ttl = {"status": "busy"}, 5
     else:
         try:
+            emit(
+                {"event": "step", "text": "Reading Relore history for the failing line"}
+            )
             history = why(*location)
+            emit({"event": "step", "text": "Searching related issues and PRs"})
             hits = related_issues.lookup(trace_id, nodeid, lambda: details).get(
                 "hits", []
             )
+            emit({"event": "step", "text": "Finding reviewers and thread participants"})
             people = candidates(history, hits)
             if people:
+                emit(
+                    {
+                        "event": "step",
+                        "text": "Asking the model where each person can help",
+                    }
+                )
                 picks = explain(nodeid, location, history, people, details)
                 result = (
                     {
@@ -269,6 +342,7 @@ def suggest(
                 result = {"status": "no_people"}
             result["location"] = f"{location[0]}:{location[1]}"
             if result["status"] == "ok" and github_get is not None:
+                emit({"event": "step", "text": "Checking linked PR destinations"})
                 result["pr_links"] = recent_pr_links(result["people"], github_get)
             ttl = 3600
         except (OSError, ValueError, KeyError, IndexError, TypeError):

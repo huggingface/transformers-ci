@@ -65,7 +65,7 @@ def test_template_and_draft_keep_required_sections_and_trace(monkeypatch):
     ]
     monkeypatch.setattr(
         new_issue.who_can_help,
-        "failure_line",
+        "source_line",
         lambda *args: ("tests/generation/test_streamers.py", 10),
     )
     monkeypatch.setattr(new_issue.who_can_help, "why", lambda *args: {"number": 42})
@@ -82,10 +82,24 @@ def test_template_and_draft_keep_required_sections_and_trace(monkeypatch):
             },
         },
     )
+    events = []
     draft = new_issue.prepare(
-        "alice", TRACE, NODE, [{"exception_message": "bad stream"}], get
+        "alice",
+        TRACE,
+        NODE,
+        [{"exception_message": "bad stream"}],
+        get,
+        emit=events.append,
     )
     assert draft["status"] == "ok"
+    assert [event["text"] for event in events if event["event"] == "step"] == [
+        "Reading the Transformers bug report template",
+        "Locating the failing test in the repository",
+        "Reading Relore history for the failing line",
+        "Searching related issues and PRs",
+        "Asking the model to draft the report",
+        "Preparing the editable issue form",
+    ]
     assert draft["title"] == "Streamer fails in CI"
     assert "### System Info" in draft["body"]
     assert "### Reproduction" in draft["body"]

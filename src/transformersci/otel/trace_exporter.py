@@ -7750,6 +7750,32 @@ class MetricsHandler(BaseHTTPRequestHandler):
             cache_control="no-store",
         )
 
+    def _stream_action(
+        self, run: Callable[[Callable[[dict], None]], dict], initial_step: str
+    ) -> None:
+        """Stream real action steps and finish with one result event."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.close_connection = True
+        sent = 0
+
+        def emit(event: dict) -> None:
+            nonlocal sent
+            line = (json.dumps(event) + "\n").encode()
+            try:
+                self.wfile.write(line)
+                self.wfile.flush()
+                sent += len(line)
+            except OSError:
+                pass
+
+        emit({"event": "step", "text": initial_step})
+        result = run(emit)
+        emit({"event": "done", **result})
+        self._observe_response(200, sent)
+
     def _action_allowed(self) -> bool:
         """CSRF gate for Serge action POSTs, replying 403 when it fails: a
         cross-site page can neither set the custom header without a preflight
@@ -7819,11 +7845,16 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._reply_json(404, {"status": "invalid"})
             return
         details = extract_failure_details(trace, nodeid)
-        self._reply_json(
-            200,
-            who_can_help.suggest(
-                login, trace_id, nodeid, details, github_get=_github_api_get
+        self._stream_action(
+            lambda emit: who_can_help.suggest(
+                login,
+                trace_id,
+                nodeid,
+                details,
+                github_get=_github_api_get,
+                emit=emit,
             ),
+            "Reading the selected failure",
         )
 
     def _serve_new_issue_draft(self) -> None:
@@ -7859,8 +7890,11 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if not details:
             self._reply_json(404, {"status": "invalid"})
             return
-        self._reply_json(
-            200, new_issue.prepare(login, trace_id, nodeid, details, _github_api_get)
+        self._stream_action(
+            lambda emit: new_issue.prepare(
+                login, trace_id, nodeid, details, _github_api_get, emit=emit
+            ),
+            "Reading the selected failure",
         )
 
     def _serve_new_issue_publish(self) -> None:

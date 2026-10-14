@@ -310,13 +310,20 @@ def test_who_can_help_route_uses_only_selected_trace(server, monkeypatch):
         "repo": "evil/repo",
     }
     assert post(url, body, {})[0] == 403
-    assert post(url, body, {"X-TCI-Action": "1"}) == (
-        200,
-        {"status": "no_people", "location": "tests/trainer/test_trainer.py:12"},
-    )
-    assert seen == [
-        (("octocat", TRACE, NODE, DETAILS), {"github_get": te._github_api_get})
-    ]
+    status, events = post(url, body, {"X-TCI-Action": "1"})
+    assert status == 200 and events[0] == {
+        "event": "step",
+        "text": "Reading the selected failure",
+    }
+    assert events[-1] == {
+        "event": "done",
+        "status": "no_people",
+        "location": "tests/trainer/test_trainer.py:12",
+    }
+    assert len(seen) == 1
+    assert seen[0][0] == ("octocat", TRACE, NODE, DETAILS)
+    assert seen[0][1]["github_get"] is te._github_api_get
+    assert callable(seen[0][1]["emit"])
 
 
 def test_new_issue_draft_uses_selected_trace_and_publish_uses_draft(
@@ -330,18 +337,21 @@ def test_new_issue_draft_uses_selected_trace_and_publish_uses_draft(
     monkeypatch.setattr(
         new_issue,
         "prepare",
-        lambda *args: seen.append(args)
+        lambda *args, **kwargs: seen.append((args, kwargs))
         or {"status": "ok", "draft_id": "f" * 32, "title": "Draft", "body": "Body"},
     )
     draft_url = server + "/serge-actions/new-issue/draft"
     assert post(draft_url, {"trace_id": TRACE, "test_nodeid": NODE}, {})[0] == 403
-    assert (
-        post(
-            draft_url, {"trace_id": TRACE, "test_nodeid": NODE}, {"X-TCI-Action": "1"}
-        )[1]["status"]
-        == "ok"
+    status, events = post(
+        draft_url, {"trace_id": TRACE, "test_nodeid": NODE}, {"X-TCI-Action": "1"}
     )
-    assert seen == [("octocat", TRACE, NODE, DETAILS, te._github_api_get)]
+    assert status == 200 and events[0] == {
+        "event": "step",
+        "text": "Reading the selected failure",
+    }
+    assert events[-1]["status"] == "ok" and events[-1]["event"] == "done"
+    assert seen[0][0] == ("octocat", TRACE, NODE, DETAILS, te._github_api_get)
+    assert callable(seen[0][1]["emit"])
     monkeypatch.setattr(te, "extract_failure_details", lambda trace, node: [])
     assert post(
         draft_url,

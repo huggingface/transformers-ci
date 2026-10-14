@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import base64
 from datetime import datetime, timedelta, timezone
 
 from transformersci.otel import who_can_help as helpers
@@ -44,6 +45,47 @@ def test_line_is_selected_from_selected_failure_only():
     ) == ("src/transformers/modeling_utils.py", 217)
     assert helpers.failure_line(NODE, [{"exception_stacktrace": "no frames"}]) is None
     assert helpers.failure_line("../../etc/passwd::test_x", DETAILS) is None
+
+
+def test_truncated_trace_falls_back_to_model_test_class():
+    node = (
+        "tests/models/deepseek_ocr2/test_modeling_deepseek_ocr2.py::"
+        "DeepseekOcr2ModelTest::test_tp_plan_matches_params"
+    )
+    source = "import unittest\n\nclass DeepseekOcr2ModelTest(VLMModelTest, unittest.TestCase):\n    pass\n"
+    urls = []
+
+    def get(url):
+        urls.append(url)
+        return {
+            "encoding": "base64",
+            "content": base64.b64encode(source.encode()).decode(),
+        }
+
+    assert helpers.source_line(
+        node,
+        [{"exception_stacktrace": "def test_tp_plan_matches_params(self):\n"}],
+        get,
+    ) == ("tests/models/deepseek_ocr2/test_modeling_deepseek_ocr2.py", 3)
+    assert urls[0].endswith(
+        "/contents/tests/models/deepseek_ocr2/test_modeling_deepseek_ocr2.py"
+    )
+
+
+def test_source_line_prefers_local_method_over_class():
+    node = "tests/models/foo/test_modeling_foo.py::FooTest::test_x"
+    source = "class FooTest:\n    def test_x(self):\n        pass\n"
+
+    def get(url):
+        return {
+            "encoding": "base64",
+            "content": base64.b64encode(source.encode()).decode(),
+        }
+
+    assert helpers.source_line(node, [{"exception_stacktrace": "truncated"}], get) == (
+        "tests/models/foo/test_modeling_foo.py",
+        2,
+    )
 
 
 def test_candidates_require_linked_human_evidence():
@@ -164,8 +206,16 @@ def test_suggest_caches_result_and_limits_names(monkeypatch):
         "explain",
         lambda *args: [{"person": args[3][0], "why": "Can explain the change"}],
     )
-    first = helpers.suggest("alice", TRACE, NODE, DETAILS)
+    events = []
+    first = helpers.suggest("alice", TRACE, NODE, DETAILS, emit=events.append)
     assert first["people"][0]["login"] == "author"
+    assert [event["text"] for event in events if event["event"] == "step"] == [
+        "Locating the failing test in the repository",
+        "Reading Relore history for the failing line",
+        "Searching related issues and PRs",
+        "Finding reviewers and thread participants",
+        "Asking the model where each person can help",
+    ]
     assert helpers.suggest("bob", TRACE, NODE, DETAILS) == first
     assert calls == [("src/transformers/models/foo/modeling_foo.py", 91)]
 

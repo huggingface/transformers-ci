@@ -214,6 +214,23 @@ const MESSAGES={disabled:'WDYT? is not configured on this server yet.',
   busy:'Serge is busy with other questions. Try again in a minute.',
   unavailable:'Serge could not answer right now. Try again in a minute.',
   forbidden:'Request refused.',invalid:'This test has no trace to look at.'};
+async function actionResponse(response,progress){
+  if(!(response.headers.get('Content-Type')||'').includes('ndjson'))return response.json();
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',result={status:'unavailable'};
+  for(;;){
+    const {value,done}=await reader.read();
+    buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});
+    let cut;
+    while((cut=buffer.indexOf('\n'))>=0){
+      const line=buffer.slice(0,cut).trim();buffer=buffer.slice(cut+1);
+      if(!line)continue;
+      const event=JSON.parse(line);
+      if(event.event==='done')result=event;else progress(event);
+    }
+    if(done)break;
+  }
+  return result;
+}
 let run=null;  // the in-flight question: {view, done}
 async function wdyt(){
   const button=document.getElementById('wdyt');
@@ -226,35 +243,18 @@ async function wdyt(){
       headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
       body:JSON.stringify(Object.fromEntries(['trace_id','test_nodeid','status','job',
         'module','pr','run_id'].map(k=>[k,context.get(k)||''])))});
-    if(!(response.headers.get('Content-Type')||'').includes('ndjson')){
-      result=await response.json();
-    }else{
-      // NDJSON: one event per line, the last one {"event":"done",...}.
-      const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
-      for(;;){
-        const {value,done}=await reader.read();
-        buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});
-        let cut;
-        while((cut=buffer.indexOf('\n'))>=0){
-          const line=buffer.slice(0,cut).trim();buffer=buffer.slice(cut+1);
-          if(!line)continue;
-          const event=JSON.parse(line);
-          if(event.event==='done')result=event;else view.progress(event);
-        }
-        if(done)break;
-      }
-    }
+    result=await actionResponse(response,event=>view.progress(event));
   }catch(error){}
   button.classList.remove('thinking');button.textContent='WDYT?';run=null;
   view.finish(result);
 }
 
-let helpersRun=false;
+let helpersRun=null;
 async function whoCanHelp(){
-  if(helpersRun)return;
-  const button=buttons['who-can-help'];helpersRun=true;
+  if(helpersRun){helpersRun.view.show();return;}
+  const button=buttons['who-can-help'];
   button.classList.add('thinking');button.textContent='Looking…';
-  const view=helpersPopup();
+  const view=helpersPopup();helpersRun={view};
   let result={status:'unavailable'};
   try{
     const response=await fetch('/serge-actions/who-can-help',{
@@ -262,17 +262,17 @@ async function whoCanHelp(){
       headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
       body:JSON.stringify({trace_id:context.get('trace_id')||'',
         test_nodeid:context.get('test_nodeid')||''})});
-    result=await response.json();
+    result=await actionResponse(response,event=>view.progress(event));
   }catch(error){}
-  button.classList.remove('thinking');button.textContent='Who can help';helpersRun=false;
+  button.classList.remove('thinking');button.textContent='Who can help';helpersRun=null;
   view.finish(result);
 }
 
-let issueRun=false;
+let issueRun=null;
 async function newIssue(){
-  if(issueRun)return;
-  issueRun=true;
+  if(issueRun){issueRun.view.show();return;}
   const button=buttons['new-issue'],view=issuePopup();
+  issueRun={view};
   button.classList.add('thinking');button.textContent='Drafting…';
   let result={status:'unavailable'};
   try{
@@ -281,10 +281,37 @@ async function newIssue(){
       headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
       body:JSON.stringify({trace_id:context.get('trace_id')||'',
         test_nodeid:context.get('test_nodeid')||''})});
-    result=await response.json();
+    result=await actionResponse(response,event=>view.progress(event));
   }catch(error){}
-  button.classList.remove('thinking');button.textContent='New issue';issueRun=false;
+  button.classList.remove('thinking');button.textContent='New issue';issueRun=null;
   view.finish(result);
+}
+
+function actionSteps(doc,host,initial){
+  const style=doc.createElement('style');
+  style.textContent='@keyframes tci-popup-spin{to{transform:rotate(360deg)}}'+
+    '.tci-popup-progress{list-style:none;margin:0 0 12px;padding:0;color:#aeb7c2;font-size:13px}'+
+    '.tci-popup-progress li{display:flex;align-items:center;gap:8px;margin:4px 0}'+
+    '.tci-popup-progress .active{display:inline-block;width:12px;height:12px;box-sizing:border-box;'+
+    'border:2px solid #657083;border-top-color:#6ab0ff;border-radius:50%;'+
+    'animation:tci-popup-spin .8s linear infinite}'+
+    '@media(prefers-reduced-motion:reduce){.tci-popup-progress .active{animation:none}}';
+  const list=doc.createElement('ul');list.className='tci-popup-progress';
+  list.setAttribute('role','status');list.setAttribute('aria-live','polite');
+  host.append(style,list);let current=null;
+  const finish=ok=>{
+    if(current){current.className='';current.textContent=ok?'✓':'×';
+      current.style.cssText='display:inline-block;width:12px;color:'+(ok?'#73bf69':'#f2495c');
+      current=null;}
+  };
+  const step=text=>{
+    finish(true);
+    const item=doc.createElement('li'),mark=doc.createElement('span');
+    mark.className='active';mark.setAttribute('aria-hidden','true');
+    item.append(mark,doc.createTextNode(text));list.append(item);current=mark;
+  };
+  step(initial);
+  return {step,finish};
 }
 
 function issuePopup(){
@@ -303,18 +330,23 @@ function issuePopup(){
   box.setAttribute('role','dialog');box.setAttribute('aria-modal','true');
   box.setAttribute('aria-label','New issue');
   const title=el('h2','New issue');title.style.margin='0 0 8px';
-  const content=el('div','Reading the failure, repository history, and bug report template…');
+  const progressHost=el('div'),steps=actionSteps(doc,progressHost,'Starting issue draft');
+  const content=el('div');
   const actions=el('div');actions.style.cssText='display:flex;gap:8px;justify-content:flex-end;margin-top:14px';
   const close=el('button','Close');close.type='button';
   const publish=el('button','Publish issue');publish.type='submit';publish.hidden=true;
   for(const button of [close,publish])button.style.cssText='background:#242b35;color:#d8d9da;'+
     'border:1px solid #657083;border-radius:4px;padding:6px 12px;font:inherit;cursor:pointer';
-  actions.append(close,publish);box.append(title,content,actions);overlay.append(box);host.append(overlay);
+  actions.append(close,publish);box.append(title,progressHost,content,actions);
+  overlay.append(box);host.append(overlay);
   const hide=()=>{overlay.remove();doc.removeEventListener('keydown',onKey);};
   const onKey=event=>{if(event.key==='Escape')hide();};
+  const show=()=>{if(!overlay.isConnected){host.append(overlay);doc.addEventListener('keydown',onKey);}
+    close.focus();};
   doc.addEventListener('keydown',onKey);close.onclick=hide;
   overlay.onclick=event=>{if(event.target===overlay)hide();};close.focus();
-  return {finish(data){
+  return {show,progress(event){if(event.event==='step')steps.step(event.text);},finish(data){
+    steps.finish(data.status==='ok');
     content.replaceChildren();
     if(data.status!=='ok'){
       const messages={invalid:'The selected failure is unavailable.',
@@ -348,6 +380,7 @@ function issuePopup(){
         status.textContent='Title and body are required.';return;
       }
       publish.disabled=true;publish.textContent='Publishing…';status.textContent='';
+      steps.step('Publishing the issue on GitHub');
       try{
         const response=await fetch('/serge-actions/new-issue/publish',{
           method:'POST',credentials:'same-origin',
@@ -357,11 +390,13 @@ function issuePopup(){
         if(result.status==='ok'){
           const link=el('a','Issue #'+result.number);link.href=result.url;
           link.target='_blank';link.rel='noopener noreferrer';
-          content.replaceChildren(el('p','Published '),link);publish.hidden=true;return;
+          steps.finish(true);content.replaceChildren(el('p','Published '),link);
+          publish.hidden=true;return;
         }
         status.textContent=result.status==='invalid'?'Draft expired. Create a new draft.':
           'Could not publish the issue. Check GitHub permissions and try again.';
       }catch(error){status.textContent='Could not publish the issue. Try again.';}
+      steps.finish(false);
       publish.disabled=false;publish.textContent='Publish issue';
     };
   }};
@@ -417,14 +452,18 @@ function helpersPopup(){
   box.setAttribute('role','dialog');box.setAttribute('aria-modal','true');
   box.setAttribute('aria-label','Who can help');
   const title=el('h2','Who can help');title.style.margin='0 0 8px';
-  const content=el('div','Reading the failing line and repository history…');
+  const progressHost=el('div'),steps=actionSteps(doc,progressHost,'Starting helper lookup');
+  const content=el('div');
   const close=el('button','Close');close.type='button';close.style.marginTop='14px';
   const hide=()=>{overlay.remove();doc.removeEventListener('keydown',onKey);};
   const onKey=event=>{if(event.key==='Escape')hide();};
+  const show=()=>{if(!overlay.isConnected){host.append(overlay);doc.addEventListener('keydown',onKey);}
+    close.focus();};
   close.onclick=hide;overlay.onclick=event=>{if(event.target===overlay)hide();};
-  box.append(title,content,close);overlay.append(box);host.append(overlay);
+  box.append(title,progressHost,content,close);overlay.append(box);host.append(overlay);
   doc.addEventListener('keydown',onKey);close.focus();
-  return {finish(data){
+  return {show,progress(event){if(event.event==='step')steps.step(event.text);},finish(data){
+    steps.finish(data.status==='ok');
     content.replaceChildren();
     if(data.status==='ok'){
       content.append(el('p','People connected to '+data.location+'; suggestions, not assignments.'));

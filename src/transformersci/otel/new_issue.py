@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Callable
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -195,7 +196,12 @@ def render_body(
 
 
 def prepare(
-    login: str, trace_id: str, nodeid: str, details: list[dict], github_get
+    login: str,
+    trace_id: str,
+    nodeid: str,
+    details: list[dict],
+    github_get,
+    emit: Callable[[dict], None] = lambda event: None,
 ) -> dict:
     now = time.monotonic()
     with _lock:
@@ -206,15 +212,21 @@ def prepare(
     if not _slots.acquire(timeout=10):
         return {"status": "busy"}
     try:
+        emit({"event": "step", "text": "Reading the Transformers bug report template"})
         fields = bug_template(github_get)
-        location = who_can_help.failure_line(nodeid, details)
+        emit({"event": "step", "text": "Locating the failing test in the repository"})
+        location = who_can_help.source_line(nodeid, details, github_get)
+        emit({"event": "step", "text": "Reading Relore history for the failing line"})
         try:
             history = who_can_help.why(*location) if location else {}
         except (OSError, ValueError):
             history = {}
+        emit({"event": "step", "text": "Searching related issues and PRs"})
         related = related_issues.lookup(trace_id, nodeid, lambda: details)
         hits = related.get("hits", [])
+        emit({"event": "step", "text": "Asking the model to draft the report"})
         result = model_draft(nodeid, details, history, hits, fields)
+        emit({"event": "step", "text": "Preparing the editable issue form"})
         title = re.sub(r"\s+", " ", str(result.get("title") or "")).strip()[:200]
         if not title:
             title = f"CI failure in {nodeid}"[:200]
