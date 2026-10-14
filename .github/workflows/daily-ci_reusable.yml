@@ -342,7 +342,7 @@ jobs:
           python3 utils/print_env.py
 
       - name: Install evaluate==0.4.6
-        run: pip install evaluate==0.4.6 sacrebleu scipy
+        run: pip install evaluate==0.4.6 sacrebleu scipy scikit-learn
 
       - name: Show installed libraries and their versions
         working-directory: ${{ inputs.working-directory-prefix }}/transformers
