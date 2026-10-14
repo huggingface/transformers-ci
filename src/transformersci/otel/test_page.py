@@ -62,8 +62,11 @@ padding:4px 12px;cursor:pointer;font:inherit}
 .stat .v .sep{color:var(--muted);margin:0 6px}
 .stat .v.bad{color:var(--red)}.stat .v.good{color:var(--green)}.stat .v.unknown{color:var(--muted)}
 .grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;align-items:start}
-#issues{border-left:1px solid var(--line);padding-left:24px}
-@media (max-width:1100px){.grid{grid-template-columns:minmax(0,1fr)}#issues{border-left:0;padding-left:0;border-top:1px solid var(--line);padding-top:16px}}
+#issues{position:sticky;top:12px;display:flex;flex-direction:column;min-height:180px;max-height:calc(100dvh - 24px);border:1px solid var(--line);border-radius:5px;background:var(--panel)}
+#issues h2{margin:0;padding:12px;border-bottom:1px solid var(--line)}
+#issues .status{margin:0;padding:12px}
+#issues ul{flex:1;overflow-y:auto;min-height:0;padding:12px}
+@media (max-width:1100px){.grid{grid-template-columns:minmax(0,1fr)}#issues{position:static;max-height:75dvh}}
 .exc{color:var(--amber);font:600 15px/1.3 Inter,system-ui,sans-serif;margin:0 0 2px}
 .where{color:var(--muted);font-size:12px;margin:0 0 4px;overflow-wrap:anywhere}
 .label{margin:14px 0 4px;color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
@@ -74,8 +77,9 @@ pre.msg{color:#ff8a80;max-height:none}
 .detail+.detail{margin-top:18px;padding-top:18px;border-top:1px solid var(--line)}
 .empty{color:var(--muted)}
 .passed{color:var(--green);font-weight:600}
-#issues ul{list-style:none;margin:0;padding:0}
-#issues li{padding:8px 0;border-top:1px solid var(--line)}
+#issues ul{list-style:none;margin:0}
+#issues li{border:1px solid var(--line);border-radius:4px;padding:10px;margin:0 0 10px;background:var(--bg)}
+#issues li:last-child{margin-bottom:0}
 #issues .meta{color:var(--muted);font-size:12px;margin:1px 0}
 #issues .snippet{color:#aeb7c2;font-size:12px;overflow-wrap:anywhere;display:-webkit-box;
 -webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
