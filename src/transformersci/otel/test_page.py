@@ -34,11 +34,12 @@ STYLE = """
 :root{color-scheme:dark;--bg:#111217;--panel:#181b1f;--line:#2c3038;--soft:#22252b;
 --text:#d8d9da;--muted:#8e9197;--link:#6ab0ff;--red:#ff7383;--green:#73bf69;--amber:#f2cc60}
 *{box-sizing:border-box}
-html,body{margin:0;background:var(--bg);color:var(--text);font:13px/1.5 Inter,system-ui,sans-serif}
+html,body{margin:0;background:var(--panel);color:var(--text);font:13px/1.5 Inter,system-ui,sans-serif}
 a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
 .gh{vertical-align:-1px;margin-left:3px}
-.page{max-width:1800px;margin:0 auto;padding:12px 16px 24px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px 16px}
+.page{max-width:1800px;margin:0 auto;padding:16px 16px 24px}
+.card{min-width:0}
+.head{padding:0 0 14px;border-bottom:1px solid var(--line)}
 h1{font:600 18px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px;overflow-wrap:anywhere}
 h2{font:600 14px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px}
 .chips{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
@@ -54,14 +55,15 @@ border-radius:4px;background:rgba(204,204,220,.04);font:13px/1.45 ui-monospace,S
 white-space:pre-wrap;overflow-wrap:anywhere}
 button{background:#242b35;color:var(--text);border:1px solid #657083;border-radius:4px;
 padding:4px 12px;cursor:pointer;font:inherit}
-.stats{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,2fr);gap:12px;margin:12px 0}
-@media (max-width:900px){.stats{grid-template-columns:minmax(0,1fr)}}
-.stat{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 12px;min-width:0}
+.stats{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,2fr);padding:12px 0;margin:0 0 16px;border-bottom:1px solid var(--line)}
+@media (max-width:900px){.stats{grid-template-columns:minmax(0,1fr)}.stats .stat+.stat{border-left:0;padding-left:0;border-top:1px solid var(--line);margin-top:10px;padding-top:10px}}
+.stat{min-width:0;padding:0 16px 0 0}.stat+.stat{border-left:1px solid var(--line);padding-left:16px}
 .stat .k{color:var(--muted);font-size:11px}.stat .v{font-size:18px;font-weight:500;margin-top:2px}
 .stat .v .sep{color:var(--muted);margin:0 6px}
 .stat .v.bad{color:var(--red)}.stat .v.good{color:var(--green)}.stat .v.unknown{color:var(--muted)}
-.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
-@media (max-width:1100px){.grid{grid-template-columns:minmax(0,1fr)}}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;align-items:start}
+#issues{border-left:1px solid var(--line);padding-left:24px}
+@media (max-width:1100px){.grid{grid-template-columns:minmax(0,1fr)}#issues{border-left:0;padding-left:0;border-top:1px solid var(--line);padding-top:16px}}
 .exc{color:var(--amber);font:600 15px/1.3 Inter,system-ui,sans-serif;margin:0 0 2px}
 .where{color:var(--muted);font-size:12px;margin:0 0 4px;overflow-wrap:anywhere}
 .label{margin:14px 0 4px;color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
@@ -317,7 +319,7 @@ def render_test_page(data: dict) -> str:
         f"<style>{STYLE}</style></head><body><div class='page'>",
     ]
     # Header: identity, links, reproduce.
-    out.append(f"<section class='card'><h1>{esc(node) or 'No test selected'}</h1>")
+    out.append(f"<section class='card head'><h1>{esc(node) or 'No test selected'}</h1>")
     chip_html = [
         f"<li class='{'status-' + esc(status) if key == 'status' else ''}'>"
         f"<span class='k'>{esc(label)}</span>{value}</li>"
