@@ -1574,10 +1574,6 @@ def test_extract_pr_info_metrics_fetches_metadata_once_per_pr() -> None:
     assert 'reviewers="alice,bob"' in info_lines[0]
     assert 'new_model="true"' in info_lines[0]
     assert 'category="New model"' in info_lines[0]
-    label_lines = metric_lines(metrics, "pytest_pr_label_info")
-    assert len(label_lines) == 1
-    assert 'name="New model"' in label_lines[0]
-    assert 'color="f5a623"' in label_lines[0]
     assert 'state="open"' in info_lines[0]
     assert 'title="Fix dashboard metadata"' in info_lines[0]
 
@@ -2885,6 +2881,52 @@ def test_pr_search_page_is_served() -> None:
     assert 'fetch("/api/ds/query"' in page
     assert "/d/pytest-observability-by-pr/pytest-observability-branch" in page
     assert "__PR_URL__" not in page
+
+
+def test_pr_labels_endpoint_uses_current_github_metadata(monkeypatch) -> None:
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.error import HTTPError
+    from urllib.request import urlopen
+
+    seen = []
+
+    def info(repository, pr):
+        seen.append((repository, pr))
+        return {
+            "labels_json": '[{"name":"New model","color":"ffcc00"}]',
+            "new_model": "true",
+            "category": "New model",
+        }
+
+    monkeypatch.setattr(trace_exporter, "fetch_github_pr_info_cached", info)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}/pr-search/labels"
+        with urlopen(
+            f"{base}?repository=huggingface%2Ftransformers&pr=49589", timeout=5
+        ) as response:
+            assert json.load(response) == {
+                "labels": [{"name": "New model", "color": "ffcc00"}],
+                "new_model": True,
+                "category": "New model",
+            }
+        with urlopen(
+            f"http://127.0.0.1:{server.server_port}/pr-search/categories.js", timeout=5
+        ) as response:
+            assert b"installOverviewCategories" in response.read()
+        assert seen == [("huggingface/transformers", "49589")]
+        try:
+            urlopen(f"{base}?repository=private%2Frepo&pr=49589", timeout=5)
+        except HTTPError as error:
+            assert error.code == 400
+        else:
+            raise AssertionError("private repository was accepted")
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_page_view_counts_dashboards(monkeypatch) -> None:

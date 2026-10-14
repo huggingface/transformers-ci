@@ -2687,7 +2687,6 @@ def extract_pr_info_metrics(
     ]
     created_lines: list[str] = []
     state_lines: list[str] = []
-    label_lines: list[str] = []
     best_by_pr: dict[tuple[str, str], tuple[int, dict[str, str]]] = {}
     for trace_info, _rows in extracted:
         pr = str(trace_info.get("pr", "none"))
@@ -2758,15 +2757,6 @@ def extract_pr_info_metrics(
         }
         lines.append(f"pytest_pr_info{metric_labels(labels)} 1")
 
-        try:
-            pr_labels = json.loads(str(metadata.get("labels_json", "[]")))
-        except (ValueError, TypeError):
-            pr_labels = []
-        for label in clean_pr_labels(pr_labels):
-            label_lines.append(
-                f"pytest_pr_label_info{metric_labels({'pr': pr, 'repository': repository, 'name': label['name'], 'color': label['color']})} 1"
-            )
-
         # Numeric state gauge: ONE series per PR whose VALUE is the state
         # (open=1, merged=2, closed-but-not-merged=0), so the dashboard can
         # last_over_time() it to get the current state without juggling a
@@ -2801,12 +2791,6 @@ def extract_pr_info_metrics(
                 f"pytest_pr_created_at_seconds{metric_labels(created_labels)} {created_ts:.0f}"
             )
 
-    if label_lines:
-        lines.append(
-            "# HELP pytest_pr_label_info Current GitHub labels on a pull request."
-        )
-        lines.append("# TYPE pytest_pr_label_info gauge")
-        lines.extend(label_lines)
     if created_lines:
         lines.append(
             "# HELP pytest_pr_created_at_seconds Unix timestamp the PR was created at."
@@ -8315,6 +8299,39 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 self._reply_json(
                     502, {"error": "Could not load your PR activity. Try again."}
                 )
+            return
+        if parsed.path == "/pr-search/labels":
+            self._request_route = "/pr-search/labels"
+            params = parse_qs(parsed.query)
+            repository = (params.get("repository") or [""])[0]
+            pr = (params.get("pr") or [""])[0]
+            if repository not in public_repositories() or not re.fullmatch(
+                r"[1-9][0-9]*", pr
+            ):
+                self._reply_json(400, {"error": "Invalid pull request"})
+                return
+            info = fetch_github_pr_info_cached(repository, pr)
+            try:
+                labels = clean_pr_labels(json.loads(info.get("labels_json", "[]")))
+            except (TypeError, ValueError):
+                labels = []
+            self._reply_json(
+                200,
+                {
+                    "labels": labels,
+                    "new_model": info.get("new_model") == "true",
+                    "category": info.get("category", ""),
+                },
+            )
+            return
+        if parsed.path == "/pr-search/categories.js":
+            self._request_route = "/pr-search/categories.js"
+            self._send(
+                200,
+                "text/javascript; charset=utf-8",
+                Path(__file__).with_name("overview_categories.js").read_bytes(),
+                cache_control="public, max-age=60",
+            )
             return
         if parsed.path == "/pr-search":
             self._request_route = "/pr-search"

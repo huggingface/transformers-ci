@@ -17,12 +17,18 @@ function installPrView() {
   let pending = false, previous = null;
   const originals = new WeakMap();
   let activityKey = '', activityTime = 0, activityRequest = null, activityRunning = false;
-  let labelKey = '', labelTime = 0, labelRequest = null, labelVersion = 0, labelData = [];
+  let labelKey = '', labelTime = 0, labelRequest = null, labelVersion = 0, labelData = [], isNewModel = false;
   function paintLabels(branch) {
     const container = branch.querySelector('[data-pr-labels]');
     if (!container || container.dataset.renderedVersion === String(labelVersion)) return;
     container.replaceChildren();
+    if (isNewModel) {
+      const stamp = doc.createElement('span');
+      stamp.className = 'tci-new-model'; stamp.textContent = 'NEW MODEL!';
+      container.append(stamp);
+    }
     for (const label of labelData) {
+      if (label.name.toLowerCase() === 'new model') continue;
       const badge = doc.createElement('span');
       badge.className = 'tci-gh-label'; badge.textContent = label.name;
       const color = /^[0-9a-f]{6}$/i.test(label.color) ? label.color : '6b7280';
@@ -41,7 +47,7 @@ function installPrView() {
     const key = repository + '#' + pr;
     if (key !== labelKey) {
       if (labelRequest) labelRequest.abort();
-      labelRequest = null; labelKey = key; labelTime = 0; labelData = []; labelVersion++;
+      labelRequest = null; labelKey = key; labelTime = 0; labelData = []; isNewModel = false; labelVersion++;
     }
     paintLabels(branch);
     if (labelRequest || Date.now() - labelTime < 60000) return;
@@ -49,17 +55,11 @@ function installPrView() {
     const controller = new host.AbortController(); labelRequest = controller;
     const timeout = host.setTimeout(() => controller.abort(), 10000);
     try {
-      const expr = 'max by (name,color) (pytest_pr_label_info{pr=' + JSON.stringify(pr) + ',repository=' + JSON.stringify(repository) + '})';
-      const response = await host.fetch('/api/ds/query', {method:'POST',credentials:'same-origin',signal:controller.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({from:'now-5m',to:'now',queries:[{refId:'PRLabels',datasource:{type:'prometheus',uid:'prometheus'},expr,instant:true,range:false,maxDataPoints:1,intervalMs:60000}]})});
+      const url = '/pr-search/labels?' + new URLSearchParams({pr, repository});
+      const response = await host.fetch(url, {credentials:'same-origin',signal:controller.signal});
       if (!response.ok) throw Error('Labels unavailable');
-      const result = (await response.json()).results?.PRLabels;
-      if (!result || result.error) throw Error('Labels unavailable');
-      const labels = [];
-      for (const frame of result.frames || []) for (const field of frame.schema.fields || []) {
-        if (field.type !== 'number' || !field.labels?.name) continue;
-        labels.push({name:field.labels.name,color:field.labels.color || '6b7280'});
-      }
-      if (labelRequest === controller) { labelData = labels.slice(0, 30); labelVersion++; schedule(); }
+      const result = await response.json();
+      if (labelRequest === controller) { labelData = (result.labels || []).slice(0, 30); isNewModel = result.new_model === true; labelVersion++; schedule(); }
     } catch (_) { /* Metadata is optional; keep the PR usable. */ }
     finally { host.clearTimeout(timeout); if (labelRequest === controller) labelRequest = null; }
   }
