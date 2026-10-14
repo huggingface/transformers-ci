@@ -75,7 +75,9 @@ from transformersci.otel import rerun_actions
 from transformersci.otel import rerun_failed
 from transformersci.otel import serge_actions
 from transformersci.otel import wdyt
+from transformersci.otel import who_can_help
 from transformersci.otel import patch_view
+from transformersci.otel import probable_fix
 from transformersci.otel import test_page
 
 from transformersci.emojize import emojize as _emojize
@@ -7694,6 +7696,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
             "/serge-actions/wdyt",
             "/serge-actions/wdyt/cache",
             "/serge-actions/wdyt/cost",
+            "/serge-actions/who-can-help",
             "/rerun-failed",
         ):
             self._send(404, JSON_CONTENT_TYPE, b'{"error":"not found"}')
@@ -7705,6 +7708,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._serve_wdyt_cache_clear()
         elif path == "/serge-actions/wdyt/cost":
             self._serve_wdyt_cost(parse_qs(urlparse(self.path).query))
+        elif path == "/serge-actions/who-can-help":
+            self._serve_who_can_help()
         else:
             self._serve_wdyt()
 
@@ -7748,6 +7753,44 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._reply_json(400, {"status": "invalid"})
         elif self._action_allowed() and self._action_user():
             self._reply_json(200, wdyt.fetch_cost(session_id))
+
+    def _serve_who_can_help(self) -> None:
+        if not self._action_allowed():
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if not 0 < length <= 8192:
+            self._reply_json(400, {"status": "invalid"})
+            return
+        try:
+            body = json.loads(self.rfile.read(length))
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        trace_id = str(body.get("trace_id") or "").strip()
+        nodeid = str(body.get("test_nodeid") or "").strip()
+        if (
+            not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id)
+            or not re.fullmatch(
+                r"tests/[\w./-]+\.py(?:::[^\x00-\x1f]{1,1800})?", nodeid
+            )
+            or ".." in nodeid.split("::", 1)[0].split("/")
+        ):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        login = self._action_user()
+        if not login:
+            return
+        trace = get_trace(trace_id)
+        if not trace or trace_repository(trace) != related_issues.REPOSITORY:
+            self._reply_json(404, {"status": "invalid"})
+            return
+        details = extract_failure_details(trace, nodeid)
+        self._reply_json(200, who_can_help.suggest(login, trace_id, nodeid, details))
 
     def _serve_wdyt(self) -> None:
         reply = self._reply_json
@@ -7985,6 +8028,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._request_route = "/serge-actions/fix-prs"
             self._serve_fix_prs(parse_qs(parsed.query))
             return
+        if parsed.path == "/serge-actions/probable-fix":
+            self._request_route = "/serge-actions/probable-fix"
+            self._serve_probable_fix(parse_qs(parsed.query))
+            return
         if parsed.path == "/serge-actions/logo.png":
             self._request_route = "/serge-actions/logo.png"
             self._send(
@@ -8171,6 +8218,29 @@ class MetricsHandler(BaseHTTPRequestHandler):
             json.dumps(result).encode(),
             cache_control="no-store",
         )
+
+    def _serve_probable_fix(self, params: dict[str, list[str]]) -> None:
+        trace_id = (params.get("trace_id") or [""])[0].strip()
+        nodeid = (params.get("test_nodeid") or [""])[0].strip()
+        if (
+            not probable_fix.test_file(nodeid)
+            or len(nodeid) > 2048
+            or any(ord(c) < 32 for c in nodeid)
+            or (trace_id and not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id))
+        ):
+            self._reply_json(400, {"status": "invalid"})
+            return
+
+        def load_details() -> list[dict[str, str]]:
+            trace = get_trace(trace_id) if trace_id else None
+            if not trace or trace_repository(trace) != related_issues.REPOSITORY:
+                return []
+            return extract_failure_details(trace, nodeid)
+
+        result = probable_fix.find(
+            trace_id, nodeid, load_details, search_github_issues, _github_api_get
+        )
+        self._reply_json(200, result)
 
     def _serve_related_issues(self, params: dict[str, list[str]]) -> None:
         if (params.get("format") or [""])[0] != "json":

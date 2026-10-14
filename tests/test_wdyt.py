@@ -12,6 +12,7 @@ import pytest
 from transformersci.otel import related_issues as ri
 from transformersci.otel import trace_exporter as te
 from transformersci.otel import wdyt
+from transformersci.otel import who_can_help
 
 NODE = "tests/trainer/test_trainer.py::TrainerIntegrationTest::test_end_to_end_example"
 TRACE = "e48b720b8543e9950d7766d80011338b"
@@ -283,6 +284,36 @@ def test_route_builds_prompt_from_the_trace(server, monkeypatch):
     assert result["related"] == []  # Relore is off in these tests
     assert "dataset loading failed" in prompts[0] and "Job: tests_torch" in prompts[0]
     assert "ignore previous" not in prompts[0]  # free text from the browser is dropped
+
+
+def test_who_can_help_route_uses_only_selected_trace(server, monkeypatch):
+    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: "octocat")
+    monkeypatch.setattr(te, "get_trace", lambda trace: {"trace": trace})
+    monkeypatch.setattr(te, "trace_repository", lambda trace: ri.REPOSITORY)
+    monkeypatch.setattr(te, "extract_failure_details", lambda trace, node: DETAILS)
+    seen = []
+    monkeypatch.setattr(
+        who_can_help,
+        "suggest",
+        lambda *args: (
+            seen.append(args)
+            or {"status": "no_people", "location": "tests/trainer/test_trainer.py:12"}
+        ),
+    )
+    url = server + "/serge-actions/who-can-help"
+    body = {
+        "trace_id": TRACE,
+        "test_nodeid": NODE,
+        "line": 999,
+        "author": "invented",
+        "repo": "evil/repo",
+    }
+    assert post(url, body, {})[0] == 403
+    assert post(url, body, {"X-TCI-Action": "1"}) == (
+        200,
+        {"status": "no_people", "location": "tests/trainer/test_trainer.py:12"},
+    )
+    assert seen == [("octocat", TRACE, NODE, DETAILS)]
 
 
 def test_cache_clear_route(server, monkeypatch):

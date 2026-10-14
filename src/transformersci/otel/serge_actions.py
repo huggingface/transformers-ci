@@ -20,6 +20,12 @@ ACTIONS = (
     ("new-issue", "New issue", "Serge writes a GitHub issue for this failure.", False),
     ("fix-it", "Fix it!", "Serge reproduces the failure and opens a fix PR.", False),
     ("wdyt", "WDYT?", "Serge takes a quick look and tells you what it thinks.", True),
+    (
+        "who-can-help",
+        "Who can help",
+        "Find people connected to this failing line and explain where they can help.",
+        True,
+    ),
 )
 
 # Fix PRs Serge already opened for a test: its PR bodies quote the failing node id.
@@ -101,7 +107,7 @@ PAGE_HTML = r"""<!doctype html><html><head><meta charset="utf-8">
 body{margin:0;padding:8px 10px;background:#181b1f;color:#d8d9da;
 font:13px/1.45 system-ui,sans-serif}
 .row{display:flex;gap:6px;flex-wrap:wrap}
-button{flex:1 1 0;min-width:0;background:#242b35;color:#d8d9da;
+button{flex:1 1 100px;min-width:0;background:#242b35;color:#d8d9da;
 border:1px solid #657083;border-radius:4px;padding:5px 8px;font:inherit;cursor:pointer;
 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 button:disabled{opacity:.55;cursor:not-allowed}
@@ -111,6 +117,7 @@ button.thinking{border-color:#6ab0ff;color:#6ab0ff}
 </style></head><body>
 <div class="row" id="actions"></div>
 <p id="fix" hidden></p>
+<p id="probable" hidden></p>
 <p id="note" role="status" aria-live="polite"></p>
 <script>
 const ACTIONS=__ACTIONS__,LOCK=__LOCK__;
@@ -135,6 +142,11 @@ function signIn(){
   top.location.href='/login?redirectTo='+encodeURIComponent(back);
 }
 const buttons={};
+function fitFrame(){
+  try{if(window.frameElement)window.frameElement.style.height=
+    Math.ceil(document.body.getBoundingClientRect().height+2)+'px';}catch(error){}
+}
+window.addEventListener('resize',fitFrame);
 for(const [id,label,help] of ACTIONS){
   const b=document.createElement('button');b.type='button';b.id=id;b.title=help;
   b.textContent=label;b.disabled=true;buttons[id]=b;row.append(b);
@@ -144,13 +156,14 @@ function render(signedIn){
     const b=buttons[id];b.replaceChildren();
     if(signedIn){
       b.textContent=label;b.title=help;b.disabled=!enabled;b.classList.remove('locked');
-      b.onclick=id==='wdyt'?wdyt:null;
+      b.onclick=id==='wdyt'?wdyt:id==='who-can-help'?whoCanHelp:null;
     }else{
       b.insertAdjacentHTML('afterbegin',LOCK);b.append(label);
       b.title='Sign in to use Serge. '+help;b.disabled=false;b.classList.add('locked');
       b.onclick=signIn;
     }
   }
+  fitFrame();
 }
 fetch('/api/user',{credentials:'same-origin',cache:'no-store'})
   .then(response=>render(response.ok)).catch(()=>render(false));
@@ -170,12 +183,25 @@ if(context.get('test_nodeid'))fetch('/serge-actions/fix-prs?test_nodeid='+
       a.rel='noopener noreferrer';a.title=pr.title;a.textContent='PR #'+pr.number;
       fix.append(a,' ('+(FIX_STATES[pr.state]||pr.state)+')');
     });
-    fix.append(' to fix this.');fix.hidden=false;
+    fix.append(' to fix this.');fix.hidden=false;fitFrame();
   }).catch(()=>{});
 // Like the traceback panel: a link without var-trace_id uses the test's latest
 // failing trace, which the dashboard resolves into latest_trace.
 if(!context.get('trace_id')&&/^[0-9a-f]{32}$/i.test(context.get('latest_trace')||''))
   context.set('trace_id',context.get('latest_trace'));
+if(context.get('test_nodeid'))fetch('/serge-actions/probable-fix?'+
+  new URLSearchParams({trace_id:context.get('trace_id')||'',
+    test_nodeid:context.get('test_nodeid')}),{cache:'no-store'})
+  .then(response=>response.json()).then(data=>{
+    if(data.status!=='ok'||!data.pr)return;
+    const p=document.getElementById('probable'),pr=data.pr;
+    const a=document.createElement('a');a.href=pr.url;a.target='_blank';
+    a.rel='noopener noreferrer';a.title=pr.title;
+    a.textContent='PR #'+pr.number;
+    p.append('🔎 Probable fix: ',a,' ('+pr.state+') · '+pr.title);
+    if(pr.issue)p.append(' · linked to issue #'+pr.issue);
+    p.hidden=false;fitFrame();
+  }).catch(()=>{});
 const MESSAGES={disabled:'WDYT? is not configured on this server yet.',
   unauthorized:'Your Grafana session expired. Sign in again.',
   rate_limited:'You asked a lot this hour. Try again later.',
@@ -215,6 +241,76 @@ async function wdyt(){
   }catch(error){}
   button.classList.remove('thinking');button.textContent='WDYT?';run=null;
   view.finish(result);
+}
+
+let helpersRun=false;
+async function whoCanHelp(){
+  if(helpersRun)return;
+  const button=buttons['who-can-help'];helpersRun=true;
+  button.classList.add('thinking');button.textContent='Looking…';
+  const view=helpersPopup();
+  let result={status:'unavailable'};
+  try{
+    const response=await fetch('/serge-actions/who-can-help',{
+      method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
+      body:JSON.stringify({trace_id:context.get('trace_id')||'',
+        test_nodeid:context.get('test_nodeid')||''})});
+    result=await response.json();
+  }catch(error){}
+  button.classList.remove('thinking');button.textContent='Who can help';helpersRun=false;
+  view.finish(result);
+}
+
+function helpersPopup(){
+  let doc=document,host=document.body;
+  for(let w=window;w.parent!==w;){
+    try{w=w.parent;if(w.document.body){doc=w.document;host=doc.body;}}catch(error){break;}
+  }
+  doc.getElementById('tci-helpers')?.remove();
+  const el=(tag,text)=>{const n=doc.createElement(tag);if(text)n.textContent=text;return n;};
+  const overlay=el('div');overlay.id='tci-helpers';
+  overlay.style.cssText='position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.55);'+
+    'display:flex;align-items:center;justify-content:center;padding:16px';
+  const box=el('div');box.style.cssText='background:#181b1f;color:#d8d9da;'+
+    'border:1px solid #657083;border-radius:6px;max-width:640px;width:100%;'+
+    'max-height:80vh;overflow:auto;padding:16px 20px;font:14px/1.5 system-ui,sans-serif';
+  box.setAttribute('role','dialog');box.setAttribute('aria-modal','true');
+  box.setAttribute('aria-label','Who can help');
+  const title=el('h2','Who can help');title.style.margin='0 0 8px';
+  const content=el('div','Reading the failing line and repository history…');
+  const close=el('button','Close');close.type='button';close.style.marginTop='14px';
+  const hide=()=>{overlay.remove();doc.removeEventListener('keydown',onKey);};
+  const onKey=event=>{if(event.key==='Escape')hide();};
+  close.onclick=hide;overlay.onclick=event=>{if(event.target===overlay)hide();};
+  box.append(title,content,close);overlay.append(box);host.append(overlay);
+  doc.addEventListener('keydown',onKey);close.focus();
+  return {finish(data){
+    content.replaceChildren();
+    if(data.status==='ok'){
+      content.append(el('p','People connected to '+data.location+'; suggestions, not assignments.'));
+      const list=el('ul');list.style.paddingLeft='20px';
+      for(const person of data.people||[]){
+        const item=el('li');item.style.margin='10px 0';
+        const link=el('a','@'+person.login);
+        link.href='https://github.com/'+encodeURIComponent(person.login);
+        link.target='_blank';link.rel='noopener noreferrer';
+        const evidence=el('a',person.evidence);evidence.href=person.url;
+        evidence.target='_blank';evidence.rel='noopener noreferrer';
+        item.append(link,' — '+person.why,' (',evidence,')');list.append(item);
+      }
+      content.append(list);
+    }else{
+      const messages={no_line:'The trace has no repository line to inspect.',
+        no_people:'No people with enough evidence were found for this line.',
+        invalid:'The selected failure is unavailable.',
+        unauthorized:'Your Grafana session expired. Sign in again.',
+        rate_limited:'You asked a lot this hour. Try again later.',
+        busy:'Serge is busy. Try again shortly.',
+        unavailable:'Could not read repository history right now. Try again shortly.'};
+      content.textContent=messages[data.status]||messages.unavailable;
+    }
+  }};
 }
 
 // Tiny Markdown subset -> DOM nodes (never innerHTML): paragraphs, "- " bullets,

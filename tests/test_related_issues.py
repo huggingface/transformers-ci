@@ -12,6 +12,7 @@ import pytest
 
 from transformersci.otel import related_issues as ri
 from transformersci.otel import serge_actions as sa
+from transformersci.otel import probable_fix as pf
 from transformersci.otel import trace_exporter as te
 
 NODE = "tests/trainer/test_trainer.py::TrainerIntegrationTest::test_end_to_end_example"
@@ -342,4 +343,30 @@ def test_fix_prs_route(server, monkeypatch):
         assert json.load(response)["prs"][0]["url"].endswith("/pull/7")
     with pytest.raises(HTTPError) as err:
         urlopen(server + "/serge-actions/fix-prs?test_nodeid=")
+    assert err.value.code == 400
+
+
+def test_probable_fix_route_uses_selected_test(server, monkeypatch):
+    seen = []
+
+    def find(trace, node, details, search, github):
+        seen.append((trace, node, details()))
+        return {"status": "none"}
+
+    monkeypatch.setattr(pf, "find", find)
+    monkeypatch.setattr(te, "get_trace", lambda trace: {"trace": trace})
+    monkeypatch.setattr(te, "trace_repository", lambda trace: ri.REPOSITORY)
+    monkeypatch.setattr(
+        te, "extract_failure_details", lambda trace, node: [{"node": node}]
+    )
+    with urlopen(
+        server
+        + "/serge-actions/probable-fix?"
+        + urlencode({"trace_id": TRACE, "test_nodeid": NODE})
+    ) as response:
+        assert response.headers["Cache-Control"] == "no-store"
+        assert json.load(response) == {"status": "none"}
+    assert seen == [(TRACE, NODE, [{"node": NODE}])]
+    with pytest.raises(HTTPError) as err:
+        urlopen(server + "/serge-actions/probable-fix?test_nodeid=../../etc/passwd")
     assert err.value.code == 400
