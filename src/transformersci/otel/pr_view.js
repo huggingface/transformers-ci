@@ -7,6 +7,8 @@ function installPrView() {
     .tci-pr-layout[data-tci-view="tests"] > .tci-pr-patch-panel,
     .tci-pr-layout[data-tci-view="patch"] > .tci-pr-tests-panel {display:none!important}
     .tci-pr-patch-panel iframe {display:block;width:100%;height:100%;min-height:640px;border:0}
+    .tci-gh-labels{display:inline-flex;align-items:center;flex-wrap:wrap;gap:5px}
+    .tci-gh-label{display:inline-block;padding:2px 8px;border-radius:999px;font:600 11px/1.5 system-ui,sans-serif;white-space:nowrap}
     [data-pr-mode="tests"][data-running="true"]::after {content:"";display:inline-block;width:8px;height:8px;margin-left:7px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-1px;animation:tci-tests-spin 1s linear infinite}
     @keyframes tci-tests-spin {to{transform:rotate(360deg)}}
     @media(prefers-reduced-motion:reduce){[data-pr-mode="tests"][data-running="true"]::after{animation:none}}
@@ -15,6 +17,52 @@ function installPrView() {
   let pending = false, previous = null;
   const originals = new WeakMap();
   let activityKey = '', activityTime = 0, activityRequest = null, activityRunning = false;
+  let labelKey = '', labelTime = 0, labelRequest = null, labelVersion = 0, labelData = [];
+  function paintLabels(branch) {
+    const container = branch.querySelector('[data-pr-labels]');
+    if (!container || container.dataset.renderedVersion === String(labelVersion)) return;
+    container.replaceChildren();
+    for (const label of labelData) {
+      const badge = doc.createElement('span');
+      badge.className = 'tci-gh-label'; badge.textContent = label.name;
+      const color = /^[0-9a-f]{6}$/i.test(label.color) ? label.color : '6b7280';
+      const red = parseInt(color.slice(0, 2), 16), green = parseInt(color.slice(2, 4), 16), blue = parseInt(color.slice(4, 6), 16);
+      badge.style.backgroundColor = '#' + color;
+      badge.style.color = (red * 299 + green * 587 + blue * 114) / 1000 > 145 ? '#111217' : '#fff';
+      container.append(badge);
+    }
+    container.dataset.renderedVersion = String(labelVersion);
+  }
+  async function checkLabels(branch) {
+    if (!branch || doc.hidden) return;
+    let pr, repository;
+    try { pr = decodeURIComponent(branch.dataset.pr || ''); repository = decodeURIComponent(branch.dataset.repository || ''); } catch (_) { return; }
+    if (!/^[1-9][0-9]*$/.test(pr) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return;
+    const key = repository + '#' + pr;
+    if (key !== labelKey) {
+      if (labelRequest) labelRequest.abort();
+      labelRequest = null; labelKey = key; labelTime = 0; labelData = []; labelVersion++;
+    }
+    paintLabels(branch);
+    if (labelRequest || Date.now() - labelTime < 60000) return;
+    labelTime = Date.now();
+    const controller = new host.AbortController(); labelRequest = controller;
+    const timeout = host.setTimeout(() => controller.abort(), 10000);
+    try {
+      const expr = 'max by (name,color) (pytest_pr_label_info{pr=' + JSON.stringify(pr) + ',repository=' + JSON.stringify(repository) + '})';
+      const response = await host.fetch('/api/ds/query', {method:'POST',credentials:'same-origin',signal:controller.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({from:'now-5m',to:'now',queries:[{refId:'PRLabels',datasource:{type:'prometheus',uid:'prometheus'},expr,instant:true,range:false,maxDataPoints:1,intervalMs:60000}]})});
+      if (!response.ok) throw Error('Labels unavailable');
+      const result = (await response.json()).results?.PRLabels;
+      if (!result || result.error) throw Error('Labels unavailable');
+      const labels = [];
+      for (const frame of result.frames || []) for (const field of frame.schema.fields || []) {
+        if (field.type !== 'number' || !field.labels?.name) continue;
+        labels.push({name:field.labels.name,color:field.labels.color || '6b7280'});
+      }
+      if (labelRequest === controller) { labelData = labels.slice(0, 30); labelVersion++; schedule(); }
+    } catch (_) { /* Metadata is optional; keep the PR usable. */ }
+    finally { host.clearTimeout(timeout); if (labelRequest === controller) labelRequest = null; }
+  }
   function markActivity(branch, running) {
     const button = branch.querySelector('[data-pr-mode="tests"]');
     if (!button) return;
@@ -70,7 +118,7 @@ function installPrView() {
   }
   function sync() {
     const branch = doc.querySelector('.tci-branch[data-pr-view]');
-    if (branch) checkActivity(branch);
+    if (branch) { checkActivity(branch); checkLabels(branch); }
     const branchItem = branch && branch.closest('.react-grid-item');
     const layout = branchItem && branchItem.parentElement;
     const patch = layout && layout.querySelector('[data-viz-panel-id="panel-15"]');
@@ -118,6 +166,7 @@ function installPrView() {
   host.addEventListener('resize', schedule);
   host.addEventListener('popstate', schedule);
   host.setInterval(() => checkActivity(), 30000);
+  host.setInterval(() => checkLabels(doc.querySelector('.tci-branch[data-pr-view]')), 60000);
   sync();
 }
 

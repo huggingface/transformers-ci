@@ -616,6 +616,79 @@
                 "value": false
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Category"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "New model": {
+                        "text": "NEW MODEL!",
+                        "color": "#d4a72c",
+                        "index": 0
+                      },
+                      "Bugfix": {
+                        "text": "Bugfix",
+                        "color": "#d85a6b",
+                        "index": 1
+                      },
+                      "Feature": {
+                        "text": "Feature",
+                        "color": "#5d9cec",
+                        "index": 2
+                      },
+                      "CI/infra": {
+                        "text": "CI/infra",
+                        "color": "#9b7edb",
+                        "index": 3
+                      },
+                      "Docs": {
+                        "text": "Docs",
+                        "color": "#72b59a",
+                        "index": 4
+                      },
+                      "Performance": {
+                        "text": "Performance",
+                        "color": "#e2a050",
+                        "index": 5
+                      },
+                      "Refactor": {
+                        "text": "Refactor",
+                        "color": "#8798b0",
+                        "index": 6
+                      },
+                      "Other": {
+                        "text": "Other",
+                        "color": "#77808e",
+                        "index": 7
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.width",
+                "value": 126
+              }
+            ]
           }
         ]
       },
@@ -663,6 +736,15 @@
           "legendFormat": "__auto",
           "range": false,
           "refId": "Title"
+        },
+        {
+          "editorMode": "code",
+          "expr": "max by (pr, category) (pytest_pr_info{pr=~\"$top_prs\",category!=\"\"})",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "Category"
         },
         {
           "editorMode": "code",
@@ -733,18 +815,20 @@
               "__name__": true,
               "instance": true,
               "job": true,
-              "Value #Title": true
+              "Value #Title": true,
+              "Value #Category": true
             },
             "indexByName": {
               "Value #Active": 0,
               "pr": 1,
               "title": 2,
-              "Value #Age": 3,
-              "Value #Activity": 4,
-              "Value #Runs": 5,
-              "Value #Failures": 6,
-              "Value #Rate": 7,
-              "Value #State": 8
+              "Value #Age": 4,
+              "Value #Activity": 5,
+              "Value #Runs": 6,
+              "Value #Failures": 7,
+              "Value #Rate": 8,
+              "Value #State": 9,
+              "category": 3
             },
             "renameByName": {
               "pr": "PR",
@@ -755,7 +839,8 @@
               "Value #Rate": "Failure Rate",
               "title": "Title",
               "Value #State": "State",
-              "Value #Active": "Live"
+              "Value #Active": "Live",
+              "category": "Category"
             }
           }
         },

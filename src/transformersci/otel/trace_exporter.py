@@ -1734,6 +1734,8 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
     head = payload.get("head")
     commit_sha = head.get("sha") if isinstance(head, dict) else ""
     created_at = payload.get("created_at")
+    labels = clean_pr_labels(payload.get("labels"))
+    new_model = any(label["name"].casefold() == "new model" for label in labels)
 
     pending: list[str] = []
     requested = payload.get("requested_reviewers")
@@ -1760,10 +1762,68 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
         if isinstance(html_url, str)
         else github_pr_html_url(repository, pr),
         "merged": "true" if is_merged else "false",
+        "new_model": "true" if new_model else "false",
+        "category": pr_category(labels, title if isinstance(title, str) else ""),
+        "labels_json": json.dumps(labels, separators=(",", ":")),
         "reviewers": reviewers,
         "state": state if isinstance(state, str) else "",
         "title": _emojize(title) if isinstance(title, str) else "",
     }
+
+
+def clean_pr_labels(raw: object) -> list[dict[str, str]]:
+    """Keep the small, displayable part of GitHub's PR label payload."""
+    labels = []
+    for item in raw[:30] if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        color = item.get("color")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        labels.append(
+            {
+                "name": name.strip()[:80],
+                "color": color.lower()
+                if isinstance(color, str) and re.fullmatch(r"[0-9a-fA-F]{6}", color)
+                else "6b7280",
+            }
+        )
+    return labels
+
+
+def pr_category(labels: list[dict[str, str]], title: str) -> str:
+    """Give sparse GitHub labels priority, then use conservative title cues."""
+    names = {label["name"].casefold() for label in labels}
+    if "new model" in names:
+        return "New model"
+    if names & {"github_actions", "testing", "deployment", "infrastructure"}:
+        return "CI/infra"
+    if names & {"documentation", "good first documentation"}:
+        return "Docs"
+    if names & {"bug", "fixme"}:
+        return "Bugfix"
+    if names & {"feature request", "high-level feature"}:
+        return "Feature"
+    if names & {"performance", "optimization", "benchmarks"}:
+        return "Performance"
+    if re.search(
+        r"\b(?:ci|github actions|circleci|workflow|docker|runner|pytest)\b", title, re.I
+    ):
+        return "CI/infra"
+    if re.search(
+        r"\b(?:fix|fixes|bug|flaky|regression|resolve|correct)\b", title, re.I
+    ):
+        return "Bugfix"
+    if re.search(r"\b(?:docs?|documentation|readme)\b", title, re.I):
+        return "Docs"
+    if re.search(r"\b(?:add|support|introduce|implement|enable)\b", title, re.I):
+        return "Feature"
+    if re.search(
+        r"\b(?:refactor|cleanup|remove|rename|separate|migrate)\b", title, re.I
+    ):
+        return "Refactor"
+    return "Other"
 
 
 _pr_info_cache_lock = threading.Lock()
@@ -1828,6 +1888,9 @@ def fetch_github_pr_info_cached(repository: str, pr: str) -> dict[str, str]:
         "created_at": "",
         "html_url": github_pr_html_url(repository, pr),
         "merged": "",
+        "new_model": "",
+        "category": "",
+        "labels_json": "[]",
         "reviewers": "",
         "state": "",
         "title": "",
@@ -2624,6 +2687,7 @@ def extract_pr_info_metrics(
     ]
     created_lines: list[str] = []
     state_lines: list[str] = []
+    label_lines: list[str] = []
     best_by_pr: dict[tuple[str, str], tuple[int, dict[str, str]]] = {}
     for trace_info, _rows in extracted:
         pr = str(trace_info.get("pr", "none"))
@@ -2669,6 +2733,9 @@ def extract_pr_info_metrics(
             "commit_sha": "",
             "created_at": "",
             "html_url": pr_url or github_pr_html_url(repository, pr),
+            "new_model": "",
+            "category": "",
+            "labels_json": "[]",
             "reviewers": "",
             "state": "",
             "title": "",
@@ -2680,6 +2747,8 @@ def extract_pr_info_metrics(
             "author": str(metadata.get("author", "")),
             "commit_sha": str(metadata.get("commit_sha", "")) or "main",
             "html_url": str(metadata.get("html_url", "")),
+            "new_model": str(metadata.get("new_model", "")),
+            "category": str(metadata.get("category", "")),
             "pr": pr,
             "repository": repository,
             "reviewers": str(metadata.get("reviewers", "")),
@@ -2688,6 +2757,15 @@ def extract_pr_info_metrics(
             "title": str(metadata.get("title", "")),
         }
         lines.append(f"pytest_pr_info{metric_labels(labels)} 1")
+
+        try:
+            pr_labels = json.loads(str(metadata.get("labels_json", "[]")))
+        except (ValueError, TypeError):
+            pr_labels = []
+        for label in clean_pr_labels(pr_labels):
+            label_lines.append(
+                f"pytest_pr_label_info{metric_labels({'pr': pr, 'repository': repository, 'name': label['name'], 'color': label['color']})} 1"
+            )
 
         # Numeric state gauge: ONE series per PR whose VALUE is the state
         # (open=1, merged=2, closed-but-not-merged=0), so the dashboard can
@@ -2723,6 +2801,12 @@ def extract_pr_info_metrics(
                 f"pytest_pr_created_at_seconds{metric_labels(created_labels)} {created_ts:.0f}"
             )
 
+    if label_lines:
+        lines.append(
+            "# HELP pytest_pr_label_info Current GitHub labels on a pull request."
+        )
+        lines.append("# TYPE pytest_pr_label_info gauge")
+        lines.extend(label_lines)
     if created_lines:
         lines.append(
             "# HELP pytest_pr_created_at_seconds Unix timestamp the PR was created at."
@@ -7443,9 +7527,14 @@ def render_run_html(
         "<style>"
         "body{margin:0;padding:10px 12px;background:#0b0c0e;color:#d8d9da;"
         "font:13px/1.5 system-ui,sans-serif}"
-        "table{width:100%;border-collapse:collapse}"
+        "table{width:100%;border-collapse:collapse;table-layout:fixed}"
         "th,td{text-align:left;padding:5px 8px;border-bottom:1px solid #24262b;"
         "white-space:nowrap}"
+        "th:first-child,td:first-child{width:102px}"
+        "th:nth-child(3),td:nth-child(3){width:115px;overflow-wrap:anywhere}"
+        "th:nth-child(4),td:nth-child(4){width:92px}"
+        "th:nth-child(5),td:nth-child(5){width:82px}"
+        "td:nth-child(3){white-space:normal}"
         "th{color:#8e9197;font:600 11px system-ui,sans-serif;text-transform:uppercase;"
         "letter-spacing:.04em;position:sticky;top:0;background:#0b0c0e}"
         "td.nodeid{white-space:normal;word-break:break-word;"

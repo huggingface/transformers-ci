@@ -71,10 +71,23 @@ def test_template_and_draft_keep_required_sections_and_trace(monkeypatch):
     )
     monkeypatch.setattr(new_issue.who_can_help, "why", lambda *args: {"number": 42})
     monkeypatch.setattr(new_issue.related_issues, "lookup", lambda *args: {"hits": []})
+    helper = {
+        "login": "maintainer",
+        "why": "Reviewed the affected line",
+        "evidence": "PR #7",
+        "url": "https://github.com/huggingface/transformers/pull/7",
+    }
+    monkeypatch.setattr(
+        new_issue.who_can_help,
+        "suggest",
+        lambda *args: {"status": "ok", "people": [helper]},
+    )
+    captured = []
     monkeypatch.setattr(
         new_issue,
         "model_draft",
-        lambda *args: {
+        lambda *args: captured.append(args[6])
+        or {
             "title": "Streamer fails in CI",
             "sections": {
                 "system-info": "",
@@ -93,12 +106,14 @@ def test_template_and_draft_keep_required_sections_and_trace(monkeypatch):
         emit=events.append,
     )
     assert draft["status"] == "ok"
+    assert captured == [[helper]]
     assert [event["text"] for event in events if event["event"] == "step"] == [
         "Reading the Transformers bug report template",
         "Locating the failing test in the repository",
         "Reading Relore history for the failing line",
         "Searching related issues and PRs",
         "Checking recent changes to the test file",
+        "Finding people who can help (slow)",
         "Asking the model to draft the report (slow)",
         "Preparing the editable issue form",
     ]
@@ -129,6 +144,9 @@ def test_cached_draft_reuses_model_output_with_distinct_publish_ids(monkeypatch)
         new_issue.who_can_help, "frequent_test_modifier", lambda *args: []
     )
     monkeypatch.setattr(new_issue.related_issues, "lookup", lambda *args: {"hits": []})
+    monkeypatch.setattr(
+        new_issue.who_can_help, "suggest", lambda *args: {"status": "no_people"}
+    )
 
     def draft(*args):
         calls.append(1)
@@ -164,6 +182,9 @@ def test_draft_uses_recent_test_modifier_when_relore_has_no_people(monkeypatch):
     )
     monkeypatch.setattr(new_issue.who_can_help, "source_line", lambda *args: None)
     monkeypatch.setattr(new_issue.related_issues, "lookup", lambda *args: {"hits": []})
+    monkeypatch.setattr(
+        new_issue.who_can_help, "suggest", lambda *args: {"status": "no_people"}
+    )
     monkeypatch.setattr(
         new_issue.who_can_help,
         "frequent_test_modifier",

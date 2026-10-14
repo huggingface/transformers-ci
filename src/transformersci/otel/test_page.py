@@ -37,7 +37,7 @@ STYLE = """
 html,body{margin:0;background:var(--panel);color:var(--text);font:13px/1.5 Inter,system-ui,sans-serif}
 a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
 .gh{vertical-align:-1px;margin-left:3px}
-.page{max-width:1800px;margin:0 auto;padding:16px 16px 24px}
+.page{width:100%;margin:0 auto;padding:16px 16px 24px}
 .card{min-width:0}
 .head{display:flex;gap:16px;align-items:flex-start;padding:0 0 14px;margin:0 0 16px;border-bottom:1px solid var(--line)}
 .head-main{flex:1 1 auto;min-width:0}
@@ -61,7 +61,7 @@ border-radius:4px;background:rgba(204,204,220,.04);font:13px/1.45 ui-monospace,S
 white-space:pre-wrap;overflow-wrap:anywhere}
 button{background:#242b35;color:var(--text);border:1px solid #657083;border-radius:4px;
 padding:4px 12px;cursor:pointer;font:inherit}
-.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;align-items:start}
+.grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,.75fr);gap:24px;align-items:start}
 .side{position:sticky;top:12px;display:flex;flex-direction:column;gap:12px;max-height:calc(100dvh - 24px);min-width:0}
 .box{border:1px solid var(--line);border-radius:5px;background:var(--panel);min-width:0}
 .box h2{display:flex;align-items:center;gap:8px;margin:0;padding:10px 12px;border-bottom:1px solid var(--line)}

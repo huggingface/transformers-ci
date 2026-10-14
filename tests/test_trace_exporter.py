@@ -1408,6 +1408,7 @@ def test_fetch_github_pr_info_uses_github_api_response() -> None:
         '"user": {"login": "octocat"}, '
         '"head": {"sha": "deadbeefcafebabe1234567890abcdef00000000"}, '
         '"created_at": "2024-01-02T03:04:05Z", '
+        '"labels": [{"name": "New model"}, {"name": "Testing"}], '
         '"requested_reviewers": [{"login": "alice"}, {"login": "bob"}]}'
     )
     reviews_payload = FakeResponse(
@@ -1444,6 +1445,9 @@ def test_fetch_github_pr_info_uses_github_api_response() -> None:
         "created_at": "2024-01-02T03:04:05Z",
         "html_url": "https://github.com/huggingface/transformers/pull/4321",
         "merged": "false",
+        "new_model": "true",
+        "category": "New model",
+        "labels_json": '[{"name":"New model","color":"6b7280"},{"name":"Testing","color":"6b7280"}]',
         "reviewers": "carol,alice,bob",
         "state": "open",
         "title": "Fix dashboard metadata",
@@ -1469,6 +1473,18 @@ def test_fetch_github_pr_info_expands_emoji_shortcodes_in_title() -> None:
     # Grafana renders GitHub shortcodes verbatim, so the exporter expands them
     # to real glyphs at the source.
     assert metadata["title"] == "🚨 Fix flaky test 🔥"
+    assert metadata["new_model"] == "false"
+
+
+def test_pr_category_prefers_labels_and_uses_title_when_unlabelled() -> None:
+    classify = trace_exporter.pr_category
+    assert classify([{"name": "New model"}], "Fix tests") == "New model"
+    assert classify([{"name": "github_actions"}], "Fix workflow") == "CI/infra"
+    assert classify([], "Fix flaky streamer timeout") == "Bugfix"
+    assert classify([], "Add support for a new tokenizer") == "Feature"
+    assert classify([], "Improve the docs") == "Docs"
+    assert classify([], "Separate encoder and decoder") == "Refactor"
+    assert classify([], "TP embeddings") == "Other"
 
 
 def test_fetch_github_pr_info_carries_merged_flag() -> None:
@@ -1532,6 +1548,9 @@ def test_extract_pr_info_metrics_fetches_metadata_once_per_pr() -> None:
             "commit_sha": "deadbeefcafebabe1234567890abcdef00000000",
             "created_at": "2024-01-02T03:04:05Z",
             "html_url": "https://github.com/huggingface/transformers/pull/4321",
+            "new_model": "true",
+            "category": "New model",
+            "labels_json": '[{"name":"New model","color":"f5a623"}]',
             "reviewers": "alice,bob",
             "state": "open",
             "title": "Fix dashboard metadata",
@@ -1553,6 +1572,12 @@ def test_extract_pr_info_metrics_fetches_metadata_once_per_pr() -> None:
     )
     assert 'repository="huggingface/transformers"' in info_lines[0]
     assert 'reviewers="alice,bob"' in info_lines[0]
+    assert 'new_model="true"' in info_lines[0]
+    assert 'category="New model"' in info_lines[0]
+    label_lines = metric_lines(metrics, "pytest_pr_label_info")
+    assert len(label_lines) == 1
+    assert 'name="New model"' in label_lines[0]
+    assert 'color="f5a623"' in label_lines[0]
     assert 'state="open"' in info_lines[0]
     assert 'title="Fix dashboard metadata"' in info_lines[0]
 
