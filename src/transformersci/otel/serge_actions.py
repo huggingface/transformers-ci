@@ -117,9 +117,21 @@ const ACTIONS=__ACTIONS__,LOCK=__LOCK__;
 const row=document.getElementById('actions'),note=document.getElementById('note');
 // Every button shows at once; signed out, each carries a lock and goes to the
 // Grafana sign-in, which brings the viewer back to the page they were on.
+// Grafana only returns to its own pages after sign-in, and a bare /test is the
+// exporter's: send that one back to the Grafana Test page for the same test.
+const TEST_PAGE_VARS={trace_id:'trace_id',test_nodeid:'test_nodeid',job:'test_job',
+  pr:'pr',run_id:'run_id',status:'status_code'};
 function signIn(){
   let back='/';
-  try{back=top.location.pathname+top.location.search;}catch(error){}
+  try{
+    const here=top.location;back=here.pathname+here.search;
+    if(here.pathname==='/test'){
+      const from=new URLSearchParams(here.search),to=new URLSearchParams();
+      for(const [key,name] of Object.entries(TEST_PAGE_VARS))
+        if(from.get(key))to.set('var-'+name,from.get(key));
+      back='/d/pytest-test/test?'+to;
+    }
+  }catch(error){}
   top.location.href='/login?redirectTo='+encodeURIComponent(back);
 }
 const buttons={};

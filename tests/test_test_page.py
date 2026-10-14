@@ -141,7 +141,9 @@ def test_render_full_failure_page():
     )
     # Serge Actions sits above the related issues, with Serge's logo.
     assert page.index("id='serge'") < page.index("id='issues'")
-    assert "<img src='/serge-actions/logo.png' alt=''>Serge Actions</h2><iframe" in page
+    assert (
+        "<img src='/serge-actions/logo.png' alt=''>Agentic Actions</h2><iframe" in page
+    )
     for text in (
         "aws-g5-12xlarge-cache · xGPU",
         "pytest -svx &#x27;" + NODE + "&#x27;",

@@ -429,7 +429,7 @@ def render_test_page(data: dict) -> str:
     )
     out.append(
         "<aside class='side'><section class='box' id='serge'>"
-        "<h2><img src='/serge-actions/logo.png' alt=''>Serge Actions</h2>"
+        "<h2><img src='/serge-actions/logo.png' alt=''>Agentic Actions</h2>"
         f"<iframe class='serge' title='Serge actions' src='/serge-actions?{esc(serge_query)}'></iframe>"
         "</section>"
         "<section class='box' id='issues'><h2>Potential related issues</h2>"

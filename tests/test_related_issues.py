@@ -273,6 +273,10 @@ def test_serge_actions_shell(server):
     assert "b.disabled=!enabled" in page
     assert "b.classList.add('locked')" in page and "b.onclick=signIn" in page
     assert "'/login?redirectTo='+encodeURIComponent(back)" in page
+    # A bare /test returns to the Grafana Test page (Grafana's sign-in only
+    # lands on its own routes).
+    assert "back='/d/pytest-test/test?'+to" in page
+    assert "job:'test_job'" in page and "status:'status_code'" in page
     assert "fetch('/api/user'" in page
     with urlopen(server + "/serge-actions/logo.png") as response:
         assert response.headers["Content-Type"] == "image/png"
