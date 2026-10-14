@@ -286,8 +286,12 @@ async function cost(sessionId,node){
 }
 
 function popup(){
+  // The top-most same-origin page: the popup centres on what the viewer sees,
+  // not on an iframe taller than the screen (the Test page inside Grafana).
   let doc=document,host=document.body;
-  try{if(parent.document.body){doc=parent.document;host=doc.body;}}catch(error){}
+  for(let w=window;w.parent!==w;){
+    try{w=w.parent;if(w.document.body){doc=w.document;host=doc.body;}}catch(error){break;}
+  }
   doc.getElementById('tci-wdyt')?.remove();
   const el=(tag,css,text)=>{const n=doc.createElement(tag);if(css)n.style.cssText=css;
     if(text!==undefined)n.textContent=text;return n;};

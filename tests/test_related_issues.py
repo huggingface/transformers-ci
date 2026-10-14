@@ -278,6 +278,9 @@ def test_serge_actions_shell(server):
     assert "back='/d/pytest-test/test?'+to" in page
     assert "job:'test_job'" in page and "status:'status_code'" in page
     assert "fetch('/api/user'" in page
+    # WDYT?'s popup goes to the top-most same-origin page, so it is centred on
+    # the screen even when Serge Actions sits two iframes deep.
+    assert "for(let w=window;w.parent!==w;)" in page
     with urlopen(server + "/serge-actions/logo.png") as response:
         assert response.headers["Content-Type"] == "image/png"
         assert response.read()[:8] == b"\x89PNG\r\n\x1a\n"
