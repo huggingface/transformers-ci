@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 jobs:
-  contracts:
+  run:
     # Infrastructure failures must not block PRs during the observational rollout.
     continue-on-error: true
     runs-on:
@@ -46,7 +46,7 @@ jobs:
         shell: bash
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # full clone — needed to compute changed files via git diff on PR events.
           fetch-depth: 0
@@ -57,11 +57,13 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           start=$SECONDS
           uv pip install -e .
-          uv pip install "transformers-mic @ git+https://github.com/huggingface/transformers-mic@${{ inputs.tmic_sha }}"
+          uv pip install "transformers-mic @ git+https://github.com/huggingface/transformers-mic@${INPUTS_TMIC_SHA}"
           uv pip install timm jsonschema "git+https://github.com/huggingface/doc-builder@$DOC_BUILDER_SHA"
           echo "Installed in $((SECONDS - start)) s on $(lscpu | sed -n 's/^Model name: *//p'), $(nproc) cores"
+        env:
+          INPUTS_TMIC_SHA: ${{ inputs.tmic_sha }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           path: /tmp/hf_home/hub
@@ -166,7 +168,7 @@ jobs:
           print('Observation:', json.dumps(report))
           PY_RESULT
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         continue-on-error: true
         with:
