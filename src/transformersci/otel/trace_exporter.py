@@ -75,7 +75,12 @@ from transformersci.otel import rerun_actions
 from transformersci.otel import rerun_failed
 from transformersci.otel import serge_actions
 from transformersci.otel import wdyt
+from transformersci.otel import who_can_help
+from transformersci.otel import new_issue
 from transformersci.otel import patch_view
+from transformersci.otel import pr_ci_view
+from transformersci.otel import probable_fix
+from transformersci.otel import test_page
 
 from transformersci.emojize import emojize as _emojize
 from transformersci.runners import ATTRIBUTE_PREFIX as RUNNER_ATTRIBUTE_PREFIX
@@ -1640,6 +1645,28 @@ def _github_api_get(api_url: str, timeout: float = 5.0) -> object:
     return json.loads(body)
 
 
+def _github_create_issue(title: str, body: str) -> object:
+    # The dashboard App is read-only. Use the separately configured PAT for writes.
+    token = os.getenv("PYTEST_GITHUB_TOKEN", "").strip()
+    if not token:
+        raise ValueError("GitHub write token unavailable")
+    api_base = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
+    request = Request(
+        f"{api_base}/repos/{related_issues.REPOSITORY}/issues",
+        data=json.dumps({"title": title, "body": body, "labels": ["bug"]}).encode(),
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "transformersci-trace-exporter",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:
+        return json.loads(response.read(64 * 1024))
+
+
 def search_github_issues(query: str, *, sort: str = "created", limit: int = 20) -> list:
     """GitHub issue/PR search, newest first (one page)."""
     api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip(
@@ -1708,6 +1735,8 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
     head = payload.get("head")
     commit_sha = head.get("sha") if isinstance(head, dict) else ""
     created_at = payload.get("created_at")
+    labels = clean_pr_labels(payload.get("labels"))
+    new_model = any(label["name"].casefold() == "new model" for label in labels)
 
     pending: list[str] = []
     requested = payload.get("requested_reviewers")
@@ -1725,6 +1754,14 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
             seen.add(login)
             merged.append(login)
     reviewers = ",".join(merged)
+    category = pr_category(labels, title if isinstance(title, str) else "")
+    if category == "Other":
+        try:
+            if pr_changes_only_in_github(repository, pr, payload.get("changed_files")):
+                category = "CI/infra"
+        except Exception:
+            # File metadata is optional; a failed lookup should not hide the PR.
+            pass
 
     return {
         "author": author if isinstance(author, str) else "",
@@ -1734,10 +1771,109 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
         if isinstance(html_url, str)
         else github_pr_html_url(repository, pr),
         "merged": "true" if is_merged else "false",
+        "new_model": "true" if new_model else "false",
+        "category": category,
+        "labels_json": json.dumps(labels, separators=(",", ":")),
         "reviewers": reviewers,
         "state": state if isinstance(state, str) else "",
         "title": _emojize(title) if isinstance(title, str) else "",
     }
+
+
+def clean_pr_labels(raw: object) -> list[dict[str, str]]:
+    """Keep the small, displayable part of GitHub's PR label payload."""
+    labels = []
+    for item in raw[:30] if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        color = item.get("color")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        labels.append(
+            {
+                "name": name.strip()[:80],
+                "color": color.lower()
+                if isinstance(color, str) and re.fullmatch(r"[0-9a-fA-F]{6}", color)
+                else "6b7280",
+            }
+        )
+    return labels
+
+
+def pr_category(labels: list[dict[str, str]], title: str) -> str:
+    """Give sparse GitHub labels priority, then use conservative title cues."""
+    names = {label["name"].casefold() for label in labels}
+    if "new model" in names:
+        return "New model"
+    if names & {"github_actions", "testing", "deployment", "infrastructure"}:
+        return "CI/infra"
+    if names & {"documentation", "good first documentation"}:
+        return "Docs"
+    if names & {"bug", "fixme"}:
+        return "Bugfix"
+    if names & {"feature request", "high-level feature"}:
+        return "Feature"
+    if names & {"performance", "optimization", "benchmarks"}:
+        return "Performance"
+    if re.search(
+        r"\b(?:ci|github actions|circleci|workflow|docker|runner|pytest)\b", title, re.I
+    ):
+        return "CI/infra"
+    if re.search(
+        r"\b(?:fix|fixes|bug|flaky|regression|resolve|correct)\b", title, re.I
+    ):
+        return "Bugfix"
+    if re.search(r"\b(?:docs?|documentation|readme)\b", title, re.I):
+        return "Docs"
+    if re.search(r"\b(?:add|support|introduce|implement|enable)\b", title, re.I):
+        return "Feature"
+    if re.search(
+        r"\b(?:refactor|cleanup|remove|rename|separate|migrate)\b", title, re.I
+    ):
+        return "Refactor"
+    return "Other"
+
+
+def pr_changes_only_in_github(repository: str, pr: str, changed_files: object) -> bool:
+    """Confirm that every changed path in a PR is under .github/."""
+    if isinstance(changed_files, int) and not isinstance(changed_files, bool):
+        if not 0 < changed_files <= 3000:
+            return False
+    else:
+        changed_files = None
+
+    api_base = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
+    files_url = (
+        f"{api_base}/repos/{quote(repository, safe='/')}/pulls/"
+        f"{quote(pr, safe='')}/files"
+    )
+    seen = 0
+    for page in range(1, 31):
+        payload = _github_api_get(f"{files_url}?per_page=100&page={page}")
+        if not isinstance(payload, list) or not payload or len(payload) > 100:
+            return False
+        for file in payload:
+            if not isinstance(file, dict):
+                return False
+            path = file.get("filename")
+            previous_path = file.get("previous_filename")
+            if not isinstance(path, str) or not path.startswith(".github/"):
+                return False
+            if previous_path is not None and (
+                not isinstance(previous_path, str)
+                or not previous_path.startswith(".github/")
+            ):
+                return False
+        seen += len(payload)
+        if changed_files is not None:
+            if seen == changed_files:
+                return True
+            if seen > changed_files:
+                return False
+        if len(payload) < 100:
+            return changed_files is None
+    return False
 
 
 _pr_info_cache_lock = threading.Lock()
@@ -1802,6 +1938,9 @@ def fetch_github_pr_info_cached(repository: str, pr: str) -> dict[str, str]:
         "created_at": "",
         "html_url": github_pr_html_url(repository, pr),
         "merged": "",
+        "new_model": "",
+        "category": "",
+        "labels_json": "[]",
         "reviewers": "",
         "state": "",
         "title": "",
@@ -1910,6 +2049,66 @@ def failure_context_trace(trace_id: str) -> dict | None:
     return recent_trace_processes(trace_id) or fetch_failure_trace(trace_id)
 
 
+# The Hugging Face 🤗 (huggingface.co's logo artwork) as every page's icon:
+# browsers ask exporter pages for /favicon.ico, and the ingress sends Grafana's
+# own icon paths here too, so Grafana and exporter tabs look the same.
+_ICON_DIR = Path(__file__).parent
+FAVICONS: dict[str, bytes] = {
+    "/favicon.ico": (_ICON_DIR / "favicon-32.png").read_bytes(),
+    "/public/build/img/fav32.png": (_ICON_DIR / "favicon-32.png").read_bytes(),
+    "/public/build/img/apple-touch-icon.png": (
+        _ICON_DIR / "favicon-180.png"
+    ).read_bytes(),
+}
+
+
+def test_span_facts(trace: dict | None, test_nodeid: str) -> dict[str, object]:
+    """What the Test page shows from the test's own span: status, duration,
+    start time and device memory. With several spans for the node (reruns),
+    a failing one wins, then the latest. Missing values are simply absent."""
+    best: tuple[int, int, dict] | None = None
+    spans = (trace or {}).get("spans")
+    for span in spans if isinstance(spans, list) else []:
+        if not isinstance(span, dict):
+            continue
+        tags = tag_map(span.get("tags", []))
+        if tags.get("pytest.span_type") != "test":
+            continue
+        if (tags.get("pytest.nodeid") or str(span.get("operationName", ""))) != (
+            test_nodeid
+        ):
+            continue
+        failed = 1 if tags.get("otel.status_code") == "ERROR" else 0
+        start = int(span.get("startTime", 0) or 0)
+        if best is None or (failed, start) > best[:2]:
+            best = (failed, start, {"span": span, "tags": tags})
+    if best is None:
+        return {}
+    span, tags = best[2]["span"], best[2]["tags"]
+    facts: dict[str, object] = {"status": tags.get("otel.status_code", "UNSET")}
+    try:
+        facts["duration_seconds"] = (
+            float(tags["pytest.worker_duration_seconds"])
+            if "pytest.worker_duration_seconds" in tags
+            else int(span.get("duration", 0)) / 1_000_000
+        )
+    except (TypeError, ValueError):
+        pass
+    if best[1]:
+        facts["started_at"] = best[1] / 1_000_000
+    for tag, key in (
+        ("pytest.cuda_inherited_bytes", "cuda_inherited_bytes"),
+        ("pytest.cuda_retained_bytes", "cuda_retained_bytes"),
+        ("pytest.cuda_delta_bytes", "cuda_delta_bytes"),
+    ):
+        try:
+            if tag in tags:
+                facts[key] = float(tags[tag])
+        except (TypeError, ValueError):
+            pass
+    return facts
+
+
 def github_job_html_url(repository: str, run_id: str, job_id: str) -> str:
     """The GitHub Actions job page, or "" without a numeric job id.
 
@@ -1977,13 +2176,99 @@ def failure_context(trace: dict | None, test_nodeid: str) -> dict[str, str]:
     }
 
 
-def fetch_github_commit_message(repository: str, sha: str) -> str:
-    """Return the first line (subject) of a commit's message from GitHub.
+class DependencyChange(NamedTuple):
+    dependency: str
+    # "" when the commit created the file (no earlier version recorded).
+    from_version: str
+    to_version: str
 
-    Mirrors :func:`fetch_github_pr_info` but hits the commits endpoint so the
-    overview's main-branch run table can show a human-readable commit subject
-    instead of a bare run id. Returns "" when the lookup fails.
-    """
+
+class CommitDetails(NamedTuple):
+    """What the exporter keeps from one ``GET /repos/{repo}/commits/{sha}``."""
+
+    message: str = ""
+    # Model folders whose ``__init__.py`` this commit added, sorted.
+    added_models: tuple[str, ...] = ()
+    # Committer date in epoch milliseconds (the merge time for a commit on main).
+    committed_at_ms: int = 0
+    # PR number from the subject's ``(#NNNNN)`` suffix, or "".
+    pr: str = ""
+    dependency_changes: tuple[DependencyChange, ...] = ()
+
+
+# Files whose version line marks a major dependency change, and the pattern
+# that pulls the version out of a ``+``/``-`` patch line. torch comes from the
+# GPU CI image (what the GPU panels run), not the dependency table's floor.
+DEPENDENCY_VERSION_FILES: dict[str, tuple[str, re.Pattern[str]]] = {
+    "docker/transformers-all-latest-gpu/Dockerfile": (
+        "torch",
+        re.compile(r"""^([-+])ARG PYTORCH=['"]?([^'"\s]+)"""),
+    ),
+    ".python-version": ("python", re.compile(r"^([-+])\s*(\d[\w.]*)\s*$")),
+}
+
+
+def dependency_change_from_patch(
+    dependency: str, pattern: re.Pattern[str], patch: str
+) -> DependencyChange | None:
+    versions = {"-": "", "+": ""}
+    for line in patch.splitlines():
+        match = pattern.match(line)
+        if match:
+            versions[match.group(1)] = match.group(2)
+    if not versions["+"] or versions["+"] == versions["-"]:
+        return None
+    return DependencyChange(dependency, versions["-"], versions["+"])
+
+
+_ADDED_MODEL_INIT = re.compile(r"^src/transformers/models/([^/]+)/__init__\.py$")
+_SUBJECT_PR_SUFFIX = re.compile(r"\(#(\d+)\)\s*$")
+
+
+def commit_details_from_payload(payload: object) -> CommitDetails:
+    if not isinstance(payload, dict):
+        return CommitDetails()
+    commit = payload.get("commit")
+    commit = commit if isinstance(commit, dict) else {}
+    message = commit.get("message")
+    subject = ""
+    if isinstance(message, str) and message.strip():
+        # Commit messages are multi-line (subject + body); keep the first line.
+        subject = message.strip().splitlines()[0]
+    pr_match = _SUBJECT_PR_SUFFIX.search(subject)
+    committer = commit.get("committer")
+    committed_at = parse_github_timestamp(
+        str(committer.get("date") or "") if isinstance(committer, dict) else ""
+    )
+    added_models = set()
+    dependency_changes = []
+    files = payload.get("files")
+    for entry in files if isinstance(files, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        filename = str(entry.get("filename", ""))
+        watched = DEPENDENCY_VERSION_FILES.get(filename)
+        # GitHub omits ``patch`` for very large diffs; no patch, no marker.
+        if watched and isinstance(entry.get("patch"), str):
+            change = dependency_change_from_patch(*watched, entry["patch"])
+            if change:
+                dependency_changes.append(change)
+        if entry.get("status") != "added":
+            continue
+        match = _ADDED_MODEL_INIT.match(filename)
+        if match:
+            added_models.add(match.group(1))
+    return CommitDetails(
+        message=_emojize(subject) if subject else "",
+        added_models=tuple(sorted(added_models)),
+        committed_at_ms=int(committed_at * 1000) if committed_at is not None else 0,
+        pr=pr_match.group(1) if pr_match else "",
+        dependency_changes=tuple(dependency_changes),
+    )
+
+
+def fetch_github_commit_details(repository: str, sha: str) -> CommitDetails:
+    """Fetch one commit from GitHub; an empty ``CommitDetails`` on failure."""
     api_base_url = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip(
         "/"
     )
@@ -1994,38 +2279,46 @@ def fetch_github_commit_message(repository: str, sha: str) -> str:
     try:
         payload = _github_api_get(api_url)
     except Exception:
-        return ""
-    if not isinstance(payload, dict):
-        return ""
-    commit = payload.get("commit")
-    message = commit.get("message") if isinstance(commit, dict) else ""
-    if not isinstance(message, str):
-        return ""
-    # Commit messages are multi-line (subject + body); the table only wants the
-    # subject, so keep the first non-empty line.
-    return _emojize(message.strip().splitlines()[0]) if message.strip() else ""
+        return CommitDetails()
+    return commit_details_from_payload(payload)
 
 
-_commit_msg_cache_lock = threading.Lock()
-_cached_commit_msg: dict[tuple[str, str], tuple[float, str]] = {}
+def fetch_github_commit_message(repository: str, sha: str) -> str:
+    """Return the first line (subject) of a commit's message from GitHub.
+
+    Mirrors :func:`fetch_github_pr_info` but hits the commits endpoint so the
+    overview's main-branch run table can show a human-readable commit subject
+    instead of a bare run id. Returns "" when the lookup fails.
+    """
+    return fetch_github_commit_details(repository, sha).message
 
 
-def fetch_github_commit_message_cached(repository: str, sha: str) -> str:
+_commit_details_cache_lock = threading.Lock()
+_cached_commit_details: dict[tuple[str, str], tuple[float, CommitDetails]] = {}
+
+
+def fetch_github_commit_details_cached(repository: str, sha: str) -> CommitDetails:
     key = (repository, sha)
     ttl = github_cache_ttl_seconds()
     now = time.monotonic()
-    with _commit_msg_cache_lock:
-        cached = _cached_commit_msg.get(key)
+    with _commit_details_cache_lock:
+        cached = _cached_commit_details.get(key)
         if cached is not None and ttl > 0:
-            cached_at, message = cached
+            cached_at, details = cached
             if now - cached_at < ttl:
-                return message
+                return details
 
-    message = fetch_github_commit_message(repository, sha)
+    details = fetch_github_commit_details(repository, sha)
 
-    with _commit_msg_cache_lock:
-        _cached_commit_msg[key] = (now, message)
-    return message
+    with _commit_details_cache_lock:
+        _cached_commit_details[key] = (now, details)
+    return details
+
+
+def fetch_github_commit_message_cached(repository: str, sha: str) -> str:
+    # Shares the details cache, so the run table's subject and the model-added
+    # markers cost one GitHub call per commit between them.
+    return fetch_github_commit_details_cached(repository, sha).message
 
 
 def latest_trace(traces: list[dict]) -> dict | None:
@@ -2489,6 +2782,9 @@ def extract_pr_info_metrics(
             "commit_sha": "",
             "created_at": "",
             "html_url": pr_url or github_pr_html_url(repository, pr),
+            "new_model": "",
+            "category": "",
+            "labels_json": "[]",
             "reviewers": "",
             "state": "",
             "title": "",
@@ -2500,6 +2796,8 @@ def extract_pr_info_metrics(
             "author": str(metadata.get("author", "")),
             "commit_sha": str(metadata.get("commit_sha", "")) or "main",
             "html_url": str(metadata.get("html_url", "")),
+            "new_model": str(metadata.get("new_model", "")),
+            "category": str(metadata.get("category", "")),
             "pr": pr,
             "repository": repository,
             "reviewers": str(metadata.get("reviewers", "")),
@@ -3212,6 +3510,290 @@ def extract_run_info_metrics(
             "service_name": service_name,
         }
         lines.append(f"pytest_run_info{metric_labels(labels)} 1")
+    return lines
+
+
+def _upstream_main_commit_shas(
+    extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]],
+) -> list[str]:
+    shas: set[str] = set()
+    for trace_info, rows in extracted:
+        if not rows or str(trace_info.get("pr", "")) != "main":
+            continue
+        repository = str(trace_info.get("repository", ""))
+        commit_sha = str(trace_info.get("commit_sha", ""))
+        # The file layouts read off these commits are upstream's; a fork's main
+        # adding a folder is not a model landing in Transformers.
+        if repository == MODEL_ADDED_REPOSITORY and commit_sha:
+            shas.add(commit_sha)
+    return sorted(shas)
+
+
+class ModelAdded(NamedTuple):
+    model: str
+    commit_sha: str
+    pr: str
+    committed_at_ms: int
+
+
+MODEL_ADDED_REPOSITORY = "huggingface/transformers"
+
+# Models merged to main between 2026-09-13 and 2026-10-13, read off GitHub by
+# hand (docs/plans/model-added-markers-2026-10-13.md in transformers-ci-playbooks):
+# detection only sees merges from the exporter's deploy onward, and these give
+# the markers real data without a backfill.
+MODEL_ADDED_SEED: tuple[ModelAdded, ...] = tuple(
+    ModelAdded(model, sha, pr, int((parse_github_timestamp(date) or 0) * 1000))
+    for model, sha, pr, date in (
+        (
+            "minicpmv4_7",
+            "c210bb39664fbd432d9753bd43393bd53c62f7fe",
+            "48979",
+            "2026-09-21T10:09:56Z",
+        ),
+        (
+            "nemotron3_diarization",
+            "8f080cb5aa480f794283c6e8618f917cc9a6506d",
+            "49056",
+            "2026-09-23T16:29:35Z",
+        ),
+        (
+            "nemotron_h_omni",
+            "4b28d51d0d5f17ec20c23a187d0475a8e68810c8",
+            "46509",
+            "2026-09-24T06:01:26Z",
+        ),
+        (
+            "gte",
+            "57296d1c69d793f7efcaee7b9bd12f401c0f3a38",
+            "48416",
+            "2026-09-30T16:22:30Z",
+        ),
+        (
+            "embedding_gemma2",
+            "92cd495f2720c064bc78eb2d93e28704c5bce51f",
+            "49364",
+            "2026-10-06T16:17:31Z",
+        ),
+        (
+            "pp_doclayout_v4",
+            "e233d3f7d2d02541ae50a30b7d9a304741b3a43c",
+            "48387",
+            "2026-10-08T11:53:39Z",
+        ),
+        (
+            "molmo2",
+            "f27b9b1456273cbe7c3abe9fb4830e425d4b2119",
+            "43451",
+            "2026-10-09T13:21:58Z",
+        ),
+    )
+)
+
+# Every model seen added since the exporter started. A run leaves the rolling
+# window within minutes; keeping the marker here keeps its series continuous
+# so a coarse annotation step cannot fall between two scrapes of it.
+_models_added_lock = threading.Lock()
+_models_added: dict[str, ModelAdded] = {}
+
+
+def extract_model_added_metrics(
+    traces: list[dict] | None = None,
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
+    _commit_fetcher: Callable[[str, str], CommitDetails] | None = None,
+    _registry: dict[str, ModelAdded] | None = None,
+    _seed: tuple[ModelAdded, ...] = MODEL_ADDED_SEED,
+) -> list[str]:
+    """Emit one ``pytest_model_added_info`` series per model merged to main.
+
+    A main run's head commit is looked up through the same cached GitHub call
+    as ``pytest_run_info``; a model counts as added when the commit adds its
+    ``src/transformers/models/<name>/__init__.py``. The value is the merge time
+    in epoch milliseconds, for a Grafana annotation that uses the series value
+    as its timestamp.
+    """
+    extracted = (
+        _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
+    )
+    commit_fetcher = _commit_fetcher or fetch_github_commit_details_cached
+    registry = _models_added if _registry is None else _registry
+
+    found: list[ModelAdded] = []
+    for commit_sha in _upstream_main_commit_shas(extracted):
+        details = commit_fetcher(MODEL_ADDED_REPOSITORY, commit_sha)
+        if not details.committed_at_ms:
+            continue
+        for model in details.added_models:
+            found.append(
+                ModelAdded(model, commit_sha, details.pr, details.committed_at_ms)
+            )
+
+    with _models_added_lock:
+        for entry in (*_seed, *found):
+            registry.setdefault(entry.model, entry)
+        entries = sorted(registry.values(), key=lambda e: (e.committed_at_ms, e.model))
+
+    lines = [
+        "# HELP pytest_model_added_info A model added to Transformers main; value is the merge time in epoch ms.",
+        "# TYPE pytest_model_added_info gauge",
+    ]
+    for entry in entries:
+        html_url = (
+            f"https://github.com/{MODEL_ADDED_REPOSITORY}/pull/{entry.pr}"
+            if entry.pr
+            else github_commit_html_url(MODEL_ADDED_REPOSITORY, entry.commit_sha)
+        )
+        labels = {
+            "commit_sha": entry.commit_sha,
+            "html_url": html_url,
+            "model": entry.model,
+            "pr": entry.pr or "none",
+        }
+        lines.append(
+            f"pytest_model_added_info{metric_labels(labels)} {entry.committed_at_ms}"
+        )
+    return lines
+
+
+class DependencyChanged(NamedTuple):
+    change: DependencyChange
+    commit_sha: str
+    pr: str
+    committed_at_ms: int
+
+
+# Every GPU-image torch bump in 2026 and the commit that created .python-version
+# (CPU CI to 3.11; the GPU image still runs 3.10), read off GitHub by hand
+# (docs/plans/model-added-markers-2026-10-13.md in transformers-ci-playbooks).
+DEPENDENCY_CHANGE_SEED: tuple[DependencyChanged, ...] = tuple(
+    DependencyChanged(
+        DependencyChange(dependency, from_version, to_version),
+        sha,
+        pr,
+        int((parse_github_timestamp(date) or 0) * 1000),
+    )
+    for dependency, from_version, to_version, sha, pr, date in (
+        (
+            "torch",
+            "2.9.0",
+            "2.10.0",
+            "c0fe6164d0d74e021aab9bfa0342a0f59ff59b16",
+            "44712",
+            "2026-03-14T20:29:02Z",
+        ),
+        (
+            "torch",
+            "2.10.0",
+            "2.11.0",
+            "499ef1d7b8fcaf946be6503e01c717f238838d0e",
+            "45243",
+            "2026-04-04T18:48:43Z",
+        ),
+        (
+            "torch",
+            "2.11.0",
+            "2.13.0",
+            "d79d0c1ed3e8fc3f4742cc34aee46d92abd0ea44",
+            "47738",
+            "2026-08-03T15:19:10Z",
+        ),
+        (
+            "torch",
+            "2.13.0",
+            "2.14.0",
+            "a2c15b30764b7c6cb0632ac6aed6eac227edc674",
+            "48750",
+            "2026-09-13T14:45:22Z",
+        ),
+        (
+            "python",
+            "",
+            "3.11",
+            "422bd07ed84ce385dc13e7f94738e7c04f7e62ca",
+            "49311",
+            "2026-10-06T09:50:38Z",
+        ),
+    )
+)
+
+# Same reason as _models_added: keep each marker's series continuous.
+_dependency_changes_lock = threading.Lock()
+_dependency_changes: dict[tuple[str, str, str], DependencyChanged] = {}
+
+
+def extract_dependency_change_metrics(
+    traces: list[dict] | None = None,
+    *,
+    _extracted: list[tuple[dict[str, str | int], list[dict[str, str | float]]]]
+    | None = None,
+    _commit_fetcher: Callable[[str, str], CommitDetails] | None = None,
+    _registry: dict[tuple[str, str, str], DependencyChanged] | None = None,
+    _seed: tuple[DependencyChanged, ...] = DEPENDENCY_CHANGE_SEED,
+) -> list[str]:
+    """Emit one ``pytest_dependency_change_info`` series per major dependency
+    change merged to main (see ``DEPENDENCY_VERSION_FILES``).
+
+    Read off the same cached commit lookup as ``pytest_model_added_info``; the
+    value is the merge time in epoch milliseconds. A GPU-image change only
+    reaches the runs once the image is rebuilt, so the marker can lead them.
+    """
+    extracted = (
+        _extracted if _extracted is not None else _precompute_trace_rows(traces or [])
+    )
+    commit_fetcher = _commit_fetcher or fetch_github_commit_details_cached
+    registry = _dependency_changes if _registry is None else _registry
+
+    found: list[DependencyChanged] = []
+    for commit_sha in _upstream_main_commit_shas(extracted):
+        details = commit_fetcher(MODEL_ADDED_REPOSITORY, commit_sha)
+        if not details.committed_at_ms:
+            continue
+        for change in details.dependency_changes:
+            found.append(
+                DependencyChanged(
+                    change, commit_sha, details.pr, details.committed_at_ms
+                )
+            )
+
+    with _dependency_changes_lock:
+        for entry in (*_seed, *found):
+            key = (entry.change.dependency, entry.change.to_version, entry.commit_sha)
+            registry.setdefault(key, entry)
+        entries = sorted(
+            registry.values(), key=lambda e: (e.committed_at_ms, e.change.dependency)
+        )
+
+    lines = [
+        "# HELP pytest_dependency_change_info A major dependency version change merged to Transformers main; value is the merge time in epoch ms.",
+        "# TYPE pytest_dependency_change_info gauge",
+    ]
+    for entry in entries:
+        change = entry.change
+        html_url = (
+            f"https://github.com/{MODEL_ADDED_REPOSITORY}/pull/{entry.pr}"
+            if entry.pr
+            else github_commit_html_url(MODEL_ADDED_REPOSITORY, entry.commit_sha)
+        )
+        labels = {
+            # Preformatted for the annotation title, which cannot branch on an
+            # empty from_version.
+            "change": (
+                f"{change.from_version} → {change.to_version}"
+                if change.from_version
+                else f"→ {change.to_version}"
+            ),
+            "commit_sha": entry.commit_sha,
+            "dependency": change.dependency,
+            "from_version": change.from_version or "none",
+            "html_url": html_url,
+            "pr": entry.pr or "none",
+            "to_version": change.to_version,
+        }
+        lines.append(
+            f"pytest_dependency_change_info{metric_labels(labels)} {entry.committed_at_ms}"
+        )
     return lines
 
 
@@ -5059,6 +5641,14 @@ def _iter_metric_lines() -> Iterator[str]:
             ),
         ),
         ("run_info", lambda: extract_run_info_metrics(_extracted=rollup_extracted)),
+        (
+            "model_added",
+            lambda: extract_model_added_metrics(_extracted=rollup_extracted),
+        ),
+        (
+            "dependency_change",
+            lambda: extract_dependency_change_metrics(_extracted=rollup_extracted),
+        ),
         ("pr_info", lambda: extract_pr_info_metrics([], _extracted=extracted)),
         ("run_active", lambda: extract_run_active_metrics(_extracted=extracted)),
         (
@@ -6971,9 +7561,14 @@ def render_run_html(
         "<style>"
         "body{margin:0;padding:10px 12px;background:#0b0c0e;color:#d8d9da;"
         "font:13px/1.5 system-ui,sans-serif}"
-        "table{width:100%;border-collapse:collapse}"
+        "table{width:100%;border-collapse:collapse;table-layout:fixed}"
         "th,td{text-align:left;padding:5px 8px;border-bottom:1px solid #24262b;"
         "white-space:nowrap}"
+        "th:first-child,td:first-child{width:102px}"
+        "th:nth-child(3),td:nth-child(3){width:150px;overflow-wrap:anywhere}"
+        "th:nth-child(4),td:nth-child(4){width:92px}"
+        "th:nth-child(5),td:nth-child(5){width:82px}"
+        "td:nth-child(3){white-space:normal}"
         "th{color:#8e9197;font:600 11px system-ui,sans-serif;text-transform:uppercase;"
         "letter-spacing:.04em;position:sticky;top:0;background:#0b0c0e}"
         "td.nodeid{white-space:normal;word-break:break-word;"
@@ -7247,6 +7842,9 @@ class MetricsHandler(BaseHTTPRequestHandler):
             "/serge-actions/wdyt",
             "/serge-actions/wdyt/cache",
             "/serge-actions/wdyt/cost",
+            "/serge-actions/who-can-help",
+            "/serge-actions/new-issue/draft",
+            "/serge-actions/new-issue/publish",
             "/rerun-failed",
         ):
             self._send(404, JSON_CONTENT_TYPE, b'{"error":"not found"}')
@@ -7258,6 +7856,12 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._serve_wdyt_cache_clear()
         elif path == "/serge-actions/wdyt/cost":
             self._serve_wdyt_cost(parse_qs(urlparse(self.path).query))
+        elif path == "/serge-actions/who-can-help":
+            self._serve_who_can_help()
+        elif path == "/serge-actions/new-issue/draft":
+            self._serve_new_issue_draft()
+        elif path == "/serge-actions/new-issue/publish":
+            self._serve_new_issue_publish()
         else:
             self._serve_wdyt()
 
@@ -7268,6 +7872,32 @@ class MetricsHandler(BaseHTTPRequestHandler):
             json.dumps(body).encode(),
             cache_control="no-store",
         )
+
+    def _stream_action(
+        self, run: Callable[[Callable[[dict], None]], dict], initial_step: str
+    ) -> None:
+        """Stream real action steps and finish with one result event."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.close_connection = True
+        sent = 0
+
+        def emit(event: dict) -> None:
+            nonlocal sent
+            line = (json.dumps(event) + "\n").encode()
+            try:
+                self.wfile.write(line)
+                self.wfile.flush()
+                sent += len(line)
+            except OSError:
+                pass
+
+        emit({"event": "step", "text": initial_step})
+        result = run(emit)
+        emit({"event": "done", **result})
+        self._observe_response(200, sent)
 
     def _action_allowed(self) -> bool:
         """CSRF gate for Serge action POSTs, replying 403 when it fails: a
@@ -7301,6 +7931,124 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._reply_json(400, {"status": "invalid"})
         elif self._action_allowed() and self._action_user():
             self._reply_json(200, wdyt.fetch_cost(session_id))
+
+    def _serve_who_can_help(self) -> None:
+        if not self._action_allowed():
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if not 0 < length <= 8192:
+            self._reply_json(400, {"status": "invalid"})
+            return
+        try:
+            body = json.loads(self.rfile.read(length))
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        trace_id = str(body.get("trace_id") or "").strip()
+        nodeid = str(body.get("test_nodeid") or "").strip()
+        if (
+            not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id)
+            or not re.fullmatch(
+                r"tests/[\w./-]+\.py(?:::[^\x00-\x1f]{1,1800})?", nodeid
+            )
+            or ".." in nodeid.split("::", 1)[0].split("/")
+        ):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        login = self._action_user()
+        if not login:
+            return
+        trace = get_trace(trace_id)
+        if not trace or trace_repository(trace) != related_issues.REPOSITORY:
+            self._reply_json(404, {"status": "invalid"})
+            return
+        details = extract_failure_details(trace, nodeid)
+        self._stream_action(
+            lambda emit: who_can_help.suggest(
+                login,
+                trace_id,
+                nodeid,
+                details,
+                github_get=_github_api_get,
+                emit=emit,
+            ),
+            "Reading the selected failure",
+        )
+
+    def _serve_new_issue_draft(self) -> None:
+        if not self._action_allowed():
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length)) if 0 < length <= 8192 else None
+        except (ValueError, TypeError):
+            body = None
+        if not isinstance(body, dict):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        trace_id = str(body.get("trace_id") or "").strip()
+        nodeid = str(body.get("test_nodeid") or "").strip()
+        if (
+            not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id)
+            or not re.fullmatch(
+                r"tests/[\w./-]+\.py(?:::[^\x00-\x1f]{1,1800})?", nodeid
+            )
+            or ".." in nodeid.split("::", 1)[0].split("/")
+        ):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        login = self._action_user()
+        if not login:
+            return
+        trace = get_trace(trace_id)
+        if not trace or trace_repository(trace) != related_issues.REPOSITORY:
+            self._reply_json(404, {"status": "invalid"})
+            return
+        details = extract_failure_details(trace, nodeid)
+        if not details:
+            self._reply_json(404, {"status": "invalid"})
+            return
+        self._stream_action(
+            lambda emit: new_issue.prepare(
+                login, trace_id, nodeid, details, _github_api_get, emit=emit
+            ),
+            "Reading the selected failure",
+        )
+
+    def _serve_new_issue_publish(self) -> None:
+        if not self._action_allowed():
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length)) if 0 < length <= 35000 else None
+        except (ValueError, TypeError):
+            body = None
+        if not isinstance(body, dict):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        login = self._action_user()
+        if not login:
+            return
+        if any(
+            not isinstance(body.get(key), str) for key in ("draft_id", "title", "body")
+        ):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        self._reply_json(
+            200,
+            new_issue.publish(
+                login,
+                body["draft_id"],
+                body["title"],
+                body["body"],
+                _github_create_issue,
+            ),
+        )
 
     def _serve_wdyt(self) -> None:
         reply = self._reply_json
@@ -7496,6 +8244,19 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._request_route = "/summary/pr"
             self._serve_pr_summary(parse_qs(parsed.query))
             return
+        if parsed.path in FAVICONS:
+            self._request_route = "/favicon"
+            self._send(
+                200,
+                "image/png",
+                FAVICONS[parsed.path],
+                cache_control="public, max-age=86400",
+            )
+            return
+        if parsed.path == "/test":
+            self._request_route = "/test"
+            self._serve_test_page(parse_qs(parsed.query))
+            return
         if parsed.path == "/failure":
             self._request_route = "/failure"
             self._serve_failure(parse_qs(parsed.query))
@@ -7525,6 +8286,19 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._request_route = "/serge-actions/fix-prs"
             self._serve_fix_prs(parse_qs(parsed.query))
             return
+        if parsed.path == "/serge-actions/probable-fix":
+            self._request_route = "/serge-actions/probable-fix"
+            self._serve_probable_fix(parse_qs(parsed.query))
+            return
+        if parsed.path == "/serge-actions/logo.png":
+            self._request_route = "/serge-actions/logo.png"
+            self._send(
+                200,
+                "image/png",
+                serge_actions.LOGO_PNG,
+                cache_control="public, max-age=86400",
+            )
+            return
         if parsed.path == "/serge-actions":
             self._request_route = "/serge-actions"
             self._send(
@@ -7541,6 +8315,23 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/rerun-failed/data":
             self._request_route = "/rerun-failed/data"
             self._serve_rerun_failed_data(parse_qs(parsed.query))
+            return
+        if parsed.path in {"/pr-ci-view", "/pr-ci-view/app.js", "/pr-ci-view/data"}:
+            self._request_route = "/pr-ci-view"
+            if parsed.path == "/pr-ci-view/data":
+                self._serve_pr_ci_view(parse_qs(parsed.query))
+            else:
+                name, content_type = (
+                    ("pr_ci_view.html", "text/html; charset=utf-8")
+                    if parsed.path == "/pr-ci-view"
+                    else ("pr_ci_view.js", "text/javascript; charset=utf-8")
+                )
+                self._send(
+                    200,
+                    content_type,
+                    Path(__file__).with_name(name).read_bytes(),
+                    cache_control="public, max-age=60",
+                )
             return
         if parsed.path == "/rerun-failed":
             self._request_route = "/rerun-failed"
@@ -7576,6 +8367,39 @@ class MetricsHandler(BaseHTTPRequestHandler):
                     502, {"error": "Could not load your PR activity. Try again."}
                 )
             return
+        if parsed.path == "/pr-search/labels":
+            self._request_route = "/pr-search/labels"
+            params = parse_qs(parsed.query)
+            repository = (params.get("repository") or [""])[0]
+            pr = (params.get("pr") or [""])[0]
+            if repository not in public_repositories() or not re.fullmatch(
+                r"[1-9][0-9]*", pr
+            ):
+                self._reply_json(400, {"error": "Invalid pull request"})
+                return
+            info = fetch_github_pr_info_cached(repository, pr)
+            try:
+                labels = clean_pr_labels(json.loads(info.get("labels_json", "[]")))
+            except (TypeError, ValueError):
+                labels = []
+            self._reply_json(
+                200,
+                {
+                    "labels": labels,
+                    "new_model": info.get("new_model") == "true",
+                    "category": info.get("category", ""),
+                },
+            )
+            return
+        if parsed.path == "/pr-search/categories.js":
+            self._request_route = "/pr-search/categories.js"
+            self._send(
+                200,
+                "text/javascript; charset=utf-8",
+                Path(__file__).with_name("overview_categories.js").read_bytes(),
+                cache_control="public, max-age=60",
+            )
+            return
         if parsed.path == "/pr-search":
             self._request_route = "/pr-search"
             self._send(
@@ -7583,6 +8407,34 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 "text/html; charset=utf-8",
                 SEARCH_HTML.encode("utf-8"),
                 cache_control=_public_cache_control_header(),
+            )
+            return
+        if parsed.path == "/pr-table/auth-complete":
+            self._request_route = "/pr-table"
+            self._send(
+                200,
+                "text/html; charset=utf-8",
+                (
+                    "<!doctype html><title>Signed in</title>"
+                    "<p>Signed in. You can return to the dashboard.</p>"
+                    "<script>localStorage.setItem('tci-pr-auth-complete', String(Date.now()));"
+                    "window.close()</script>"
+                ).encode(),
+                cache_control="no-store",
+            )
+            return
+        if parsed.path in {"/pr-table", "/pr-table/app.js", "/pr-table/queries"}:
+            self._request_route = "/pr-table"
+            name, content_type = {
+                "/pr-table": ("pr_table.html", "text/html; charset=utf-8"),
+                "/pr-table/app.js": ("pr_table.js", "text/javascript; charset=utf-8"),
+                "/pr-table/queries": ("pr_table_queries.json", "application/json"),
+            }[parsed.path]
+            self._send(
+                200,
+                content_type,
+                Path(__file__).with_name(name).read_bytes(),
+                cache_control="public, max-age=60",
             )
             return
         if parsed.path == "/page-view":
@@ -7703,6 +8555,29 @@ class MetricsHandler(BaseHTTPRequestHandler):
             cache_control="no-store",
         )
 
+    def _serve_probable_fix(self, params: dict[str, list[str]]) -> None:
+        trace_id = (params.get("trace_id") or [""])[0].strip()
+        nodeid = (params.get("test_nodeid") or [""])[0].strip()
+        if (
+            not probable_fix.test_file(nodeid)
+            or len(nodeid) > 2048
+            or any(ord(c) < 32 for c in nodeid)
+            or (trace_id and not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id))
+        ):
+            self._reply_json(400, {"status": "invalid"})
+            return
+
+        def load_details() -> list[dict[str, str]]:
+            trace = get_trace(trace_id) if trace_id else None
+            if not trace or trace_repository(trace) != related_issues.REPOSITORY:
+                return []
+            return extract_failure_details(trace, nodeid)
+
+        result = probable_fix.find(
+            trace_id, nodeid, load_details, search_github_issues, _github_api_get
+        )
+        self._reply_json(200, result)
+
     def _serve_related_issues(self, params: dict[str, list[str]]) -> None:
         if (params.get("format") or [""])[0] != "json":
             page = (
@@ -7759,6 +8634,64 @@ class MetricsHandler(BaseHTTPRequestHandler):
             "text/html; charset=utf-8",
             render_failure_html(trace_id, details).encode("utf-8"),
             cache_control="public, max-age=300",
+        )
+
+    def _serve_test_page(self, params: dict[str, list[str]]) -> None:
+        def param(name: str) -> str:
+            return (params.get(name) or [""])[0].strip()
+
+        nodeid = param("test_nodeid")
+        trace_id = param("trace_id") or param("latest_trace")
+        if (
+            not nodeid
+            or len(nodeid) > 2048
+            or any(ord(c) < 32 for c in nodeid)
+            or (trace_id and not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id))
+        ):
+            self._send(
+                400,
+                "text/plain; charset=utf-8",
+                b"/test needs a test_nodeid and, optionally, a 32-hex trace_id",
+            )
+            return
+        trace = fetch_failure_trace(trace_id) if trace_id else None
+        context = failure_context(trace, nodeid) if trace else {}
+        details = extract_failure_details(trace, nodeid) if trace else []
+        if trace and details:
+            annotate_github_links(trace, details)
+            for detail in details:
+                detail["job_log_url"] = context.get("job_url", "")
+                detail["run_url"] = context.get("run_url", "")
+        job = ""
+        for process in ((trace or {}).get("processes") or {}).values():
+            if isinstance(process, dict):
+                tags = tag_map(process.get("tags", []))
+                job = tags.get(
+                    "transformers.test.job", tags.get("transformers.test.suite", "")
+                )
+                if job:
+                    break
+        # The trace wins; the URL's values fill in what it lacks.
+        data: dict[str, object] = {
+            "trace_id": trace_id,
+            "test_nodeid": nodeid,
+            "status": param("status"),
+            "job": job or param("job"),
+            "pr": param("pr"),
+            "run_id": param("run_id"),
+            "module": split_pytest_nodeid(nodeid)["test_module"],
+            "has_trace": trace is not None,
+            "details": details,
+        }
+        for key, value in context.items():
+            if value and not (key == "pr" and value == "none"):
+                data[key] = value
+        data.update(test_span_facts(trace, nodeid) if trace else {})
+        self._send(
+            200,
+            "text/html; charset=utf-8",
+            test_page.render_test_page(data).encode("utf-8"),
+            cache_control="public, max-age=300" if trace else "no-store",
         )
 
     def _serve_failure_context(self, params: dict[str, list[str]]) -> None:
@@ -7838,6 +8771,300 @@ class MetricsHandler(BaseHTTPRequestHandler):
         return rerun_failed.snapshot(
             pr, query=query, api=api, get_rows=gather_run_test_rows
         )
+
+    def _pr_ci_sources(self, pr: str) -> dict:
+        # The rerun picker also loads 90 days of commit metadata, checks
+        # queued workflows, and enumerates every failed test. This view
+        # only needs the newest source run in each lane.
+        base_url = prometheus_base_url()
+        if not base_url:
+            raise ValueError("Prometheus unavailable")
+        expr = (
+            f'last_over_time(pytest_run_start_time_seconds{{pr="{pr}",'
+            'ci_event!~"rerun-failed-.*"}[90d])'
+        )
+        prometheus = _http_get_json(
+            f"{base_url}/api/v1/query?{urlencode({'query': expr})}",
+            upstream="prometheus",
+        )
+        if not isinstance(prometheus, dict) or prometheus.get("status") != "success":
+            raise ValueError("Prometheus query failed")
+        results = prometheus.get("data", {}).get("result", [])
+        if not isinstance(results, list):
+            raise ValueError("Prometheus response incomplete")
+        candidates = rerun_failed.source_candidates(pr, lambda _expr: results)
+
+        def active_cpu_runs() -> list[dict]:
+            # The status exporter can lose its in-memory run list during a
+            # restart. GitHub's current head and workflow list are authoritative
+            # even before any test span exists for a queued run.
+            try:
+                pull = _rerun_github_api(f"pulls/{pr}")
+                head = pull.get("head") if isinstance(pull, dict) else None
+                sha = str(head.get("sha") or "") if isinstance(head, dict) else ""
+                if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                    return []
+                payload = _rerun_github_api(
+                    "actions/workflows/pr-ci-caller.yml/runs"
+                    f"?event=pull_request&head_sha={sha}&per_page=10"
+                )
+                runs = (
+                    payload.get("workflow_runs") if isinstance(payload, dict) else None
+                )
+                if not isinstance(runs, list):
+                    return []
+                return [
+                    rerun_failed._run_summary(
+                        raw, f"{raw['id']}:{raw.get('run_attempt') or 1}"
+                    )
+                    for raw in runs
+                    if isinstance(raw, dict)
+                    and raw.get("status") in rerun_failed.ACTIVE_STATUSES
+                    and raw.get("head_sha") == sha
+                    and rerun_failed._source_run(raw, "cpu")
+                ][:3]
+            except Exception:
+                return []
+
+        def source_for(key: str) -> dict:
+            source_run = None
+            notes = []
+            for run_id in candidates[key][0]:
+                try:
+                    raw = _rerun_github_api(f"actions/runs/{run_id.split(':', 1)[0]}")
+                except Exception:
+                    if source_run is None:
+                        source_run = {
+                            "run_id": run_id,
+                            "url": f"https://github.com/huggingface/transformers/actions/runs/{run_id.split(':', 1)[0]}",
+                            "status": "unknown",
+                            "conclusion": "",
+                            "created_at": "",
+                        }
+                    notes.append("GitHub run status is temporarily unavailable.")
+                    continue
+                if rerun_failed._source_run(raw, key):
+                    source_run = rerun_failed._run_summary(raw, run_id)
+                    break
+            return {
+                "source_run": source_run,
+                "active_runs": [],
+                "notes": notes,
+            }
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            cpu = pool.submit(source_for, "cpu")
+            gpu = pool.submit(source_for, "gpu")
+            active_cpu = pool.submit(active_cpu_runs)
+            cpu_lane = cpu.result()
+            cpu_lane["active_runs"] = active_cpu.result()
+            return {"cpu": cpu_lane, "gpu": gpu.result()}
+
+    def _serve_pr_ci_view(self, params: dict[str, list[str]]) -> None:
+        pr = (params.get("pr") or [""])[0].strip()
+        if not re.fullmatch(r"[1-9][0-9]*", pr):
+            self._reply_json(400, {"error": "Invalid pull request"})
+            return
+        cache_key = f"pr-ci-view:{pr}"
+        cached = _public_response_cache_get(cache_key)
+        if cached is not None:
+            self._request_cache = "hit"
+            self._send(200, JSON_CONTENT_TYPE, cached, cache_control="no-store")
+            return
+        try:
+            sources = self._pr_ci_sources(pr)
+            nvidia_run = pr_ci_view.newest_run(sources["gpu"])
+            since = (
+                f"{nvidia_run['created_at'][:10]}T00:00:00Z"
+                if nvidia_run and nvidia_run.get("created_at")
+                else time.strftime(
+                    "%Y-%m-%dT00:00:00Z", time.gmtime(time.time() - 90 * 86400)
+                )
+            )
+            comments: list[dict] = []
+            for page in range(1, 4):
+                try:
+                    batch = _rerun_github_api(
+                        f"issues/{pr}/comments?per_page=100&sort=updated&direction=desc&since={since}&page={page}"
+                    )
+                except Exception:
+                    break
+                if not isinstance(batch, list):
+                    break
+                comments.extend(item for item in batch if isinstance(item, dict))
+                if len(batch) < 100 or (
+                    nvidia_run
+                    and pr_ci_view.matching_comment(comments, nvidia_run["run_id"])
+                ):
+                    break
+
+            latest_nvidia = pr_ci_view.latest_platform_comment(comments, "nvidia")
+            latest_nvidia_body = (
+                str(latest_nvidia.get("body") or "") if latest_nvidia else ""
+            )
+            latest_nvidia_id = pr_ci_view.comparison(latest_nvidia_body, "nvidia")[
+                "run_id"
+            ]
+            if latest_nvidia_id and (
+                not nvidia_run
+                or latest_nvidia_id != nvidia_run["run_id"].split(":", 1)[0]
+            ):
+                try:
+                    raw = _rerun_github_api(f"actions/runs/{latest_nvidia_id}")
+                    if rerun_failed._source_run(raw, "gpu"):
+                        attempt = raw.get("run_attempt") or 1
+                        sources["gpu"]["active_runs"].append(
+                            rerun_failed._run_summary(
+                                raw, f"{latest_nvidia_id}:{attempt}"
+                            )
+                        )
+                except Exception:
+                    pass
+            nvidia_run = pr_ci_view.newest_run(sources["gpu"])
+
+            def jobs_for(run_id: str) -> tuple[list[dict], list[str]]:
+                jobs: list[dict] = []
+                notes = []
+                for page in range(1, 6):
+                    try:
+                        payload = _rerun_github_api(
+                            f"actions/runs/{run_id.split(':', 1)[0]}/jobs?per_page=100&page={page}"
+                        )
+                    except Exception:
+                        notes.append("GitHub job details are temporarily unavailable.")
+                        break
+                    batch = payload.get("jobs") if isinstance(payload, dict) else None
+                    if not isinstance(batch, list):
+                        notes.append("GitHub job details are unavailable.")
+                        break
+                    jobs.extend(item for item in batch if isinstance(item, dict))
+                    if len(batch) < 100:
+                        break
+                if len(jobs) >= 500:
+                    notes.append("Showing the first 500 GitHub jobs.")
+                return jobs, notes
+
+            comment = (
+                pr_ci_view.matching_comment(comments, nvidia_run["run_id"])
+                if nvidia_run
+                else None
+            )
+            body = str(comment.get("body") or "") if comment else ""
+            amd_comment = (
+                comment
+                if pr_ci_view.section(body, "amd")
+                else pr_ci_view.latest_platform_comment(comments, "amd")
+            )
+            amd_body = str(amd_comment.get("body") or "") if amd_comment else ""
+            runs = {key: pr_ci_view.newest_run(sources[key]) for key in ("cpu", "gpu")}
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                job_futures = {
+                    key: pool.submit(jobs_for, run["run_id"])
+                    for key, run in runs.items()
+                    if run
+                }
+                nvidia_comparison = (
+                    pr_ci_view.comparison(body, "nvidia") if runs["gpu"] else None
+                )
+                amd_comparison = (
+                    pr_ci_view.comparison(amd_body, "amd") if amd_body else None
+                )
+                rows_by_key = {
+                    key: gather_run_test_rows(run["run_id"]) if run else []
+                    for key, run in runs.items()
+                }
+                jobs_by_key = {
+                    key: future.result() for key, future in job_futures.items()
+                }
+
+            lanes = []
+            for key, label, comparison_platform in (
+                ("cpu", "CPU · PR CI", ""),
+                ("gpu", "Nvidia · run-slow", "nvidia"),
+            ):
+                source = sources[key]
+                run = runs[key]
+                comparison_data = nvidia_comparison if comparison_platform else None
+                rows = rows_by_key[key]
+                raw_jobs, notes = jobs_by_key.get(key, ([], []))
+                lanes.append(
+                    {
+                        "id": key,
+                        "label": label,
+                        "run": run,
+                        "jobs": pr_ci_view.summarize_jobs(
+                            raw_jobs, rows, key, (run or {}).get("conclusion", "")
+                        ),
+                        "failures": pr_ci_view.failures(rows, comparison_data),
+                        "comparison": comparison_data,
+                        "notes": source.get("notes", []) + notes,
+                    }
+                )
+
+            amd_id = amd_comparison["run_id"] if amd_comparison else ""
+            if amd_id:
+                amd_notes = []
+                try:
+                    raw_run = _rerun_github_api(f"actions/runs/{amd_id}")
+                except Exception:
+                    raw_run = {
+                        "path": ".github/workflows/self-comment-ci-amd.yml",
+                        "event": "issue_comment",
+                        "html_url": f"https://github.com/huggingface/transformers/actions/runs/{amd_id}",
+                        "status": "unknown",
+                    }
+                    amd_notes.append("GitHub run status is temporarily unavailable.")
+                path = (
+                    str(raw_run.get("path") or "").split("@", 1)[0]
+                    if isinstance(raw_run, dict)
+                    else ""
+                )
+                if (
+                    path == ".github/workflows/self-comment-ci-amd.yml"
+                    and raw_run.get("event") == "issue_comment"
+                ):
+                    raw_jobs, notes = jobs_for(amd_id)
+                    amd_run = rerun_failed._run_summary(raw_run, amd_id)
+                    attributed = [
+                        {
+                            "nodeid": item["nodeid"],
+                            "hardware": "amd-2gpu"
+                            if item["hardware"] == "multi-gpu"
+                            else "amd-1gpu"
+                            if item["hardware"] == "single-gpu"
+                            else "amd-gpu",
+                            "job": "run_models_gpu",
+                            "trace_id": "",
+                            "specific": True,
+                        }
+                        for item in amd_comparison["specific"]
+                    ]
+                    lanes.append(
+                        {
+                            "id": "amd",
+                            "label": "AMD · run-slow",
+                            "run": amd_run,
+                            "jobs": pr_ci_view.summarize_jobs(raw_jobs, [], "amd"),
+                            "failures": attributed,
+                            "comparison": amd_comparison,
+                            "notes": amd_notes
+                            + notes
+                            + [
+                                "AMD failures come from the run-slow comparison report; full test telemetry is not available."
+                            ],
+                        }
+                    )
+            for lane in lanes:
+                for failure in lane["failures"]:
+                    nodeid = failure["nodeid"]
+                    failure["model"] = run_row_model(nodeid)
+                    failure["test_name"] = run_row_test_name({"test_nodeid": nodeid})
+            payload = json.dumps({"pr": pr, "lanes": lanes}).encode()
+            _public_response_cache_put(cache_key, payload)
+            self._request_cache = "miss"
+            self._send(200, JSON_CONTENT_TYPE, payload, cache_control="no-store")
+        except Exception as error:
+            self._reply_json(*_rerun_source_error(error))
 
     def _serve_rerun_failed_data(self, params: dict[str, list[str]]) -> None:
         pr = (params.get("pr") or [""])[0].strip()

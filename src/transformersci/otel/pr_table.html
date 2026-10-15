@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Last 20 PRs</title>
+<style>
+:root{color-scheme:dark;--bg:#181b1f;--fg:#d8d9da;--muted:#9fa3a9;--line:#33383f;--hover:#252a31;--accent:#6e9fff}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:13px Inter,system-ui,sans-serif}
+body{display:flex;flex-direction:column}
+body.light{color-scheme:light;--bg:#fff;--fg:#24292e;--muted:#656d76;--line:#d0d7de;--hover:#f3f4f6;--accent:#1f6feb}
+header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--line)}
+h1{font-size:15px;line-height:24px;margin:0 12px 0 0}
+.switch{display:inline-flex;align-items:center;gap:7px;padding:5px 9px;border:1px solid var(--line);border-radius:14px;background:transparent;color:var(--muted);font:600 12px Inter,system-ui,sans-serif;cursor:pointer}
+.switch:hover{background:var(--hover);color:var(--fg)}
+.switch[aria-checked=true]{border-color:var(--accent);color:var(--fg)}
+.switch:focus-visible,.days button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.track{display:block;width:25px;height:15px;border-radius:9px;background:var(--line);padding:2px;box-sizing:border-box}
+.knob{display:block;width:11px;height:11px;border-radius:50%;background:var(--muted);transition:transform .15s}
+.switch[aria-checked=true] .track{background:#3d71d9}
+.switch[aria-checked=true] .knob{background:white;transform:translateX(10px)}
+.days{display:inline-flex;align-items:center;gap:3px;color:var(--muted);font-size:12px}
+.days button{padding:5px 7px;border:1px solid var(--line);border-radius:4px;background:transparent;color:var(--muted);font:600 12px Inter,system-ui,sans-serif;cursor:pointer}
+.days button:hover{background:var(--hover);color:var(--fg)}
+.days button[aria-pressed=true]{border-color:var(--accent);background:var(--hover);color:var(--fg)}
+#status{margin-left:auto;color:var(--muted);font-size:12px}
+#status.error{color:#f2495c}
+#status a{color:var(--accent)}
+.scroll{flex:1;min-height:0;overflow:auto}
+table{width:100%;border-collapse:collapse;table-layout:fixed;min-width:900px}
+th,td{padding:7px 8px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+th{position:sticky;top:0;background:var(--bg);color:var(--muted);font-weight:600;z-index:1}
+tbody tr:hover{background:var(--hover)}
+td a{color:var(--accent);text-decoration:none}td a:hover{text-decoration:underline}
+.live{display:inline-block;width:12px;height:12px;border:2px solid var(--line);border-top-color:#f2cc60;border-radius:50%;animation:spin .8s linear infinite}
+th:nth-child(4),td:nth-child(4){text-align:center}
+th:nth-child(10),td:nth-child(10){text-align:center}
+.category-cell{font-size:11px;font-weight:700}
+.model-badge{display:inline-block;border:1px solid #d4a72c;border-radius:3px;padding:1px 4px;font:800 9px/1.2 system-ui,sans-serif;letter-spacing:.04em;transform:rotate(-2deg)}
+.new-model{background:#4b3714;color:#f4ce73}.bugfix{background:#d85a6b;color:#fff}.feature{background:#5d9cec;color:#fff}.ci{background:#9b7edb;color:#fff}.docs{background:#72b59a;color:#111217}.performance{background:#e2a050;color:#111217}.refactor{background:#8798b0;color:#111217}.other{background:#77808e;color:#fff}
+.open,.merged,.closed{color:#fff}
+.open{background:#73bf69}.merged{background:#8f7ee7}.closed{background:var(--muted)}
+.rate-zero,.rate-low,.rate-medium,.rate-high{color:#fff}
+.rate-zero{background:linear-gradient(90deg,#43a047,#9bd393)}
+.rate-low{background:linear-gradient(90deg,#699044,#adc276)}
+.rate-medium{background:linear-gradient(90deg,#fc9300,#ff9930)}
+.rate-high{background:linear-gradient(90deg,#d92a43,#f87784)}
+.empty{padding:22px 12px;color:var(--muted)}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.live{animation:none}.knob{transition:none}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Last 20 PRs</h1>
+  <button id="mine" class="switch" type="button" role="switch" aria-checked="false" title="Show PRs you authored, commented on, reviewed, or were asked to review"><span class="track" aria-hidden="true"><span class="knob"></span></span>My Stuff</button>
+  <button id="open" class="switch" type="button" role="switch" aria-checked="false" title="Hide merged and closed PRs"><span class="track" aria-hidden="true"><span class="knob"></span></span>Hide merged/closed</button>
+  <div class="days" role="group" aria-label="PR activity lookback">Days <button type="button" data-days="7" aria-pressed="true">7</button><button type="button" data-days="14" aria-pressed="false">14</button><button type="button" data-days="21" aria-pressed="false">21</button></div>
+  <span id="status" role="status" aria-live="polite"></span>
+</header>
+<div class="scroll"><table aria-label="Last 20 PRs"><colgroup><col style="width:42px"><col style="width:60px"><col><col style="width:95px"><col style="width:55px"><col style="width:110px"><col style="width:58px"><col style="width:72px"><col style="width:92px"><col style="width:72px"></colgroup><thead><tr><th>Live</th><th>PR</th><th>Title</th><th>Category</th><th>Age</th><th>Last Activity</th><th>Runs</th><th>Failures</th><th>Failure Rate</th><th>State</th></tr></thead><tbody id="rows"></tbody></table><div id="empty" class="empty" hidden></div></div>
+<script src="/pr-table/app.js"></script>
+</body>
+</html>

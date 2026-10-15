@@ -11,6 +11,12 @@
 	handle /summary* {
 		reverse_proxy pytest-trace-exporter:8000
 	}
+	handle /pr-search* {
+		reverse_proxy pytest-trace-exporter:8000
+	}
+	handle /pr-table* {
+		reverse_proxy pytest-trace-exporter:8000
+	}
 	# Backward-compat alias: the old /exporter/* prefix still works (stripped).
 	handle_path /exporter/* {
 		reverse_proxy pytest-trace-exporter:8000

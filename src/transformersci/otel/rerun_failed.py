@@ -45,7 +45,6 @@ CPU_JOBS = frozenset(
         "tests_processors",
         "pipelines_torch",
         "tests_custom_tokenizers",
-        "examples_torch",
         "tests_exotic_models",
         "tests_repo_utils",
         "tests_non_model",

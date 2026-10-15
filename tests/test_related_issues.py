@@ -12,6 +12,7 @@ import pytest
 
 from transformersci.otel import related_issues as ri
 from transformersci.otel import serge_actions as sa
+from transformersci.otel import probable_fix as pf
 from transformersci.otel import trace_exporter as te
 
 NODE = "tests/trainer/test_trainer.py::TrainerIntegrationTest::test_end_to_end_example"
@@ -93,7 +94,7 @@ def test_dedup_ranking_limit_and_safe_links(monkeypatch):
 @pytest.mark.parametrize(
     "payload,version",
     [
-        ({"hits": []}, "0.3.18"),
+        ({"hits": []}, "0.0.0"),
         ({"hits": []}, None),
         ({"error": "broken"}, ri.WIRE_VERSION),
         ({"hits": [None]}, ri.WIRE_VERSION),
@@ -230,9 +231,11 @@ def test_route_shell_validation_and_selected_trace(server, monkeypatch):
     with urlopen(server + "/related-issues?view=summary") as response:
         summary = response.read().decode()
         assert 'class="tci-meta"' in summary
-        assert summary.index("Reproduce locally") < summary.index(
-            "Potential related issues"
-        )
+        assert "Reproduce locally" in summary
+        # The related issues are their own panel now, beside the failure.
+        assert "Searching related issues" not in summary
+        assert "fetch(url" not in summary
+        assert summary.count("<body>") == 1 and summary.endswith("</body></html>")
     assert fetched == []  # shell returns before any upstream work
     params = urlencode({"format": "json", "trace_id": TRACE, "test_nodeid": NODE})
     with urlopen(server + "/related-issues?" + params) as response:
@@ -261,12 +264,29 @@ def test_serge_actions_shell(server):
     with urlopen(server + "/serge-actions") as response:
         page = response.read().decode()
         assert response.headers["Cache-Control"] == "no-store"
-    assert "__ACTIONS__" not in page and "__NYAN__" not in page
-    assert 'class="nyan"' in page
+    assert "__ACTIONS__" not in page and "__LOCK__" not in page
+    # Only the two loading buttons animate, with reduced-motion support.
+    assert "nyan" not in page
+    assert "button.thinking:is(#who-can-help,#new-issue)::before" in page
+    assert "prefers-reduced-motion:reduce" in page
     for label in ("New issue", "Fix it!", "WDYT?"):
         assert label in page
+    # Signed in: the wired actions only. Signed out: every button, locked,
+    # sending the viewer to the Grafana sign-in and back.
     assert "b.disabled=!enabled" in page
+    assert "b.classList.add('locked')" in page and "b.onclick=signIn" in page
+    assert "'/login?redirectTo='+encodeURIComponent(back)" in page
+    # A bare /test returns to the Grafana Test page (Grafana's sign-in only
+    # lands on its own routes).
+    assert "back='/d/pytest-test/test?'+to" in page
+    assert "job:'test_job'" in page and "status:'status_code'" in page
     assert "fetch('/api/user'" in page
+    # WDYT?'s popup goes to the top-most same-origin page, so it is centred on
+    # the screen even when Serge Actions sits two iframes deep.
+    assert "for(let w=window;w.parent!==w;)" in page
+    with urlopen(server + "/serge-actions/logo.png") as response:
+        assert response.headers["Content-Type"] == "image/png"
+        assert response.read()[:8] == b"\x89PNG\r\n\x1a\n"
     assert "/serge-actions/fix-prs?test_nodeid=" in page
 
 
@@ -325,4 +345,30 @@ def test_fix_prs_route(server, monkeypatch):
         assert json.load(response)["prs"][0]["url"].endswith("/pull/7")
     with pytest.raises(HTTPError) as err:
         urlopen(server + "/serge-actions/fix-prs?test_nodeid=")
+    assert err.value.code == 400
+
+
+def test_probable_fix_route_uses_selected_test(server, monkeypatch):
+    seen = []
+
+    def find(trace, node, details, search, github):
+        seen.append((trace, node, details()))
+        return {"status": "none"}
+
+    monkeypatch.setattr(pf, "find", find)
+    monkeypatch.setattr(te, "get_trace", lambda trace: {"trace": trace})
+    monkeypatch.setattr(te, "trace_repository", lambda trace: ri.REPOSITORY)
+    monkeypatch.setattr(
+        te, "extract_failure_details", lambda trace, node: [{"node": node}]
+    )
+    with urlopen(
+        server
+        + "/serge-actions/probable-fix?"
+        + urlencode({"trace_id": TRACE, "test_nodeid": NODE})
+    ) as response:
+        assert response.headers["Cache-Control"] == "no-store"
+        assert json.load(response) == {"status": "none"}
+    assert seen == [(TRACE, NODE, [{"node": NODE}])]
+    with pytest.raises(HTTPError) as err:
+        urlopen(server + "/serge-actions/probable-fix?test_nodeid=../../etc/passwd")
     assert err.value.code == 400

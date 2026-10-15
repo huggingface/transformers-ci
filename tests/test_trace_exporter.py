@@ -1408,6 +1408,7 @@ def test_fetch_github_pr_info_uses_github_api_response() -> None:
         '"user": {"login": "octocat"}, '
         '"head": {"sha": "deadbeefcafebabe1234567890abcdef00000000"}, '
         '"created_at": "2024-01-02T03:04:05Z", '
+        '"labels": [{"name": "New model"}, {"name": "Testing"}], '
         '"requested_reviewers": [{"login": "alice"}, {"login": "bob"}]}'
     )
     reviews_payload = FakeResponse(
@@ -1444,6 +1445,9 @@ def test_fetch_github_pr_info_uses_github_api_response() -> None:
         "created_at": "2024-01-02T03:04:05Z",
         "html_url": "https://github.com/huggingface/transformers/pull/4321",
         "merged": "false",
+        "new_model": "true",
+        "category": "New model",
+        "labels_json": '[{"name":"New model","color":"6b7280"},{"name":"Testing","color":"6b7280"}]',
         "reviewers": "carol,alice,bob",
         "state": "open",
         "title": "Fix dashboard metadata",
@@ -1469,6 +1473,71 @@ def test_fetch_github_pr_info_expands_emoji_shortcodes_in_title() -> None:
     # Grafana renders GitHub shortcodes verbatim, so the exporter expands them
     # to real glyphs at the source.
     assert metadata["title"] == "🚨 Fix flaky test 🔥"
+    assert metadata["new_model"] == "false"
+
+
+def test_pr_category_prefers_labels_and_uses_title_when_unlabelled() -> None:
+    classify = trace_exporter.pr_category
+    assert classify([{"name": "New model"}], "Fix tests") == "New model"
+    assert classify([{"name": "github_actions"}], "Fix workflow") == "CI/infra"
+    assert classify([], "Fix flaky streamer timeout") == "Bugfix"
+    assert classify([], "Add support for a new tokenizer") == "Feature"
+    assert classify([], "Improve the docs") == "Docs"
+    assert classify([], "Separate encoder and decoder") == "Refactor"
+    assert classify([], "TP embeddings") == "Other"
+
+
+def test_fetch_github_pr_info_classifies_github_only_changes() -> None:
+    pr_payload = {"title": "Housekeeping", "changed_files": 2}
+    with patch(
+        "transformersci.otel.trace_exporter._github_api_get",
+        side_effect=[
+            pr_payload,
+            [],
+            [
+                {"filename": ".github/workflows/check.yml"},
+                {"filename": ".github/CODEOWNERS"},
+            ],
+        ],
+    ) as github_get:
+        metadata = trace_exporter.fetch_github_pr_info("huggingface/transformers", "42")
+    assert metadata["category"] == "CI/infra"
+    assert (
+        github_get.call_args_list[-1]
+        .args[0]
+        .endswith("/pulls/42/files?per_page=100&page=1")
+    )
+
+
+def test_pr_changes_only_in_github_requires_every_changed_path() -> None:
+    check = trace_exporter.pr_changes_only_in_github
+    with patch("transformersci.otel.trace_exporter._github_api_get") as github_get:
+        github_get.return_value = [
+            {"filename": ".github/workflows/check.yml"},
+            {"filename": "src/model.py"},
+        ]
+        assert not check("huggingface/transformers", "42", 2)
+        github_get.return_value = [
+            {
+                "filename": ".github/workflows/check.yml",
+                "previous_filename": "ci/check.yml",
+            }
+        ]
+        assert not check("huggingface/transformers", "42", 1)
+        github_get.return_value = []
+        assert not check("huggingface/transformers", "42", 0)
+
+
+def test_pr_changes_only_in_github_checks_all_pages() -> None:
+    first_page = [{"filename": f".github/workflows/{i}.yml"} for i in range(100)]
+    with patch(
+        "transformersci.otel.trace_exporter._github_api_get",
+        side_effect=[first_page, [{"filename": ".github/CODEOWNERS"}]],
+    ) as github_get:
+        assert trace_exporter.pr_changes_only_in_github(
+            "huggingface/transformers", "42", 101
+        )
+    assert github_get.call_count == 2
 
 
 def test_fetch_github_pr_info_carries_merged_flag() -> None:
@@ -1532,6 +1601,9 @@ def test_extract_pr_info_metrics_fetches_metadata_once_per_pr() -> None:
             "commit_sha": "deadbeefcafebabe1234567890abcdef00000000",
             "created_at": "2024-01-02T03:04:05Z",
             "html_url": "https://github.com/huggingface/transformers/pull/4321",
+            "new_model": "true",
+            "category": "New model",
+            "labels_json": '[{"name":"New model","color":"f5a623"}]',
             "reviewers": "alice,bob",
             "state": "open",
             "title": "Fix dashboard metadata",
@@ -1553,6 +1625,8 @@ def test_extract_pr_info_metrics_fetches_metadata_once_per_pr() -> None:
     )
     assert 'repository="huggingface/transformers"' in info_lines[0]
     assert 'reviewers="alice,bob"' in info_lines[0]
+    assert 'new_model="true"' in info_lines[0]
+    assert 'category="New model"' in info_lines[0]
     assert 'state="open"' in info_lines[0]
     assert 'title="Fix dashboard metadata"' in info_lines[0]
 
@@ -2860,6 +2934,88 @@ def test_pr_search_page_is_served() -> None:
     assert 'fetch("/api/ds/query"' in page
     assert "/d/pytest-observability-by-pr/pytest-observability-branch" in page
     assert "__PR_URL__" not in page
+
+
+def test_overview_pr_table_assets_are_served() -> None:
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.request import urlopen
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with urlopen(f"{base}/pr-table", timeout=5) as response:
+            page = response.read().decode()
+            assert response.headers["Content-Type"].startswith("text/html")
+        with urlopen(f"{base}/pr-table/app.js", timeout=5) as response:
+            script = response.read().decode()
+            assert response.headers["Content-Type"].startswith("text/javascript")
+        with urlopen(f"{base}/pr-table/auth-complete", timeout=5) as response:
+            auth_page = response.read().decode()
+            assert response.headers["Cache-Control"] == "no-store"
+        with urlopen(f"{base}/pr-table/queries", timeout=5) as response:
+            queries = json.load(response)
+            assert response.headers["Content-Type"] == "application/json"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert 'id="mine"' in page and 'id="open"' in page
+    assert "parent.location.assign('/login/github?redirectTo='" not in script
+    assert "Sign in with GitHub" in script
+    assert "tci-pr-auth-complete" in auth_page
+    assert "unless on (pr)" in script
+    assert set(queries["targets"]) == {
+        "Activity", "Title", "Category", "Runs", "Failures", "Rate", "Age", "State", "Active"
+    }
+
+
+def test_pr_labels_endpoint_uses_current_github_metadata(monkeypatch) -> None:
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.error import HTTPError
+    from urllib.request import urlopen
+
+    seen = []
+
+    def info(repository, pr):
+        seen.append((repository, pr))
+        return {
+            "labels_json": '[{"name":"New model","color":"ffcc00"}]',
+            "new_model": "true",
+            "category": "New model",
+        }
+
+    monkeypatch.setattr(trace_exporter, "fetch_github_pr_info_cached", info)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}/pr-search/labels"
+        with urlopen(
+            f"{base}?repository=huggingface%2Ftransformers&pr=49589", timeout=5
+        ) as response:
+            assert json.load(response) == {
+                "labels": [{"name": "New model", "color": "ffcc00"}],
+                "new_model": True,
+                "category": "New model",
+            }
+        with urlopen(
+            f"http://127.0.0.1:{server.server_port}/pr-search/categories.js", timeout=5
+        ) as response:
+            assert b"installOverviewCategories" in response.read()
+        assert seen == [("huggingface/transformers", "49589")]
+        try:
+            urlopen(f"{base}?repository=private%2Frepo&pr=49589", timeout=5)
+        except HTTPError as error:
+            assert error.code == 400
+        else:
+            raise AssertionError("private repository was accepted")
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_page_view_counts_dashboards(monkeypatch) -> None:
@@ -6062,3 +6218,323 @@ def test_live_test_counts_sums_replicas_and_errors(monkeypatch) -> None:
     # Cached: a polling page does not re-query every 30 s per viewer.
     trace_exporter.live_test_counts("9:1", "tests_torch")
     assert len(seen) == 1
+
+
+MOLMO2_SHA = "f27b9b1456273cbe7c3abe9fb4830e425d4b2119"
+
+
+def molmo2_commit_payload() -> dict:
+    """Trimmed from the real GET /repos/huggingface/transformers/commits/f27b9b1."""
+    return {
+        "commit": {
+            "message": "Add Molmo2 (#43451)\n\n* body",
+            "committer": {"date": "2026-10-09T13:21:58Z"},
+        },
+        "files": [
+            {
+                "filename": "src/transformers/models/molmo2/__init__.py",
+                "status": "added",
+            },
+            {
+                "filename": "src/transformers/models/molmo2/modeling_molmo2.py",
+                "status": "added",
+            },
+            {"filename": "tests/models/molmo2/__init__.py", "status": "added"},
+            {
+                "filename": "src/transformers/models/auto/__init__.py",
+                "status": "modified",
+            },
+            {
+                "filename": "src/transformers/models/renamed/__init__.py",
+                "status": "renamed",
+            },
+            {
+                "filename": "src/transformers/models/molmo2/sub/__init__.py",
+                "status": "added",
+            },
+        ],
+    }
+
+
+def test_commit_details_reads_added_models_pr_and_merge_time() -> None:
+    details = trace_exporter.commit_details_from_payload(molmo2_commit_payload())
+
+    assert details.message == "Add Molmo2 (#43451)"
+    # Only an added top-level model __init__.py counts: not tests/, not a
+    # modified or renamed one, not a nested package.
+    assert details.added_models == ("molmo2",)
+    assert details.pr == "43451"
+    assert details.committed_at_ms == 1791552118000
+
+
+def test_commit_details_tolerates_a_bad_payload() -> None:
+    assert trace_exporter.commit_details_from_payload(None) == (
+        trace_exporter.CommitDetails()
+    )
+    details = trace_exporter.commit_details_from_payload(
+        {"commit": {"message": "Smthn smthn"}, "files": "nope"}
+    )
+    assert details.message == "Smthn smthn"
+    assert details.added_models == ()
+    assert details.pr == ""
+    assert details.committed_at_ms == 0
+
+
+def test_commit_message_and_details_share_one_github_call() -> None:
+    import json as _json
+
+    payload = FakeResponse(_json.dumps(molmo2_commit_payload()))
+    with (
+        patch.dict(trace_exporter._cached_commit_details, {}, clear=True),
+        patch(
+            "transformersci.otel.trace_exporter.urlopen", side_effect=[payload]
+        ) as mocked_urlopen,
+    ):
+        message = trace_exporter.fetch_github_commit_message_cached(
+            "huggingface/transformers", MOLMO2_SHA
+        )
+        details = trace_exporter.fetch_github_commit_details_cached(
+            "huggingface/transformers", MOLMO2_SHA
+        )
+
+    assert message == "Add Molmo2 (#43451)"
+    assert details.added_models == ("molmo2",)
+    assert mocked_urlopen.call_count == 1
+
+
+def main_run_trace(
+    *, pr: str = "main", repository: str = "huggingface/transformers"
+) -> dict:
+    return make_trace(
+        trace_id=f"trace-{pr}-{repository}",
+        run_id="run-1",
+        job="run_models_gpu",
+        pr=pr,
+        repository=repository,
+        commit_sha=MOLMO2_SHA,
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/models/molmo2/test_modeling_molmo2.py::T::test_a",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+
+
+def test_extract_model_added_metrics_emits_a_main_commit_model() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fetcher(repository: str, sha: str) -> trace_exporter.CommitDetails:
+        calls.append((repository, sha))
+        return trace_exporter.commit_details_from_payload(molmo2_commit_payload())
+
+    lines = trace_exporter.extract_model_added_metrics(
+        [main_run_trace()], _commit_fetcher=fetcher, _registry={}, _seed=()
+    )
+
+    assert calls == [("huggingface/transformers", MOLMO2_SHA)]
+    series = metric_lines(lines, "pytest_model_added_info")
+    assert series == [
+        "pytest_model_added_info{"
+        f'commit_sha="{MOLMO2_SHA}",'
+        'html_url="https://github.com/huggingface/transformers/pull/43451",'
+        'model="molmo2",pr="43451"} 1791552118000'
+    ]
+
+
+def test_extract_model_added_metrics_ignores_pr_and_fork_runs() -> None:
+    def fetcher(repository: str, sha: str) -> trace_exporter.CommitDetails:
+        raise AssertionError("no GitHub call for a PR or fork run")
+
+    lines = trace_exporter.extract_model_added_metrics(
+        [
+            main_run_trace(pr="43451"),
+            main_run_trace(repository="someone/transformers"),
+        ],
+        _commit_fetcher=fetcher,
+        _registry={},
+        _seed=(),
+    )
+
+    assert metric_lines(lines, "pytest_model_added_info") == []
+
+
+def test_extract_model_added_metrics_keeps_a_marker_after_its_run_leaves() -> None:
+    registry: dict[str, trace_exporter.ModelAdded] = {}
+
+    def fetcher(repository: str, sha: str) -> trace_exporter.CommitDetails:
+        return trace_exporter.commit_details_from_payload(molmo2_commit_payload())
+
+    trace_exporter.extract_model_added_metrics(
+        [main_run_trace()], _commit_fetcher=fetcher, _registry=registry, _seed=()
+    )
+    # The run has left the rolling window; the series must not vanish with it.
+    lines = trace_exporter.extract_model_added_metrics(
+        [], _commit_fetcher=fetcher, _registry=registry, _seed=()
+    )
+
+    assert len(metric_lines(lines, "pytest_model_added_info")) == 1
+
+
+def test_extract_model_added_metrics_skips_a_failed_lookup() -> None:
+    lines = trace_exporter.extract_model_added_metrics(
+        [main_run_trace()],
+        _commit_fetcher=lambda repository, sha: trace_exporter.CommitDetails(),
+        _registry={},
+        _seed=(),
+    )
+
+    assert metric_lines(lines, "pytest_model_added_info") == []
+
+
+def test_model_added_seed_matches_the_github_merge_times() -> None:
+    lines = trace_exporter.extract_model_added_metrics(
+        [], _commit_fetcher=lambda repository, sha: None, _registry={}
+    )
+    series = metric_lines(lines, "pytest_model_added_info")
+
+    assert len(series) == 7
+    # Sorted by merge time, valued in epoch ms (2026-09-21T10:09:56Z).
+    assert 'model="minicpmv4_7"' in series[0]
+    assert series[0].endswith(" 1789985396000")
+    assert 'model="molmo2"' in series[-1]
+    assert series[-1].endswith(" 1791552118000")
+
+
+TORCH_BUMP_SHA = "a2c15b30764b7c6cb0632ac6aed6eac227edc674"
+
+
+def torch_bump_commit_payload() -> dict:
+    """Trimmed from the real GET /repos/huggingface/transformers/commits/a2c15b3."""
+    return {
+        "commit": {
+            "message": "Switch daily CI to torch 2.14 — update expected outputs (#48750)",
+            "committer": {"date": "2026-09-13T14:45:22Z"},
+        },
+        "files": [
+            {
+                "filename": "docker/transformers-all-latest-gpu/Dockerfile",
+                "status": "modified",
+                "patch": "@@ -9,7 +9,7 @@\n ARG REF=main\n-ARG PYTORCH='2.13.0'\n+ARG PYTORCH='2.14.0'\n # Example: `cu102`",
+            },
+            {
+                "filename": "tests/models/llama/test_modeling_llama.py",
+                "status": "modified",
+                "patch": "-ARG PYTORCH='1.0'\n+ARG PYTORCH='9.9'",
+            },
+        ],
+    }
+
+
+def test_commit_details_reads_the_gpu_image_torch_bump() -> None:
+    details = trace_exporter.commit_details_from_payload(torch_bump_commit_payload())
+
+    # Only the watched file counts, not a look-alike line elsewhere.
+    assert details.dependency_changes == (
+        trace_exporter.DependencyChange("torch", "2.13.0", "2.14.0"),
+    )
+    assert details.pr == "48750"
+
+
+def test_commit_details_reads_a_created_python_version_file() -> None:
+    details = trace_exporter.commit_details_from_payload(
+        {
+            "commit": {"message": "Move CI to Python 3.11 (#49311)"},
+            "files": [
+                {
+                    "filename": ".python-version",
+                    "status": "added",
+                    "patch": "@@ -0,0 +1 @@\n+3.11",
+                }
+            ],
+        }
+    )
+
+    assert details.dependency_changes == (
+        trace_exporter.DependencyChange("python", "", "3.11"),
+    )
+
+
+def test_commit_details_ignores_an_untouched_version_or_missing_patch() -> None:
+    dockerfile = "docker/transformers-all-latest-gpu/Dockerfile"
+    details = trace_exporter.commit_details_from_payload(
+        {
+            "commit": {"message": "Edit the Dockerfile"},
+            "files": [
+                # Version line only moved (same value removed and re-added).
+                {
+                    "filename": dockerfile,
+                    "status": "modified",
+                    "patch": "-ARG PYTORCH='2.14.0'\n+ARG PYTORCH='2.14.0'",
+                },
+                # GitHub drops ``patch`` on very large diffs.
+                {"filename": ".python-version", "status": "modified"},
+            ],
+        }
+    )
+
+    assert details.dependency_changes == ()
+
+
+def test_extract_dependency_change_metrics_emits_a_main_commit_change() -> None:
+    def fetcher(repository: str, sha: str) -> trace_exporter.CommitDetails:
+        return trace_exporter.commit_details_from_payload(torch_bump_commit_payload())
+
+    trace = main_run_trace()
+    lines = trace_exporter.extract_dependency_change_metrics(
+        [trace], _commit_fetcher=fetcher, _registry={}, _seed=()
+    )
+
+    assert metric_lines(lines, "pytest_dependency_change_info") == [
+        "pytest_dependency_change_info{"
+        'change="2.13.0 → 2.14.0",'
+        f'commit_sha="{MOLMO2_SHA}",'
+        'dependency="torch",from_version="2.13.0",'
+        'html_url="https://github.com/huggingface/transformers/pull/48750",'
+        'pr="48750",to_version="2.14.0"} 1789310722000'
+    ]
+
+
+def test_extract_dependency_change_metrics_ignores_pr_runs() -> None:
+    def fetcher(repository: str, sha: str) -> trace_exporter.CommitDetails:
+        raise AssertionError("no GitHub call for a PR run")
+
+    lines = trace_exporter.extract_dependency_change_metrics(
+        [main_run_trace(pr="48750")], _commit_fetcher=fetcher, _registry={}, _seed=()
+    )
+
+    assert metric_lines(lines, "pytest_dependency_change_info") == []
+
+
+def test_dependency_change_seed_and_live_detection_do_not_duplicate() -> None:
+    def fetcher(repository: str, sha: str) -> trace_exporter.CommitDetails:
+        return trace_exporter.commit_details_from_payload(torch_bump_commit_payload())
+
+    trace = make_trace(
+        trace_id="trace-torch",
+        run_id="run-torch",
+        job="run_models_gpu",
+        pr="main",
+        commit_sha=TORCH_BUMP_SHA,
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid="tests/test_a.py::T::test_a",
+                start_time=1_000_000,
+                duration=1_000_000,
+            )
+        ],
+    )
+    lines = trace_exporter.extract_dependency_change_metrics(
+        [trace], _commit_fetcher=fetcher, _registry={}
+    )
+    series = metric_lines(lines, "pytest_dependency_change_info")
+
+    # 4 torch bumps + python 3.11; the live sighting of a seeded commit is not a 6th.
+    assert len(series) == 5
+    assert sum('to_version="2.14.0"' in line for line in series) == 1
+    python = [line for line in series if 'dependency="python"' in line]
+    assert len(python) == 1
+    assert 'change="→ 3.11"' in python[0] and 'from_version="none"' in python[0]

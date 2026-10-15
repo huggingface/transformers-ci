@@ -7,6 +7,8 @@ function installPrView() {
     .tci-pr-layout[data-tci-view="tests"] > .tci-pr-patch-panel,
     .tci-pr-layout[data-tci-view="patch"] > .tci-pr-tests-panel {display:none!important}
     .tci-pr-patch-panel iframe {display:block;width:100%;height:100%;min-height:640px;border:0}
+    .tci-gh-labels{display:inline-flex;align-items:center;flex-wrap:wrap;gap:5px}
+    .tci-gh-label{display:inline-block;padding:2px 8px;border-radius:999px;font:600 11px/1.5 system-ui,sans-serif;white-space:nowrap}
     [data-pr-mode="tests"][data-running="true"]::after {content:"";display:inline-block;width:8px;height:8px;margin-left:7px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-1px;animation:tci-tests-spin 1s linear infinite}
     @keyframes tci-tests-spin {to{transform:rotate(360deg)}}
     @media(prefers-reduced-motion:reduce){[data-pr-mode="tests"][data-running="true"]::after{animation:none}}
@@ -15,6 +17,52 @@ function installPrView() {
   let pending = false, previous = null;
   const originals = new WeakMap();
   let activityKey = '', activityTime = 0, activityRequest = null, activityRunning = false;
+  let labelKey = '', labelTime = 0, labelRequest = null, labelVersion = 0, labelData = [], isNewModel = false;
+  function paintLabels(branch) {
+    const container = branch.querySelector('[data-pr-labels]');
+    if (!container || container.dataset.renderedVersion === String(labelVersion)) return;
+    container.replaceChildren();
+    if (isNewModel) {
+      const stamp = doc.createElement('span');
+      stamp.className = 'tci-new-model'; stamp.textContent = 'NEW MODEL!';
+      container.append(stamp);
+    }
+    for (const label of labelData) {
+      if (label.name.toLowerCase() === 'new model') continue;
+      const badge = doc.createElement('span');
+      badge.className = 'tci-gh-label'; badge.textContent = label.name;
+      const color = /^[0-9a-f]{6}$/i.test(label.color) ? label.color : '6b7280';
+      const red = parseInt(color.slice(0, 2), 16), green = parseInt(color.slice(2, 4), 16), blue = parseInt(color.slice(4, 6), 16);
+      badge.style.backgroundColor = '#' + color;
+      badge.style.color = (red * 299 + green * 587 + blue * 114) / 1000 > 145 ? '#111217' : '#fff';
+      container.append(badge);
+    }
+    container.dataset.renderedVersion = String(labelVersion);
+  }
+  async function checkLabels(branch) {
+    if (!branch || doc.hidden) return;
+    let pr, repository;
+    try { pr = decodeURIComponent(branch.dataset.pr || ''); repository = decodeURIComponent(branch.dataset.repository || ''); } catch (_) { return; }
+    if (!/^[1-9][0-9]*$/.test(pr) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return;
+    const key = repository + '#' + pr;
+    if (key !== labelKey) {
+      if (labelRequest) labelRequest.abort();
+      labelRequest = null; labelKey = key; labelTime = 0; labelData = []; isNewModel = false; labelVersion++;
+    }
+    paintLabels(branch);
+    if (labelRequest || Date.now() - labelTime < 60000) return;
+    labelTime = Date.now();
+    const controller = new host.AbortController(); labelRequest = controller;
+    const timeout = host.setTimeout(() => controller.abort(), 10000);
+    try {
+      const url = '/pr-search/labels?' + new URLSearchParams({pr, repository});
+      const response = await host.fetch(url, {credentials:'same-origin',signal:controller.signal});
+      if (!response.ok) throw Error('Labels unavailable');
+      const result = await response.json();
+      if (labelRequest === controller) { labelData = (result.labels || []).slice(0, 30); isNewModel = result.new_model === true; labelVersion++; schedule(); }
+    } catch (_) { /* Metadata is optional; keep the PR usable. */ }
+    finally { host.clearTimeout(timeout); if (labelRequest === controller) labelRequest = null; }
+  }
   function markActivity(branch, running) {
     const button = branch.querySelector('[data-pr-mode="tests"]');
     if (!button) return;
@@ -24,10 +72,10 @@ function installPrView() {
   }
   async function checkActivity(branch = doc.querySelector('.tci-branch[data-pr-view]'), force = false) {
     if (!branch || doc.hidden) return;
-    let pr, repository;
-    try { pr = decodeURIComponent(branch.dataset.pr || ''); repository = decodeURIComponent(branch.dataset.repository || ''); } catch (_) { return; }
-    if (!/^[1-9][0-9]*$/.test(pr) || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) { markActivity(branch, false); return; }
-    const key = repository + '#' + pr;
+    let pr;
+    try { pr = decodeURIComponent(branch.dataset.pr || ''); } catch (_) { return; }
+    if (!/^[1-9][0-9]*$/.test(pr)) { markActivity(branch, false); return; }
+    const key = pr;
     if (key !== activityKey) {
       if (activityRequest) activityRequest.abort();
       activityRequest = null; activityKey = key; activityTime = 0; activityRunning = false;
@@ -38,16 +86,15 @@ function installPrView() {
     const controller = new host.AbortController(); activityRequest = controller;
     const timeout = host.setTimeout(() => controller.abort(), 10000);
     try {
-      // Active-job series have no repository label; scope them through run identity.
-      const response = await host.fetch('/api/ds/query', {method:'POST', credentials:'same-origin', signal:controller.signal, headers:{'Content-Type':'application/json'}, body:JSON.stringify({from:'now-5m', to:'now', queries:[{refId:'PRTestsActive', datasource:{type:'prometheus',uid:'prometheus'}, expr:'max(pytest_run_job_active{pr=' + JSON.stringify(pr) + '} and on(pr,run_id) ci_github_run_info{pr=' + JSON.stringify(pr) + ',repository=' + JSON.stringify(repository) + '}) or vector(0)', instant:true, range:false, maxDataPoints:1, intervalMs:30000}]})});
+      const response = await host.fetch('/pr-ci-view/data?pr=' + encodeURIComponent(pr), {credentials:'same-origin',signal:controller.signal});
       if (!response.ok) throw Error('Live status unavailable');
-      const result = (await response.json()).results?.PRTestsActive;
-      if (!result || result.error) throw Error('Live status unavailable');
-      const running = (result.frames || []).some(frame => frame.schema.fields.some((field, index) => field.type === 'number' && Number(frame.data.values[index]?.at(-1)) > 0));
+      const result = await response.json();
+      if (!Array.isArray(result.lanes)) throw Error('Live status unavailable');
+      const active = new Set(['in_progress','queued','waiting','requested','pending']);
+      const running = result.lanes.some(lane => active.has(lane.run?.status) || (lane.jobs || []).some(job => active.has(job.status)));
       if (activityRequest === controller) { activityRunning = running; checkActivity(); }
-    } catch (_) {
-      if (activityRequest === controller) { activityRunning = false; checkActivity(); }
-    } finally {
+    } catch (_) { /* Keep the last known status during a transient refresh error. */ }
+    finally {
       host.clearTimeout(timeout);
       if (activityRequest === controller) activityRequest = null;
     }
@@ -70,7 +117,7 @@ function installPrView() {
   }
   function sync() {
     const branch = doc.querySelector('.tci-branch[data-pr-view]');
-    if (branch) checkActivity(branch);
+    if (branch) { checkActivity(branch); checkLabels(branch); }
     const branchItem = branch && branch.closest('.react-grid-item');
     const layout = branchItem && branchItem.parentElement;
     const patch = layout && layout.querySelector('[data-viz-panel-id="panel-15"]');
@@ -118,6 +165,7 @@ function installPrView() {
   host.addEventListener('resize', schedule);
   host.addEventListener('popstate', schedule);
   host.setInterval(() => checkActivity(), 30000);
+  host.setInterval(() => checkLabels(doc.querySelector('.tci-branch[data-pr-view]')), 60000);
   sync();
 }
 

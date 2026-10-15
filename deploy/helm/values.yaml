@@ -176,7 +176,7 @@ tempo:
 traceExporter:
   replicas: 1
   # Read-only related-issue search. Empty disables lookups; the panel reports
-  # unavailable. Adapter targets Relore 0.3.17; verify compatibility on upgrades.
+  # unavailable. Adapter targets Relore 0.3.18; verify compatibility on upgrades.
   relore:
     url: http://ghlore.ghlore.svc.cluster.local
   # WDYT? on the Test page: one direct LLM call per (trace, test), for signed-in

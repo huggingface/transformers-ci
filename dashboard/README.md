@@ -15,22 +15,25 @@ It includes:
 - `pytest-test-dashboard.json`: per-test view (metadata + embedded Tempo trace view when failed)
 - `data/`: shared local data directory for resource metrics
 
-## My Stuff
+## Overview PR table
 
-The **My Stuff** switch sits to the left of the header's PR search. Turning it
-on refreshes **Last 10 PRs** to show PRs you authored, commented on, reviewed,
-or were asked to review. The existing ordering by latest CI activity applies
-after this filter. Turning it off restores the full list. The switch is saved
-in this browser's local storage and remains visible when signed out; clicking
-it then starts GitHub sign-in and returns to the dashboard with My Stuff on.
+The **Last 10 PRs** table is an embedded `/pr-table` view. Its **My Stuff** and
+**Hide merged/closed** switches sit above the rows and update only this view;
+the overview dashboard does not navigate or reload. Both choices are remembered
+in this browser. The table queries Prometheus through Grafana's `/api/ds/query`
+using the expressions in `src/transformersci/otel/pr_table_queries.json`, copied
+from the former Grafana table panel. Filters apply before the newest ten PRs are
+selected, so hiding closed PRs can reveal older open ones. Unknown PR states
+remain visible. Clicking My Stuff while signed out starts GitHub sign-in and
+returns to the overview.
 
 `/pr-search/mine` verifies the Grafana session and searches only configured
 public repositories using the signed-in GitHub username. It considers up to
 100 recently updated PRs per interaction type, merges duplicate PRs, and caches
 the result for five minutes per account. Concurrent lookups share the same
-request; the cache holds at most 64 accounts. The header refreshes the lookup
-every five minutes. An empty result shows no PRs, and lookup errors appear in
-the switch tooltip with a retry by toggling off and on.
+request; the cache holds at most 64 accounts. The embedded table refreshes its
+rows every 10 seconds and refreshes the My Stuff lookup every five minutes.
+Lookup errors appear in the table instead of silently showing unfiltered PRs.
 
 ## PR diff panel
 

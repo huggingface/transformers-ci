@@ -17,7 +17,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 REPOSITORY = "huggingface/transformers"
-WIRE_VERSION = "0.3.17"
+WIRE_VERSION = "0.3.18"
 MAX_RESPONSE_BYTES = 512 * 1024
 _cache: OrderedDict[tuple[str, str, str], tuple[float, dict]] = OrderedDict()
 _inflight: dict[tuple[str, str, str], threading.Event] = {}
@@ -188,7 +188,6 @@ a:hover{text-decoration:underline}.meta{color:#8e9197;font-size:12px;margin:1px 
 button{background:#242b35;color:#d8d9da;
 border:1px solid #657083;border-radius:4px;padding:4px 10px;cursor:pointer}
 </style></head><body>
-<h3 style="font-size:14px;margin:0 0 6px">Potential related issues</h3>
 <p id="status" role="status" aria-live="polite">Searching related issues…</p>
 <ul id="results"></ul><button id="retry" hidden>Retry</button>
 <script>
@@ -235,9 +234,11 @@ retry.addEventListener('click',load);load();
 
 # Match the PR dashboard's Branch header and metadata chips. All dynamic text
 # comes from URLSearchParams and textContent, never JS/HTML interpolation.
-SUMMARY_HTML = PAGE_HTML.replace(
-    "</head><body>",
-    """<style>
+# Shares PAGE_HTML's head (base styles) but not its body: the test page shows
+# the related issues as their own panel beside the failure.
+SUMMARY_HTML = (
+    PAGE_HTML[: PAGE_HTML.index("</head><body>")]
+    + """<style>
 .tci-hd{font:600 18px/1.3 Inter,system-ui,sans-serif;margin:0 0 10px;
 display:flex;align-items:center;gap:8px;flex-wrap:wrap;overflow-wrap:anywhere}
 .tci-meta{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
@@ -326,5 +327,5 @@ copyButton.addEventListener('click',async()=>{
   }
   copyButton.textContent='Copied';setTimeout(()=>{copyButton.textContent='Copy';},1500);
 });
-</script>""",
+</script></body></html>"""
 ).replace("__GITHUB_MARK__", GITHUB_MARK_PATH)

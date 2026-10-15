@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Latest PR CI</title>
+<style>
+:root{color-scheme:dark;--bg:#181b1f;--fg:#d8d9da;--muted:#9fa3a9;--line:#33383f;--hover:#252a31;--accent:#6e9fff;--green:#73bf69;--red:#f2495c;--amber:#f2cc60}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:13px/1.4 Inter,system-ui,sans-serif}
+body{display:flex;flex-direction:column;min-height:0}
+body.light{color-scheme:light;--bg:#fff;--fg:#24292e;--muted:#656d76;--line:#d0d7de;--hover:#f3f4f6;--accent:#1f6feb}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.runs{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:8px 12px;border-bottom:1px solid var(--line);min-height:42px}
+.run{display:inline-flex;gap:6px;align-items:center;min-width:0}.run strong{font-size:12px}.run small{color:var(--muted)}
+.good{color:var(--green)}.bad{color:var(--red)}.busy{color:var(--amber)}
+.live{display:inline-block;width:12px;height:12px;border:2px solid var(--line);border-top-color:var(--amber);border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px}
+.progress{height:3px;background:transparent;overflow:hidden;flex:none}.progress span{display:block;width:28%;height:100%;background:var(--accent);animation:progress 1.35s ease-in-out infinite}.progress[hidden]{display:none}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);flex:1;min-height:0}
+section{display:flex;flex-direction:column;min-width:0;min-height:0}section+section{border-left:1px solid var(--line)}
+.head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:39px;padding:7px 12px;border-bottom:1px solid var(--line)}
+h2{margin:0;font-size:13px}.scroll{overflow:auto;min-height:0;flex:1}.notice{padding:8px 12px;color:var(--muted);border-bottom:1px solid var(--line)}
+.controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;border-bottom:1px solid var(--line)}
+.controls input[type=search]{flex:1 1 180px;min-width:120px;max-width:280px;height:25px;padding:0 8px;border:1px solid var(--line);border-radius:3px;background:var(--bg);color:var(--fg);font:12px Inter,system-ui,sans-serif}
+.controls label{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;color:var(--muted);font-size:12px;cursor:pointer}.controls input[type=checkbox]{accent-color:#3d71d9;margin:0}
+.seg{display:inline-flex;align-items:center;gap:0}.seg-label{color:var(--muted);font-size:12px;margin-right:5px}
+.seg button{height:25px;padding:0 7px;border:1px solid var(--line);background:transparent;color:var(--fg);font:500 12px Inter,system-ui,sans-serif;cursor:pointer;white-space:nowrap}
+.seg button+button{margin-left:-1px}.seg button:first-of-type{border-radius:3px 0 0 3px}.seg button:last-child{border-radius:0 3px 3px 0}
+.seg button:hover{background:var(--hover)}.seg button[aria-pressed=true]{position:relative;z-index:1;background:#3d71d9;border-color:#3d71d9;color:#fff}
+.summary{padding:7px 12px;color:var(--muted);border-bottom:1px solid var(--line);font-size:12px}
+table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{padding:7px 8px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{position:sticky;top:0;background:var(--bg);color:var(--muted);font:600 11px Inter,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.04em;z-index:1}
+tbody tr:hover{background:var(--hover)}td{overflow-wrap:anywhere}td.nodeid{font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}
+td.dur{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.exc{margin-top:2px;color:var(--red);font:12px system-ui,sans-serif}
+.state{display:inline-block;padding:2px 6px;border-radius:3px;color:#fff;font-size:11px;font-weight:700;white-space:nowrap}
+.state.success{background:#43a047}.state.failure,.state.timed_out,.state.startup_failure{background:#d92a43}
+.state.running{background:#9b7624}.state.skipped,.state.cancelled{background:#77808e}.state.unknown{background:#77808e}
+.specific{display:inline-block;margin-left:6px;color:var(--green);font:600 11px Inter,system-ui,sans-serif}
+.shared{display:inline-block;margin-left:6px;color:var(--muted);font:11px Inter,system-ui,sans-serif}
+.tb{margin-left:5px;padding:0 5px;border:1px solid var(--line);border-radius:3px;background:transparent;color:var(--muted);font:11px Inter,system-ui,sans-serif;cursor:pointer}.tb:hover{color:var(--fg)}
+.tbrow td{padding:0 0 6px}.tbrow iframe{display:block;width:100%;height:120px;border:1px solid var(--line);border-radius:4px;background:var(--bg)}
+details{border-bottom:1px solid var(--line);padding:4px 0}summary{cursor:pointer;padding:4px 12px;font:12px ui-monospace,Menlo,monospace}summary .meta{font:12px Inter,system-ui,sans-serif;color:var(--muted)}
+details table{width:calc(100% - 14px);margin:4px 0 8px 14px}.test-table{min-width:600px}.jobs-table{min-width:490px}
+.status-cell{text-align:center}.status-cell .live{margin-top:3px}.running-text{margin-left:5px;color:var(--amber);font-size:11px;font-weight:600}.jobs-table th:nth-child(1),.jobs-table td:nth-child(1){width:96px}.jobs-table th:nth-child(3),.jobs-table td:nth-child(3){width:105px;text-align:center}.jobs-table th:nth-child(4),.jobs-table td:nth-child(4),.jobs-table th:nth-child(5),.jobs-table td:nth-child(5){width:56px;text-align:right}
+.status-icon{display:inline-block;width:16px;height:16px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}@keyframes progress{0%{transform:translateX(-110%)}100%{transform:translateX(470%)}}
+@media(prefers-reduced-motion:reduce){.live,.progress span{animation:none}}
+@media(max-width:800px){.layout{display:flex;flex-direction:column;overflow:auto}.layout section{min-height:300px}.layout section+section{border-left:0;border-top:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<div id="runs" class="runs" aria-live="polite">Loading CPU and GPU runs…</div>
+<div id="progress" class="progress" role="progressbar" aria-label="Loading PR CI results"><span></span></div>
+<div class="layout">
+  <section aria-label="Failing tests">
+    <div class="head"><h2>Failing Tests</h2></div>
+    <div class="controls"><input id="search" type="search" autocomplete="off" placeholder="Search: model, test name or error" aria-label="Search failing tests"><span class="seg" role="group" aria-label="Group failing tests"><span class="seg-label">Group by</span><button type="button" data-group="none">None</button><button type="button" data-group="test">Test</button><button type="button" data-group="model">Model</button><button type="button" data-group="test_model">Test + Model</button><button type="button" data-group="job">Job</button></span><label><input id="specific" type="checkbox">Only PR-specific run-slow failures</label></div>
+    <div id="failures" class="scroll" aria-live="polite"></div>
+  </section>
+  <section aria-label="Latest run jobs">
+    <div class="head"><h2>Latest Run Jobs</h2></div>
+    <div class="scroll"><table class="jobs-table"><thead><tr><th>Lane</th><th>Job</th><th>Status</th><th>Pass</th><th>Fail</th></tr></thead><tbody id="jobs"></tbody></table><div id="jobs-empty" class="notice" hidden></div></div>
+  </section>
+</div>
+<script src="/pr-ci-view/app.js"></script>
+</body>
+</html>

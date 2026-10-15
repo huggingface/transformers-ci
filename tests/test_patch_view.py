@@ -69,6 +69,88 @@ def test_large_diff_is_rejected_not_silently_truncated(monkeypatch):
     assert not patch_view._cache
 
 
+def test_too_large_diff_is_rebuilt_from_file_patches(monkeypatch):
+    files = [
+        {
+            "filename": "a.py",
+            "status": "modified",
+            "changes": 2,
+            "patch": "@@ -1 +1 @@\n-old\n+new",
+        },
+        {
+            "filename": "new.py",
+            "previous_filename": "old.py",
+            "status": "renamed",
+            "changes": 0,
+        },
+        {
+            "filename": "big.json",
+            "status": "added",
+            "changes": 7000,
+            "additions": 7000,
+            "deletions": 0,
+        },
+        {
+            "filename": "gone.py",
+            "status": "removed",
+            "changes": 1,
+            "patch": "@@ -1 +0,0 @@\n-x",
+        },
+    ]
+    urls = []
+
+    def fetch(request, timeout):
+        urls.append(request.full_url)
+        if request.get_header("Accept") == "application/vnd.github.diff":
+            raise HTTPError(request.full_url, 406, "too_large", {}, None)
+        return BytesIO(json.dumps(files).encode())
+
+    monkeypatch.setattr(patch_view, "urlopen", fetch)
+    diff = patch_view.fetch_diff("owner/repo", "7")
+    assert urls[1].endswith("/pulls/7/files?per_page=100&page=1")
+    assert len(urls) == 2
+    assert diff == (
+        "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+        "diff --git a/old.py b/new.py\n--- a/old.py\n+++ b/new.py\n"
+        "diff --git a/big.json b/big.json\n--- /dev/null\n+++ b/big.json\n"
+        "GitHub does not show this file's diff (7000 additions, 0 deletions). "
+        "Open it on GitHub.\n"
+        "diff --git a/gone.py b/gone.py\n--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
+    )
+
+
+def test_file_listing_beyond_github_cap_is_rejected(monkeypatch):
+    monkeypatch.setattr(patch_view, "MAX_FILE_PAGES", 2)
+    page = [
+        {
+            "filename": f"f{i}.py",
+            "status": "added",
+            "changes": 1,
+            "patch": "@@ -0,0 +1 @@\n+x",
+        }
+        for i in range(100)
+    ]
+
+    def fetch(request, timeout):
+        if request.get_header("Accept") == "application/vnd.github.diff":
+            raise HTTPError(request.full_url, 406, "too_large", {}, None)
+        return BytesIO(json.dumps(page).encode())
+
+    monkeypatch.setattr(patch_view, "urlopen", fetch)
+    with pytest.raises(ValueError, match="too many files"):
+        patch_view.fetch_diff("owner/repo", "1")
+    assert not patch_view._cache
+
+
+def test_other_diff_errors_are_not_masked(monkeypatch):
+    def fetch(request, timeout):
+        raise HTTPError(request.full_url, 404, "missing", {}, None)
+
+    monkeypatch.setattr(patch_view, "urlopen", fetch)
+    with pytest.raises(HTTPError):
+        patch_view.fetch_diff("owner/repo", "1")
+
+
 def test_comments_merge_paginate_and_cache(monkeypatch):
     calls = []
     discussion = {

@@ -19,19 +19,7 @@ SEARCH_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>Find a PR</title>
 <style>
 html,body{margin:0;background:transparent;font:14px Inter,Helvetica,Arial,sans-serif;overflow:hidden}
-#search-controls{display:flex;gap:10px;align-items:center;height:32px}
-#my-stuff{display:inline-flex;align-items:center;gap:8px;flex:none;height:32px;padding:0 10px;
- border:1px solid var(--line);border-radius:16px;background:var(--bg);color:var(--dim);font:600 12px Inter,system-ui,sans-serif;cursor:pointer}
-#my-stuff:hover{background:var(--hover);color:var(--fg)}
-#my-stuff:focus-visible{outline:2px solid #6e9fff;outline-offset:-2px}
-#my-stuff[aria-checked="true"]{background:var(--hover);border-color:#6e9fff;color:var(--fg)}
-#my-stuff .track{display:block;width:26px;height:16px;border-radius:9px;background:var(--line);padding:2px;box-sizing:border-box}
-#my-stuff .knob{display:block;width:12px;height:12px;border-radius:50%;background:var(--dim);transition:transform .15s,background .15s}
-#my-stuff[aria-checked="true"] .track{background:#3d71d9}
-#my-stuff[aria-checked="true"] .knob{transform:translateX(10px);background:#fff}
-#my-stuff[aria-busy="true"]{opacity:.7}
-#my-stuff.error{border-color:#f2495c}
-@media(prefers-reduced-motion:reduce){#my-stuff .knob{transition:none}}
+#search-controls{display:flex;align-items:center;height:32px}
 #box{min-width:0;flex:1;box-sizing:border-box;width:100%;height:32px;padding:0 8px 0 30px;border:1px solid var(--line);
  border-radius:4px;background:var(--bg) no-repeat 8px center;color:var(--fg);outline:none;font:inherit}
 #box:focus{border-color:#3d71d9;box-shadow:0 0 0 1px #3d71d9}
@@ -56,8 +44,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
 @keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
 </style></head>
 <body>
-<div id="search-controls"><button id="my-stuff" type="button" role="switch" aria-checked="false" title="Show PRs you authored, commented on, or reviewed"><span class="track" aria-hidden="true"><span class="knob"></span></span>My Stuff</button>
-<input id="box" type="search" autocomplete="off" spellcheck="false"
+<div id="search-controls"><input id="box" type="search" autocomplete="off" spellcheck="false"
  placeholder="Find a PR: number, title or author" aria-label="Find a PR"></div>
 <div id="list" role="listbox"></div>
 <script>
@@ -67,91 +54,6 @@ a.row.sel,a.row:hover{background:var(--hover)}
   var fe = window.frameElement, pd = parent.document;
   var box = document.getElementById("box"), list = document.getElementById("list");
   var rows = [], sel = -1, seq = 0, timer = null;
-  var mineButton = document.getElementById('my-stuff'), mineMode = false, mineRequest = null, mineSeq = 0, minePrs = null, lastMineRefresh = Date.now();
-  try { mineMode = localStorage.getItem('tci-my-stuff') === 'true'; } catch (_) {}
-  function rememberMine() {
-    try { localStorage.setItem('tci-my-stuff', String(mineMode)); } catch (_) {}
-    mineButton.setAttribute('aria-checked', String(mineMode));
-  }
-  function anonymous() {
-    var user = parent.grafanaBootData && parent.grafanaBootData.user;
-    return !!(user && user.isSignedIn === false);
-  }
-  function overview() {
-    // Grafana gives its configured home dashboard a synthetic UID.
-    var path = parent.location.pathname, parts = path.split('/');
-    return path === '/' || (parts[1] === 'd' && (parts[2] === 'pytest-observability' || parts[2] === 'default-home-dashboard'));
-  }
-  function scope(prs) {
-    if (!overview()) return;
-    var url = new URL(parent.location.href);
-    if (mineMode) url.searchParams.set('var-pr_scope', prs.length ? prs.join('|') : '0');
-    else {
-      if (!url.searchParams.has('var-pr_scope') || url.searchParams.get('var-pr_scope') === '[0-9]+') return;
-      url.searchParams.set('var-pr_scope', '[0-9]+');
-    }
-    if (url.href !== parent.location.href) parent.location.replace(url.href);
-  }
-  function signIn() {
-    var target = parent.location.pathname + parent.location.search + parent.location.hash;
-    parent.location.assign('/login/github?redirectTo=' + encodeURIComponent(target));
-  }
-  function loadMine(redirect) {
-    lastMineRefresh = Date.now();
-    if (!mineMode) { scope([]); return; }
-    if (anonymous()) {
-      mineButton.title = 'Sign in to see your PRs';
-      if (redirect) signIn();
-      else { minePrs = []; scope([]); }
-      return;
-    }
-    var request = ++mineSeq;
-    mineButton.setAttribute('aria-busy', 'true');
-    mineButton.classList.remove('error');
-    mineButton.title = 'Loading your PR activity…';
-    mineRequest = new AbortController();
-    fetch('/pr-search/mine', {credentials:'same-origin', signal:mineRequest.signal})
-      .then(function (response) {
-        if (response.status === 401) {
-          if (redirect) { signIn(); return null; }
-          throw new Error('Sign in to see your PRs');
-        }
-        return response.json().then(function (data) {
-          if (!response.ok) throw new Error(data.error || 'Could not load your PR activity');
-          if (!Array.isArray(data.prs)) throw new Error('Could not load your PR activity');
-          return data.prs.filter(function (pr) { return typeof pr === 'string' && /^[1-9][0-9]*$/.test(pr); });
-        });
-      })
-      .then(function (prs) {
-        if (request !== mineSeq || !mineMode || !prs) return;
-        mineButton.title = 'Your authored, commented, reviewed, and requested-review PRs';
-        minePrs = prs;
-        scope(prs);
-      })
-      .catch(function (error) {
-        if (request !== mineSeq || error.name === 'AbortError') return;
-        mineButton.title = error.message + '. Toggle off and on to retry.';
-        mineButton.classList.add('error');
-        minePrs = [];
-        scope([]);
-      })
-      .finally(function () {
-        if (request === mineSeq) {
-          mineButton.removeAttribute('aria-busy');
-          mineRequest = null;
-        }
-      });
-  }
-  mineButton.addEventListener('click', function () {
-    mineSeq++;
-    if (mineRequest) mineRequest.abort();
-    mineButton.removeAttribute('aria-busy');
-    mineButton.classList.remove('error');
-    mineMode = anonymous() ? true : !mineMode;
-    rememberMine();
-    loadMine(true);
-  });
-  rememberMine();
 
   // Hide Grafana's own box; this one takes its place. Grafana 13 renders the
   // wide box as the command-palette trigger and, below the lg breakpoint, an
@@ -183,7 +85,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
     var timer;
     emoji.addEventListener('mouseenter', function () {
       parent.clearTimeout(timer);
-      timer = parent.setTimeout(explode, 30000);
+      timer = parent.setTimeout(explode, 5000);
     });
     emoji.addEventListener('mouseleave', function () { parent.clearTimeout(timer); });
     function explode() {
@@ -246,6 +148,20 @@ a.row.sel,a.row:hover{background:var(--hover)}
 
   // Keep this customization in the shared loader rather than each dashboard.
   // Clone dashboard links: moving React-owned nodes breaks later renders.
+  var overviewLinks = null, overviewLinksTriedAt = 0;
+  function loadOverviewLinks() {
+    if (Date.now() - overviewLinksTriedAt < 30000) return;
+    overviewLinksTriedAt = Date.now();
+    fetch('/api/dashboards/uid/pytest-observability', {credentials:'same-origin'})
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        var links = data && data.dashboard && data.dashboard.links;
+        if (!Array.isArray(links)) return;
+        overviewLinks = links.filter(function (link) { return link.title && link.url; });
+        header();
+      })
+      .catch(function () {});
+  }
   function header() {
     var h = pd.querySelector('header'), crumbs = h && h.querySelector('nav[aria-label="Breadcrumbs"]');
     if (!crumbs) return;
@@ -286,6 +202,18 @@ a.row.sel,a.row:hover{background:var(--hover)}
       crumbs.parentNode.insertBefore(nav, crumbs);
     }
     var links = Array.from(pd.querySelectorAll('[data-testid="data-testid Dashboard link"]'));
+    if (!links.length) {
+      if (!overviewLinks) loadOverviewLinks();
+      if (overviewLinks) links = overviewLinks.map(function (item) {
+        var link = pd.createElement('a');
+        link.href = item.url;
+        link.textContent = item.title;
+        link.title = item.tooltip || item.title;
+        if (item.targetBlank) link.target = '_blank';
+        return link;
+      });
+      else if (nav.children.length > 1) return;
+    }
     var signature = JSON.stringify(links.map(function (a) { return [a.textContent, a.getAttribute('href')]; }));
     if (nav.dataset.links !== signature) {
       nav.dataset.links = signature;
@@ -336,11 +264,6 @@ a.row.sel,a.row:hover{background:var(--hover)}
     fe.style.transform = 'none';
     fe.style.width = Math.min(WIDTH, Math.max(160, parent.innerWidth - (narrow ? 32 : 850))) + "px";
     if (nav) nav.style.maxWidth = narrow ? 'none' : Math.max(160, fe.getBoundingClientRect().left - nav.getBoundingClientRect().left - 16) + 'px';
-    if (overview()) {
-      if (!mineMode) scope([]);
-      else if (minePrs !== null) scope(minePrs);
-    }
-    if (mineMode && !mineRequest && !anonymous() && Date.now() - lastMineRefresh >= 300000) loadMine(false);
     if (!list.classList.contains("open")) fe.style.height = "32px";
   }
   function grow() {
@@ -503,7 +426,6 @@ a.row.sel,a.row:hover{background:var(--hover)}
 
   theme();
   place();
-  loadMine(false);
   setInterval(place, 1000);
 })();
 </script>

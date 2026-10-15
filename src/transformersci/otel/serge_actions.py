@@ -12,13 +12,20 @@ import json
 import re
 import threading
 import time
+from pathlib import Path
 from collections.abc import Callable
 
 # (id, label, what Serge will do, wired yet). Rendered with textContent only.
 ACTIONS = (
-    ("new-issue", "New issue", "Serge writes a GitHub issue for this failure.", False),
+    ("new-issue", "New issue", "Draft a GitHub issue for this failure.", True),
     ("fix-it", "Fix it!", "Serge reproduces the failure and opens a fix PR.", False),
     ("wdyt", "WDYT?", "Serge takes a quick look and tells you what it thinks.", True),
+    (
+        "who-can-help",
+        "Who can help",
+        "Find people connected to this failing line and explain where they can help.",
+        True,
+    ),
 )
 
 # Fix PRs Serge already opened for a test: its PR bodies quote the failing node id.
@@ -83,43 +90,16 @@ def fix_prs(nodeid: str, search: Callable[[str], list]) -> dict:
     return result
 
 
-# A pixel-art homage drawn here (no third-party image): rainbow trail in
-# 5-unit segments that alternate up/down, Pop-Tart body, grey head.
-_RAINBOW = ("#ff0000", "#ff9900", "#ffff00", "#33ff00", "#0099ff", "#6633ff")
-_TRAIL = "".join(
-    f'<g class="w{seg % 2}">'
-    + "".join(
-        f'<rect x="{seg * 5}" y="{3 + 2 * i}" width="5" height="2" fill="{c}"/>'
-        for i, c in enumerate(_RAINBOW)
-    )
-    + "</g>"
-    for seg in range(6)
-)
-_CAT = (
-    '<rect x="28" y="8" width="3" height="2" fill="#999"/>'  # tail
-    + "".join(
-        f'<rect x="{x}" y="14" width="2" height="2" fill="#999"/>'
-        for x in (32, 35, 41, 44)
-    )  # legs
-    + '<rect x="31" y="2" width="13" height="12" rx="1" fill="#ffcc99" stroke="#000"'
-    ' stroke-width=".5"/>'
-    + '<rect x="32" y="3" width="11" height="10" rx="1" fill="#ff99ff"/>'
-    + "".join(
-        f'<rect x="{x}" y="{y}" width="1" height="1" fill="#ff3399"/>'
-        for x, y in ((34, 5), (38, 4), (35, 9), (40, 7), (33, 11), (41, 11))
-    )  # sprinkles
-    + '<rect x="40" y="4" width="2" height="2" fill="#999"/>'  # ears
-    + '<rect x="47" y="4" width="2" height="2" fill="#999"/>'
-    + '<rect x="40" y="6" width="9" height="7" fill="#999"/>'  # head
-    + '<rect x="42" y="8" width="1" height="1" fill="#000"/>'  # eyes
-    + '<rect x="46" y="8" width="1" height="1" fill="#000"/>'
-    + '<rect x="41" y="10" width="1" height="1" fill="#ff9999"/>'  # cheeks
-    + '<rect x="47" y="10" width="1" height="1" fill="#ff9999"/>'
-    + '<rect x="43" y="11" width="3" height="1" fill="#000"/>'  # mouth
-)
-NYAN_SVG = (
-    '<svg class="nyan" viewBox="0 0 50 18" shape-rendering="crispEdges"'
-    ' aria-hidden="true">' + _TRAIL + '<g class="cat">' + _CAT + "</g></svg>"
+# Serge's logo (huggingface/serge docs/assets/serge-logo.png), served at
+# /serge-actions/logo.png for this page, the WDYT? popup and the Test page.
+LOGO_PNG = (Path(__file__).parent / "serge-logo.png").read_bytes()
+
+# Shown before a button's label when the viewer is signed out.
+LOCK_SVG = (
+    "<svg viewBox='0 0 16 16' width='11' height='11' fill='currentColor' "
+    "aria-hidden='true' style='vertical-align:-1px;margin-right:5px'><path d='M4 7V5a4 4 0 0 1 8 "
+    "0v2h.5A1.5 1.5 0 0 1 14 8.5v5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5v-5A1.5 "
+    "1.5 0 0 1 3.5 7H4zm2 0h4V5a2 2 0 1 0-4 0v2z'/></svg>"
 )
 
 PAGE_HTML = r"""<!doctype html><html><head><meta charset="utf-8">
@@ -127,46 +107,72 @@ PAGE_HTML = r"""<!doctype html><html><head><meta charset="utf-8">
 body{margin:0;padding:8px 10px;background:#181b1f;color:#d8d9da;
 font:13px/1.45 system-ui,sans-serif}
 .row{display:flex;gap:6px;flex-wrap:wrap}
-button{flex:1 1 0;min-width:0;background:#242b35;color:#d8d9da;
+button{flex:1 1 100px;min-width:0;background:#242b35;color:#d8d9da;
 border:1px solid #657083;border-radius:4px;padding:5px 8px;font:inherit;cursor:pointer;
 white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 button:disabled{opacity:.55;cursor:not-allowed}
 p{margin:6px 0 0;color:#8e9197;font-size:12px}a{color:#6ab0ff;text-decoration:none}
-.sky{position:relative;height:24px;margin:6px 0 0;overflow:hidden}
-.nyan{position:absolute;top:0;height:24px;width:67px;left:calc(100% - 67px);
-animation:fly 7s linear infinite}
-.nyan .cat,.nyan .w0,.nyan .w1{animation:bob .4s steps(1) infinite}
-.nyan .w1{animation-delay:-.2s}
-@keyframes fly{from{left:-67px}to{left:100%}}
-@keyframes bob{0%{transform:translateY(0)}50%{transform:translateY(1px)}}
-button.thinking{color:#fff;border-color:transparent;background:linear-gradient(90deg,
-#ff0000,#ff9900,#ffff00,#33ff00,#0099ff,#6633ff,#ff0000);background-size:300% 100%;
-animation:shimmer 1.2s linear infinite;text-shadow:0 1px 2px #000}
-@keyframes shimmer{to{background-position:-150% 0}}
-body.thinking .nyan{animation-duration:1.4s}
-@media (prefers-reduced-motion:reduce){.nyan,.nyan *,button.thinking{animation:none}}
+button.locked{color:#aeb7c2}
+button.thinking{border-color:#6ab0ff;color:#6ab0ff}
+button.thinking:is(#who-can-help,#new-issue)::before{content:'';display:inline-block;
+width:10px;height:10px;margin-right:6px;border:2px solid #657083;border-top-color:#6ab0ff;
+border-radius:50%;vertical-align:-2px;animation:serge-spin .8s linear infinite}
+@keyframes serge-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){button.thinking::before{animation:none}}
 </style></head><body>
-<div class="row" id="actions" hidden></div>
+<div class="row" id="actions"></div>
 <p id="fix" hidden></p>
-<div class="sky">__NYAN__</div>
+<p id="probable" hidden></p>
 <p id="note" role="status" aria-live="polite"></p>
 <script>
-const ACTIONS=__ACTIONS__;
+const ACTIONS=__ACTIONS__,LOCK=__LOCK__;
 const row=document.getElementById('actions'),note=document.getElementById('note');
+// Every button shows at once; signed out, each carries a lock and goes to the
+// Grafana sign-in, which brings the viewer back to the page they were on.
+// Grafana only returns to its own pages after sign-in, and a bare /test is the
+// exporter's: send that one back to the Grafana Test page for the same test.
+const TEST_PAGE_VARS={trace_id:'trace_id',test_nodeid:'test_nodeid',job:'test_job',
+  pr:'pr',run_id:'run_id',status:'status_code'};
 function signIn(){
-  note.textContent='';const a=document.createElement('a');
-  a.href='/login';a.target='_top';a.textContent='Sign in';
-  note.append(a,' to ask Serge about this failure.');
+  let back='/';
+  try{
+    const here=top.location;back=here.pathname+here.search;
+    if(here.pathname==='/test'){
+      const from=new URLSearchParams(here.search),to=new URLSearchParams();
+      for(const [key,name] of Object.entries(TEST_PAGE_VARS))
+        if(from.get(key))to.set('var-'+name,from.get(key));
+      back='/d/pytest-test/test?'+to;
+    }
+  }catch(error){}
+  top.location.href='/login?redirectTo='+encodeURIComponent(back);
 }
-fetch('/api/user',{credentials:'same-origin',cache:'no-store'}).then(response=>{
-  if(!response.ok){signIn();return;}
+const buttons={};
+function fitFrame(){
+  try{if(window.frameElement)window.frameElement.style.height=
+    Math.ceil(document.body.getBoundingClientRect().height+2)+'px';}catch(error){}
+}
+window.addEventListener('resize',fitFrame);
+for(const [id,label,help] of ACTIONS){
+  const b=document.createElement('button');b.type='button';b.id=id;b.title=help;
+  b.textContent=label;b.disabled=true;buttons[id]=b;row.append(b);
+}
+function render(signedIn){
   for(const [id,label,help,enabled] of ACTIONS){
-    const b=document.createElement('button');b.type='button';b.id=id;
-    b.textContent=label;b.title=help;b.disabled=!enabled;row.append(b);
+    const b=buttons[id];b.replaceChildren();
+    if(signedIn){
+      b.textContent=label;b.title=help;b.disabled=!enabled;b.classList.remove('locked');
+      b.onclick=id==='wdyt'?wdyt:id==='who-can-help'?whoCanHelp:
+        id==='new-issue'?newIssue:null;
+    }else{
+      b.insertAdjacentHTML('afterbegin',LOCK);b.append(label);
+      b.title='Sign in to use Serge. '+help;b.disabled=false;b.classList.add('locked');
+      b.onclick=signIn;
+    }
   }
-  row.hidden=false;
-  document.getElementById('wdyt').addEventListener('click',wdyt);
-}).catch(signIn);
+  fitFrame();
+}
+fetch('/api/user',{credentials:'same-origin',cache:'no-store'})
+  .then(response=>render(response.ok)).catch(()=>render(false));
 
 const context=new URLSearchParams(location.search);
 // Public: a fix PR Serge already opened for this test, from its PR bodies on GitHub.
@@ -183,53 +189,310 @@ if(context.get('test_nodeid'))fetch('/serge-actions/fix-prs?test_nodeid='+
       a.rel='noopener noreferrer';a.title=pr.title;a.textContent='PR #'+pr.number;
       fix.append(a,' ('+(FIX_STATES[pr.state]||pr.state)+')');
     });
-    fix.append(' to fix this.');fix.hidden=false;
+    fix.append(' to fix this.');fix.hidden=false;fitFrame();
   }).catch(()=>{});
 // Like the traceback panel: a link without var-trace_id uses the test's latest
 // failing trace, which the dashboard resolves into latest_trace.
 if(!context.get('trace_id')&&/^[0-9a-f]{32}$/i.test(context.get('latest_trace')||''))
   context.set('trace_id',context.get('latest_trace'));
+if(context.get('test_nodeid'))fetch('/serge-actions/probable-fix?'+
+  new URLSearchParams({trace_id:context.get('trace_id')||'',
+    test_nodeid:context.get('test_nodeid')}),{cache:'no-store'})
+  .then(response=>response.json()).then(data=>{
+    if(data.status!=='ok'||!data.pr)return;
+    const p=document.getElementById('probable'),pr=data.pr;
+    const a=document.createElement('a');a.href=pr.url;a.target='_blank';
+    a.rel='noopener noreferrer';a.title=pr.title;
+    a.textContent='PR #'+pr.number;
+    p.append('🔎 Probable fix: ',a,' ('+pr.state+') · '+pr.title);
+    if(pr.issue)p.append(' · linked to issue #'+pr.issue);
+    p.hidden=false;fitFrame();
+  }).catch(()=>{});
 const MESSAGES={disabled:'WDYT? is not configured on this server yet.',
   unauthorized:'Your Grafana session expired. Sign in again.',
   rate_limited:'You asked a lot this hour. Try again later.',
   busy:'Serge is busy with other questions. Try again in a minute.',
   unavailable:'Serge could not answer right now. Try again in a minute.',
   forbidden:'Request refused.',invalid:'This test has no trace to look at.'};
+async function actionResponse(response,progress){
+  if(!(response.headers.get('Content-Type')||'').includes('ndjson'))return response.json();
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='',result={status:'unavailable'};
+  for(;;){
+    const {value,done}=await reader.read();
+    buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});
+    let cut;
+    while((cut=buffer.indexOf('\n'))>=0){
+      const line=buffer.slice(0,cut).trim();buffer=buffer.slice(cut+1);
+      if(!line)continue;
+      const event=JSON.parse(line);
+      if(event.event==='done')result=event;else progress(event);
+    }
+    if(done)break;
+  }
+  return result;
+}
 let run=null;  // the in-flight question: {view, done}
 async function wdyt(){
   const button=document.getElementById('wdyt');
   if(run){run.view.show();return;}  // reopen the popup of a running question
   const view=popup();run={view};
-  button.classList.add('thinking');document.body.classList.add('thinking');
-  button.textContent='Thinking…';
+  button.classList.add('thinking');button.textContent='Thinking…';
   let result={status:'unavailable'};
   try{
     const response=await fetch('/serge-actions/wdyt',{method:'POST',credentials:'same-origin',
       headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
       body:JSON.stringify(Object.fromEntries(['trace_id','test_nodeid','status','job',
         'module','pr','run_id'].map(k=>[k,context.get(k)||''])))});
-    if(!(response.headers.get('Content-Type')||'').includes('ndjson')){
-      result=await response.json();
-    }else{
-      // NDJSON: one event per line, the last one {"event":"done",...}.
-      const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
-      for(;;){
-        const {value,done}=await reader.read();
-        buffer+=decoder.decode(value||new Uint8Array(),{stream:!done});
-        let cut;
-        while((cut=buffer.indexOf('\n'))>=0){
-          const line=buffer.slice(0,cut).trim();buffer=buffer.slice(cut+1);
-          if(!line)continue;
-          const event=JSON.parse(line);
-          if(event.event==='done')result=event;else view.progress(event);
-        }
-        if(done)break;
-      }
-    }
+    result=await actionResponse(response,event=>view.progress(event));
   }catch(error){}
-  button.classList.remove('thinking');document.body.classList.remove('thinking');
-  button.textContent='WDYT?';run=null;
+  button.classList.remove('thinking');button.textContent='WDYT?';run=null;
   view.finish(result);
+}
+
+let helpersRun=null;
+async function whoCanHelp(){
+  if(helpersRun){helpersRun.view.show();return;}
+  const button=buttons['who-can-help'];
+  button.classList.add('thinking');button.textContent='Looking…';
+  const view=helpersPopup();helpersRun={view};
+  let result={status:'unavailable'};
+  try{
+    const response=await fetch('/serge-actions/who-can-help',{
+      method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
+      body:JSON.stringify({trace_id:context.get('trace_id')||'',
+        test_nodeid:context.get('test_nodeid')||''})});
+    result=await actionResponse(response,event=>view.progress(event));
+  }catch(error){}
+  button.classList.remove('thinking');button.textContent='Who can help';helpersRun=null;
+  view.finish(result);
+}
+
+let issueRun=null;
+async function newIssue(){
+  if(issueRun){issueRun.view.show();return;}
+  const button=buttons['new-issue'],view=issuePopup();
+  issueRun={view};
+  button.classList.add('thinking');button.textContent='Drafting…';
+  let result={status:'unavailable'};
+  try{
+    const response=await fetch('/serge-actions/new-issue/draft',{
+      method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
+      body:JSON.stringify({trace_id:context.get('trace_id')||'',
+        test_nodeid:context.get('test_nodeid')||''})});
+    result=await actionResponse(response,event=>view.progress(event));
+  }catch(error){}
+  button.classList.remove('thinking');button.textContent='New issue';issueRun=null;
+  view.finish(result);
+}
+
+function actionSteps(doc,host,initial){
+  const style=doc.createElement('style');
+  style.textContent='@keyframes tci-popup-spin{to{transform:rotate(360deg)}}'+
+    '.tci-popup-progress{list-style:none;margin:0 0 12px;padding:0;color:#aeb7c2;font-size:13px}'+
+    '.tci-popup-progress li{display:flex;align-items:center;gap:8px;margin:4px 0}'+
+    '.tci-popup-progress .active{display:inline-block;width:12px;height:12px;box-sizing:border-box;'+
+    'border:2px solid #657083;border-top-color:#6ab0ff;border-radius:50%;'+
+    'animation:tci-popup-spin .8s linear infinite}'+
+    '@media(prefers-reduced-motion:reduce){.tci-popup-progress .active{animation:none}}';
+  const list=doc.createElement('ul');list.className='tci-popup-progress';
+  list.setAttribute('role','status');list.setAttribute('aria-live','polite');
+  host.append(style,list);let current=null;
+  const finish=ok=>{
+    if(current){current.className='';current.textContent=ok?'✓':'×';
+      current.style.cssText='display:inline-block;width:12px;color:'+(ok?'#73bf69':'#f2495c');
+      current=null;}
+  };
+  const step=text=>{
+    finish(true);
+    const item=doc.createElement('li'),mark=doc.createElement('span');
+    mark.className='active';mark.setAttribute('aria-hidden','true');
+    item.append(mark,doc.createTextNode(text));list.append(item);current=mark;
+  };
+  step(initial);
+  return {step,finish};
+}
+
+function issuePopup(){
+  let doc=document,host=document.body;
+  for(let w=window;w.parent!==w;){
+    try{w=w.parent;if(w.document.body){doc=w.document;host=doc.body;}}catch(error){break;}
+  }
+  doc.getElementById('tci-new-issue')?.remove();
+  const el=(tag,text)=>{const n=doc.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
+  const overlay=el('div');overlay.id='tci-new-issue';
+  overlay.style.cssText='position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.55);'+
+    'display:flex;align-items:center;justify-content:center;padding:16px';
+  const box=el('div');box.style.cssText='background:#181b1f;color:#d8d9da;'+
+    'border:1px solid #657083;border-radius:6px;max-width:760px;width:100%;'+
+    'max-height:85vh;overflow:auto;padding:16px 20px;font:14px/1.5 system-ui,sans-serif';
+  box.setAttribute('role','dialog');box.setAttribute('aria-modal','true');
+  box.setAttribute('aria-label','New issue');
+  const title=el('h2','New issue');title.style.margin='0 0 8px';
+  const progressHost=el('div'),steps=actionSteps(doc,progressHost,'Starting issue draft');
+  const content=el('div');
+  const actions=el('div');actions.style.cssText='display:flex;gap:8px;justify-content:flex-end;margin-top:14px';
+  const close=el('button','Close');close.type='button';
+  const publish=el('button','Publish issue');publish.type='submit';publish.hidden=true;
+  for(const button of [close,publish])button.style.cssText='background:#242b35;color:#d8d9da;'+
+    'border:1px solid #657083;border-radius:4px;padding:6px 12px;font:inherit;cursor:pointer';
+  actions.append(close,publish);box.append(title,progressHost,content,actions);
+  overlay.append(box);host.append(overlay);
+  const hide=()=>{overlay.remove();doc.removeEventListener('keydown',onKey);};
+  const onKey=event=>{if(event.key==='Escape')hide();};
+  const show=()=>{if(!overlay.isConnected){host.append(overlay);doc.addEventListener('keydown',onKey);}
+    close.focus();};
+  doc.addEventListener('keydown',onKey);close.onclick=hide;
+  overlay.onclick=event=>{if(event.target===overlay)hide();};close.focus();
+  return {show,progress(event){if(event.event==='step')steps.step(event.text);},finish(data){
+    steps.finish(data.status==='ok');
+    content.replaceChildren();
+    if(data.status!=='ok'){
+      const messages={invalid:'The selected failure is unavailable.',
+        unauthorized:'Your Grafana session expired. Sign in again.',
+        rate_limited:'You asked a lot this hour. Try again later.',
+        busy:'Serge is busy. Try again shortly.',
+        unavailable:'Could not draft the issue right now. Try again shortly.'};
+      content.textContent=messages[data.status]||messages.unavailable;return;
+    }
+    const form=el('form');form.id='tci-new-issue-form';form.style.margin='0';
+    publish.setAttribute('form',form.id);
+    const note=el('p','Draft based on the Transformers bug report template. Edit both fields before publishing. The connected GitHub account will create the issue.');
+    note.style.cssText='color:#aeb7c2;margin:0 0 12px';
+    const titleLabel=el('label','Title');titleLabel.style.display='block';
+    const titleInput=el('input');titleInput.type='text';titleInput.value=data.title;
+    titleInput.maxLength=200;titleInput.style.cssText='display:block;box-sizing:border-box;width:100%;'+
+      'margin:4px 0 12px;padding:8px;background:#242b35;color:#d8d9da;border:1px solid #657083';
+    titleLabel.append(titleInput);
+    const bodyLabel=el('label','Body (Markdown)');bodyLabel.style.display='block';
+    const bodyInput=el('textarea');bodyInput.value=data.body;bodyInput.maxLength=30000;
+    bodyInput.rows=18;bodyInput.style.cssText='display:block;box-sizing:border-box;width:100%;'+
+      'margin:4px 0 12px;padding:8px;background:#242b35;color:#d8d9da;'+
+      'border:1px solid #657083;font:12px/1.5 ui-monospace,monospace;resize:vertical';
+    bodyLabel.append(bodyInput);
+    const status=el('p','');status.setAttribute('role','status');
+    form.append(note,titleLabel,bodyLabel,status);content.append(form);
+    publish.hidden=false;titleInput.focus();
+    form.onsubmit=async event=>{
+      event.preventDefault();
+      if(!titleInput.value.trim()||!bodyInput.value.trim()){
+        status.textContent='Title and body are required.';return;
+      }
+      publish.disabled=true;publish.textContent='Publishing…';status.textContent='';
+      steps.step('Publishing the issue on GitHub');
+      try{
+        const response=await fetch('/serge-actions/new-issue/publish',{
+          method:'POST',credentials:'same-origin',
+          headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
+          body:JSON.stringify({draft_id:data.draft_id,title:titleInput.value,body:bodyInput.value})});
+        const result=await response.json();
+        if(result.status==='ok'){
+          const link=el('a','Issue #'+result.number);link.href=result.url;
+          link.target='_blank';link.rel='noopener noreferrer';
+          steps.finish(true);content.replaceChildren(el('p','Published '),link);
+          publish.hidden=true;return;
+        }
+        status.textContent=result.status==='invalid'?'Draft expired. Create a new draft.':
+          'Could not publish the issue. Check GitHub permissions and try again.';
+      }catch(error){status.textContent='Could not publish the issue. Try again.';}
+      steps.finish(false);
+      publish.disabled=false;publish.textContent='Publish issue';
+    };
+  }};
+}
+
+function helperRefs(doc,parent,value,evidenceUrl,prLinks){
+  const text=String(value||'');
+  const pattern=/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:pull|issues)\/\d+|[\w.-]+\/[\w.-]+#\d+|(?:pull request|PR|issues?)\s*#\d+|@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?|#\d{1,7}\b/gi;
+  let last=0;
+  for(const match of text.matchAll(pattern)){
+    const ref=match[0],at=match.index;
+    if(at>last)parent.append(doc.createTextNode(text.slice(last,at)));
+    let url='';
+    if(ref.startsWith('https://github.com/')){
+      const pr=ref.match(/^https:\/\/github\.com\/huggingface\/transformers\/pull\/(\d+)$/i);
+      url=pr&&prLinks?.[pr[1]]||ref;
+    }
+    else if(ref.startsWith('@'))url='https://github.com/'+ref.slice(1);
+    else if(/^[\w.-]+\/[\w.-]+#\d+$/.test(ref)){
+      const [repo,number]=ref.split('#');
+      url=repo.toLowerCase()==='huggingface/transformers'&&prLinks?.[number]||
+        (String(evidenceUrl||'').endsWith('/'+number)?evidenceUrl:
+          'https://github.com/'+repo+'/issues/'+number);
+    }
+    else{
+      const number=ref.match(/#(\d+)$/)?.[1];
+      const route=/^(?:PR|pull request)/i.test(ref)?'pull':'issues';
+      const isIssue=/^issues?\s/i.test(ref);
+      url=!isIssue&&prLinks?.[number]||
+        (ref.startsWith('#')&&String(evidenceUrl||'').endsWith('/'+number)?evidenceUrl:
+          'https://github.com/huggingface/transformers/'+route+'/'+number);
+    }
+    const link=doc.createElement('a');link.href=url;link.target='_blank';
+    link.rel='noopener noreferrer';link.textContent=ref;parent.append(link);
+    last=at+ref.length;
+  }
+  if(last<text.length)parent.append(doc.createTextNode(text.slice(last)));
+}
+
+function helpersPopup(){
+  let doc=document,host=document.body;
+  for(let w=window;w.parent!==w;){
+    try{w=w.parent;if(w.document.body){doc=w.document;host=doc.body;}}catch(error){break;}
+  }
+  doc.getElementById('tci-helpers')?.remove();
+  const el=(tag,text)=>{const n=doc.createElement(tag);if(text)n.textContent=text;return n;};
+  const overlay=el('div');overlay.id='tci-helpers';
+  overlay.style.cssText='position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.55);'+
+    'display:flex;align-items:center;justify-content:center;padding:16px';
+  const box=el('div');box.style.cssText='background:#181b1f;color:#d8d9da;'+
+    'border:1px solid #657083;border-radius:6px;max-width:640px;width:100%;'+
+    'max-height:80vh;overflow:auto;padding:16px 20px;font:14px/1.5 system-ui,sans-serif';
+  box.setAttribute('role','dialog');box.setAttribute('aria-modal','true');
+  box.setAttribute('aria-label','Who can help');
+  const title=el('h2','Who can help');title.style.margin='0 0 8px';
+  const progressHost=el('div'),steps=actionSteps(doc,progressHost,'Starting helper lookup');
+  const content=el('div');
+  const close=el('button','Close');close.type='button';close.style.marginTop='14px';
+  const hide=()=>{overlay.remove();doc.removeEventListener('keydown',onKey);};
+  const onKey=event=>{if(event.key==='Escape')hide();};
+  const show=()=>{if(!overlay.isConnected){host.append(overlay);doc.addEventListener('keydown',onKey);}
+    close.focus();};
+  close.onclick=hide;overlay.onclick=event=>{if(event.target===overlay)hide();};
+  box.append(title,progressHost,content,close);overlay.append(box);host.append(overlay);
+  doc.addEventListener('keydown',onKey);close.focus();
+  return {show,progress(event){if(event.event==='step')steps.step(event.text);},finish(data){
+    steps.finish(data.status==='ok');
+    content.replaceChildren();
+    if(data.status==='ok'){
+      content.append(el('p','People connected to '+data.location+'; suggestions, not assignments.'));
+      const list=el('ul');list.style.paddingLeft='20px';
+      for(const person of data.people||[]){
+        const item=el('li');item.style.margin='10px 0';
+        const link=el('a','@'+person.login);
+        link.href='https://github.com/'+encodeURIComponent(person.login);
+        link.target='_blank';link.rel='noopener noreferrer';
+        const evidence=el('a',person.evidence);
+        const pr=String(person.url||'').match(/^https:\/\/github\.com\/huggingface\/transformers\/pull\/(\d+)$/i);
+        evidence.href=pr&&data.pr_links?.[pr[1]]||person.url;
+        evidence.target='_blank';evidence.rel='noopener noreferrer';
+        item.append(link,' — ');
+        helperRefs(doc,item,person.why,person.url,data.pr_links);
+        item.append(' (',evidence,')');list.append(item);
+      }
+      content.append(list);
+    }else{
+      const messages={no_line:'The trace has no repository line to inspect.',
+        no_people:'No people with enough evidence were found for this line.',
+        invalid:'The selected failure is unavailable.',
+        unauthorized:'Your Grafana session expired. Sign in again.',
+        rate_limited:'You asked a lot this hour. Try again later.',
+        busy:'Serge is busy. Try again shortly.',
+        unavailable:'Could not find suggestions right now. Try again shortly.'};
+      content.textContent=messages[data.status]||messages.unavailable;
+    }
+  }};
 }
 
 // Tiny Markdown subset -> DOM nodes (never innerHTML): paragraphs, "- " bullets,
@@ -301,8 +564,12 @@ async function cost(sessionId,node){
 }
 
 function popup(){
+  // The top-most same-origin page: the popup centres on what the viewer sees,
+  // not on an iframe taller than the screen (the Test page inside Grafana).
   let doc=document,host=document.body;
-  try{if(parent.document.body){doc=parent.document;host=doc.body;}}catch(error){}
+  for(let w=window;w.parent!==w;){
+    try{w=w.parent;if(w.document.body){doc=w.document;host=doc.body;}}catch(error){break;}
+  }
   doc.getElementById('tci-wdyt')?.remove();
   const el=(tag,css,text)=>{const n=doc.createElement(tag);if(css)n.style.cssText=css;
     if(text!==undefined)n.textContent=text;return n;};
@@ -313,7 +580,10 @@ function popup(){
     'padding:16px 20px;font:14px/1.5 Inter,system-ui,sans-serif;box-shadow:0 8px 32px #000');
   box.setAttribute('role','dialog');box.setAttribute('aria-modal','true');
   box.setAttribute('aria-label','Serge thinks');
-  const title=el('div','font-weight:600;font-size:16px;margin:0 0 8px','✨🦄 Serge thinks…');
+  const title=el('div','font-weight:600;font-size:16px;margin:0 0 8px;display:flex;'+
+    'align-items:center;gap:8px');
+  const logo=el('img','width:22px;height:22px');logo.src='/serge-actions/logo.png';logo.alt='';
+  title.append(logo,'Serge thinks…');
   const test=el('div','color:#8e9197;font:12px ui-monospace,monospace;overflow-wrap:anywhere;'+
     'margin:0 0 8px',context.get('test_nodeid')||'');
   // Live progress: finished steps get a check, the current one pulses.
@@ -322,13 +592,12 @@ function popup(){
   const answer=el('div','margin:6px 0 0');let streamed='';
   const foot=el('div','color:#8e9197;font-size:12px;margin:10px 0 0');
   const style=el('style');
-  style.textContent='@keyframes tci-pulse{50%{opacity:.35}}'+
-    '@media (prefers-reduced-motion:reduce){#tci-wdyt *{animation:none!important}}';
+  style.textContent='';
   box.append(style,title,test,steps,answer,foot);
   let current=null;
   const step=text=>{
-    if(current){current.firstChild.textContent='✓ ';current.firstChild.style.animation='';}
-    const li=el('li','margin:2px 0'),mark=el('span','animation:tci-pulse 1s infinite','● ');
+    if(current){current.firstChild.textContent='✓ ';}
+    const li=el('li','margin:2px 0'),mark=el('span','','● ');
     li.append(mark,doc.createTextNode(text));steps.append(li);current=li;
   };
   step('Starting');
@@ -358,7 +627,7 @@ function popup(){
       }
     },
     finish(data){
-      if(current){current.firstChild.textContent='✓ ';current.firstChild.style.animation='';}
+      if(current){current.firstChild.textContent='✓ ';}
       title.textContent='✨🦄 Serge thinks';
       answer.replaceChildren();
       if(data.status==='ok'){
@@ -382,7 +651,7 @@ function popup(){
 </script></body></html>"""
 
 PAGE_HTML = PAGE_HTML.replace("__ACTIONS__", json.dumps(ACTIONS)).replace(
-    "__NYAN__", NYAN_SVG
+    "__LOCK__", json.dumps(LOCK_SVG)
 )
 
 # CI Health: clear WDYT?'s answer cache so a demo shows the whole live run.
