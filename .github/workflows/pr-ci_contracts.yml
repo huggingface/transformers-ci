@@ -61,7 +61,7 @@ jobs:
           uv pip install timm jsonschema "git+https://github.com/huggingface/doc-builder@$DOC_BUILDER_SHA"
           echo "Installed in $((SECONDS - start)) s on $(lscpu | sed -n 's/^Model name: *//p'), $(nproc) cores"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         continue-on-error: true
         with:
           path: /tmp/hf_home/hub
@@ -166,7 +166,7 @@ jobs:
           print('Observation:', json.dumps(report))
           PY_RESULT
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         continue-on-error: true
         with:
