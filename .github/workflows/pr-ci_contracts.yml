@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 jobs:
-  contracts:
+  run:
     # Infrastructure failures must not block PRs during the observational rollout.
     continue-on-error: true
     runs-on:
