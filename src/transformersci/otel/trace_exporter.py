@@ -8280,10 +8280,6 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._request_route = "/test"
             self._serve_test_page(parse_qs(parsed.query))
             return
-        if parsed.path == "/test/markers":
-            self._request_route = "/test/markers"
-            self._serve_test_markers(parse_qs(parsed.query))
-            return
         if parsed.path == "/failure":
             self._request_route = "/failure"
             self._serve_failure(parse_qs(parsed.query))
@@ -8291,6 +8287,12 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/failure/job-page":
             self._request_route = "/failure/job-page"
             self._serve_failure_job_page(parse_qs(parsed.query))
+            return
+        # Under /failure, not /test: the ingress routes /test as an exact path
+        # and every other path to Grafana, while /failure is a prefix.
+        if parsed.path == "/failure/markers":
+            self._request_route = "/failure/markers"
+            self._serve_test_markers(parse_qs(parsed.query))
             return
         if parsed.path == "/failure/context":
             self._request_route = "/failure/context"

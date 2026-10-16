@@ -98,7 +98,7 @@ def test_page_has_a_markers_box_and_passes_the_commit():
     html = test_page.render_test_page(
         {"test_nodeid": "tests/a.py::T::test_x", "commit": SHA, "details": []}
     )
-    assert "id='markers'" in html and "/test/markers?" in html
+    assert "id='markers'" in html and "/failure/markers?" in html
     assert f'"commit": "{SHA}"' in html
 
 
@@ -115,7 +115,7 @@ def test_markers_endpoint(monkeypatch):
     monkeypatch.setattr(te, "_github_api_get", fake_get([]))
     server = ThreadingHTTPServer(("127.0.0.1", 0), te.MetricsHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    base = f"http://127.0.0.1:{server.server_address[1]}/test/markers?"
+    base = f"http://127.0.0.1:{server.server_address[1]}/failure/markers?"
     try:
         node = (
             "tests/models/foo/test_modeling_foo.py::FooIntegrationTest::test_generate"

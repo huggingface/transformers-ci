@@ -153,7 +153,7 @@ async function loadMarkers(){
   try{
     const params={test_nodeid:ctx.test_nodeid};
     if(ctx.commit)params.commit=ctx.commit;
-    const response=await fetch('/test/markers?'+new URLSearchParams(params));
+    const response=await fetch('/failure/markers?'+new URLSearchParams(params));
     if(!response.ok)return;
     const data=await response.json();
     for(const name of data.markers||[]){
@@ -354,7 +354,7 @@ def render_test_page(data: dict) -> str:
     # Header: identity, links, reproduce.
     out.append(
         f"<section class='head'><div class='head-main'><h1>{esc(node) or 'No test selected'}</h1>"
-        # Filled by the script from /test/markers (@slow, @is_flaky).
+        # Filled by the script from /failure/markers (@slow, @is_flaky).
         "<div id='markers' class='gh-labels' hidden></div>"
     )
     chip_html = [
