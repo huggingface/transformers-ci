@@ -44,6 +44,10 @@ ENVIRONMENT_TAGS = {
     "transformers.test.runner.gpu_memory_gib": "gpu_memory_gib",
 }
 KEEPALIVE_SECONDS = 15
+# A slow step still running after this long says so in its label.
+PATIENCE_SECONDS = 30
+PEOPLE_STEP = "Finding people who can help (slow)"
+DRAFT_STEP = "Drafting the issue (slow)"
 GPU_DOCKERFILE = "docker/transformers-all-latest-gpu/Dockerfile"
 AI_FOOTER = (
     "---\n\n_This report was drafted by AI from the CI failure trace and the "
@@ -358,8 +362,10 @@ def render_body(
     nodeid: str,
     details: list[dict],
     environment: dict[str, str] | None = None,
+    helpers: list[dict] | None = None,
 ) -> str:
     environment = environment or {}
+    contacts = who_can_help_text(helpers or [])
     failure = details[0] if details else {}
     trace_url = (
         "https://transformers-ci.huggingface.cool/d/pytest-test/test?"
@@ -369,7 +375,9 @@ def render_body(
     for field in fields:
         if field["type"] == "textarea":
             value = str(sections.get(field["id"]) or "").strip()[:6000]
-            if field["id"] == "system-info":
+            if field["id"] == "who-can-help" and contacts:
+                value = contacts
+            elif field["id"] == "system-info":
                 value = (
                     system_info(environment)
                     or value
@@ -459,31 +467,44 @@ def prepare(
         if not people:
             emit({"event": "step", "text": "Checking recent changes to the test file"})
             people = who_can_help.frequent_test_modifier(nodeid, github_get)
-        emit({"event": "step", "text": "Finding people who can help (slow)"})
-        try:
-            suggestions = who_can_help.suggest(
-                login, trace_id, nodeid, details, github_get
-            )
-            helper_findings = (
-                suggestions.get("people", [])
-                if suggestions.get("status") == "ok"
-                else []
-            )
-        except (OSError, ValueError, KeyError, IndexError, TypeError):
-            helper_findings = []
-        emit({"event": "step", "text": "Asking the model to draft the report (slow)"})
-        result = _with_keepalive(
-            lambda: model_draft(
-                nodeid, details, history, hits, fields, people, helper_findings, source
-            ),
+        # Both are slow model calls and neither needs the other: the people
+        # fill "Who can help?" directly instead of going through the draft.
+        suggestions, result = _in_parallel(
+            [
+                (
+                    PEOPLE_STEP,
+                    lambda: who_can_help.suggest(
+                        login, trace_id, nodeid, details, github_get
+                    ),
+                ),
+                (
+                    DRAFT_STEP,
+                    lambda: model_draft(
+                        nodeid, details, history, hits, fields, people, [], source
+                    ),
+                ),
+            ],
             emit,
+        )
+        if isinstance(result, BaseException):
+            raise result
+        helper_findings = (
+            suggestions.get("people", [])
+            if isinstance(suggestions, dict) and suggestions.get("status") == "ok"
+            else []
         )
         emit({"event": "step", "text": "Preparing the editable issue form"})
         title = re.sub(r"\s+", " ", str(result.get("title") or "")).strip()[:200]
         if not title:
             title = f"CI failure in {nodeid}"[:200]
         body = render_body(
-            fields, result["sections"], trace_id, nodeid, details, environment
+            fields,
+            result["sections"],
+            trace_id,
+            nodeid,
+            details,
+            environment,
+            helper_findings,
         )
         with _lock:
             _draft_cache[key] = (time.monotonic() + 900, title, body)
@@ -497,28 +518,71 @@ def prepare(
         _slots.release()
 
 
-def _with_keepalive(call: Callable[[], dict], emit: Callable[[dict], None]) -> dict:
-    """Run a slow call, writing to the stream every 15 s so that a proxy's idle
-    timeout (60 s on an AWS load balancer) does not cut the wait. The page
-    ignores events other than ``step`` and ``done``."""
-    box: dict = {}
+def who_can_help_text(helpers: list[dict]) -> str:
+    """The Who can help suggestions, one line each, without claiming ownership."""
+    lines = []
+    for person in helpers[:3]:
+        login = str(person.get("login") or "")
+        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login):
+            continue
+        why = re.sub(r"\s+", " ", str(person.get("why") or "")).strip()[:300]
+        url = str(person.get("url") or "")
+        if url.startswith("https://github.com/"):
+            why = f"{why} ([evidence]({url}))" if why else f"[evidence]({url})"
+        lines.append(f"- @{login}" + (f": {why}" if why else ""))
+    return "\n".join(lines)
 
-    def run() -> None:
-        try:
-            box["result"] = call()
-        except Exception as error:  # re-raised in the request thread
-            box["error"] = error
 
-    worker = threading.Thread(target=run, daemon=True)
-    worker.start()
-    while True:
-        worker.join(KEEPALIVE_SECONDS)
-        if not worker.is_alive():
-            break
-        emit({"event": "keepalive"})
-    if "error" in box:
-        raise box["error"]
-    return box["result"]
+def _in_parallel(
+    tasks: list[tuple[str, Callable[[], object]]], emit: Callable[[dict], None]
+) -> list[object]:
+    """Run slow steps at once, each shown as its own progress line.
+
+    Writes to the stream at least every 15 s so that a proxy's idle timeout
+    (60 s on an AWS load balancer) does not cut the wait, and relabels a step
+    still running after ``PATIENCE_SECONDS``. A task's exception is returned in
+    its slot, not raised.
+    """
+    results: list[object] = [None] * len(tasks)
+    workers = []
+    for index, (label, call) in enumerate(tasks):
+
+        def run(index: int = index, call: Callable[[], object] = call) -> None:
+            try:
+                results[index] = call()
+            except Exception as error:  # handed back to the request thread
+                results[index] = error
+
+        emit({"event": "step", "text": label, "parallel": index > 0})
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        workers.append(worker)
+    started = time.monotonic()
+    labels = [label for label, _call in tasks]
+    pending = set(range(len(tasks)))
+    while pending:
+        deadline = time.monotonic() + KEEPALIVE_SECONDS
+        while pending and time.monotonic() < deadline:
+            for index in sorted(pending):
+                workers[index].join(0.05)
+                if not workers[index].is_alive():
+                    pending.discard(index)
+                    emit({"event": "step_done", "text": labels[index]})
+            if time.monotonic() - started >= PATIENCE_SECONDS:
+                for index in sorted(pending):
+                    if labels[index].endswith("(slow)"):
+                        patient = labels[index][: -len("(slow)")] + "(bear with us!)"
+                        emit(
+                            {
+                                "event": "step_text",
+                                "text": labels[index],
+                                "to": patient,
+                            }
+                        )
+                        labels[index] = patient
+        if pending:
+            emit({"event": "keepalive"})
+    return results
 
 
 def _issue_draft(login: str, title: str, body: str) -> dict:

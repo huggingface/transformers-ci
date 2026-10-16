@@ -108,7 +108,7 @@ def test_template_and_draft_keep_required_sections_and_trace(monkeypatch):
         emit=events.append,
     )
     assert draft["status"] == "ok"
-    assert captured == [[helper]]
+    assert captured == [[]]
     assert [event["text"] for event in events if event["event"] == "step"] == [
         "Reading the Transformers bug report template",
         "Locating the failing test in the repository",
@@ -116,7 +116,7 @@ def test_template_and_draft_keep_required_sections_and_trace(monkeypatch):
         "Searching related issues and PRs",
         "Checking recent changes to the test file",
         "Finding people who can help (slow)",
-        "Asking the model to draft the report (slow)",
+        "Drafting the issue (slow)",
         "Preparing the editable issue form",
     ]
     assert draft["title"] == "Streamer fails in CI"
@@ -465,31 +465,74 @@ def test_issue_environment_uses_the_checked_out_commit_for_run_slow():
     assert run_slow["commit"] == "b" * 40 and "branch" not in run_slow
 
 
-def test_slow_model_call_keeps_the_stream_alive(monkeypatch):
+def test_slow_steps_run_in_parallel_keep_alive_and_ask_for_patience(monkeypatch):
     import threading
 
-    monkeypatch.setattr(new_issue, "KEEPALIVE_SECONDS", 0.01)
+    monkeypatch.setattr(new_issue, "KEEPALIVE_SECONDS", 0.05)
+    monkeypatch.setattr(new_issue, "PATIENCE_SECONDS", 0.1)
+    both_running = threading.Barrier(2, timeout=5)
     release = threading.Event()
     events = []
 
-    def slow():
+    def people():
+        both_running.wait()
+        return {"status": "ok"}
+
+    def draft():
+        both_running.wait()
         release.wait(5)
-        return {"ok": True}
+        raise ValueError("bad draft")
 
     def emit(event):
         events.append(event)
-        if len(events) >= 2:
+        if event["event"] == "step_text":
             release.set()
 
-    assert new_issue._with_keepalive(slow, emit) == {"ok": True}
-    assert events and all(event == {"event": "keepalive"} for event in events)
+    found, drafted = new_issue._in_parallel(
+        [("People (slow)", people), ("Draft (slow)", draft)], emit
+    )
+    assert found == {"status": "ok"}
+    assert isinstance(drafted, ValueError)
+    assert events[:2] == [
+        {"event": "step", "text": "People (slow)", "parallel": False},
+        {"event": "step", "text": "Draft (slow)", "parallel": True},
+    ]
+    assert {"event": "step_done", "text": "People (slow)"} in events
+    assert {
+        "event": "step_text",
+        "text": "Draft (slow)",
+        "to": "Draft (bear with us!)",
+    } in events
+    assert events[-1] == {"event": "step_done", "text": "Draft (bear with us!)"}
+    assert {"event": "keepalive"} in events
 
-    def boom():
-        raise ValueError("bad draft")
 
-    try:
-        new_issue._with_keepalive(boom, emit)
-    except ValueError as error:
-        assert str(error) == "bad draft"
-    else:
-        raise AssertionError("error swallowed")
+def test_who_can_help_comes_from_the_helper_findings():
+    fields = [
+        {
+            "id": "who-can-help",
+            "type": "textarea",
+            "label": "Who can help?",
+            "required": False,
+        }
+    ]
+    helpers = [
+        {
+            "login": "maintainer",
+            "why": "Reviewed the affected line",
+            "url": "https://github.com/huggingface/transformers/pull/7",
+        },
+        {"login": "bad login!", "why": "x"},
+    ]
+    body = new_issue.render_body(
+        fields, {"who-can-help": "model text"}, TRACE, NODE, [], {}, helpers
+    )
+    assert (
+        "- @maintainer: Reviewed the affected line "
+        "([evidence](https://github.com/huggingface/transformers/pull/7))"
+    ) in body
+    assert "model text" not in body and "bad login" not in body
+    body = new_issue.render_body(
+        fields, {"who-can-help": "model text"}, TRACE, NODE, [], {}, []
+    )
+    assert "model text" in body

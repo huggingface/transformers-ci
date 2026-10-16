@@ -298,20 +298,30 @@ function actionSteps(doc,host,initial){
     '@media(prefers-reduced-motion:reduce){.tci-popup-progress .active{animation:none}}';
   const list=doc.createElement('ul');list.className='tci-popup-progress';
   list.setAttribute('role','status');list.setAttribute('aria-live','polite');
-  host.append(style,list);let current=null;
-  const finish=ok=>{
-    if(current){current.className='';current.textContent=ok?'✓':'×';
-      current.style.cssText='display:inline-block;width:12px;color:'+(ok?'#73bf69':'#f2495c');
-      current=null;}
+  host.append(style,list);let active=[];
+  // Several steps can run at once (parallel); each is {mark,label}.
+  const settle=(entry,ok)=>{
+    entry.mark.className='';entry.mark.textContent=ok?'✓':'×';
+    entry.mark.style.cssText='display:inline-block;width:12px;color:'+(ok?'#73bf69':'#f2495c');
   };
-  const step=text=>{
-    finish(true);
-    const item=doc.createElement('li'),mark=doc.createElement('span');
+  const finish=ok=>{for(const entry of active)settle(entry,ok);active=[];};
+  const step=(text,parallel)=>{
+    if(!parallel)finish(true);
+    const item=doc.createElement('li'),mark=doc.createElement('span'),label=doc.createTextNode(text);
     mark.className='active';mark.setAttribute('aria-hidden','true');
-    item.append(mark,doc.createTextNode(text));list.append(item);current=mark;
+    item.append(mark,label);list.append(item);active.push({mark,label});
+  };
+  const find=text=>active.find(entry=>entry.label.data===text);
+  const done=text=>{const entry=find(text);
+    if(entry){settle(entry,true);active=active.filter(other=>other!==entry);}};
+  const retext=(text,to)=>{const entry=find(text);if(entry)entry.label.data=to;};
+  const progress=event=>{
+    if(event.event==='step')step(event.text,event.parallel);
+    else if(event.event==='step_done')done(event.text);
+    else if(event.event==='step_text')retext(event.text,event.to);
   };
   step(initial);
-  return {step,finish};
+  return {step,finish,progress};
 }
 
 function issuePopup(){
@@ -345,7 +355,7 @@ function issuePopup(){
     close.focus();};
   doc.addEventListener('keydown',onKey);close.onclick=hide;
   overlay.onclick=event=>{if(event.target===overlay)hide();};close.focus();
-  return {show,progress(event){if(event.event==='step')steps.step(event.text);},finish(data){
+  return {show,progress:steps.progress,finish(data){
     steps.finish(data.status==='ok');
     content.replaceChildren();
     if(data.status!=='ok'){
