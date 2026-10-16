@@ -76,6 +76,7 @@ from transformersci.otel import rerun_failed
 from transformersci.otel import serge_actions
 from transformersci.otel import wdyt
 from transformersci.otel import who_can_help
+from transformersci.otel import test_markers
 from transformersci.otel import new_issue
 from transformersci.otel import patch_view
 from transformersci.otel import pr_ci_view
@@ -8279,6 +8280,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._request_route = "/test"
             self._serve_test_page(parse_qs(parsed.query))
             return
+        if parsed.path == "/test/markers":
+            self._request_route = "/test/markers"
+            self._serve_test_markers(parse_qs(parsed.query))
+            return
         if parsed.path == "/failure":
             self._request_route = "/failure"
             self._serve_failure(parse_qs(parsed.query))
@@ -8709,11 +8714,38 @@ class MetricsHandler(BaseHTTPRequestHandler):
             if value and not (key == "pr" and value == "none"):
                 data[key] = value
         data.update(test_span_facts(trace, nodeid) if trace else {})
+        # The commit the test ran at, so its labels come from that source.
+        commit = issue_environment(trace, nodeid).get("commit", "") if trace else ""
+        if _FULL_SHA.match(commit):
+            data["commit"] = commit
         self._send(
             200,
             "text/html; charset=utf-8",
             test_page.render_test_page(data).encode("utf-8"),
             cache_control="public, max-age=300" if trace else "no-store",
+        )
+
+    def _serve_test_markers(self, params: dict[str, list[str]]) -> None:
+        """The @slow / @is_flaky labels of a test, read from its source."""
+        nodeid = (params.get("test_nodeid") or [""])[0].strip()
+        commit = (params.get("commit") or [""])[0].strip()
+        if (
+            not re.fullmatch(r"tests/[\w./-]+\.py::[^\x00-\x1f]{1,1800}", nodeid)
+            or ".." in nodeid.split("::", 1)[0].split("/")
+            or (commit and not _FULL_SHA.match(commit))
+        ):
+            self._reply_json(400, {"markers": []})
+            return
+        try:
+            found = test_markers.markers(nodeid, commit, _github_api_get)
+        except (OSError, ValueError, KeyError, TypeError):
+            found = []
+        self._send(
+            200,
+            "application/json",
+            json.dumps({"markers": found}).encode(),
+            # A commit's source never changes; main's does.
+            cache_control="public, max-age=86400" if commit else "public, max-age=600",
         )
 
     def _serve_failure_context(self, params: dict[str, list[str]]) -> None:

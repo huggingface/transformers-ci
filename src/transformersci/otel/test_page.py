@@ -72,6 +72,8 @@ padding:4px 12px;cursor:pointer;font:inherit}
 @media (max-width:1100px){.grid{grid-template-columns:minmax(0,1fr)}.side{position:static;max-height:none}#issues{max-height:75dvh}}
 .exc{color:var(--amber);font:600 15px/1.3 Inter,system-ui,sans-serif;margin:0 0 2px}
 .where{color:var(--muted);font-size:12px;margin:0 0 4px;overflow-wrap:anywhere}
+.gh-labels{display:flex;flex-wrap:wrap;gap:5px;margin:4px 0 6px}
+.gh-label{display:inline-block;padding:2px 8px;border-radius:999px;font:600 11px/1.5 system-ui,sans-serif;white-space:nowrap}
 .label{margin:14px 0 4px;color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
 pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#0b0c0e;border:1px solid var(--soft);
 border-radius:6px;padding:12px;font:12.5px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;
@@ -143,6 +145,30 @@ async function loadIssues(){
   }catch(error){statusNode.textContent='Related issues are temporarily unavailable.';}
 }
 loadIssues();
+// Same pills as the PR page's GitHub labels.
+const MARKER_COLORS={slow:'fbca04',flaky:'8250df'};
+async function loadMarkers(){
+  const box=document.getElementById('markers');
+  if(!box||!ctx.test_nodeid)return;
+  try{
+    const params={test_nodeid:ctx.test_nodeid};
+    if(ctx.commit)params.commit=ctx.commit;
+    const response=await fetch('/test/markers?'+new URLSearchParams(params));
+    if(!response.ok)return;
+    const data=await response.json();
+    for(const name of data.markers||[]){
+      const color=MARKER_COLORS[name]||'6b7280';
+      const red=parseInt(color.slice(0,2),16),green=parseInt(color.slice(2,4),16),blue=parseInt(color.slice(4,6),16);
+      const badge=document.createElement('span');badge.className='gh-label';badge.textContent=name;
+      badge.title=name==='slow'?'Marked @slow: runs only with RUN_SLOW=1':'Marked @is_flaky: retried on failure';
+      badge.style.backgroundColor='#'+color;
+      badge.style.color=(red*299+green*587+blue*114)/1000>145?'#111217':'#fff';
+      box.append(badge);
+    }
+    box.hidden=!box.children.length;
+  }catch(error){}
+}
+loadMarkers();
 """
 
 
@@ -328,6 +354,8 @@ def render_test_page(data: dict) -> str:
     # Header: identity, links, reproduce.
     out.append(
         f"<section class='head'><div class='head-main'><h1>{esc(node) or 'No test selected'}</h1>"
+        # Filled by the script from /test/markers (@slow, @is_flaky).
+        "<div id='markers' class='gh-labels' hidden></div>"
     )
     chip_html = [
         f"<li class='{'status-' + esc(status) if key == 'status' else ''}'>"
@@ -437,7 +465,11 @@ def render_test_page(data: dict) -> str:
         "<ul></ul></section></aside>"
     )
     out.append("</div></div>")
-    context = {"trace_id": trace_id, "test_nodeid": node}
+    context = {
+        "trace_id": trace_id,
+        "test_nodeid": node,
+        "commit": str(data.get("commit") or ""),
+    }
     # json.dumps escapes neither "<" nor "/", so close-tag injection is
     # neutralised by escaping "<" explicitly.
     out.append(
