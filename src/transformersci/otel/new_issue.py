@@ -443,38 +443,65 @@ def prepare(
     if not _slots.acquire(timeout=10):
         return {"status": "busy"}
     try:
-        emit({"event": "step", "text": "Reading the Transformers bug report template"})
-        fields = bug_template(github_get)
-        emit({"event": "step", "text": "Locating the failing test in the repository"})
-        location = who_can_help.source_line(nodeid, details, github_get)
-        source = failing_test_source(
-            nodeid, details, environment.get("commit", ""), github_get
-        )
-        if environment.get("gpu_vendor") == "nvidia" and environment.get("commit"):
-            emit({"event": "step", "text": "Reading the GPU image's PyTorch version"})
-            torch = gpu_image_torch(environment["commit"], github_get)
-            if torch:
-                environment["torch"] = torch
-        emit({"event": "step", "text": "Reading Relore history for the failing line"})
-        try:
-            history = who_can_help.why(*location) if location else {}
-        except (OSError, ValueError):
-            history = {}
-        emit({"event": "step", "text": "Searching related issues and PRs"})
-        related = related_issues.lookup(trace_id, nodeid, lambda: details)
+        commit = environment.get("commit", "")
+
+        def relore_history() -> tuple:
+            location = who_can_help.source_line(nodeid, details, github_get)
+            try:
+                return location, who_can_help.why(*location) if location else {}
+            except (OSError, ValueError):
+                return location, {}
+
+        # Independent lookups first, all at once: each needs only the trace.
+        lookups = [
+            (
+                "Reading the Transformers bug report template",
+                lambda: bug_template(github_get),
+            ),
+            ("Reading Relore history for the failing line", relore_history),
+            (
+                "Searching related issues and PRs",
+                lambda: related_issues.lookup(trace_id, nodeid, lambda: details),
+            ),
+            (
+                "Reading the failing test's code",
+                lambda: failing_test_source(nodeid, details, commit, github_get),
+            ),
+        ]
+        if environment.get("gpu_vendor") == "nvidia" and commit:
+            lookups.append(
+                (
+                    "Reading the GPU image's PyTorch version",
+                    lambda: gpu_image_torch(commit, github_get),
+                )
+            )
+        found = _in_parallel(lookups, emit)
+        for value in found[:3]:
+            if isinstance(value, BaseException):
+                raise value
+        fields, (location, history), related = found[:3]
+        source = found[3] if isinstance(found[3], str) else ""
+        if len(found) > 4 and isinstance(found[4], str) and found[4]:
+            environment["torch"] = found[4]
         hits = related.get("hits", [])
         people = who_can_help.candidates(history, hits)
         if not people:
             emit({"event": "step", "text": "Checking recent changes to the test file"})
             people = who_can_help.frequent_test_modifier(nodeid, github_get)
-        # Both are slow model calls and neither needs the other: the people
-        # fill "Who can help?" directly instead of going through the draft.
+        # The two slow model calls share that evidence and nothing else: the
+        # helpers fill "Who can help?" directly, so the draft does not wait.
+        evidence = (location, history, hits, people)
         suggestions, result = _in_parallel(
             [
                 (
                     PEOPLE_STEP,
                     lambda: who_can_help.suggest(
-                        login, trace_id, nodeid, details, github_get
+                        login,
+                        trace_id,
+                        nodeid,
+                        details,
+                        github_get,
+                        evidence=evidence,
                     ),
                 ),
                 (

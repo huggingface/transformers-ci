@@ -70,6 +70,7 @@ def test_template_and_draft_keep_required_sections_and_trace(monkeypatch):
         lambda *args: ("tests/generation/test_streamers.py", 10),
     )
     monkeypatch.setattr(new_issue.who_can_help, "why", lambda *args: {"number": 42})
+    seen_evidence = []
     monkeypatch.setattr(new_issue.related_issues, "lookup", lambda *args: {"hits": []})
     helper = {
         "login": "maintainer",
@@ -80,7 +81,10 @@ def test_template_and_draft_keep_required_sections_and_trace(monkeypatch):
     monkeypatch.setattr(
         new_issue.who_can_help,
         "suggest",
-        lambda *args: {"status": "ok", "people": [helper]},
+        lambda *args, **kwargs: (
+            seen_evidence.append(kwargs["evidence"])
+            or {"status": "ok", "people": [helper]}
+        ),
     )
     captured = []
     monkeypatch.setattr(
@@ -109,11 +113,17 @@ def test_template_and_draft_keep_required_sections_and_trace(monkeypatch):
     )
     assert draft["status"] == "ok"
     assert captured == [[]]
+    # The helpers reuse the draft's lookups instead of repeating them.
+    assert seen_evidence[0][:2] == (
+        ("tests/generation/test_streamers.py", 10),
+        {"number": 42},
+    )
+    assert "- @maintainer" not in draft["body"]  # template has no such field
     assert [event["text"] for event in events if event["event"] == "step"] == [
         "Reading the Transformers bug report template",
-        "Locating the failing test in the repository",
         "Reading Relore history for the failing line",
         "Searching related issues and PRs",
+        "Reading the failing test's code",
         "Checking recent changes to the test file",
         "Finding people who can help (slow)",
         "Drafting the issue (slow)",
@@ -147,7 +157,9 @@ def test_cached_draft_reuses_model_output_with_distinct_publish_ids(monkeypatch)
     )
     monkeypatch.setattr(new_issue.related_issues, "lookup", lambda *args: {"hits": []})
     monkeypatch.setattr(
-        new_issue.who_can_help, "suggest", lambda *args: {"status": "no_people"}
+        new_issue.who_can_help,
+        "suggest",
+        lambda *args, **kwargs: {"status": "no_people"},
     )
 
     def draft(*args):
@@ -185,7 +197,9 @@ def test_draft_uses_recent_test_modifier_when_relore_has_no_people(monkeypatch):
     monkeypatch.setattr(new_issue.who_can_help, "source_line", lambda *args: None)
     monkeypatch.setattr(new_issue.related_issues, "lookup", lambda *args: {"hits": []})
     monkeypatch.setattr(
-        new_issue.who_can_help, "suggest", lambda *args: {"status": "no_people"}
+        new_issue.who_can_help,
+        "suggest",
+        lambda *args, **kwargs: {"status": "no_people"},
     )
     monkeypatch.setattr(
         new_issue.who_can_help,

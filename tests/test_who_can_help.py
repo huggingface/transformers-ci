@@ -385,3 +385,34 @@ def test_recent_pr_links_use_dashboard_only_for_confirmed_recent_prs():
     assert helpers.recent_pr_links(people, get, now=now) == {
         "12": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=12"
     }
+
+
+def test_suggest_with_evidence_does_not_repeat_the_lookups(monkeypatch):
+    def unexpected(*args, **kwargs):
+        raise AssertionError("lookup repeated")
+
+    monkeypatch.setattr(helpers, "source_line", unexpected)
+    monkeypatch.setattr(helpers, "why", unexpected)
+    monkeypatch.setattr(helpers.related_issues, "lookup", unexpected)
+    monkeypatch.setattr(helpers, "frequent_test_modifier", unexpected)
+    person = {
+        "login": "alice",
+        "evidence": "reviewed it",
+        "url": "https://github.com/x",
+    }
+    monkeypatch.setattr(
+        helpers,
+        "explain",
+        lambda *args, **kwargs: [{"person": person, "why": "Reviewed the line"}],
+    )
+    result = helpers.suggest(
+        "bob",
+        "c" * 32,
+        "tests/a/test_b.py::T::test_x",
+        [],
+        None,
+        evidence=(("tests/a/test_b.py", 3), {"number": 1}, [], [person]),
+    )
+    assert result["status"] == "ok"
+    assert result["people"][0]["login"] == "alice"
+    assert result["location"] == "tests/a/test_b.py:3"

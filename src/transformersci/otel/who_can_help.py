@@ -342,7 +342,10 @@ def suggest(
     details: list[dict],
     github_get: Callable[[str], object] | None = None,
     emit: Callable[[dict], None] = lambda event: None,
+    evidence: tuple | None = None,
 ) -> dict:
+    """``evidence`` is ``(location, history, hits, people)`` already gathered by
+    the caller (the New issue draft), so the lookups are not made twice."""
     key = (trace_id, nodeid)
     with _lock:
         cached = _cache.get(key)
@@ -366,14 +369,19 @@ def suggest(
         with _lock:
             cached = _cache.get(key)
         return cached[1] if cached else {"status": "busy"}
-    emit({"event": "step", "text": "Locating the failing test in the repository"})
-    location = source_line(nodeid, details, github_get)
+    if evidence is None:
+        emit({"event": "step", "text": "Locating the failing test in the repository"})
+        location = source_line(nodeid, details, github_get)
+    else:
+        location = evidence[0]
     if not _slots.acquire(timeout=10):
         result, ttl = {"status": "busy"}, 5
     else:
         try:
             history = {}
-            if location:
+            if evidence is not None:
+                _location, history, hits, people = evidence
+            elif location:
                 emit(
                     {
                         "event": "step",
@@ -384,13 +392,19 @@ def suggest(
                     history = why(*location)
                 except (OSError, ValueError):
                     pass
-            emit({"event": "step", "text": "Searching related issues and PRs"})
-            hits = related_issues.lookup(trace_id, nodeid, lambda: details).get(
-                "hits", []
-            )
-            emit({"event": "step", "text": "Finding reviewers and thread participants"})
-            people = candidates(history, hits)
-            if not people:
+            if evidence is None:
+                emit({"event": "step", "text": "Searching related issues and PRs"})
+                hits = related_issues.lookup(trace_id, nodeid, lambda: details).get(
+                    "hits", []
+                )
+                emit(
+                    {
+                        "event": "step",
+                        "text": "Finding reviewers and thread participants",
+                    }
+                )
+                people = candidates(history, hits)
+            if not people and evidence is None:
                 emit(
                     {
                         "event": "step",
