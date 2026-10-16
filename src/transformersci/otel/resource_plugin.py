@@ -109,6 +109,13 @@ def pytest_configure(config: pytest.Config) -> None:
 
     span_pruning.install()
 
+    # A test that fails every pytest-rerunfailures attempt must reach Tempo as
+    # ERROR, not as the OK its first retried attempt locks in. See
+    # transformersci.otel.rerun_status for the full write-up.
+    from . import rerun_status
+
+    rerun_status.install(config)
+
 
 def split_pytest_nodeid(nodeid: str) -> dict[str, str]:
     parts = nodeid.split("::")
