@@ -86,15 +86,17 @@ def test_template_and_draft_keep_required_sections_and_trace(monkeypatch):
     monkeypatch.setattr(
         new_issue,
         "model_draft",
-        lambda *args: captured.append(args[6])
-        or {
-            "title": "Streamer fails in CI",
-            "sections": {
-                "system-info": "",
-                "reproduction": "Observed in CI",
-                "expected-behavior": "Should pass",
-            },
-        },
+        lambda *args: (
+            captured.append(args[6])
+            or {
+                "title": "Streamer fails in CI",
+                "sections": {
+                    "system-info": "",
+                    "reproduction": "Observed in CI",
+                    "expected-behavior": "Should pass",
+                },
+            }
+        ),
     )
     events = []
     draft = new_issue.prepare(
@@ -280,3 +282,214 @@ def test_publish_uses_write_token_not_read_only_app(monkeypatch):
         "body": "Edited body",
         "labels": ["bug"],
     }
+
+
+def _trace(nodeid=NODE):
+    tags = {
+        "vcs.ref.head.revision": "a" * 40,
+        "vcs.ref.head.name": "main",
+        "service.version": "b" * 40,
+        "process.runtime.name": "cpython",
+        "process.runtime.version": "3.11.17",
+        "transformers.test.ci_event": "daily",
+        "transformers.test.job": "run_models_gpu",
+        "transformers.test.hardware": "single-gpu",
+        "transformers.test.runner.type": "aws-g5-4xlarge-cache",
+        "transformers.test.runner.cpu_model": "AMD EPYC 7R32",
+        "transformers.test.runner.vcpus": "16",
+        "transformers.test.runner.memory_gib": "62",
+        "transformers.test.runner.gpu_vendor": "nvidia",
+        "transformers.test.runner.gpu_model": "NVIDIA A10G",
+        "transformers.test.runner.gpu_count": "1",
+        "transformers.test.runner.gpu_memory_gib": "22",
+        "vcs.repository.name": "huggingface/transformers",
+    }
+    return {
+        "processes": {
+            "p1": {"tags": [{"key": k, "value": v} for k, v in tags.items()]},
+            "p2": {"tags": [{"key": "process.runtime.version", "value": "3.9"}]},
+        },
+        "spans": [
+            {
+                "processID": "p2",
+                "operationName": "other",
+                "tags": [
+                    {"key": "pytest.span_type", "value": "test"},
+                    {"key": "pytest.nodeid", "value": "tests/other.py::test_x"},
+                ],
+            },
+            {
+                "processID": "p1",
+                "operationName": nodeid,
+                "tags": [
+                    {"key": "pytest.span_type", "value": "test"},
+                    {"key": "pytest.nodeid", "value": nodeid},
+                ],
+            },
+        ],
+    }
+
+
+def test_trace_environment_reads_the_failing_tests_process():
+    env = new_issue.trace_environment(_trace(), NODE)
+    assert env["python"] == "3.11.17"
+    assert env["commit"] == "a" * 40
+    assert env["own_commit"] == "b" * 40
+    assert env["gpu_model"] == "NVIDIA A10G"
+    assert new_issue.trace_environment(_trace(), "tests/missing.py::t") == {}
+
+
+def test_system_info_and_command_come_from_the_trace_and_footer_says_ai():
+    env = new_issue.trace_environment(_trace(), NODE)
+    env.pop("own_commit")
+    env["torch"] = "2.14.0"
+    env["job_url"] = "https://github.com/huggingface/transformers/actions/runs/1/job/2"
+    fields = [
+        {
+            "id": "system-info",
+            "type": "textarea",
+            "label": "System Info",
+            "required": True,
+        },
+        {
+            "id": "reproduction",
+            "type": "textarea",
+            "label": "Reproduction",
+            "required": True,
+        },
+    ]
+    body = new_issue.render_body(
+        fields,
+        {
+            "system-info": "Not provided in the supplied evidence.",
+            "reproduction": "snippet",
+        },
+        TRACE,
+        NODE,
+        [{"exception_message": "bad"}],
+        env,
+    )
+    assert "Not provided" not in body
+    assert "- Python version: 3.11.17 (CPython)" in body
+    assert "- PyTorch version: 2.14.0 (pinned by the GPU CI image)" in body
+    assert "- GPU: 1× NVIDIA A10G, 22 GiB" in body
+    assert "- CPU: AMD EPYC 7R32, 16 vCPUs, 62 GiB RAM" in body
+    assert "`run_models_gpu` (daily) on `aws-g5-4xlarge-cache` [single-gpu]" in body
+    assert "actions/runs/1/job/2" in body
+    assert f"git checkout {'a' * 40}\nRUN_SLOW=1 python -m pytest '{NODE}'" in body
+    assert body.index("snippet") < body.index("RUN_SLOW=1")
+    assert body.rstrip().endswith("Please check it before relying on it._")
+
+
+def test_system_info_falls_back_without_trace_facts():
+    fields = [
+        {
+            "id": "system-info",
+            "type": "textarea",
+            "label": "System Info",
+            "required": True,
+        }
+    ]
+    body = new_issue.render_body(fields, {}, TRACE, NODE, [], {})
+    assert "exact versions were not recorded" in body
+
+
+def test_gpu_image_torch_reads_the_dockerfile_at_the_commit():
+    urls = []
+
+    def get(url):
+        urls.append(url)
+        text = "FROM x\nARG PYTORCH='2.14.0'\n"
+        return {
+            "encoding": "base64",
+            "content": base64.b64encode(text.encode()).decode(),
+        }
+
+    assert new_issue.gpu_image_torch("c" * 40, get) == "2.14.0"
+    assert urls[0].endswith(
+        "/contents/docker/transformers-all-latest-gpu/Dockerfile?ref=" + "c" * 40
+    )
+    assert new_issue.gpu_image_torch("main", get) == ""
+
+
+def test_failing_test_source_returns_the_enclosing_test_function():
+    urls = []
+    text = "\n".join(
+        [
+            "class T:",
+            "    @slow",
+            "    def test_a(self):",
+            "        x = load(",
+            "            'ckpt',",
+            "        )",
+            "        assert x == 1",
+            "",
+            "    def test_b(self):",
+            "        pass",
+        ]
+    )
+
+    def get(url):
+        urls.append(url)
+        return {
+            "encoding": "base64",
+            "content": base64.b64encode(text.encode()).decode(),
+        }
+
+    details = [
+        {
+            "exception_stacktrace": "tests/a/test_b.py:7: \n"
+            "src/transformers/x.py:3: in load\nsrc/transformers/y.py:9: OSError"
+        }
+    ]
+    source = new_issue.failing_test_source(
+        "tests/a/test_b.py::T::test_a", details, "d" * 40, get
+    )
+    assert source.splitlines()[0] == "    @slow"
+    assert "assert x == 1" in source and "test_b" not in source
+    assert urls == [
+        "https://api.github.com/repos/huggingface/transformers/contents/tests/a/test_b.py?ref="
+        + "d" * 40
+    ]
+
+
+def test_issue_environment_uses_the_checked_out_commit_for_run_slow():
+    daily = te.issue_environment(_trace(), NODE)
+    assert daily["commit"] == "a" * 40 and daily["branch"] == "main"
+    assert "own_commit" not in daily
+    trace = _trace()
+    for tag in trace["processes"]["p1"]["tags"]:
+        if tag["key"] == "transformers.test.ci_event":
+            tag["value"] = te.RUN_SLOW_CI_EVENT
+    run_slow = te.issue_environment(trace, NODE)
+    assert run_slow["commit"] == "b" * 40 and "branch" not in run_slow
+
+
+def test_slow_model_call_keeps_the_stream_alive(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(new_issue, "KEEPALIVE_SECONDS", 0.01)
+    release = threading.Event()
+    events = []
+
+    def slow():
+        release.wait(5)
+        return {"ok": True}
+
+    def emit(event):
+        events.append(event)
+        if len(events) >= 2:
+            release.set()
+
+    assert new_issue._with_keepalive(slow, emit) == {"ok": True}
+    assert events and all(event == {"event": "keepalive"} for event in events)
+
+    def boom():
+        raise ValueError("bad draft")
+
+    try:
+        new_issue._with_keepalive(boom, emit)
+    except ValueError as error:
+        assert str(error) == "bad draft"
+    else:
+        raise AssertionError("error swallowed")

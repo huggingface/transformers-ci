@@ -2176,6 +2176,21 @@ def failure_context(trace: dict | None, test_nodeid: str) -> dict[str, str]:
     }
 
 
+def issue_environment(trace: dict, test_nodeid: str) -> dict[str, str]:
+    """CI facts for a bug report's System Info, plus where its log lives."""
+    environment = new_issue.trace_environment(trace, test_nodeid)
+    # Same rule as failure_context: a pr-comment run's head revision is main.
+    own_commit = environment.pop("own_commit", "")
+    if checks_out_own_commit(environment.get("ci_event", "")):
+        environment["commit"] = own_commit
+        environment.pop("branch", None)
+    context = failure_context(trace, test_nodeid)
+    for key in ("run_url", "job_url", "pr_url"):
+        if context.get(key):
+            environment[key] = context[key]
+    return environment
+
+
 class DependencyChange(NamedTuple):
     dependency: str
     # "" when the commit created the file (no earlier version recorded).
@@ -8013,9 +8028,16 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if not details:
             self._reply_json(404, {"status": "invalid"})
             return
+        environment = issue_environment(trace, nodeid)
         self._stream_action(
             lambda emit: new_issue.prepare(
-                login, trace_id, nodeid, details, _github_api_get, emit=emit
+                login,
+                trace_id,
+                nodeid,
+                details,
+                _github_api_get,
+                emit=emit,
+                environment=environment,
             ),
             "Reading the selected failure",
         )
