@@ -1,10 +1,11 @@
-"""Every dashboard LLM call names itself: Cerebras's Cloudflare 403s urllib's default."""
+"""Every dashboard LLM feature goes through llm.chat, which names itself:
+Cerebras's Cloudflare 403s urllib's default User-Agent."""
 
 from __future__ import annotations
 
 import pytest
 
-from transformersci.otel import new_issue, wdyt, who_can_help
+from transformersci.otel import llm, new_issue, wdyt, who_can_help
 
 CFG = {
     "api_base": "https://router.example/v1",
@@ -16,7 +17,7 @@ CFG = {
 }
 
 
-def capture(monkeypatch, module):
+def capture(monkeypatch):
     sent = []
 
     class Opener:
@@ -24,30 +25,28 @@ def capture(monkeypatch, module):
             sent.append(request)
             raise OSError("stop after capture")
 
-    monkeypatch.setattr(module, "build_opener", lambda *args: Opener())
+    monkeypatch.setattr(llm, "build_opener", lambda *args: Opener())
     return sent
 
 
 @pytest.mark.parametrize(
-    "module, call",
+    "call",
     [
-        (wdyt, lambda: wdyt.ask(CFG, "q", lambda event: None)),
-        (
-            who_can_help,
-            lambda: who_can_help.explain(
-                "tests/a.py::t",
-                "tests/a.py",
-                {},
-                [{"login": "a", "evidence": "e", "url": "u"}],
-                [],
-            ),
+        lambda: wdyt.ask(CFG, "q", lambda event: None),
+        lambda: who_can_help.explain(
+            "tests/a.py::t",
+            "tests/a.py",
+            {},
+            [{"login": "a", "evidence": "e", "url": "u"}],
+            [],
         ),
-        (new_issue, lambda: new_issue.model_draft("tests/a.py::t", [], {}, [], [], [])),
+        lambda: new_issue.model_draft("tests/a.py::t", [], {}, [], [], []),
     ],
+    ids=["wdyt", "who_can_help", "new_issue"],
 )
-def test_llm_requests_send_a_user_agent(monkeypatch, module, call):
-    monkeypatch.setattr(wdyt, "config", lambda: dict(CFG))
-    sent = capture(monkeypatch, module)
+def test_llm_requests_send_a_user_agent(monkeypatch, call):
+    monkeypatch.setattr(llm, "config", lambda: dict(CFG))
+    sent = capture(monkeypatch)
     with pytest.raises(OSError):
         call()
-    assert sent[0].get_header("User-agent") == wdyt.LLM_USER_AGENT
+    assert sent[0].get_header("User-agent") == llm.USER_AGENT

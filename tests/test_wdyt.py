@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from transformersci.otel import related_issues as ri
+from transformersci.otel import llm, related_issues as ri
 from transformersci.otel import trace_exporter as te
 from transformersci.otel import wdyt
 from transformersci.otel import who_can_help
@@ -115,7 +115,7 @@ def test_prompt_bounds_and_fences_untrusted_text():
 def test_ask_uses_proxy_and_strips_thinking(monkeypatch):
     content = "<think>hmm</think>\n**Likely cause:** the dataset."
     opener = Opener({"choices": [{"message": {"content": content}}]})
-    monkeypatch.setattr(wdyt, "build_opener", opener)
+    monkeypatch.setattr(llm, "build_opener", opener)
     events = []
     answer = wdyt.ask(wdyt.config(), "prompt", events.append)
     assert answer == "**Likely cause:** the dataset."
@@ -139,7 +139,7 @@ def test_ask_streams_answer_but_never_reasoning(monkeypatch):
     ]
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_LLM_BILL_TO", "huggingface")
     opener = Opener(stream=stream)
-    monkeypatch.setattr(wdyt, "build_opener", opener)
+    monkeypatch.setattr(llm, "build_opener", opener)
     events = []
     answer = wdyt.ask(wdyt.config(), "prompt", events.append)
     assert answer == "- **Likely cause:** a <b>tag</b>"
@@ -337,8 +337,10 @@ def test_new_issue_draft_uses_selected_trace_and_publish_uses_draft(
     monkeypatch.setattr(
         new_issue,
         "prepare",
-        lambda *args, **kwargs: seen.append((args, kwargs))
-        or {"status": "ok", "draft_id": "f" * 32, "title": "Draft", "body": "Body"},
+        lambda *args, **kwargs: (
+            seen.append((args, kwargs))
+            or {"status": "ok", "draft_id": "f" * 32, "title": "Draft", "body": "Body"}
+        ),
     )
     draft_url = server + "/serge-actions/new-issue/draft"
     assert post(draft_url, {"trace_id": TRACE, "test_nodeid": NODE}, {})[0] == 403
@@ -434,7 +436,7 @@ def test_fresh_answer_carries_a_billing_session(monkeypatch):
 
 def test_ask_sends_session_header(monkeypatch):
     opener = Opener(stream=[{"content": "A"}])
-    monkeypatch.setattr(wdyt, "build_opener", opener)
+    monkeypatch.setattr(llm, "build_opener", opener)
     wdyt.ask(wdyt.config(), "p", lambda event: None, "sid-1")
     assert opener.requests[0].get_header("X-hf-session-id") == "sid-1"
 

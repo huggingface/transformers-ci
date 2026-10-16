@@ -118,7 +118,7 @@ def test_candidates_require_linked_human_evidence():
 
 
 def test_model_cannot_add_or_repeat_people(monkeypatch):
-    from transformersci.otel import wdyt
+    from transformersci.otel import llm
 
     class Opener:
         def open(self, request, timeout):
@@ -164,9 +164,9 @@ def test_model_cannot_add_or_repeat_people(monkeypatch):
 
             return Reply()
 
-    monkeypatch.setattr(helpers, "build_opener", lambda *args: Opener())
+    monkeypatch.setattr(llm, "build_opener", lambda *args: Opener())
     monkeypatch.setattr(
-        wdyt,
+        llm,
         "config",
         lambda: {
             "api_base": "https://llm.test/v1",
