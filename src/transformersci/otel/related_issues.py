@@ -200,7 +200,7 @@ async function load(){
   const url=new URL(location.href);url.searchParams.set('format','json');
   // A link without var-trace_id falls back to the test's latest failing trace.
   const latest=url.searchParams.get('latest_trace')||'';
-  if(!url.searchParams.get('trace_id')&&/^[0-9a-f]{32}$/i.test(latest))
+  if(!url.searchParams.get('trace_id')&&/^[0-9a-f]{24,32}$/i.test(latest))
     url.searchParams.set('trace_id',latest);
   url.searchParams.delete('latest_trace');
   try {
@@ -269,7 +269,9 @@ document.getElementById('test-heading').textContent=node;
 // scoped to this trace's hardware with this test's row opened, and Runner opens the exact GitHub job when
 // the trace names it (job_url), else the run.
 const latestTrace=context.get('latest_trace')||'';
-const traceId=context.get('trace_id')||(/^[0-9a-f]{32}$/i.test(latestTrace)?latestTrace:'');
+// Tempo drops leading zeros from trace ids; pad back to 32 hex characters.
+const padTrace=id=>/^[0-9a-f]{24,32}$/i.test(id||'')?id.toLowerCase().padStart(32,'0'):'';
+const traceId=padTrace(context.get('trace_id'))||padTrace(latestTrace);
 // GitHub's mark (octicon mark-github) on links that leave for GitHub.
 function githubMark(){
   const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg'),path=document.createElementNS(ns,'path');

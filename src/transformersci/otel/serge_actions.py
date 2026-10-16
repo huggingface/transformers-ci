@@ -193,7 +193,7 @@ if(context.get('test_nodeid'))fetch('/serge-actions/fix-prs?test_nodeid='+
   }).catch(()=>{});
 // Like the traceback panel: a link without var-trace_id uses the test's latest
 // failing trace, which the dashboard resolves into latest_trace.
-if(!context.get('trace_id')&&/^[0-9a-f]{32}$/i.test(context.get('latest_trace')||''))
+if(!context.get('trace_id')&&/^[0-9a-f]{24,32}$/i.test(context.get('latest_trace')||''))
   context.set('trace_id',context.get('latest_trace'));
 if(context.get('test_nodeid'))fetch('/serge-actions/probable-fix?'+
   new URLSearchParams({trace_id:context.get('trace_id')||'',

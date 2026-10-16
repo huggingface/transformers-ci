@@ -64,7 +64,7 @@ from math import fsum
 from pathlib import Path
 from typing import NamedTuple
 from urllib.error import HTTPError
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from transformersci.otel import my_stuff
@@ -268,6 +268,42 @@ def _public_response_cache_seconds() -> float:
 def _public_cache_control_header() -> str:
     ttl = int(_public_response_cache_seconds())
     return f"public, max-age={ttl}" if ttl > 0 else "no-store"
+
+
+# Query parameters that carry a trace id, on every exporter route.
+TRACE_ID_PARAMS = frozenset({"trace_id", "latest_trace", "focus_trace"})
+
+
+def normalize_trace_id(value: str) -> str:
+    """A trace id as 32 lowercase hex characters.
+
+    Tempo's search API drops a trace id's leading zeros ("072c…" comes back as
+    "72c…", 31 characters), so about 1 trace in 16 reached the dashboards, and
+    every link built from them, too short for the 32-hex checks: the Test page
+    answered 400. Only ids of 24–32 hex characters are padded: losing 8 or more
+    leading zeros is a 1-in-4-billion trace id, while a short string like "bad"
+    is a typo. Anything else is returned as is, for the caller's own
+    validation to reject.
+    """
+    value = value.strip()
+    if re.fullmatch(r"[0-9a-fA-F]{24,32}", value):
+        return value.lower().zfill(32)
+    return value
+
+
+def _normalize_trace_query(path: str) -> str:
+    """``path`` with any trace id query parameter padded to 32 characters."""
+    parsed = urlparse(path)
+    if not parsed.query:
+        return path
+    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    fixed = [
+        (key, normalize_trace_id(value) if key in TRACE_ID_PARAMS else value)
+        for key, value in pairs
+    ]
+    if fixed == pairs:
+        return path
+    return parsed._replace(query=urlencode(fixed)).geturl()
 
 
 def tag_map(items: list[dict]) -> dict[str, str]:
@@ -659,7 +695,11 @@ def tempo_trace_to_jaeger(trace_id: str, payload: dict) -> dict:
                     }
                 )
 
-    return {"processes": processes, "spans": spans, "traceID": trace_id}
+    return {
+        "processes": processes,
+        "spans": spans,
+        "traceID": normalize_trace_id(trace_id),
+    }
 
 
 # Tempo search/get_trace latency over real CI-volume blocks is usually several
@@ -774,7 +814,7 @@ def search_trace_ids(
         if isinstance(entry, dict):
             trace_id = entry.get("traceID")
             if isinstance(trace_id, str) and trace_id:
-                trace_ids.append(trace_id)
+                trace_ids.append(normalize_trace_id(trace_id))
     return trace_ids
 
 
@@ -7988,7 +8028,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             self._reply_json(400, {"status": "invalid"})
             return
-        trace_id = str(body.get("trace_id") or "").strip()
+        trace_id = normalize_trace_id(str(body.get("trace_id") or ""))
         nodeid = str(body.get("test_nodeid") or "").strip()
         if (
             not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id)
@@ -8030,7 +8070,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             self._reply_json(400, {"status": "invalid"})
             return
-        trace_id = str(body.get("trace_id") or "").strip()
+        trace_id = normalize_trace_id(str(body.get("trace_id") or ""))
         nodeid = str(body.get("test_nodeid") or "").strip()
         if (
             not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id)
@@ -8114,7 +8154,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             reply(400, {"status": "invalid"})
             return
-        trace_id = str(body.get("trace_id") or "").strip()
+        trace_id = normalize_trace_id(str(body.get("trace_id") or ""))
         nodeid = str(body.get("test_nodeid") or "").strip()
         if (
             not nodeid
@@ -8199,6 +8239,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self._request_started = time.monotonic()
         self._request_route = "notfound"
         self._request_cache = "none"
+        self.path = _normalize_trace_query(self.path)
         parsed = urlparse(self.path)
         if parsed.path in {
             "/patch-view",
