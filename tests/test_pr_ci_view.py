@@ -334,7 +334,7 @@ def test_combined_view_endpoint_serves_both_lanes(monkeypatch) -> None:
             page = response.read()
             assert b"Latest Run Jobs" in page
             assert b'data-group="test_model"' in page
-            assert b"Only PR-specific run-slow failures" in page
+            assert b"Hide non-PR-specific" in page
         with urlopen(f"{base}/pr-ci-view/app.js", timeout=5) as response:
             assert b"Only PR-specific" not in response.read()
         with urlopen(f"{base}/pr-ci-view/data?pr=49599", timeout=5) as response:

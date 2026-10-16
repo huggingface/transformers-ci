@@ -15,7 +15,7 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 .good{color:var(--green)}.bad{color:var(--red)}.busy{color:var(--amber)}
 .live{display:inline-block;width:12px;height:12px;border:2px solid var(--line);border-top-color:var(--amber);border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px}
 .progress{height:3px;background:transparent;overflow:hidden;flex:none}.progress span{display:block;width:28%;height:100%;background:var(--accent);animation:progress 1.35s ease-in-out infinite}.progress[hidden]{display:none}
-.layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);flex:1;min-height:0}
+.layout{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,3fr);flex:1;min-height:0}
 section{display:flex;flex-direction:column;min-width:0;min-height:0}section+section{border-left:1px solid var(--line)}
 .head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:39px;padding:7px 12px;border-bottom:1px solid var(--line)}
 h2{margin:0;font-size:13px}.scroll{overflow:auto;min-height:0;flex:1}.notice{padding:8px 12px;color:var(--muted);border-bottom:1px solid var(--line)}
@@ -40,8 +40,26 @@ td.dur{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.ex
 .tbrow td{padding:0 0 6px}.tbrow iframe{display:block;width:100%;height:120px;border:1px solid var(--line);border-radius:4px;background:var(--bg)}
 details{border-bottom:1px solid var(--line);padding:4px 0}summary{cursor:pointer;padding:4px 12px;font:12px ui-monospace,Menlo,monospace}summary .meta{font:12px Inter,system-ui,sans-serif;color:var(--muted)}
 details table{width:calc(100% - 14px);margin:4px 0 8px 14px}.test-table{min-width:600px}.jobs-table{min-width:490px}
-.status-cell{text-align:center}.status-cell .live{margin-top:3px}.running-text{margin-left:5px;color:var(--amber);font-size:11px;font-weight:600}.jobs-table th:nth-child(1),.jobs-table td:nth-child(1){width:96px}.jobs-table th:nth-child(3),.jobs-table td:nth-child(3){width:105px;text-align:center}.jobs-table th:nth-child(4),.jobs-table td:nth-child(4),.jobs-table th:nth-child(5),.jobs-table td:nth-child(5){width:56px;text-align:right}
+.status-cell{text-align:center}.status-cell .live{margin-top:3px}.running-text{margin-left:5px;color:var(--amber);font-size:11px;font-weight:600}.jobs-table th:nth-child(1),.jobs-table td:nth-child(1){width:24px;padding-left:6px;padding-right:2px;text-align:center}.jobs-table th:nth-child(2),.jobs-table td:nth-child(2){width:84px;text-align:center}.jobs-table th:nth-child(4),.jobs-table td:nth-child(4),.jobs-table th:nth-child(5),.jobs-table td:nth-child(5){width:64px;text-align:right}.jobs-table th:nth-child(6),.jobs-table td:nth-child(6){width:52px;text-align:center}
+.jobs-table td{vertical-align:middle}.filter-icon{width:13px;height:13px;vertical-align:-2px;color:var(--muted)}.jobs-table input{accent-color:#3d71d9;margin:0;cursor:pointer}.jobs-table tr.picked{background:var(--hover)}.jobs-table tr.picked td:nth-child(3){font-weight:600}
+.lane-icon{display:inline-flex;gap:1px;vertical-align:middle;color:var(--muted)}.lane-icon svg{width:18px;height:18px}.lane-icon.nvidia{color:#76b900}.lane-icon.amd{color:#ed1c24}
+.fold-all{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:auto;padding:0;border:1px solid var(--line);border-radius:3px;background:transparent;color:var(--muted);cursor:pointer}.fold-all:hover{color:var(--fg);background:var(--hover)}.fold-all svg{width:14px;height:14px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}.jobfilter{padding:6px 12px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}.jobfilter b{color:var(--fg)}.jobfilter button{padding:0;border:0;background:none;color:var(--accent);font:inherit;cursor:pointer}
 .status-icon{display:inline-block;width:16px;height:16px;vertical-align:middle}
+.mq{display:flex;gap:2px;align-items:center}.mq i{flex:none;width:7px;height:14px;border-radius:2px;background:var(--line)}
+.mq i.f{background:var(--red)}.mq i.p{background:var(--green)}.mq i.x{background:transparent;border:1px dashed var(--line)}
+.mq i.a{background:var(--amber)}.mq i.r{background:repeating-linear-gradient(135deg,var(--red) 0 3px,#8f2a37 3px 5px)}
+.rate{margin-top:4px;color:var(--muted);font:600 11px Inter,system-ui,sans-serif;white-space:nowrap}.mq+.rate{margin-top:4px}.rate.bad{color:var(--red)}.rate.good{margin-top:0;color:var(--green);font-weight:500}
+.verdict{display:inline-block;padding:2px 8px;border:0;border-radius:999px;font:600 11px/1.5 Inter,system-ui,sans-serif;white-space:nowrap;cursor:pointer}
+.v-pr{background:#5c1f29;color:#ffb3bd}.v-flaky{background:#5a3d0c;color:#ffcf8a}.v-main{background:#3a2a52;color:#d9c9ff}.v-unknown,.v-none{background:var(--hover);color:var(--muted)}
+body.light .v-pr{background:#ffe1e5;color:#a1102a}body.light .v-flaky{background:#fff0d1;color:#7a4b00}body.light .v-main{background:#ece3ff;color:#4b2a8c}
+.mqcell{cursor:pointer}.meta-line{margin-top:2px;color:var(--muted);font:11px Inter,system-ui,sans-serif}
+.hidden-note{padding:7px 12px;color:var(--muted);border-bottom:1px solid var(--line);font-size:12px}.hidden-note b{color:var(--fg)}
+.hidden-note button{padding:0;border:0;background:none;color:var(--accent);font:inherit;cursor:pointer}
+.xp>td{padding:2px 8px 10px}.why{margin:4px 0 6px;padding:6px 9px;border-left:3px solid var(--accent);background:var(--hover);font-size:12px}
+.xp table{table-layout:auto;min-width:0}.xp table td{padding:3px 6px;border-bottom:1px solid var(--line);font-size:11.5px}.xp table tr:last-child td{border-bottom:0}
+.xp .sq{display:inline-block;width:8px;height:8px;margin-right:5px;border-radius:2px;vertical-align:0}
+.xp .age{color:var(--muted);white-space:nowrap}.xp .note{color:var(--muted);font-style:italic}
 @keyframes spin{to{transform:rotate(360deg)}}@keyframes progress{0%{transform:translateX(-110%)}100%{transform:translateX(470%)}}
 @media(prefers-reduced-motion:reduce){.live,.progress span{animation:none}}
 @media(max-width:800px){.layout{display:flex;flex-direction:column;overflow:auto}.layout section{min-height:300px}.layout section+section{border-left:0;border-top:1px solid var(--line)}}
@@ -52,13 +70,13 @@ details table{width:calc(100% - 14px);margin:4px 0 8px 14px}.test-table{min-widt
 <div id="progress" class="progress" role="progressbar" aria-label="Loading PR CI results"><span></span></div>
 <div class="layout">
   <section aria-label="Failing tests">
-    <div class="head"><h2>Failing Tests</h2></div>
-    <div class="controls"><input id="search" type="search" autocomplete="off" placeholder="Search: model, test name or error" aria-label="Search failing tests"><span class="seg" role="group" aria-label="Group failing tests"><span class="seg-label">Group by</span><button type="button" data-group="none">None</button><button type="button" data-group="test">Test</button><button type="button" data-group="model">Model</button><button type="button" data-group="test_model">Test + Model</button><button type="button" data-group="job">Job</button></span><label><input id="specific" type="checkbox">Only PR-specific run-slow failures</label></div>
+    <div class="head"><h2>Failing Tests</h2><button id="fold-all" class="fold-all" type="button" hidden></button></div>
+    <div class="controls"><input id="search" type="search" autocomplete="off" placeholder="Search: model, test name or error" aria-label="Search failing tests"><span class="seg" role="group" aria-label="Group failing tests"><span class="seg-label">Group by</span><button type="button" data-group="none">None</button><button type="button" data-group="test">Test</button><button type="button" data-group="model">Model</button><button type="button" data-group="test_model">Test + Model</button><button type="button" data-group="job">Job</button></span><label title="Hide failures that also happen without this PR: run-slow failures the bot did not attribute to this PR, and tests that fail in other PRs' merge-queue runs (broken on main or flaky)"><input id="specific" type="checkbox">Hide non-PR-specific</label></div>
     <div id="failures" class="scroll" aria-live="polite"></div>
   </section>
   <section aria-label="Latest run jobs">
     <div class="head"><h2>Latest Run Jobs</h2></div>
-    <div class="scroll"><table class="jobs-table"><thead><tr><th>Lane</th><th>Job</th><th>Status</th><th>Pass</th><th>Fail</th></tr></thead><tbody id="jobs"></tbody></table><div id="jobs-empty" class="notice" hidden></div></div>
+    <div class="scroll"><table class="jobs-table"><thead><tr><th title="Tick a job to show only its failing tests"><svg class="filter-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12l-4.6 5.4V13l-2.8-1.4V8.4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg><span class="sr">Filter by job</span></th><th>Status</th><th>Job</th><th>Pass</th><th>Fail</th><th>Lane</th></tr></thead><tbody id="jobs"></tbody></table><div id="jobs-empty" class="notice" hidden></div></div>
   </section>
 </div>
 <script src="/pr-ci-view/app.js"></script>

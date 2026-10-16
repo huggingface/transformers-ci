@@ -9,15 +9,24 @@
   const onlySpecific = document.getElementById('specific');
   const search = document.getElementById('search');
   const progress = document.getElementById('progress');
+  // Jobs picked in the Latest Run Jobs table; empty = every job.
+  const pickedJobs = new Set();
+  const jobKey = (lane, name, hardware) => `${lane.id}|${name}|${hardware || ''}`;
   const groupButtons = [...document.querySelectorAll('[data-group]')];
   let snapshot = null, loading = false;
+  // Merge-queue history per failing node id; null until loaded, {} when unavailable.
+  let history = null, historyIncomplete = false, historyKey = '', historyAt = 0;
+  const expanded = new Set();
+  const foldAll = document.getElementById('fold-all');
+  // One-shot override for group <details> on the next render: true = open all, false = close all.
+  let groupsForced = null;
   let group = 'none';
   try {
     const body = parent.document.body;
     if (/light/.test(body.className) || parent.grafanaBootData?.user?.lightTheme) document.body.classList.add('light');
   } catch (_) {}
   try {
-    const saved = localStorage.getItem('tci-pr-specific-v2');
+    const saved = localStorage.getItem('tci-pr-hide-nonspecific-v1');
     onlySpecific.checked = saved === null ? true : saved === 'true';
   } catch (_) { onlySpecific.checked = true; }
   const node = (tag, cls, value) => {
@@ -69,6 +78,60 @@
     return icon;
   }
   const laneName = (lane, hardware) => lane.id === 'cpu' ? 'CPU' : lane.id === 'amd' ? (hardware === 'amd-2gpu' ? 'AMD xGPU' : 'AMD GPU') : (hardware === 'multi-gpu' ? 'Nvidia xGPU' : 'Nvidia GPU');
+  const VERDICTS = {
+    pr: ['v-pr', 'Likely this PR'],
+    flaky: ['v-flaky', 'Flaky — not this PR'],
+    main: ['v-main', 'Broken on main'],
+    others: ['v-main', 'Fails for other PRs'],
+    unknown: ['v-unknown', 'Not enough history'],
+    none: ['v-none', 'No queue history'],
+  };
+  const VERDICT_RANK = {pr: 0, unknown: 1, none: 2, flaky: 3, others: 4, main: 5};
+  const queueOf = test => (test.hardware === 'cpu' && history?.[test.nodeid]) || null;
+  const verdictOf = test => queueOf(test)?.verdict || null;
+  const age = seconds => seconds < 3600 ? `${Math.max(1, Math.round(seconds / 60))} min ago`
+    : seconds < 172800 ? `${Math.round(seconds / 3600)} h ago` : `${Math.round(seconds / 86400)} d ago`;
+  const runResult = run => run.status === 'passed' ? 'passed'
+    : run.status === 'rerun' ? `passed after a rerun${run.exception_type ? ` (failed once: ${run.exception_type})` : ''}`
+    : `failed${run.exception_type ? `: ${run.exception_type}` : ''}${run.reported_ok ? ' (final result unknown, before tci#275)' : ''}`;
+  const runTitle = run => `#${run.pr} · ${runResult(run)} · ${age(run.age_seconds)}`;
+  function strip(queue, width) {
+    const element = node('div', 'mq');
+    const runs = queue.runs.slice(0, width).reverse();
+    for (let slot = 0; slot < width - runs.length; slot++) {
+      const empty = node('i', 'x'); empty.title = 'No run'; element.append(empty);
+    }
+    for (const run of runs) {
+      const square = node('i', run.status === 'passed' ? 'p' : run.status === 'rerun' ? 'a' : run.reported_ok ? 'r' : 'f');
+      square.title = runTitle(run);
+      element.append(square);
+    }
+    return element;
+  }
+  function rateText(queue) {
+    if (!queue.ran_count) return 'not run in the queue';
+    if (!queue.fail_count) return `0 / ${queue.ran_count} · none failed`;
+    return `${queue.fail_count} / ${queue.ran_count} · ${queue.distinct_prs_failed} PR${queue.distinct_prs_failed === 1 ? '' : 's'}`;
+  }
+  // CPU: a chip. GPU: a card, two for multi-GPU runners; vendor colour, full name on hover.
+  function laneIcon(lane, hardware) {
+    const label = laneName(lane, hardware);
+    const wrap = node('span', `lane-icon ${lane.id === 'cpu' ? 'cpu' : lane.id === 'amd' ? 'amd' : 'nvidia'}`);
+    wrap.title = label; wrap.setAttribute('role', 'img'); wrap.setAttribute('aria-label', label);
+    const multi = hardware === 'multi-gpu' || hardware === 'amd-2gpu';
+    for (let index = 0; index < (lane.id !== 'cpu' && multi ? 2 : 1); index++) {
+      const icon = svgNode('svg');
+      icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('fill', 'none');
+      icon.setAttribute('stroke', 'currentColor'); icon.setAttribute('stroke-width', '1.7');
+      icon.setAttribute('stroke-linecap', 'round'); icon.setAttribute('aria-hidden', 'true');
+      const path = svgNode('path');
+      path.setAttribute('d', lane.id === 'cpu'
+        ? 'M7 7h10v10H7zM10 10h4v4h-4zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4'
+        : 'M3 7h18v10H3zM8 12m-2.5 0a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0M14 10h4M14 14h4M5 17v3M9 17v3');
+      icon.append(path); wrap.append(icon);
+    }
+    return wrap;
+  }
   function renderRuns() {
     runs.replaceChildren();
     for (const lane of snapshot.lanes) {
@@ -90,18 +153,54 @@
       'var-gh_run_id': String(lane.run.run_id).split(':')[0]});
     return link(`/d/pytest-test/test?${query}`, test.nodeid);
   }
+  // Why a failure is hidden, or null. Every hidden failure is counted in the hidden note.
+  function hiddenReason(lane, test) {
+    const verdict = verdictOf(test);
+    if (!onlySpecific.checked) return null;
+    if (lane.id !== 'cpu' && lane.comparison?.state === 'complete' && test.specific !== true) return 'shared';
+    if (['main', 'others', 'flaky'].includes(verdict)) return verdict;
+    return null;
+  }
   function visibleFailures() {
-    const listed = [];
+    const listed = [], hidden = [];
     for (const lane of snapshot.lanes) {
-      const filterable = lane.id !== 'cpu' && lane.comparison?.state === 'complete';
       for (const test of lane.failures) {
-        if (onlySpecific.checked && filterable && test.specific !== true) continue;
+        if (pickedJobs.size && !pickedJobs.has(jobKey(lane, test.job, test.hardware))) continue;
         const text = `${test.nodeid} ${test.job} ${test.model || ''} ${test.exception_type || ''} ${test.exception_message || ''} ${lane.label}`.toLowerCase();
         if (search.value.trim().toLowerCase().split(/\s+/).filter(Boolean).some(term => !text.includes(term))) continue;
-        listed.push({lane, test});
+        const reason = hiddenReason(lane, test);
+        if (reason) hidden.push({lane, test, reason});
+        else listed.push({lane, test});
       }
     }
-    return listed;
+    return {listed, hidden};
+  }
+  const shortName = nodeid => nodeid.split('/').at(-1);
+  function hiddenNote(hidden) {
+    const note = node('div', 'hidden-note');
+    const labels = {shared: 'run-slow not specific to this PR', flaky: 'flaky', main: 'broken on main', others: 'failing for other PRs too'};
+    const counts = ['main', 'others', 'shared', 'flaky'].map(kind => [kind, hidden.filter(item => item.reason === kind)]).filter(([, items]) => items.length);
+    note.append('Hidden: ');
+    counts.forEach(([kind, items], index) => {
+      if (index) note.append(', ');
+      note.append(node('b', '', `${items.length} ${labels[kind]}`));
+    });
+    const names = hidden.slice(0, 3).map(({test}) => shortName(test.nodeid));
+    const types = [...new Set(hidden.map(({test}) => test.exception_type).filter(Boolean))];
+    note.append(` — ${names.join(', ')}${hidden.length > 3 ? ` +${hidden.length - 3} more` : ''}${types.length ? ` (${types.join(' / ')})` : ''}`);
+    const queued = hidden.filter(item => item.reason !== 'shared').map(({test}) => queueOf(test));
+    if (queued.length) {
+      const failed = Math.max(...queued.map(queue => queue.fail_count));
+      const ran = Math.max(...queued.map(queue => queue.ran_count));
+      const prs = Math.max(...queued.map(queue => queue.distinct_prs_failed));
+      note.append(` · up to ${failed} of the last ${ran} merge-queue runs failed, across ${prs} other PR${prs === 1 ? '' : 's'}`);
+    }
+    note.append(' · ');
+    const show = node('button', '', 'show them');
+    show.type = 'button';
+    show.addEventListener('click', () => { setToggle(onlySpecific, false); renderFailures(); });
+    note.append(show);
+    return note;
   }
   // Same summary as the run table's groups: the three commonest error types.
   function errorTypes(members) {
@@ -122,10 +221,52 @@
     if (group === 'test_model') return `${test.model || ''} · ${test.test_name || test.nodeid.split('::').at(-1)}`;
     return test.job;
   }
+  const WINDOW = 20;
+  function historyRow(queue) {
+    const row = node('tr', 'xp');
+    const cell = node('td'); cell.colSpan = 3;
+    cell.append(node('div', 'why', queue.reason));
+    const failedRuns = queue.runs.filter(run => run.status !== 'passed');
+    const passedRuns = queue.runs.filter(run => run.status === 'passed');
+    if (failedRuns.length) {
+      const list = node('table');
+      for (const run of failedRuns.slice(0, 8)) {
+        const line = node('tr');
+        const who = node('td');
+        const square = node('i', 'sq');
+        square.style.background = run.status === 'passed' ? 'var(--green)' : run.status === 'rerun' ? 'var(--amber)' : 'var(--red)';
+        who.append(square, link(`https://github.com/huggingface/transformers/pull/${run.pr}`, `#${run.pr}`));
+        const result = node('td');
+        if (run.status === 'passed') result.append(node('span', 'age', 'passed'));
+        else {
+          result.append(node('span', run.status === 'rerun' ? 'busy' : 'bad', [run.exception_type, run.exception_message].filter(Boolean).join(': ').slice(0, 160) || 'failed'));
+          if (run.status === 'rerun') result.append(node('span', 'note', ' — passed after a rerun'));
+          else if (run.reported_ok) result.append(node('span', 'note', ' — final result unknown (before tci#275)'));
+        }
+        const log = node('td'); log.append(link(run.log_url, 'log'));
+        line.append(who, result, node('td', 'age', age(run.age_seconds)), log);
+        list.append(line);
+      }
+      cell.append(list);
+      if (failedRuns.length > 8) cell.append(node('div', 'meta-line', `+${failedRuns.length - 8} older failing runs in the strip`));
+    }
+    if (passedRuns.length) {
+      const prs = [...new Set(passedRuns.map(run => run.pr))];
+      const line = node('div', 'meta-line', `Passed in ${passedRuns.length} other run${passedRuns.length === 1 ? '' : 's'}, from ${prs.length} PR${prs.length === 1 ? '' : 's'}: `);
+      prs.slice(0, 10).forEach((number, index) => {
+        if (index) line.append(', ');
+        line.append(link(`https://github.com/huggingface/transformers/pull/${number}`, `#${number}`));
+      });
+      if (prs.length > 10) line.append(` +${prs.length - 10} more`);
+      cell.append(line);
+    }
+    row.append(cell);
+    return row;
+  }
   function table(items) {
     const element = node('table', 'test-table');
     const cols = node('colgroup');
-    for (const width of ['70px', '', '115px', '92px', '70px']) {
+    for (const width of ['', '200px', '150px']) {
       const col = node('col');
       if (width) col.style.width = width;
       cols.append(col);
@@ -133,14 +274,20 @@
     element.append(cols);
     const head = node('thead');
     const headings = node('tr');
-    for (const label of ['Status', 'Test', 'Job', 'Lane', 'Duration']) headings.append(node('th', '', label));
+    for (const label of ['Test', `Merge queue · last ${WINDOW}`, 'Verdict']) headings.append(node('th', '', label));
     head.append(headings); element.append(head);
     const body = node('tbody');
     for (const {lane, test} of items) {
       const row = node('tr');
-      row.append(node('td', 'bad', 'FAIL'));
+      row.dataset.nodeid = test.nodeid;
       const title = node('td', 'nodeid');
-      title.append(testLink(lane, test) || node('span', '', test.nodeid));
+      const label = testLink(lane, test) || node('span', '', test.nodeid);
+      label.textContent = '';
+      test.nodeid.split('::').forEach((part, index) => {
+        if (index) label.append('::', document.createElement('wbr'));
+        label.append(part);
+      });
+      title.append(label);
       if (test.specific === true) title.append(node('span', 'specific', 'PR-specific'));
       else if (test.specific === false) title.append(node('span', 'shared', 'Shared or pre-existing'));
       const error = [test.exception_type, test.exception_message].filter(Boolean).join(': ');
@@ -151,20 +298,88 @@
         toggle.dataset.src = `/failure?${new URLSearchParams({trace_id:test.trace_id,test_nodeid:test.nodeid})}`;
         title.append(toggle);
       }
-      row.append(title, node('td', '', test.job), node('td', '', laneName(lane, test.hardware)));
       const duration = Number(test.duration_seconds || 0);
-      row.append(node('td', 'dur', duration ? `${duration.toFixed(3)}s` : '—'));
+      title.append(node('div', 'meta-line', [test.job, laneName(lane, test.hardware), duration ? `${duration.toFixed(2)}s` : ''].filter(Boolean).join(' · ')));
+      row.append(title);
+      const queue = queueOf(test);
+      const mq = node('td', 'mqcell'), verdict = node('td');
+      if (lane.id !== 'cpu') {
+        mq.append(node('span', 'meta-line', 'GPU · not run in the queue'));
+        mq.title = 'Merge-queue runs are CPU only; this GPU test never runs there.';
+      } else if (!queue) {
+        mq.append(node('span', 'meta-line', history === null ? 'loading…' : '—'));
+      } else if (!queue.fail_count) {
+        mq.append(node('div', 'rate good', queue.ran_count ? '✓ passed' : 'not run in the queue'));
+      } else {
+        mq.append(strip(queue, WINDOW));
+        mq.append(node('div', 'rate bad', rateText(queue)));
+      }
+      if (queue?.ran_count && !queue.fail_count) mq.title ||= `Passed in all ${queue.ran_count} recent merge-queue runs of other PRs`;
+      if (queue && lane.id === 'cpu') {
+        const [cls, text] = VERDICTS[queue.verdict] || VERDICTS.unknown;
+        const pill = node('button', `verdict ${cls}`, text);
+        pill.type = 'button'; pill.title = queue.reason || '';
+        verdict.append(pill);
+        mq.dataset.expand = verdict.dataset.expand = 'true';
+      }
+      row.append(mq, verdict);
       body.append(row);
+      if (queue && lane.id === 'cpu' && expanded.has(test.nodeid)) body.append(historyRow(queue));
     }
     element.append(body);
     return element;
   }
+  // Rows that can unfold: tests with merge-queue history, plus any groups.
+  const foldable = () => visibleFailures().listed.filter(({lane, test}) => lane.id === 'cpu' && queueOf(test));
+  function anyUnfolded() {
+    return expanded.size > 0 || failures.querySelector('details[open], tr.tbrow') !== null;
+  }
+  function updateFoldAll() {
+    const items = snapshot ? foldable() : [];
+    foldAll.hidden = !items.length && !failures.querySelector('details');
+    const fold = anyUnfolded();
+    const label = fold ? 'Collapse all' : 'Expand all';
+    foldAll.title = label; foldAll.setAttribute('aria-label', label);
+    foldAll.replaceChildren();
+    const icon = svgNode('svg');
+    icon.setAttribute('viewBox', '0 0 16 16'); icon.setAttribute('fill', 'none'); icon.setAttribute('stroke', 'currentColor');
+    icon.setAttribute('stroke-width', '1.6'); icon.setAttribute('stroke-linecap', 'round'); icon.setAttribute('stroke-linejoin', 'round');
+    icon.setAttribute('aria-hidden', 'true');
+    const path = svgNode('path');
+    // Collapse: chevrons pointing together. Expand: chevrons pointing apart.
+    path.setAttribute('d', fold ? 'M4.5 2.5L8 6l3.5-3.5M4.5 13.5L8 10l3.5 3.5' : 'M4.5 6L8 2.5 11.5 6M4.5 10L8 13.5 11.5 10');
+    icon.append(path); foldAll.append(icon);
+  }
+  foldAll.addEventListener('click', () => {
+    if (anyUnfolded()) { expanded.clear(); groupsForced = false; }
+    else { for (const {test} of foldable()) expanded.add(test.nodeid); groupsForced = true; }
+    renderFailures();
+  });
   function renderFailures() {
+    renderFailureList();
+    groupsForced = null;
+    updateFoldAll();
+  }
+  function renderFailureList() {
     if (!snapshot) return;
     const opened = new Set([...failures.querySelectorAll('details[open]')].map(item => item.dataset.key));
     failures.replaceChildren();
-    const listed = visibleFailures();
-    if (!listed.length) {
+    const {listed, hidden} = visibleFailures();
+    if (pickedJobs.size) {
+      const banner = node('div', 'jobfilter', 'Only tests from ');
+      [...pickedJobs].forEach((key, index) => {
+        const [laneId, name, hardware] = key.split('|');
+        if (index) banner.append(', ');
+        banner.append(node('b', '', laneId === 'cpu' ? name : `${name} (${laneName({id: laneId}, hardware)})`));
+      });
+      banner.append(' · ');
+      const clear = node('button', '', 'all jobs');
+      clear.type = 'button';
+      clear.addEventListener('click', () => { pickedJobs.clear(); renderJobs(); renderFailures(); });
+      banner.append(clear);
+      failures.append(banner);
+    }
+    if (!listed.length && !hidden.length) {
       let message = search.value ? 'No matching failures.' : 'No failing tests.';
       if (!search.value) {
         const failedRunSlow = snapshot.lanes.find(lane => lane.id !== 'cpu' && lane.jobs.some(job => statusClass(job.status) === 'failure') && !lane.failures.length);
@@ -179,9 +394,12 @@
       failures.append(node('div', 'notice', message));
       return;
     }
-    failures.append(node('div', 'summary', `${listed.length} failing test${listed.length === 1 ? '' : 's'}${group === 'none' ? ' · longest first' : ''}`));
+    failures.append(node('div', 'summary', `${listed.length} failing test${listed.length === 1 ? '' : 's'}${hidden.length ? ` · ${hidden.length} hidden as not this PR` : ''}${group === 'none' ? " · this PR's likely failures first" : ''}${historyIncomplete ? ' · merge-queue history may be incomplete' : ''}`));
+    if (hidden.length) failures.append(hiddenNote(hidden));
+    if (!listed.length) return;
     if (group === 'none') {
-      listed.sort((a, b) => Number(b.test.duration_seconds || 0) - Number(a.test.duration_seconds || 0));
+      const rank = item => VERDICT_RANK[verdictOf(item.test)] ?? 1;
+      listed.sort((a, b) => rank(a) - rank(b) || Number(b.test.duration_seconds || 0) - Number(a.test.duration_seconds || 0));
       failures.append(table(listed));
       return;
     }
@@ -194,7 +412,7 @@
     for (const [key, members] of [...groups].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))) {
       const details = node('details');
       details.dataset.key = key;
-      details.open = opened.has(key) || (!opened.size && members.length <= 5);
+      details.open = groupsForced ?? (opened.has(key) || (!opened.size && members.length <= 5));
       const summary = node('summary', '', key);
       summary.append(node('span', 'meta', ` — ${members.length} test${members.length === 1 ? '' : 's'}${errorTypes(members)}`));
       details.append(summary, table(members.sort((a, b) => a.test.nodeid.localeCompare(b.test.nodeid))));
@@ -206,19 +424,32 @@
     const ordered = snapshot.lanes.flatMap(lane => lane.jobs.map(job => ({lane, job})));
     const rank = status => live(status) ? 0 : statusClass(status) === 'failure' ? 1 : status === 'success' ? 2 : 3;
     ordered.sort((a, b) => rank(a.job.status) - rank(b.job.status) || (b.job.fail || 0) - (a.job.fail || 0) || a.job.name.localeCompare(b.job.name));
+    const failingJobs = new Set(snapshot.lanes.flatMap(lane => lane.failures.map(test => jobKey(lane, test.job, test.hardware))));
     for (const {lane, job} of ordered) {
       const tr = node('tr');
-      tr.append(node('td', '', laneName(lane, job.hardware)));
+      const key = jobKey(lane, job.name, job.hardware);
+      const pick = node('td');
+      if (failingJobs.has(key)) {
+        const box = node('input');
+        box.type = 'checkbox'; box.checked = pickedJobs.has(key);
+        box.setAttribute('aria-label', `Show only failing tests from ${job.name}`);
+        box.title = 'Show only this job\'s failing tests';
+        box.addEventListener('change', () => { if (box.checked) pickedJobs.add(key); else pickedJobs.delete(key); renderJobs(); renderFailures(); });
+        pick.append(box);
+      }
+      if (pickedJobs.has(key)) tr.classList.add('picked');
+      tr.append(pick);
       const name = node('td');
       name.append(lane.run ? link(jobLink(lane, job), job.name) : node('span', '', job.name));
-      tr.append(name);
       const status = node('td', 'status-cell');
       if (live(job.status)) {
         status.append(node('span', 'live'));
         status.append(node('span', 'running-text', job.status === 'in_progress' ? 'running' : job.status));
       }
       else status.append(statusIcon(job.status));
-      tr.append(status, node('td', 'dur', job.pass ?? '—'), node('td', 'dur', job.fail ?? '—'));
+      const laneCell = node('td');
+      laneCell.append(laneIcon(lane, job.hardware));
+      tr.append(status, name, node('td', 'dur', job.pass ?? '—'), node('td', 'dur', job.fail ?? '—'), laneCell);
       jobs.append(tr);
     }
     jobsEmpty.hidden = ordered.length > 0;
@@ -236,13 +467,33 @@
       }
       const data = await response.json();
       snapshot = data; render();
+      loadHistory();
     } catch (error) { runs.textContent = error.message || 'CI results are temporarily unavailable. Retrying shortly…'; }
     finally { loading = false; progress.hidden = true; }
   }
-  onlySpecific.addEventListener('change', () => {
-    try { localStorage.setItem('tci-pr-specific-v2', String(onlySpecific.checked)); } catch (_) {}
+  const HISTORY_MAX_TESTS = 60, HISTORY_REFRESH_MS = 300000;
+  async function loadHistory() {
+    const nodeids = [...new Set(snapshot.lanes.filter(lane => lane.id === 'cpu')
+      .flatMap(lane => lane.failures.map(test => test.nodeid)))].sort().slice(0, HISTORY_MAX_TESTS);
+    const key = nodeids.join('\n');
+    if (!nodeids.length) { history = {}; historyKey = key; renderFailures(); return; }
+    if (key === historyKey && Date.now() - historyAt < HISTORY_REFRESH_MS) return;
+    const query = new URLSearchParams({pr});
+    for (const nodeid of nodeids) query.append('t', nodeid);
+    try {
+      const response = await fetch(`/pr-ci-view/queue-history?${query}`, {credentials: 'same-origin', cache: 'no-store'});
+      const data = response.ok ? await response.json() : {};
+      history = data.tests || {};
+      historyIncomplete = Boolean(data.incomplete);
+      historyKey = key; historyAt = Date.now();
+    } catch (_) { history = history || {}; }
     renderFailures();
-  });
+  }
+  function setToggle(box, value) {
+    box.checked = value;
+    try { localStorage.setItem('tci-pr-hide-nonspecific-v1', String(value)); } catch (_) {}
+  }
+  onlySpecific.addEventListener('change', () => { setToggle(onlySpecific, onlySpecific.checked); renderFailures(); });
   search.addEventListener('input', renderFailures);
   for (const button of groupButtons) button.addEventListener('click', () => {
     group = button.dataset.group;
@@ -250,17 +501,26 @@
     renderFailures();
   });
   groupButtons[0].setAttribute('aria-pressed', 'true');
+  failures.addEventListener('toggle', updateFoldAll, true);
   failures.addEventListener('click', event => {
+    const expander = event.target.closest('[data-expand]');
+    if (expander && !event.target.closest('a')) {
+      const nodeid = expander.closest('tr').dataset.nodeid;
+      if (expanded.has(nodeid)) expanded.delete(nodeid); else expanded.add(nodeid);
+      renderFailures();
+      return;
+    }
     const button = event.target.closest('button.tb');
     if (!button) return;
     const row = button.closest('tr');
     const next = row.nextElementSibling;
-    if (next?.classList.contains('tbrow')) { next.remove(); button.textContent = 'error ▸'; return; }
+    if (next?.classList.contains('tbrow')) { next.remove(); button.textContent = 'error ▸'; updateFoldAll(); return; }
     const extra = node('tr', 'tbrow');
-    const cell = node('td'); cell.colSpan = 5;
+    const cell = node('td'); cell.colSpan = 3;
     const frame = node('iframe'); frame.title = 'Failure details'; frame.src = button.dataset.src;
     frame.addEventListener('load', () => { try { frame.style.height = `${Math.min(600, frame.contentDocument.documentElement.scrollHeight + 4)}px`; } catch (_) {} });
     cell.append(frame); extra.append(cell); row.after(extra); button.textContent = 'error ▾';
+    updateFoldAll();
   });
   refresh();
   setInterval(refresh, 30000);

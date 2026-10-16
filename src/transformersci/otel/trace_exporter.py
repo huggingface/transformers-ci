@@ -45,6 +45,7 @@ Pipeline (and roughly the order functions appear in the file):
 from __future__ import annotations
 
 import gzip
+import hashlib
 import html
 import json
 import os
@@ -79,6 +80,7 @@ from transformersci.otel import who_can_help
 from transformersci.otel import test_markers
 from transformersci.otel import new_issue
 from transformersci.otel import patch_view
+from transformersci.otel import merge_queue
 from transformersci.otel import pr_ci_view
 from transformersci.otel import probable_fix
 from transformersci.otel import test_page
@@ -6192,6 +6194,14 @@ def _public_response_cache_get(key: str) -> bytes | None:
         return payload
 
 
+# Merge-queue history costs a few Tempo searches per PR view and moves slowly
+# (a queue run every ~40 min), so it is cached far longer than other responses.
+_QUEUE_HISTORY_CACHE_TTL_SECONDS = 600.0
+_QUEUE_HISTORY_CACHE_MAX = 64
+_queue_history_cache: "OrderedDict[str, tuple[float, bytes]]" = OrderedDict()
+_queue_history_cache_lock = threading.Lock()
+
+
 def _public_response_cache_put(key: str, payload: bytes) -> None:
     ttl = _public_response_cache_seconds()
     if ttl <= 0:
@@ -8409,6 +8419,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._request_route = "/rerun-failed/data"
             self._serve_rerun_failed_data(parse_qs(parsed.query))
             return
+        if parsed.path == "/pr-ci-view/queue-history":
+            self._request_route = "/pr-ci-view/queue-history"
+            self._serve_queue_history(parse_qs(parsed.query))
+            return
         if parsed.path in {"/pr-ci-view", "/pr-ci-view/app.js", "/pr-ci-view/data"}:
             self._request_route = "/pr-ci-view"
             if parsed.path == "/pr-ci-view/data":
@@ -8979,6 +8993,68 @@ class MetricsHandler(BaseHTTPRequestHandler):
             cpu_lane = cpu.result()
             cpu_lane["active_runs"] = active_cpu.result()
             return {"cpu": cpu_lane, "gpu": gpu.result()}
+
+    def _serve_queue_history(self, params: dict[str, list[str]]) -> None:
+        pr = (params.get("pr") or [""])[0].strip()
+        nodeids = sorted({value for value in params.get("t", []) if value})
+        if not re.fullmatch(r"[1-9][0-9]*", pr) or not nodeids:
+            self._reply_json(400, {"error": "Invalid pull request or tests"})
+            return
+        if len(nodeids) > merge_queue.MAX_NODEIDS or not all(
+            merge_queue.valid_nodeid(nodeid) for nodeid in nodeids
+        ):
+            self._reply_json(400, {"error": "Too many or invalid test ids"})
+            return
+        key = hashlib.sha256("\n".join([pr, *nodeids]).encode()).hexdigest()
+        now = time.monotonic()
+        with _queue_history_cache_lock:
+            hit = _queue_history_cache.get(key)
+            if hit and hit[0] > now:
+                _queue_history_cache.move_to_end(key)
+                self._request_cache = "hit"
+                self._send(200, JSON_CONTENT_TYPE, hit[1], cache_control="no-store")
+                return
+        base_url = tempo_base_url()
+
+        def search(traceql: str, start: int, end: int) -> object:
+            query = urlencode(
+                {
+                    "q": traceql,
+                    "start": start,
+                    "end": end,
+                    "limit": merge_queue.SEARCH_LIMIT,
+                    "spss": merge_queue.SPANS_PER_TRACE,
+                }
+            )
+            return _http_get_json(f"{base_url}/api/search?{query}")
+
+        rows, incomplete = merge_queue.fetch_rows(
+            nodeids,
+            search,
+            service_name=os.getenv(
+                "PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME
+            ),
+            repository="huggingface/transformers",
+        )
+        payload = json.dumps(
+            {
+                "pr": pr,
+                "window": merge_queue.WINDOW,
+                "lookback_days": merge_queue.LOOKBACK_DAYS,
+                "incomplete": incomplete,
+                "tests": merge_queue.history(rows, nodeids, pr),
+            }
+        ).encode()
+        if not incomplete:
+            with _queue_history_cache_lock:
+                _queue_history_cache[key] = (
+                    now + _QUEUE_HISTORY_CACHE_TTL_SECONDS,
+                    payload,
+                )
+                _queue_history_cache.move_to_end(key)
+                while len(_queue_history_cache) > _QUEUE_HISTORY_CACHE_MAX:
+                    _queue_history_cache.popitem(last=False)
+        self._send(200, JSON_CONTENT_TYPE, payload, cache_control="no-store")
 
     def _serve_pr_ci_view(self, params: dict[str, list[str]]) -> None:
         pr = (params.get("pr") or [""])[0].strip()
