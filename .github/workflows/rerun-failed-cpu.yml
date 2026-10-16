@@ -168,6 +168,7 @@ jobs:
       HF_DATASETS_CACHE: /tmp/hf_datasets_cache
       HF_MODULES_CACHE: /tmp/hf_modules_cache
       HF_XET_LOG_DEST: /tmp/xet_logs/
+      HF_XET_CACHE: /tmp/hf_xet_cache
       HF_METRICS_CACHE: /tmp/hf_metrics_cache
     steps:
       # Pin the source attempt's merge, including its original base revision.
