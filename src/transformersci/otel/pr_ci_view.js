@@ -13,7 +13,7 @@
   const pickedJobs = new Set();
   const jobKey = (lane, name, hardware) => `${lane.id}|${name}|${hardware || ''}`;
   const groupButtons = [...document.querySelectorAll('[data-group]')];
-  let snapshot = null, loading = false;
+  let snapshot = null, snapshotText = '', loading = false;
   // Merge-queue history per failing node id; null until loaded, {} when unavailable.
   let history = null, historyIncomplete = false, historyKey = '', historyAt = 0;
   const expanded = new Set();
@@ -465,8 +465,9 @@
       if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
         throw new Error(`CI results are temporarily unavailable (HTTP ${response.status}). Retrying shortly…`);
       }
-      const data = await response.json();
-      snapshot = data; render();
+      const text = await response.text();
+      // An unchanged refresh must not re-render: that would close open tracebacks and history rows.
+      if (text !== snapshotText) { snapshotText = text; snapshot = JSON.parse(text); render(); }
       loadHistory();
     } catch (error) { runs.textContent = error.message || 'CI results are temporarily unavailable. Retrying shortly…'; }
     finally { loading = false; progress.hidden = true; }
@@ -483,10 +484,12 @@
     try {
       const response = await fetch(`/pr-ci-view/queue-history?${query}`, {credentials: 'same-origin', cache: 'no-store'});
       const data = response.ok ? await response.json() : {};
+      historyKey = key; historyAt = Date.now();
+      const same = history !== null && JSON.stringify(data.tests || {}) === JSON.stringify(history) && Boolean(data.incomplete) === historyIncomplete;
       history = data.tests || {};
       historyIncomplete = Boolean(data.incomplete);
-      historyKey = key; historyAt = Date.now();
-    } catch (_) { history = history || {}; }
+      if (same) return;
+    } catch (_) { if (history !== null) return; history = {}; }
     renderFailures();
   }
   function setToggle(box, value) {
@@ -517,9 +520,17 @@
     if (next?.classList.contains('tbrow')) { next.remove(); button.textContent = 'error ▸'; updateFoldAll(); return; }
     const extra = node('tr', 'tbrow');
     const cell = node('td'); cell.colSpan = 3;
-    const frame = node('iframe'); frame.title = 'Failure details'; frame.src = button.dataset.src;
-    frame.addEventListener('load', () => { try { frame.style.height = `${Math.min(600, frame.contentDocument.documentElement.scrollHeight + 4)}px`; } catch (_) {} });
-    cell.append(frame); extra.append(cell); row.after(extra); button.textContent = 'error ▾';
+    // The traceback page can take seconds; show progress instead of an empty box.
+    const waiting = node('div', 'tb-loading');
+    const bar = node('div', 'progress'); bar.append(node('span'));
+    waiting.append(bar, node('div', 'tb-loading-text', 'Loading traceback…'));
+    const frame = node('iframe'); frame.title = 'Failure details'; frame.hidden = true;
+    frame.addEventListener('load', () => {
+      waiting.remove(); frame.hidden = false;
+      try { frame.style.height = `${Math.min(600, frame.contentDocument.documentElement.scrollHeight + 4)}px`; } catch (_) {}
+    });
+    frame.src = button.dataset.src;
+    cell.append(waiting, frame); extra.append(cell); row.after(extra); button.textContent = 'error ▾';
     updateFoldAll();
   });
   refresh();
