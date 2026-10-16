@@ -261,12 +261,14 @@ def explain(
             },
             {"role": "user", "content": prompt},
         ],
-        "max_tokens": 350,
+        # Includes reasoning tokens on providers that count them (Cerebras).
+        "max_tokens": 2000,
         "temperature": 0.1,
     }
     headers = {
         "Authorization": f"Bearer {cfg['api_key']}",
         "Content-Type": "application/json",
+        "User-Agent": wdyt.LLM_USER_AGENT,
     }
     if cfg["bill_to"]:
         headers["X-HF-Bill-To"] = cfg["bill_to"]

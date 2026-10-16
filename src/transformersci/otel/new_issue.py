@@ -330,13 +330,16 @@ def model_draft(
                         "content": json.dumps(context, ensure_ascii=True)[:18000],
                     },
                 ],
-                "max_tokens": 1600,
+                # Reasoning models spend part of this on reasoning: Cerebras
+                # counts it, and a 1600 budget left no tokens for the answer.
+                "max_tokens": 8000,
                 "temperature": 0.1,
             }
         ).encode(),
         headers={
             "Authorization": f"Bearer {cfg['api_key']}",
             "Content-Type": "application/json",
+            "User-Agent": wdyt.LLM_USER_AGENT,
             **({"X-HF-Bill-To": cfg["bill_to"]} if cfg["bill_to"] else {}),
         },
         method="POST",
