@@ -152,7 +152,7 @@
   }
   function categoryStyle(value) {
     return {'New model': 'new-model', Bugfix: 'bugfix', Feature: 'feature', 'CI/infra': 'ci',
-      Docs: 'docs', Performance: 'performance', Refactor: 'refactor', Other: 'other'}[value] || '';
+      Docs: 'docs', Performance: 'performance', Refactor: 'refactor', Tests: 'tests', Other: 'other'}[value] || '';
   }
   function paintCategory(cell, value) {
     cell.className = value ? `category-cell ${categoryStyle(value)}` : '';

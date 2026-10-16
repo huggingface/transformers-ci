@@ -2968,7 +2968,15 @@ def test_overview_pr_table_assets_are_served() -> None:
     assert "tci-pr-auth-complete" in auth_page
     assert "unless on (pr)" in script
     assert set(queries["targets"]) == {
-        "Activity", "Title", "Category", "Runs", "Failures", "Rate", "Age", "State", "Active"
+        "Activity",
+        "Title",
+        "Category",
+        "Runs",
+        "Failures",
+        "Rate",
+        "Age",
+        "State",
+        "Active",
     }
 
 
@@ -6538,3 +6546,50 @@ def test_dependency_change_seed_and_live_detection_do_not_duplicate() -> None:
     python = [line for line in series if 'dependency="python"' in line]
     assert len(python) == 1
     assert 'change="→ 3.11"' in python[0] and 'from_version="none"' in python[0]
+
+
+def test_python_changes_only_in_tests() -> None:
+    check = trace_exporter.python_changes_only_in_tests
+    assert check(["tests/models/bert/test_modeling_bert.py", "docs/x.md"])
+    assert not check(
+        ["tests/test_a.py", "src/transformers/models/bert/modeling_bert.py"]
+    )
+    assert not check(["tests/fixtures/data.json"])  # no Python change
+    assert not check(None) and not check([])
+
+
+def test_pr_info_category_is_tests_when_python_changes_are_all_tests() -> None:
+    def info(labels, title, files):
+        pr = {
+            "html_url": "https://github.com/huggingface/transformers/pull/7",
+            "title": title,
+            "labels": labels,
+            "changed_files": len(files),
+            "user": {"login": "a"},
+            "head": {"sha": "s"},
+        }
+
+        def github_get(url):
+            if "/files?" in url:
+                return [{"filename": path} for path in files]
+            return pr
+
+        with (
+            patch.object(trace_exporter, "_github_api_get", side_effect=github_get),
+            patch.object(trace_exporter, "fetch_github_pr_reviews", return_value=[]),
+        ):
+            return trace_exporter.fetch_github_pr_info("huggingface/transformers", "7")[
+                "category"
+            ]
+
+    tests_only = ["tests/models/bert/test_modeling_bert.py"]
+    assert info([], "Fix flaky bert test", tests_only) == "Tests"
+    assert (
+        info([{"name": "bug", "color": "d73a4a"}], "Something", tests_only) == "Tests"
+    )
+    assert (
+        info([{"name": "New model", "color": "fff"}], "Add Foo", tests_only)
+        == "New model"
+    )
+    assert info([], "Fix bert", tests_only + ["src/transformers/x.py"]) == "Bugfix"
+    assert info([], "Bump action", [".github/workflows/a.yml"]) == "CI/infra"

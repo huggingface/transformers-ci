@@ -1756,13 +1756,20 @@ def fetch_github_pr_info(repository: str, pr: str) -> dict[str, str]:
             merged.append(login)
     reviewers = ",".join(merged)
     category = pr_category(labels, title if isinstance(title, str) else "")
-    if category == "Other":
-        try:
-            if pr_changes_only_in_github(repository, pr, payload.get("changed_files")):
-                category = "CI/infra"
-        except Exception:
-            # File metadata is optional; a failed lookup should not hide the PR.
-            pass
+    try:
+        paths = pr_changed_paths(repository, pr, payload.get("changed_files"))
+    except Exception:
+        # File metadata is optional; a failed lookup should not hide the PR.
+        paths = None
+    if category != "New model" and python_changes_only_in_tests(paths):
+        # What the PR touches beats what its title or labels say it is.
+        category = "Tests"
+    elif (
+        category == "Other"
+        and paths
+        and all(path.startswith(".github/") for path in paths)
+    ):
+        category = "CI/infra"
 
     return {
         "author": author if isinstance(author, str) else "",
@@ -1836,11 +1843,14 @@ def pr_category(labels: list[dict[str, str]], title: str) -> str:
     return "Other"
 
 
-def pr_changes_only_in_github(repository: str, pr: str, changed_files: object) -> bool:
-    """Confirm that every changed path in a PR is under .github/."""
+def pr_changed_paths(
+    repository: str, pr: str, changed_files: object
+) -> list[str] | None:
+    """Every path a PR touches (renames count both sides), or None when the
+    list cannot be read in full: a partial list must never classify a PR."""
     if isinstance(changed_files, int) and not isinstance(changed_files, bool):
         if not 0 < changed_files <= 3000:
-            return False
+            return None
     else:
         changed_files = None
 
@@ -1849,32 +1859,45 @@ def pr_changes_only_in_github(repository: str, pr: str, changed_files: object) -
         f"{api_base}/repos/{quote(repository, safe='/')}/pulls/"
         f"{quote(pr, safe='')}/files"
     )
+    paths: list[str] = []
     seen = 0
     for page in range(1, 31):
         payload = _github_api_get(f"{files_url}?per_page=100&page={page}")
         if not isinstance(payload, list) or not payload or len(payload) > 100:
-            return False
+            return None
         for file in payload:
             if not isinstance(file, dict):
-                return False
+                return None
             path = file.get("filename")
             previous_path = file.get("previous_filename")
-            if not isinstance(path, str) or not path.startswith(".github/"):
-                return False
-            if previous_path is not None and (
-                not isinstance(previous_path, str)
-                or not previous_path.startswith(".github/")
-            ):
-                return False
+            if not isinstance(path, str):
+                return None
+            paths.append(path)
+            if previous_path is not None:
+                if not isinstance(previous_path, str):
+                    return None
+                paths.append(previous_path)
         seen += len(payload)
         if changed_files is not None:
             if seen == changed_files:
-                return True
+                return paths
             if seen > changed_files:
-                return False
+                return None
         if len(payload) < 100:
-            return changed_files is None
-    return False
+            return paths if changed_files is None else None
+    return None
+
+
+def pr_changes_only_in_github(repository: str, pr: str, changed_files: object) -> bool:
+    """Confirm that every changed path in a PR is under .github/."""
+    paths = pr_changed_paths(repository, pr, changed_files)
+    return bool(paths) and all(path.startswith(".github/") for path in paths)
+
+
+def python_changes_only_in_tests(paths: list[str] | None) -> bool:
+    """A PR whose Python changes are all under tests/ (other files may change)."""
+    python = [path for path in paths or [] if path.endswith(".py")]
+    return bool(python) and all(path.startswith("tests/") for path in python)
 
 
 _pr_info_cache_lock = threading.Lock()

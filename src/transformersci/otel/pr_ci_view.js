@@ -103,6 +103,18 @@
     }
     return listed;
   }
+  // Same summary as the run table's groups: the three commonest error types.
+  function errorTypes(members) {
+    const counts = new Map();
+    for (const {test} of members) {
+      if (test.exception_type) counts.set(test.exception_type, (counts.get(test.exception_type) || 0) + 1);
+    }
+    const sorted = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    if (!sorted.length) return '';
+    const shown = sorted.slice(0, 3).map(([type, count]) => count > 1 ? `${type} ×${count}` : type);
+    if (sorted.length > 3) shown.push(`+${sorted.length - 3} more`);
+    return ' · ' + shown.join(', ');
+  }
   function groupKey(item) {
     const {test} = item;
     if (group === 'test') return test.test_name || test.nodeid.split('::').at(-1).replace(/\[.*\]$/, '');
@@ -184,7 +196,7 @@
       details.dataset.key = key;
       details.open = opened.has(key) || (!opened.size && members.length <= 5);
       const summary = node('summary', '', key);
-      summary.append(node('span', 'meta', ` — ${members.length} test${members.length === 1 ? '' : 's'}`));
+      summary.append(node('span', 'meta', ` — ${members.length} test${members.length === 1 ? '' : 's'}${errorTypes(members)}`));
       details.append(summary, table(members.sort((a, b) => a.test.nodeid.localeCompare(b.test.nodeid))));
       failures.append(details);
     }

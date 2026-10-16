@@ -3,7 +3,7 @@ function installOverviewCategories() {
   const host = window, doc = host.document;
   if (host.tciOverviewCategories) { host.tciOverviewCategories(); return; }
   const cache = new Map(), pending = new Set();
-  const colors = {'New model':['#4b3714','#f4ce73'],Bugfix:['#d85a6b','#fff'],Feature:['#5d9cec','#fff'],'CI/infra':['#9b7edb','#fff'],Docs:['#72b59a','#111217'],Performance:['#e2a050','#111217'],Refactor:['#8798b0','#111217'],Other:['#77808e','#fff']};
+  const colors = {'New model':['#4b3714','#f4ce73'],Bugfix:['#d85a6b','#fff'],Feature:['#5d9cec','#fff'],'CI/infra':['#9b7edb','#fff'],Tests:['#3f9cb5','#fff'],Docs:['#72b59a','#111217'],Performance:['#e2a050','#111217'],Refactor:['#8798b0','#111217'],Other:['#77808e','#fff']};
   let scheduled = false;
   function paint(cell, category) {
     if (!cell || !colors[category]) return;
