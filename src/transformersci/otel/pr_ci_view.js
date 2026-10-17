@@ -443,8 +443,11 @@
       name.append(lane.run ? link(jobLink(lane, job), job.name) : node('span', '', job.name));
       const status = node('td', 'status-cell');
       if (live(job.status)) {
-        status.append(node('span', 'live'));
-        status.append(node('span', 'running-text', job.status === 'in_progress' ? 'running' : job.status));
+        const label = job.status === 'in_progress' ? 'running' : job.status;
+        const icon = node('span', job.status === 'in_progress' ? 'live' : 'live queued');
+        icon.setAttribute('role', 'img'); icon.setAttribute('aria-label', label);
+        status.title = label;
+        status.append(icon);
       }
       else status.append(statusIcon(job.status));
       const laneCell = node('td');

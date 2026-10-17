@@ -41,7 +41,7 @@ td.dur{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.ex
 .tbrow iframe{display:block;width:100%;height:120px;border:1px solid var(--line);border-radius:4px;background:var(--bg)}
 details{border-bottom:1px solid var(--line);padding:4px 0}summary{cursor:pointer;padding:4px 12px;font:12px ui-monospace,Menlo,monospace}summary .meta{font:12px Inter,system-ui,sans-serif;color:var(--muted)}
 details table{width:calc(100% - 14px);margin:4px 0 8px 14px}.test-table{min-width:600px}.jobs-table{min-width:460px}
-.status-cell{text-align:center}.status-cell .live{margin-top:3px}.running-text{margin-left:5px;color:var(--amber);font-size:11px;font-weight:600}.jobs-table th:nth-child(1),.jobs-table td:nth-child(1){width:24px;padding-left:6px;padding-right:2px;text-align:center}.jobs-table th:nth-child(2),.jobs-table td:nth-child(2){width:62px;text-align:center}.jobs-table th:nth-child(4),.jobs-table td:nth-child(4){width:64px;text-align:right}.jobs-table th:nth-child(5),.jobs-table td:nth-child(5){width:44px;text-align:right}.jobs-table th:nth-child(6),.jobs-table td:nth-child(6){width:50px;text-align:center}
+.status-cell{text-align:center}.status-cell .live{margin-top:3px}.live.queued{border-color:var(--amber);animation:pulse 1.4s ease-in-out infinite}.jobs-table th:nth-child(1),.jobs-table td:nth-child(1){width:24px;padding-left:6px;padding-right:2px;text-align:center}.jobs-table th:nth-child(2),.jobs-table td:nth-child(2){width:52px;text-align:center}.jobs-table th:nth-child(4),.jobs-table td:nth-child(4){width:64px;text-align:right}.jobs-table th:nth-child(5),.jobs-table td:nth-child(5){width:44px;text-align:right}.jobs-table th:nth-child(6),.jobs-table td:nth-child(6){width:50px;text-align:center}
 .jobs-table td{vertical-align:middle}.filter-icon{width:13px;height:13px;vertical-align:-2px;color:var(--muted)}.jobs-table input{accent-color:#3d71d9;margin:0;cursor:pointer}.jobs-table tr.picked{background:var(--hover)}.jobs-table tr.picked td:nth-child(3){font-weight:600}
 .lane-icon{display:inline-flex;gap:1px;vertical-align:middle;color:var(--muted)}.lane-icon svg{width:18px;height:18px}.lane-icon.nvidia{color:#76b900}.lane-icon.amd{color:#ed1c24}
 .fold-all{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:auto;padding:0;border:1px solid var(--line);border-radius:3px;background:transparent;color:var(--muted);cursor:pointer}.fold-all:hover{color:var(--fg);background:var(--hover)}.fold-all svg{width:14px;height:14px}
@@ -61,7 +61,7 @@ body.light .v-pr{background:#ffe1e5;color:#a1102a}body.light .v-flaky{background
 .xp table{table-layout:auto;min-width:0}.xp table td{padding:3px 6px;border-bottom:1px solid var(--line);font-size:11.5px}.xp table tr:last-child td{border-bottom:0}
 .xp .sq{display:inline-block;width:8px;height:8px;margin-right:5px;border-radius:2px;vertical-align:0}
 .xp .age{color:var(--muted);white-space:nowrap}.xp .note{color:var(--muted);font-style:italic}
-@keyframes spin{to{transform:rotate(360deg)}}@keyframes progress{0%{transform:translateX(-110%)}100%{transform:translateX(470%)}}
+@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{50%{opacity:.25;transform:scale(.7)}}@keyframes progress{0%{transform:translateX(-110%)}100%{transform:translateX(470%)}}
 @media(prefers-reduced-motion:reduce){.live,.progress span{animation:none}}
 @media(max-width:800px){.layout{display:flex;flex-direction:column;overflow:auto}.layout section{min-height:300px}.layout section+section{border-left:0;border-top:1px solid var(--line)}}
 </style>
