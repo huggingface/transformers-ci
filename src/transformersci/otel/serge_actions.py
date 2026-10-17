@@ -441,8 +441,8 @@ function heldBy(doc,data){
     issue.rel='noopener noreferrer';issue.textContent='#'+data.number;
     p.append('Already picked up by ',who,' in ',issue,'. Comment there instead of opening a second issue.');
   }else{
-    const minutes=Math.max(1,Math.round((Date.now()/1000-data.since)/60));
-    p.append(who,' started an issue for this test '+minutes+' min ago. '+
+    const minutes=Math.round((Date.now()/1000-data.since)/60);
+    p.append(who,' started an issue for this test '+(minutes<1?'just now':minutes+' min ago')+'. '+
       'It frees up if they close it without publishing.');
   }
   return p;
