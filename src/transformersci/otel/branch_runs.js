@@ -85,7 +85,7 @@
     if ((loading && !force) || document.hidden) return;
     const query = new URLSearchParams({days: state.days, limit: state.limit, main: state.main ? '1' : '0'}).toString();
     wanted = query; loading = true;
-    tci.status(status, 'Loading…');
+    tci.busy(status);
     try {
       const response = await fetch(`/branch-runs/rows?${query}`, {credentials: 'same-origin', cache: 'no-store'});
       if (!response.ok) throw new Error(`HTTP ${response.status}`);

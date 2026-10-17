@@ -210,7 +210,7 @@
     const controller = new AbortController();
     active = controller;
     const current = ++sequence;
-    message('Loading…');
+    tci.busy(status);
     try {
       queryConfig ||= await fetch('/pr-table/queries', {signal: controller.signal}).then(json);
       const prs = await candidates(controller.signal);

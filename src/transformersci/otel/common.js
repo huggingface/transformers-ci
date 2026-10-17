@@ -23,7 +23,10 @@
     '.choice{display:inline-flex;align-items:center;gap:3px;color:var(--muted);font-size:12px}',
     '.choice button{padding:5px 7px;border:1px solid var(--line);border-radius:4px;background:transparent;color:var(--muted);font:600 12px Inter,system-ui,sans-serif;cursor:pointer}',
     '.choice button:hover{background:var(--hover);color:var(--fg)}.choice button[aria-pressed=true]{border-color:var(--accent);background:var(--hover);color:var(--fg)}',
-    '@media(prefers-reduced-motion:reduce){.live{animation:none}.knob{transition:none}}',
+    // Busy: a page is fetching (status line).
+    '.busy-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green,#73bf69);vertical-align:middle;animation:tci-blink 1s ease-in-out infinite}',
+    '@keyframes tci-blink{50%{opacity:.2}}',
+    '@media(prefers-reduced-motion:reduce){.live,.busy-dot{animation:none}.knob{transition:none}}',
   ].join('\n');
   // Prepended so a page's own rules (e.g. a pulsing queued spinner) still win.
   document.head.prepend(style);
@@ -45,10 +48,17 @@
   const stored = key => { try { return localStorage.getItem(key); } catch (_) { return null; } };
   const save = (key, value) => { try { localStorage.setItem(key, String(value)); } catch (_) {} };
   const esc = value => String(value).replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
-  // A page header's status line: "Loading…" while a refresh runs, an error in red.
+  // A page header's status line: a message, an error in red, or busy() while a
+  // refresh runs (a blinking green dot; screen readers hear "Loading").
   function status(element, text, error = false) {
     element.textContent = text;
     element.classList.toggle('error', error);
+  }
+  function busy(element) {
+    const dot = node('span', 'busy-dot');
+    dot.title = 'Loading'; dot.setAttribute('role', 'img'); dot.setAttribute('aria-label', 'Loading');
+    element.classList.remove('error');
+    element.replaceChildren(dot);
   }
   function spinner(label) {
     const spin = node('span', 'live');
@@ -105,5 +115,5 @@
     return wrap;
   }
 
-  window.tci = {applyTheme, node, esc, spinner, status, stored, save, laneName: (hardware, laneId) => lane(hardware, laneId).name, laneIcon, laneIcons};
+  window.tci = {applyTheme, node, esc, spinner, status, busy, stored, save, laneName: (hardware, laneId) => lane(hardware, laneId).name, laneIcon, laneIcons};
 })();
