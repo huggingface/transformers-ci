@@ -128,7 +128,7 @@ def test_an_existing_database_gains_the_issue_columns(tmp_path) -> None:
         " number INTEGER, url TEXT)"
     )
     db.execute(
-        "INSERT INTO claims VALUES (?, 'tarekziade', 'claimed', 1.0, NULL, 49691, ?)",
+        "INSERT INTO claims VALUES (?, 'alice', 'claimed', 1.0, NULL, 49691, ?)",
         (NODEID, "https://github.com/huggingface/transformers/issues/49691"),
     )
     db.commit()
