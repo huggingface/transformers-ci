@@ -1816,7 +1816,7 @@
     "type": "prometheus",
     "uid": "prometheus"
    },
-   "description": "Dashboard page loads over the selected time range, reported by each dashboard's hidden loader panel (GET /page-view). One count per visit; re-renders of the same dashboard are not counted. Grafana OSS has no per-dashboard view count of its own.",
+   "description": "Dashboard page loads over the selected time range, reported by each dashboard's hidden loader panel (GET /page-view). One count per visit; re-renders of the same dashboard are not counted. Grafana OSS has no per-dashboard view count of its own. Named as in the menu (PR, Run, Job and Test are the pages under it).",
    "gridPos": {
     "h": 8,
     "w": 8,
@@ -1832,7 +1832,140 @@
      "unit": "short",
      "min": 0
     },
-    "overrides": []
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-observability"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Overview"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-test-health"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Project health"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-observability-daily"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Daily runs"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-observability-stack-health"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "CI Health"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-observability-by-pr"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "PR"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-observability-by-run"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Run"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-observability-by-job"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Job"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-test"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Test (failure)"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "ci-runners"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Runners"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "ci-live-status"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Live CI status"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "serge-agent-sessions"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Serge sessions"
+       }
+      ]
+     }
+    ]
    },
    "options": {
     "displayMode": "basic",
@@ -1871,7 +2004,7 @@
     "type": "prometheus",
     "uid": "prometheus"
    },
-   "description": "Dashboard page loads per hour, stacked by dashboard.",
+   "description": "Dashboard page loads per hour, stacked by dashboard. Named as in the menu (PR, Run, Job and Test are the pages under it).",
    "gridPos": {
     "h": 8,
     "w": 16,
@@ -1899,7 +2032,140 @@
      "unit": "short",
      "min": 0
     },
-    "overrides": []
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-observability"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Overview"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-test-health"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Project health"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-observability-daily"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Daily runs"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-observability-stack-health"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "CI Health"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-observability-by-pr"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "PR"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-observability-by-run"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Run"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-observability-by-job"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Job"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pytest-test"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Test (failure)"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "ci-runners"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Runners"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "ci-live-status"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Live CI status"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "serge-agent-sessions"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "Serge sessions"
+       }
+      ]
+     }
+    ]
    },
    "options": {
     "legend": {
