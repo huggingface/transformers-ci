@@ -45,7 +45,7 @@
     cpu: {vendor: 'cpu', name: 'CPU', cards: 1},
     gpu: {vendor: 'nvidia', name: 'Nvidia', cards: 1},
     'single-gpu': {vendor: 'nvidia', name: 'Nvidia', cards: 1},
-    'multi-gpu': {vendor: 'nvidia', name: '4×Nvidia', cards: 2},
+    'multi-gpu': {vendor: 'nvidia', name: '4×Nvidia', cards: 3},
     'amd-1gpu': {vendor: 'amd', name: 'AMD', cards: 1},
     'amd-2gpu': {vendor: 'amd', name: '2×AMD', cards: 2},
   };
@@ -54,6 +54,9 @@
   const PATHS = {
     cpu: 'M7 7h10v10H7zM10 10h4v4h-4zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4',
     card: 'M3 7h18v10H3zM8 12m-2.5 0a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0M14 10h4M14 14h4M5 17v3M9 17v3',
+    // Several GPUs: one smaller front card with the edges of the cards behind it.
+    front: 'M2 11h15v8H2zM6.5 15m-2 0a2 2 0 1 0 4 0a2 2 0 1 0-4 0M11 13.5h4M11 16.5h4M4 19v2.5M8 19v2.5',
+    layers: ['M5 11V8h15v8h-3', 'M8 8V5h15v8h-3'],
   };
   const SVG = 'http://www.w3.org/2000/svg';
   const lane = (hardware, laneId) => LANES[hardware] || LANES[DEFAULT_FOR_LANE[laneId]] || {vendor: 'nvidia', name: hardware || 'GPU', cards: 1};
@@ -61,15 +64,19 @@
     const info = lane(hardware, laneId);
     const wrap = node('span', `lane-icon ${info.vendor}`);
     wrap.title = info.name; wrap.setAttribute('role', 'img'); wrap.setAttribute('aria-label', info.name);
-    for (let index = 0; index < info.cards; index++) {
-      const svg = document.createElementNS(SVG, 'svg');
-      svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
-      svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '1.7');
-      svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('aria-hidden', 'true');
+    const svg = document.createElementNS(SVG, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '1.7');
+    svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round'); svg.setAttribute('aria-hidden', 'true');
+    // `cards` is how many layers to draw: 2 for two GPUs, 3 (the cap) for four.
+    const shapes = info.vendor === 'cpu' ? [PATHS.cpu]
+      : info.cards > 1 ? [PATHS.front, ...PATHS.layers.slice(0, info.cards - 1)] : [PATHS.card];
+    for (const d of shapes) {
       const path = document.createElementNS(SVG, 'path');
-      path.setAttribute('d', info.vendor === 'cpu' ? PATHS.cpu : PATHS.card);
-      svg.append(path); wrap.append(svg);
+      path.setAttribute('d', d);
+      svg.append(path);
     }
+    wrap.append(svg);
     return wrap;
   }
   // Several lanes side by side (a run on main can span CPU and both GPU pools).
