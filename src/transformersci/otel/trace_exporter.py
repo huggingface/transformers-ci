@@ -83,6 +83,7 @@ from transformersci.otel import patch_view
 from transformersci.otel import merge_queue
 from transformersci.otel import pr_ci_view
 from transformersci.otel import probable_fix
+from transformersci.otel import project_health
 from transformersci.otel import test_page
 
 from transformersci.emojize import emojize as _emojize
@@ -6178,6 +6179,31 @@ def _badge_prometheus_lookback() -> str:
     )
 
 
+# Project health reads a few wide Prometheus queries per window (30 days of
+# failures is ~4 MB); every viewer shares one answer per (endpoint, days).
+_PROJECT_HEALTH_CACHE_TTL_SECONDS = 60.0
+_project_health_cache: dict[tuple[str, int], tuple[float, bytes]] = {}
+_project_health_cache_lock = threading.Lock()
+
+
+def _prometheus_vector(query: str) -> list[dict]:
+    """Run an instant query; raise when Prometheus is unset or answers badly."""
+    base_url = prometheus_base_url()
+    if not base_url:
+        raise RuntimeError("Prometheus URL is not configured")
+    payload = _http_get_json(
+        f"{base_url}/api/v1/query?{urlencode({'query': query})}",
+        timeout=60,
+        upstream="prometheus",
+    )
+    if not isinstance(payload, dict) or payload.get("status") != "success":
+        raise RuntimeError("Prometheus query failed")
+    result = (payload.get("data") or {}).get("result")
+    if not isinstance(result, list):
+        raise RuntimeError("Prometheus returned no vector")
+    return result
+
+
 _pr_summary_cache_lock = threading.Lock()
 # (pr, event) -> (expiry_monotonic, summary-or-None). None (a genuinely-unknown
 # PR, or a PR nobody has run run-slow on) is cached too, so a miss doesn't
@@ -8427,6 +8453,28 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._request_route = "/rerun-failed/actions"
             self._serve_rerun_failed_status(parsed.path.rsplit("/", 1)[1])
             return
+        if parsed.path in {
+            "/project-health",
+            "/project-health/app.js",
+            "/project-health/rows",
+            "/project-health/trend",
+        }:
+            self._request_route = parsed.path
+            if parsed.path in {"/project-health/rows", "/project-health/trend"}:
+                self._serve_project_health_data(parsed.path, parse_qs(parsed.query))
+            else:
+                name, content_type = (
+                    ("project_health.html", "text/html; charset=utf-8")
+                    if parsed.path == "/project-health"
+                    else ("project_health.js", "text/javascript; charset=utf-8")
+                )
+                self._send(
+                    200,
+                    content_type,
+                    Path(__file__).with_name(name).read_bytes(),
+                    cache_control="public, max-age=60",
+                )
+            return
         if parsed.path == "/rerun-failed/data":
             self._request_route = "/rerun-failed/data"
             self._serve_rerun_failed_data(parse_qs(parsed.query))
@@ -9066,6 +9114,36 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 _queue_history_cache.move_to_end(key)
                 while len(_queue_history_cache) > _QUEUE_HISTORY_CACHE_MAX:
                     _queue_history_cache.popitem(last=False)
+        self._send(200, JSON_CONTENT_TYPE, payload, cache_control="no-store")
+
+    def _serve_project_health_data(
+        self, path: str, params: dict[str, list[str]]
+    ) -> None:
+        days = project_health.parse_days((params.get("days") or [""])[0])
+        key = (path, days)
+        now = time.monotonic()
+        with _project_health_cache_lock:
+            hit = _project_health_cache.get(key)
+        if hit is not None and hit[0] > now:
+            self._request_cache = "hit"
+            self._send(200, JSON_CONTENT_TYPE, hit[1], cache_control="no-store")
+            return
+        build = (
+            project_health.build_rows
+            if path == "/project-health/rows"
+            else project_health.build_trend
+        )
+        try:
+            body = build(_prometheus_vector, now=time.time(), days=days)
+        except Exception as exc:
+            self._reply_json(502, {"error": f"Prometheus unavailable: {exc}"})
+            return
+        payload = json.dumps(body, separators=(",", ":")).encode()
+        with _project_health_cache_lock:
+            _project_health_cache[key] = (
+                now + _PROJECT_HEALTH_CACHE_TTL_SECONDS,
+                payload,
+            )
         self._send(200, JSON_CONTENT_TYPE, payload, cache_control="no-store")
 
     def _serve_pr_ci_view(self, params: dict[str, list[str]]) -> None:
