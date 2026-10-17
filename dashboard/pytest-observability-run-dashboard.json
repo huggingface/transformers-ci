@@ -808,7 +808,7 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(topk(1, max by (html_url) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+        "definition": "query_result(topk(1, max by (html_url) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[90d:5m]))))",
         "hide": 2,
         "includeAll": false,
         "label": "",
@@ -817,7 +817,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(topk(1, max by (html_url) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[7d:]))))",
+          "query": "query_result(topk(1, max by (html_url) (max_over_time((timestamp(pytest_pr_info{pr=~\"$pr\"}))[90d:5m]))))",
           "refId": "Prometheus-run_pr_url-Variable-Query"
         },
         "regex": "/html_url=\"([^\"]*)\"/",
