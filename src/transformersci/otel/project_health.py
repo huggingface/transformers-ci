@@ -233,12 +233,15 @@ def trend_queries(days: int) -> dict[str, str]:
 def merge_trend(
     replies: dict[str, list[dict[str, Any]]], *, now: float, days: int
 ) -> dict[str, Any]:
-    """Per UTC day, the share of merge runs with at least one failing test.
+    """Per UTC day, the average share of failing tests in a merge run.
 
-    Per-test rates are not comparable between the two runners (a GPU merge
-    run is ~11k tests per GPU type, a CPU one the full ~199k suite; the rates
-    differ ~300x), but "did this merge break something" is. A run is one
-    run_id: a GPU run's single- and multi-GPU halves count as one merge.
+    Each run's rate is its failed tests over its tests (1 of 100 is 1%); a
+    day's value is the mean of its runs' rates, so one huge run does not drown
+    the others. A run is one run_id: a GPU run's single- and multi-GPU halves
+    are summed into one merge. The two runners' rates are not on the same
+    scale (a GPU merge run is ~11k tests per GPU type, a CPU one the full ~199k
+    suite), so the page charts them separately. How many runs had any failure
+    is kept alongside, for the tooltip.
     """
     start_of = {
         labels.get("run_id", ""): value
@@ -252,8 +255,10 @@ def merge_trend(
             for labels, value in _samples(replies.get(f"{runner}_failed", []))
         }
         buckets = [
-            {"runs": 0, "failing": 0, "tests": 0.0, "failed": 0.0} for _ in range(days)
+            {"runs": 0, "failing": 0, "tests": 0.0, "failed": 0.0, "rate": None}
+            for _ in range(days)
         ]
+        rates: list[list[float]] = [[] for _ in range(days)]
         for labels, total in _samples(replies.get(f"{runner}_total", [])):
             run_id = labels.get("run_id", "")
             if total <= 0 or run_id not in start_of:
@@ -267,6 +272,11 @@ def merge_trend(
             bucket["failed"] += failed.get(run_id, 0.0)
             if failed.get(run_id, 0.0) > 0:
                 bucket["failing"] += 1
+            rates[index].append(failed.get(run_id, 0.0) / total)
+        for bucket, day_rates in zip(buckets, rates):
+            if day_rates:
+                bucket["rate"] = sum(day_rates) / len(day_rates)
+        every_rate = [rate for day_rates in rates for rate in day_rates]
         runs = sum(bucket["runs"] for bucket in buckets)
         failing = sum(bucket["failing"] for bucket in buckets)
         tests = sum(bucket["tests"] for bucket in buckets)
@@ -275,6 +285,7 @@ def merge_trend(
             "runs": runs,
             "failing": failing,
             "share": failing / runs if runs else None,
+            "rate": sum(every_rate) / len(every_rate) if every_rate else None,
             "test_rate": sum(b["failed"] for b in buckets) / tests if tests else None,
         }
     return {"days": days, "first_day": first_day * DAY, "series": series}

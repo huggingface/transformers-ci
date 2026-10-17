@@ -23,7 +23,10 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 .stat .n{color:var(--muted);font-size:12px}
 @media (max-width:800px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .chart{position:relative;padding:6px 12px 4px}
-.chart svg{display:block;width:100%;height:200px;overflow:visible}
+.charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}
+@media (max-width:900px){.charts{grid-template-columns:minmax(0,1fr)}}
+.ct{font-size:12px;font-weight:600;color:var(--strong);padding:4px 0 0}.ct i{display:inline-block;width:14px;height:2px;vertical-align:middle;margin-right:6px}
+.chart svg{display:block;width:100%;height:180px;overflow:visible}
 .chart .grid line{stroke:var(--soft)}.chart .axis text{fill:var(--muted);font-size:11px}
 .chart .line{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
 .chart .dot{stroke:var(--panel);stroke-width:2}
@@ -31,6 +34,7 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 .chart .cross{stroke:var(--muted);stroke-dasharray:3 3}
 .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;padding:0 12px 10px;color:var(--fg)}
 .legend span:before{content:"";display:inline-block;width:14px;height:2px;margin-right:6px;vertical-align:middle;background:var(--c)}
+.legend{color:var(--muted)}
 .hover{position:absolute;pointer-events:none;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:7px 9px;font-size:12px;
 box-shadow:0 6px 18px rgba(0,0,0,.35);white-space:nowrap;display:none;z-index:5}
 .hover b{display:block;margin-bottom:3px;color:var(--strong)}.hover i{display:inline-block;width:10px;height:2px;vertical-align:middle;margin-right:6px}
@@ -70,6 +74,8 @@ iframe.serge{position:absolute;width:0;height:0;border:0;visibility:hidden}
 tr.grp td{background:var(--soft);cursor:pointer;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--strong);padding:6px 8px}
 tr.grp:hover td{background:var(--hover)}tr.grp .meta{font:12px Inter,system-ui,sans-serif;color:var(--muted)}
 tr.grp .caret{display:inline-block;width:12px;color:var(--muted)}
+.fold{display:inline-flex;align-items:center;justify-content:center;width:26px;height:24px;padding:0;border:1px solid var(--line);border-radius:4px;background:transparent;color:var(--muted);cursor:pointer}
+.fold:hover{color:var(--fg);border-color:var(--sel)}.fold svg{width:15px;height:15px}.fold[hidden]{display:none}
 .tip{position:fixed;z-index:20;width:min(720px,calc(100vw - 16px));height:min(440px,calc(100vh - 16px));display:none;flex-direction:column;
 background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
 .tip.show{display:flex}
@@ -81,16 +87,19 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
 </head>
 <body>
 <div class="stats">
-  <div class="stat"><div class="t">GPU merge runs with a failure</div><div class="v" id="s-gpu">–</div><div class="n" id="s-gpu-n"></div></div>
-  <div class="stat"><div class="t">CPU merge runs with a failure</div><div class="v" id="s-cpu">–</div><div class="n" id="s-cpu-n"></div></div>
+  <div class="stat"><div class="t">GPU: failing tests per merge run</div><div class="v" id="s-gpu">–</div><div class="n" id="s-gpu-n"></div></div>
+  <div class="stat"><div class="t">CPU: failing tests per merge run</div><div class="v" id="s-cpu">–</div><div class="n" id="s-cpu-n"></div></div>
   <div class="stat"><div class="t">Failing tests</div><div class="v" id="s-fail">–</div><div class="n" id="s-fail-n"></div></div>
   <div class="stat"><div class="t">Sticky failures</div><div class="v" id="s-sticky">–</div><div class="n">failed on 2+ days, not cleared since</div></div>
 </div>
 
 <div class="panel">
-  <div class="ph"><h2>Merges to main that broke a test</h2>
-    <span class="sub">share of merge runs with at least one failing test, per UTC day</span></div>
-  <div class="chart" id="chart"><svg id="svg" role="img" aria-label="Share of merge runs with a failing test, per day"></svg><div class="hover" id="hover"></div></div>
+  <div class="ph"><h2>Failing tests per merge run</h2>
+    <span class="sub">share of a merge run's tests that failed (1 of 100 = 1%), averaged over the day's runs · each runner on its own scale</span></div>
+  <div class="charts">
+    <div class="chart" id="chart-gpu"><div class="ct"><i style="background:var(--gpu)"></i>GPU <span class="sub">run_models_gpu on push · ~11k tests per GPU type</span></div><svg role="img" aria-label="GPU: average share of failing tests per merge run, per day"></svg><div class="hover"></div></div>
+    <div class="chart" id="chart-cpu"><div class="ct"><i style="background:var(--cpu)"></i>CPU <span class="sub">every CPU job on main · ~199k tests</span></div><svg role="img" aria-label="CPU: average share of failing tests per merge run, per day"></svg><div class="hover"></div></div>
+  </div>
   <div class="legend" id="legend"></div>
   <div class="progress" id="chart-progress"><span></span></div>
 </div>
@@ -102,6 +111,8 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
     <label class="tog"><input type="checkbox" id="sticky-only">Sticky only</label>
     <span class="lbl">Days</span><span class="seg" id="days"><button data-v="7">7</button><button data-v="14">14</button><button data-v="30">30</button></span>
     <span class="lbl">Group by</span><span class="seg" id="group"><button data-v="none" aria-pressed="true">None</button><button data-v="model">Model</button><button data-v="test">Test</button><button data-v="function">Function</button><button data-v="test_model">Test + Model</button><button data-v="error">Error</button></span>
+    <span class="lbl">Sort</span><span class="seg" id="sort"><button data-v="fails" aria-pressed="true" title="Most failing runs first">Failures</button><button data-v="alpha" title="Alphabetical by name">A–Z</button></span>
+    <button type="button" class="fold" id="fold" hidden></button>
     <input class="search" id="q" type="search" placeholder="Search model, test or job" aria-label="Search">
   </div>
   <div class="progress" id="rows-progress"><span></span></div>
@@ -109,7 +120,7 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
     <thead><tr><th>Category</th><th>Model / test</th><th>Signal</th><th>Runner</th><th id="days-head">Last 14 days</th><th>Last seen</th><th>Actions</th></tr></thead>
     <tbody id="rows"></tbody>
   </table></div>
-  <div class="foot"><span id="count"></span><span>Failures on main only · sticky = Main health's rule · sorted by bad days, then most recent</span></div>
+  <div class="foot"><span id="count"></span><span>Failures on main only · sticky = Main health's rule</span></div>
 </div>
 
 <div class="tip" id="tip"><div class="th"><b id="tip-title"></b><span class="sub" id="tip-sub"></span><a class="more" id="tip-more" target="_top">more…</a></div><iframe id="tip-frame" title="Traceback"></iframe></div>

@@ -239,8 +239,18 @@ def test_trend_counts_a_run_once_and_buckets_it_by_start_day() -> None:
     gpu, cpu = trend["series"]["gpu"], trend["series"]["cpu"]
     assert trend["first_day"] == 94 * DAY
     assert (gpu["runs"], gpu["failing"], gpu["share"]) == (2, 1, 0.5)
-    assert gpu["days"][5] == {"runs": 2, "failing": 1, "tests": 44000.0, "failed": 3.0}
+    assert gpu["days"][5] == {
+        "runs": 2,
+        "failing": 1,
+        "tests": 44000.0,
+        "failed": 3.0,
+        "rate": (3 / 22000 + 0) / 2,
+    }
     assert gpu["test_rate"] == 3 / 44000
+    # Day and window rates are the mean of each run's own rate.
+    assert gpu["days"][5]["rate"] == (3 / 22000 + 0) / 2
+    assert gpu["rate"] == (3 / 22000) / 2
+    assert gpu["days"][0]["rate"] is None
     assert (cpu["runs"], cpu["failing"], cpu["share"]) == (1, 0, 0.0)
     assert cpu["days"][6]["runs"] == 1
 
@@ -248,6 +258,7 @@ def test_trend_counts_a_run_once_and_buckets_it_by_start_day() -> None:
 def test_trend_with_no_runs_has_no_share() -> None:
     trend = project_health.merge_trend({}, now=NOW, days=7)
     assert trend["series"]["gpu"]["share"] is None
+    assert trend["series"]["gpu"]["rate"] is None
     assert trend["series"]["cpu"]["test_rate"] is None
 
 

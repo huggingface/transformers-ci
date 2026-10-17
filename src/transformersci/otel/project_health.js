@@ -7,11 +7,10 @@
   const DAY = 86400;
   const $ = id => document.getElementById(id);
   const esc = value => String(value).replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
-  const pct = (value, digits = 0) => value == null ? '–' : `${(100 * value).toFixed(digits)}%`;
   const params = new URLSearchParams(location.search);
   const state = {
     days: [7, 14, 30].includes(Number(params.get('days'))) ? Number(params.get('days')) : 14,
-    cat: 'all', runner: 'all', sticky: false, q: '', group: 'none',
+    cat: 'all', runner: 'all', sticky: false, q: '', group: 'none', sort: 'fails',
   };
   let rows = [], generatedAt = 0;
 
@@ -36,76 +35,78 @@
   }
 
   // ---- chart ---------------------------------------------------------------
-  function drawChart(trend) {
-    const svg = $('svg'), width = svg.clientWidth || 900, height = 200;
-    const left = 36, right = 64, top = 10, bottom = 24;
+  // Percentages of very different sizes (GPU ~0.1%, CPU ~0.0002%): two
+  // significant digits, never rounded to zero.
+  function rate(value) {
+    if (value == null) return '–';
+    const percent = 100 * value;
+    if (percent === 0) return '0%';
+    return `${percent >= 1 ? percent.toFixed(1) : Number(percent.toPrecision(2))}%`;
+  }
+  function niceMax(value) {
+    if (!(value > 0)) return 1e-4;
+    const power = 10 ** Math.floor(Math.log10(value));
+    return [1, 2, 2.5, 5, 10].map(step => step * power).find(step => step >= value);
+  }
+  function drawRunner(trend, key, name) {
+    const host = $(`chart-${key}`), svg = host.querySelector('svg'), hover = host.querySelector('.hover');
+    const width = svg.clientWidth || 600, height = 180;
+    const left = 58, right = 12, top = 10, bottom = 24;
     const plotW = width - left - right, plotH = height - top - bottom;
-    const n = trend.days, x = i => left + (n === 1 ? plotW / 2 : (i * plotW) / (n - 1));
-    const y = share => top + plotH * (1 - share);
+    const days = trend.series[key].days, n = trend.days;
+    const top_ = niceMax(Math.max(0, ...days.map(day => day.rate ?? 0)) * 1.1);
+    const x = i => left + (n === 1 ? plotW / 2 : (i * plotW) / (n - 1));
+    const y = value => top + plotH * (1 - value / top_);
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     let out = '<g class="grid">';
-    for (const tick of [0, 0.25, 0.5, 0.75, 1]) out += `<line x1="${left}" x2="${left + plotW}" y1="${y(tick)}" y2="${y(tick)}"/>`;
+    for (const tick of [0, 0.5, 1]) out += `<line x1="${left}" x2="${left + plotW}" y1="${y(tick * top_)}" y2="${y(tick * top_)}"/>`;
     out += '</g><g class="axis">';
-    for (const tick of [0, 0.5, 1]) out += `<text x="${left - 6}" y="${y(tick) + 4}" text-anchor="end">${tick * 100}%</text>`;
-    const step = Math.max(1, Math.ceil(n / 7));
+    for (const tick of [0, 0.5, 1]) out += `<text x="${left - 6}" y="${y(tick * top_) + 4}" text-anchor="end">${rate(tick * top_)}</text>`;
+    const step = Math.max(1, Math.ceil(n / (width < 500 ? 4 : 6)));
     for (let i = 0; i < n; i += step) out += `<text x="${x(i)}" y="${height - 6}" text-anchor="middle">${dayLabel(trend.first_day + i * DAY)}</text>`;
     out += '</g>';
-    const labels = [];
-    for (const [key, name] of RUNNERS) {
-      const days = trend.series[key].days;
-      let path = '', pen = false, last = null;
-      days.forEach((day, i) => {
-        if (!day.runs) { pen = false; return; }
-        const share = day.failing / day.runs;
-        path += `${pen ? 'L' : 'M'}${x(i).toFixed(1)},${y(share).toFixed(1)}`;
-        pen = true; last = [i, share];
-      });
-      out += `<path class="line" d="${path}" stroke="var(--${key})"/>`;
-      days.forEach((day, i) => {
-        if (day.runs) out += `<circle class="dot" cx="${x(i)}" cy="${y(day.failing / day.runs)}" r="3" fill="var(--${key})"/>`;
-      });
-      if (last) labels.push({key, name, x: x(last[0]) + 8, y: y(last[1]) + 4});
-    }
-    // Keep the two end labels apart when the lines finish close together.
-    if (labels.length === 2 && Math.abs(labels[0].y - labels[1].y) < 13) {
-      const [hi, lo] = labels[0].y <= labels[1].y ? labels : [labels[1], labels[0]];
-      const mid = (hi.y + lo.y) / 2; hi.y = mid - 7; lo.y = mid + 7;
-    }
-    for (const label of labels) out += `<text class="label" x="${label.x}" y="${label.y}">${label.name}</text>`;
-    out += `<line class="cross" id="cross" y1="${top}" y2="${top + plotH}" visibility="hidden"/>`;
-    out += `<rect x="${left}" y="${top}" width="${plotW}" height="${plotH}" fill="transparent" id="hit"/>`;
+    let path = '', pen = false;
+    days.forEach((day, i) => {
+      if (day.rate == null) { pen = false; return; }
+      path += `${pen ? 'L' : 'M'}${x(i).toFixed(1)},${y(day.rate).toFixed(1)}`;
+      pen = true;
+    });
+    out += `<path class="line" d="${path}" stroke="var(--${key})"/>`;
+    days.forEach((day, i) => {
+      if (day.rate != null) out += `<circle class="dot" cx="${x(i)}" cy="${y(day.rate)}" r="3" fill="var(--${key})"/>`;
+    });
+    out += `<line class="cross" y1="${top}" y2="${top + plotH}" visibility="hidden"/>`;
+    out += `<rect x="${left}" y="${top}" width="${plotW}" height="${plotH}" fill="transparent" class="hit"/>`;
     svg.innerHTML = out;
-
-    const hover = $('hover'), cross = $('cross');
-    $('hit').addEventListener('mousemove', event => {
+    const cross = svg.querySelector('.cross'), hit = svg.querySelector('.hit');
+    hit.addEventListener('mousemove', event => {
       const box = svg.getBoundingClientRect();
       const px = ((event.clientX - box.left) / box.width) * width;
       const i = Math.max(0, Math.min(n - 1, Math.round(((px - left) / plotW) * (n - 1))));
       cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('visibility', 'visible');
-      let html = `<b>${dayLabel(trend.first_day + i * DAY)}</b>`;
-      for (const [key, name] of RUNNERS) {
-        const day = trend.series[key].days[i];
-        html += `<div><i style="background:var(--${key})"></i>${name}: ${day.runs
-          ? `${day.failing} of ${day.runs} runs (${pct(day.failing / day.runs)}) · ${pct(day.tests ? day.failed / day.tests : 0, 4)} of tests`
-          : 'no merge run'}</div>`;
-      }
-      hover.innerHTML = html; hover.style.display = 'block';
-      const chartBox = $('chart').getBoundingClientRect();
-      const hx = event.clientX - chartBox.left + 14;
-      hover.style.left = `${Math.min(hx, chartBox.width - hover.offsetWidth - 4)}px`;
+      const day = days[i];
+      hover.innerHTML = `<b>${name} · ${dayLabel(trend.first_day + i * DAY)}</b>${day.runs
+        ? `<div>${rate(day.rate)} of tests failing, averaged over ${day.runs} run${day.runs === 1 ? '' : 's'}</div>
+           <div>${Math.round(day.failed).toLocaleString('en')} failed of ${Math.round(day.tests).toLocaleString('en')} tests</div>
+           <div>${day.failing} of ${day.runs} runs had a failure</div>`
+        : '<div>no merge run</div>'}`;
+      hover.style.display = 'block';
+      const chartBox = host.getBoundingClientRect();
+      hover.style.left = `${Math.min(event.clientX - chartBox.left + 14, chartBox.width - hover.offsetWidth - 4)}px`;
       hover.style.top = `${event.clientY - chartBox.top + 12}px`;
     });
-    $('hit').addEventListener('mouseleave', () => { hover.style.display = 'none'; cross.setAttribute('visibility', 'hidden'); });
-
+    hit.addEventListener('mouseleave', () => { hover.style.display = 'none'; cross.setAttribute('visibility', 'hidden'); });
+  }
+  function drawChart(trend) {
+    for (const [key, name] of RUNNERS) drawRunner(trend, key, name);
     $('legend').innerHTML = RUNNERS.map(([key, name]) => {
       const series = trend.series[key];
-      const what = key === 'gpu' ? 'run_models_gpu, push' : 'every CPU job on main';
-      return `<span style="--c:var(--${key})">${name} (${what}) · ${series.failing} of ${series.runs} runs · ${pct(series.test_rate, 4)} of tests failed</span>`;
+      return `<span style="--c:var(--${key})">${name}: ${rate(series.rate)} of tests failing per merge run on average · ${series.failing} of ${series.runs} runs had a failure</span>`;
     }).join('');
-    for (const [key, name] of RUNNERS) {
+    for (const [key] of RUNNERS) {
       const series = trend.series[key];
-      $(`s-${key}`).textContent = pct(series.share);
-      $(`s-${key}-n`).textContent = `${series.failing} of ${series.runs} runs · ${trend.days} days`;
+      $(`s-${key}`).textContent = rate(series.rate);
+      $(`s-${key}-n`).textContent = `average over ${series.runs} runs · ${trend.days} days`;
     }
   }
 
@@ -116,7 +117,7 @@
       drawChart(trend);
       window.addEventListener('resize', () => drawChart(trend), {once: true});
     } catch (error) {
-      $('svg').innerHTML = '';
+      document.querySelectorAll('.chart svg').forEach(svg => { svg.innerHTML = ''; });
       $('legend').textContent = `Could not load merge runs (${error.message}).`;
     } finally {
       $('chart-progress').hidden = true;
@@ -158,8 +159,12 @@
     test_model: row => `${row.model} · ${fn(row)}`,
     error: row => row.signal,
   };
+  // Sort toggle: most failing runs first, or alphabetical by name.
+  const byName = (a, b) => `${a.model} ${a.test}`.localeCompare(`${b.model} ${b.test}`) || a.job.localeCompare(b.job);
+  const byFails = (a, b) => b.fails - a.fails || b.bad_days - a.bad_days || b.last_seen - a.last_seen || byName(a, b);
+  const sortRows = list => [...list].sort(state.sort === 'alpha' ? byName : byFails);
   const openGroups = new Set();
-  let groupsSeen = '';
+  let groupsSeen = '', groupNames = [];
 
   function rowHtml(row, index) {
     return `<tr>
@@ -182,7 +187,10 @@
       if (!groups.has(name)) groups.set(name, []);
       groups.get(name).push([row, index]);
     });
-    const ordered = [...groups].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+    const fails = members => members.reduce((sum, [row]) => sum + row.fails, 0);
+    const ordered = [...groups].sort(state.sort === 'alpha'
+      ? (a, b) => a[0].localeCompare(b[0])
+      : (a, b) => fails(b[1]) - fails(a[1]) || b[1].length - a[1].length || a[0].localeCompare(b[0]));
     // A new grouping opens its small groups, as the PR CI view does; after that
     // the viewer's own choices stick.
     const seen = `${state.group}|${state.days}`;
@@ -190,6 +198,7 @@
       groupsSeen = seen; openGroups.clear();
       for (const [name, members] of ordered) if (members.length <= 5) openGroups.add(name);
     }
+    groupNames = ordered.map(([name]) => name);
     return ordered.map(([name, members]) => {
       const open = openGroups.has(name);
       const errors = new Map();
@@ -198,19 +207,34 @@
         .map(([error, count]) => `${count}× ${esc(error)}`).join(', ')}${errors.size > 3 ? ', …' : ''}`;
       const sticky = members.filter(([row]) => row.sticky).length;
       return `<tr class="grp" data-group="${esc(name)}" aria-expanded="${open}"><td colspan="7"><span class="caret">${open ? '▾' : '▸'}</span>${esc(name)}
-        <span class="meta"> — ${members.length} test${members.length === 1 ? '' : 's'}${sticky ? `, ${sticky} sticky` : ''}${summary}</span></td></tr>`
+        <span class="meta"> — ${members.length} test${members.length === 1 ? '' : 's'}, ${fails(members)} failing run${fails(members) === 1 ? '' : 's'}${sticky ? `, ${sticky} sticky` : ''}${summary}</span></td></tr>`
         + (open ? members.map(([row, index]) => rowHtml(row, index)).join('') : '');
     }).join('');
   }
 
+  const FOLD_PATHS = {
+    collapse: 'M4.5 2.5L8 6l3.5-3.5M4.5 13.5L8 10l3.5 3.5',
+    expand: 'M4.5 6L8 2.5 11.5 6M4.5 10L8 13.5 11.5 10',
+  };
+  function drawFold() {
+    const fold = $('fold');
+    fold.hidden = state.group === 'none';
+    const collapse = groupNames.some(name => openGroups.has(name));
+    const label = collapse ? 'Collapse all groups' : 'Expand all groups';
+    fold.title = label; fold.setAttribute('aria-label', label);
+    fold.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${FOLD_PATHS[collapse ? 'collapse' : 'expand']}"/></svg>`;
+  }
+
   function drawRows() {
-    const {base, shown} = visible();
+    const visibleRows = visible();
+    const base = visibleRows.base, shown = sortRows(visibleRows.shown);
     drawCategories(base);
     $('days-head').textContent = `Last ${state.days} days`;
     $('rows').innerHTML = (state.group === 'none' ? shown.map(rowHtml).join('') : groupedHtml(shown))
       || `<tr><td colspan="7" class="state">${rows.length ? 'Nothing matches these filters.' : 'No failures on main in this window.'}</td></tr>`;
     $('count').textContent = `Showing ${shown.length} of ${rows.length}`;
     current = shown;
+    drawFold();
   }
 
   let current = [], rowsFirstDay = 0;
@@ -335,6 +359,15 @@
   $('group').addEventListener('click', event => {
     const button = event.target.closest('button'); if (!button) return;
     state.group = button.dataset.v; press($('group'), state.group); drawRows();
+  });
+  $('sort').addEventListener('click', event => {
+    const button = event.target.closest('button'); if (!button) return;
+    state.sort = button.dataset.v; press($('sort'), state.sort); drawRows();
+  });
+  $('fold').addEventListener('click', () => {
+    if (groupNames.some(name => openGroups.has(name))) openGroups.clear();
+    else groupNames.forEach(name => openGroups.add(name));
+    drawRows();
   });
   $('sticky-only').addEventListener('change', event => { state.sticky = event.target.checked; drawRows(); });
   $('q').addEventListener('input', event => { state.q = event.target.value.trim().toLowerCase(); drawRows(); });
