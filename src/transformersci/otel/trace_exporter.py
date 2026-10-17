@@ -84,6 +84,7 @@ from transformersci.otel import patch_view
 from transformersci.otel import merge_queue
 from transformersci.otel import pr_ci_view
 from transformersci.otel import claims
+from transformersci.otel import branch_runs
 from transformersci.otel import probable_fix
 from transformersci.otel import project_health
 from transformersci.otel import test_page
@@ -6299,6 +6300,16 @@ def reopen_line(login: str) -> str:
 # Project health reads a few wide Prometheus queries per window (30 days of
 # failures is ~4 MB); every viewer shares one answer per (endpoint, days).
 _PROJECT_HEALTH_CACHE_TTL_SECONDS = 60.0
+# Branch Runs refreshes every 10 s in every open tab; one answer serves them all.
+_BRANCH_RUNS_CACHE_TTL_SECONDS = 10.0
+_branch_runs_cache: dict[str, tuple[float, bytes]] = {}
+_branch_runs_cache_lock = threading.Lock()
+# common.js (theme, spinner, lane icons) is shared by the exporter's pages; each
+# loads it under its own prefix, which the ingress already routes here.
+COMMON_JS_PATHS = frozenset(
+    f"/{page}/common.js"
+    for page in ("pr-ci-view", "pr-table", "project-health", "branch-runs")
+)
 # Events carry GitHub counts; a day's count barely moves in ten minutes and the
 # token's hourly budget is shared (one GraphQL call costs a point or two).
 _PROJECT_HEALTH_EVENTS_CACHE_TTL_SECONDS = 600.0
@@ -8947,6 +8958,32 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 cache_control="no-store",
             )
             return
+        if parsed.path in COMMON_JS_PATHS:
+            self._request_route = "/common.js"
+            self._send(
+                200,
+                "text/javascript; charset=utf-8",
+                Path(__file__).with_name("common.js").read_bytes(),
+                cache_control="public, max-age=60",
+            )
+            return
+        if parsed.path in {"/branch-runs", "/branch-runs/app.js", "/branch-runs/rows"}:
+            self._request_route = parsed.path
+            if parsed.path == "/branch-runs/rows":
+                self._serve_branch_runs()
+                return
+            name, content_type = (
+                ("branch_runs.html", "text/html; charset=utf-8")
+                if parsed.path == "/branch-runs"
+                else ("branch_runs.js", "text/javascript; charset=utf-8")
+            )
+            self._send(
+                200,
+                content_type,
+                Path(__file__).with_name(name).read_bytes(),
+                cache_control="public, max-age=60",
+            )
+            return
         if parsed.path in {"/pr-table", "/pr-table/app.js", "/pr-table/queries"}:
             self._request_route = "/pr-table"
             name, content_type = {
@@ -9471,6 +9508,27 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 _queue_history_cache.move_to_end(key)
                 while len(_queue_history_cache) > _QUEUE_HISTORY_CACHE_MAX:
                     _queue_history_cache.popitem(last=False)
+        self._send(200, JSON_CONTENT_TYPE, payload, cache_control="no-store")
+
+    def _serve_branch_runs(self) -> None:
+        now = time.monotonic()
+        with _branch_runs_cache_lock:
+            hit = _branch_runs_cache.get("rows")
+        if hit is not None and hit[0] > now:
+            self._request_cache = "hit"
+            payload = hit[1]
+        else:
+            try:
+                body = branch_runs.build_rows(_prometheus_vector)
+            except Exception as exc:
+                self._reply_json(502, {"error": f"Prometheus unavailable: {exc}"})
+                return
+            payload = json.dumps(body, separators=(",", ":")).encode()
+            with _branch_runs_cache_lock:
+                _branch_runs_cache["rows"] = (
+                    now + _BRANCH_RUNS_CACHE_TTL_SECONDS,
+                    payload,
+                )
         self._send(200, JSON_CONTENT_TYPE, payload, cache_control="no-store")
 
     def _serve_project_health_data(

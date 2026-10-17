@@ -159,6 +159,14 @@ spec:
                 name: trace-exporter
                 port:
                   number: 8000
+          # Branch Runs: the Overview's runs on branches without a PR.
+          - path: /branch-runs
+            pathType: Prefix
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
           # Project health: the page Project health iframes, plus its rows, trend and events.
           - path: /project-health
             pathType: Prefix

@@ -13,7 +13,7 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 .runs{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:8px 12px;border-bottom:1px solid var(--line);min-height:42px}
 .run{display:inline-flex;gap:6px;align-items:center;min-width:0}.run strong{font-size:12px}.run small{color:var(--muted)}
 .good{color:var(--green)}.bad{color:var(--red)}.busy{color:var(--amber)}
-.live{display:inline-block;width:12px;height:12px;border:2px solid var(--line);border-top-color:var(--amber);border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px}
+
 .progress{height:3px;background:transparent;overflow:hidden;flex:none}.progress span{display:block;width:28%;height:100%;background:var(--accent);animation:progress 1.35s ease-in-out infinite}.progress[hidden]{display:none}
 .layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(470px,30%);flex:1;min-height:0}
 section{display:flex;flex-direction:column;min-width:0;min-height:0}section+section{border-left:1px solid var(--line)}
@@ -43,7 +43,7 @@ details{border-bottom:1px solid var(--line);padding:4px 0}summary{cursor:pointer
 details table{width:calc(100% - 14px);margin:4px 0 8px 14px}.test-table{min-width:600px}.jobs-table{min-width:460px}
 .status-cell{text-align:center}.status-cell .live{margin-top:3px}.live.queued{border-color:var(--amber);animation:pulse 1.4s ease-in-out infinite}.jobs-table th:nth-child(1),.jobs-table td:nth-child(1){width:24px;padding-left:6px;padding-right:2px;text-align:center}.jobs-table th:nth-child(2),.jobs-table td:nth-child(2){width:52px;text-align:center}.jobs-table th:nth-child(4),.jobs-table td:nth-child(4){width:64px;text-align:right}.jobs-table th:nth-child(5),.jobs-table td:nth-child(5){width:44px;text-align:right}.jobs-table th:nth-child(6),.jobs-table td:nth-child(6){width:50px;text-align:center}
 .jobs-table td{vertical-align:middle}.filter-icon{width:13px;height:13px;vertical-align:-2px;color:var(--muted)}.jobs-table input{accent-color:#3d71d9;margin:0;cursor:pointer}.jobs-table tr.picked{background:var(--hover)}.jobs-table tr.picked td:nth-child(3){font-weight:600}
-.lane-icon{display:inline-flex;gap:1px;vertical-align:middle;color:var(--muted)}.lane-icon svg{width:18px;height:18px}.lane-icon.nvidia{color:#76b900}.lane-icon.amd{color:#ed1c24}
+
 .fold-all{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:auto;padding:0;border:1px solid var(--line);border-radius:3px;background:transparent;color:var(--muted);cursor:pointer}.fold-all:hover{color:var(--fg);background:var(--hover)}.fold-all svg{width:14px;height:14px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}.jobfilter{padding:6px 12px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}.jobfilter b{color:var(--fg)}.jobfilter button{padding:0;border:0;background:none;color:var(--accent);font:inherit;cursor:pointer}
 .status-icon{display:inline-block;width:16px;height:16px;vertical-align:middle}
@@ -80,6 +80,7 @@ body.light .v-pr{background:#ffe1e5;color:#a1102a}body.light .v-flaky{background
     <div class="scroll"><table class="jobs-table"><thead><tr><th title="Tick a job to show only its failing tests"><svg class="filter-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12l-4.6 5.4V13l-2.8-1.4V8.4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg><span class="sr">Filter by job</span></th><th>Status</th><th>Job</th><th>Pass</th><th>Fail</th><th>Lane</th></tr></thead><tbody id="jobs"></tbody></table><div id="jobs-empty" class="notice" hidden></div></div>
   </section>
 </div>
+<script src="/pr-ci-view/common.js"></script>
 <script src="/pr-ci-view/app.js"></script>
 </body>
 </html>

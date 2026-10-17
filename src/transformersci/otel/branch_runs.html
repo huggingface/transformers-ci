@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Branch Runs</title>
+<style>
+:root{color-scheme:dark;--bg:#181b1f;--fg:#d8d9da;--muted:#9fa3a9;--line:#33383f;--hover:#252a31;--accent:#6e9fff}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:13px Inter,system-ui,sans-serif}
+body{display:flex;flex-direction:column}
+body.light{color-scheme:light;--bg:#fff;--fg:#24292e;--muted:#656d76;--line:#d0d7de;--hover:#f3f4f6;--accent:#1f6feb}
+header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--line)}
+h1{font-size:15px;line-height:24px;margin:0}
+.info{display:inline-flex;width:15px;height:15px;border:1px solid var(--muted);border-radius:50%;color:var(--muted);font:700 10px/15px Inter,system-ui,sans-serif;justify-content:center;cursor:help}
+.window{color:var(--accent);font-size:12px}
+#status{margin-left:auto;color:var(--muted);font-size:12px}
+#status.error{color:#f2495c}
+.scroll{flex:1;min-height:0;overflow:auto}
+table{width:100%;border-collapse:collapse;table-layout:fixed;min-width:900px}
+th,td{padding:7px 8px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+th{position:sticky;top:0;background:var(--bg);color:var(--muted);font-weight:600;z-index:1}
+tbody tr:hover{background:var(--hover)}
+td a{color:var(--accent);text-decoration:none}td a:hover{text-decoration:underline}
+.num{text-align:right;font-variant-numeric:tabular-nums}
+th:nth-child(1),td:nth-child(1),th:nth-child(5),td:nth-child(5){text-align:center}
+.rate{text-align:right;color:#fff;font-variant-numeric:tabular-nums}
+.rate-zero{background:linear-gradient(90deg,#43a047,#9bd393)}
+.rate-low{background:linear-gradient(90deg,#699044,#adc276)}
+.rate-medium{background:linear-gradient(90deg,#fc9300,#ff9930)}
+.rate-high{background:linear-gradient(90deg,#d92a43,#f87784)}
+.empty{padding:22px 12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Branch Runs (no PR) - Last 10</h1>
+  <span class="info" title="The 10 most recent runs on branches without a PR, such as main, in the last 7 days. The spinner shows a run GitHub reports as queued or in progress.">i</span>
+  <span class="window">Last 7 days</span>
+  <span id="status" role="status" aria-live="polite"></span>
+</header>
+<div class="scroll"><table aria-label="Branch Runs"><colgroup><col style="width:46px"><col style="width:70px"><col><col style="width:52px"><col style="width:96px"><col style="width:88px"><col style="width:104px"><col style="width:90px"><col style="width:84px"><col style="width:100px"></colgroup><thead><tr><th>Live</th><th>Branch</th><th>Commit</th><th class="num">Jobs</th><th>Lane</th><th class="num">Tests</th><th class="num">Started</th><th class="num">Test Time</th><th class="num">Wall</th><th class="num">Failure Rate</th></tr></thead><tbody id="rows"></tbody></table><div id="empty" class="empty" hidden>No branch runs in the last 7 days.</div></div>
+<script src="/branch-runs/common.js"></script>
+<script src="/branch-runs/app.js"></script>
+</body>
+</html>

@@ -22,10 +22,7 @@
   let active = null;
   let signInPending = false;
 
-  try {
-    const body = parent.document.body;
-    if (/light/.test(body.className) || parent.grafanaBootData?.user?.lightTheme) document.body.classList.add('light');
-  } catch (_) {}
+  tci.applyTheme();
 
   function switches() {
     mineButton.setAttribute('aria-checked', String(mine));

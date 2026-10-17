@@ -8,7 +8,7 @@
     ['who-can-help', 'Who?', 'Who can help: people connected to the failing line']];
   const DAY = 86400;
   const $ = id => document.getElementById(id);
-  const esc = value => String(value).replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
+  const {esc} = tci;
   const params = new URLSearchParams(location.search);
   const state = {
     days: [7, 14, 30].includes(Number(params.get('days'))) ? Number(params.get('days')) : 14,
@@ -16,10 +16,7 @@
   };
   let rows = [], generatedAt = 0, claims = {}, me = '';
 
-  try {
-    const body = parent.document.body;
-    if (/light/.test(body.className) || parent.grafanaBootData?.user?.lightTheme) document.body.classList.add('light');
-  } catch (_) {}
+  tci.applyTheme();
 
   function ago(ts) {
     const seconds = Math.max(0, (generatedAt || Date.now() / 1000) - ts);

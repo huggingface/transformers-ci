@@ -32,7 +32,7 @@ th,td{padding:7px 8px;text-align:left;border-bottom:1px solid var(--line);white-
 th{position:sticky;top:0;background:var(--bg);color:var(--muted);font-weight:600;z-index:1}
 tbody tr:hover{background:var(--hover)}
 td a{color:var(--accent);text-decoration:none}td a:hover{text-decoration:underline}
-.live{display:inline-block;width:12px;height:12px;border:2px solid var(--line);border-top-color:#f2cc60;border-radius:50%;animation:spin .8s linear infinite}
+
 th:nth-child(4),td:nth-child(4){text-align:center}
 th:nth-child(10),td:nth-child(10){text-align:center}
 .category-cell{font-size:11px;font-weight:700}
@@ -59,6 +59,7 @@ th:nth-child(10),td:nth-child(10){text-align:center}
   <span id="status" role="status" aria-live="polite"></span>
 </header>
 <div class="scroll"><table aria-label="Last 20 PRs"><colgroup><col style="width:42px"><col style="width:60px"><col><col style="width:95px"><col style="width:55px"><col style="width:110px"><col style="width:58px"><col style="width:72px"><col style="width:92px"><col style="width:72px"></colgroup><thead><tr><th>Live</th><th>PR</th><th>Title</th><th>Category</th><th>Age</th><th>Last Activity</th><th>Runs</th><th>Failures</th><th>Failure Rate</th><th>State</th></tr></thead><tbody id="rows"></tbody></table><div id="empty" class="empty" hidden></div></div>
+<script src="/pr-table/common.js"></script>
 <script src="/pr-table/app.js"></script>
 </body>
 </html>

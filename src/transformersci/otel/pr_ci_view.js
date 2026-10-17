@@ -21,20 +21,12 @@
   // One-shot override for group <details> on the next render: true = open all, false = close all.
   let groupsForced = null;
   let group = 'none';
-  try {
-    const body = parent.document.body;
-    if (/light/.test(body.className) || parent.grafanaBootData?.user?.lightTheme) document.body.classList.add('light');
-  } catch (_) {}
+  tci.applyTheme();
   try {
     const saved = localStorage.getItem('tci-pr-hide-nonspecific-v1');
     onlySpecific.checked = saved === null ? true : saved === 'true';
   } catch (_) { onlySpecific.checked = true; }
-  const node = (tag, cls, value) => {
-    const item = document.createElement(tag);
-    if (cls) item.className = cls;
-    if (value != null) item.textContent = String(value);
-    return item;
-  };
+  const {node} = tci;
   const link = (href, label) => {
     const item = node('a', '', label);
     item.href = href;
@@ -77,7 +69,7 @@
     }
     return icon;
   }
-  const laneName = (lane, hardware) => lane.id === 'cpu' ? 'CPU' : lane.id === 'amd' ? (hardware === 'amd-2gpu' ? 'AMD xGPU' : 'AMD GPU') : (hardware === 'multi-gpu' ? 'Nvidia xGPU' : 'Nvidia GPU');
+  const laneName = (lane, hardware) => tci.laneName(hardware, lane.id);
   const VERDICTS = {
     pr: ['v-pr', 'Likely this PR'],
     flaky: ['v-flaky', 'Flaky — not this PR'],
@@ -114,24 +106,8 @@
     return `${queue.fail_count} / ${queue.ran_count} · ${queue.distinct_prs_failed} PR${queue.distinct_prs_failed === 1 ? '' : 's'}`;
   }
   // CPU: a chip. GPU: a card, two for multi-GPU runners; vendor colour, full name on hover.
-  function laneIcon(lane, hardware) {
-    const label = laneName(lane, hardware);
-    const wrap = node('span', `lane-icon ${lane.id === 'cpu' ? 'cpu' : lane.id === 'amd' ? 'amd' : 'nvidia'}`);
-    wrap.title = label; wrap.setAttribute('role', 'img'); wrap.setAttribute('aria-label', label);
-    const multi = hardware === 'multi-gpu' || hardware === 'amd-2gpu';
-    for (let index = 0; index < (lane.id !== 'cpu' && multi ? 2 : 1); index++) {
-      const icon = svgNode('svg');
-      icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('fill', 'none');
-      icon.setAttribute('stroke', 'currentColor'); icon.setAttribute('stroke-width', '1.7');
-      icon.setAttribute('stroke-linecap', 'round'); icon.setAttribute('aria-hidden', 'true');
-      const path = svgNode('path');
-      path.setAttribute('d', lane.id === 'cpu'
-        ? 'M7 7h10v10H7zM10 10h4v4h-4zM10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4'
-        : 'M3 7h18v10H3zM8 12m-2.5 0a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0M14 10h4M14 14h4M5 17v3M9 17v3');
-      icon.append(path); wrap.append(icon);
-    }
-    return wrap;
-  }
+  const laneIcon = (lane, hardware) => tci.laneIcon(hardware, lane.id);
+
   function renderRuns() {
     runs.replaceChildren();
     for (const lane of snapshot.lanes) {
