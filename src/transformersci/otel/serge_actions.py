@@ -175,6 +175,14 @@ fetch('/api/user',{credentials:'same-origin',cache:'no-store'})
   .then(response=>render(response.ok)).catch(()=>render(false));
 
 const context=new URLSearchParams(location.search);
+// Project health's Slow rows have no failure trace: actions get the test's
+// timings instead, and the server answers from those (kind=slow).
+function slowTarget(){
+  if(context.get('kind')!=='slow')return null;
+  let durations=[];try{durations=JSON.parse(context.get('durations')||'[]');}catch(error){}
+  return {kind:'slow',test_nodeid:context.get('test_nodeid')||'',job:context.get('job')||'',
+    runner:context.get('runner')||'',first_day:context.get('first_day')||'',durations};
+}
 // Public: a fix PR Serge already opened for this test, from its PR bodies on GitHub.
 const FIX_STATES={open:'open',draft:'draft',merged:'merged ✓',closed:'closed'};
 if(context.get('test_nodeid'))fetch('/serge-actions/fix-prs?test_nodeid='+
@@ -239,9 +247,10 @@ async function wdyt(){
   button.classList.add('thinking');button.textContent='Thinking…';
   let result={status:'unavailable'};
   try{
-    const response=await fetch('/serge-actions/wdyt',{method:'POST',credentials:'same-origin',
+    const slow=slowTarget();
+    const response=await fetch('/serge-actions/wdyt'+(slow?'?kind=slow':''),{method:'POST',credentials:'same-origin',
       headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
-      body:JSON.stringify(Object.fromEntries(['trace_id','test_nodeid','status','job',
+      body:JSON.stringify(slow||Object.fromEntries(['trace_id','test_nodeid','status','job',
         'module','pr','run_id'].map(k=>[k,context.get(k)||''])))});
     result=await actionResponse(response,event=>view.progress(event));
   }catch(error){}
@@ -257,10 +266,11 @@ async function whoCanHelp(){
   const view=helpersPopup();helpersRun={view};
   let result={status:'unavailable'};
   try{
-    const response=await fetch('/serge-actions/who-can-help',{
+    const slow=slowTarget();
+    const response=await fetch('/serge-actions/who-can-help'+(slow?'?kind=slow':''),{
       method:'POST',credentials:'same-origin',
       headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
-      body:JSON.stringify({trace_id:context.get('trace_id')||'',
+      body:JSON.stringify(slow||{trace_id:context.get('trace_id')||'',
         test_nodeid:context.get('test_nodeid')||''})});
     result=await actionResponse(response,event=>view.progress(event));
   }catch(error){}
@@ -276,11 +286,12 @@ async function newIssue(){
   button.classList.add('thinking');button.textContent='Drafting…';
   let result={status:'unavailable'};
   try{
+    const draft=slowTarget()||
+      {trace_id:context.get('trace_id')||'',test_nodeid:context.get('test_nodeid')||''};
     const response=await fetch('/serge-actions/new-issue/draft',{
       method:'POST',credentials:'same-origin',
       headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
-      body:JSON.stringify({trace_id:context.get('trace_id')||'',
-        test_nodeid:context.get('test_nodeid')||''})});
+      body:JSON.stringify(draft)});
     result=await actionResponse(response,event=>view.progress(event));
   }catch(error){}
   button.classList.remove('thinking');button.textContent='New issue';issueRun=null;

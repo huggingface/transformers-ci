@@ -160,7 +160,9 @@ def test_answer_disabled_without_key(monkeypatch):
 def test_answer_caches_and_rate_limits(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        wdyt, "ask", lambda cfg, prompt, emit, sid="": calls.append(prompt) or "A"
+        wdyt,
+        "ask",
+        lambda cfg, prompt, emit, sid="", system="": calls.append(prompt) or "A",
     )
     first = wdyt.answer("u", TRACE, NODE, lambda emit: ("p", []))
     assert first.pop("session_id")
@@ -183,7 +185,7 @@ def test_answer_caches_and_rate_limits(monkeypatch):
 
 
 def test_answer_failure_is_short_lived_and_releases(monkeypatch):
-    def fail(cfg, prompt, emit, sid=""):
+    def fail(cfg, prompt, emit, sid="", system=""):
         raise URLError("down")
 
     monkeypatch.setattr(wdyt, "ask", fail)
@@ -197,7 +199,7 @@ def test_answer_failure_is_short_lived_and_releases(monkeypatch):
 def test_concurrent_same_test_asks_once(monkeypatch):
     calls, release = [], threading.Event()
 
-    def slow(cfg, prompt, emit, sid=""):
+    def slow(cfg, prompt, emit, sid="", system=""):
         calls.append(1)
         release.wait(5)
         return "A"
@@ -266,7 +268,9 @@ def test_route_builds_prompt_from_the_trace(server, monkeypatch):
     monkeypatch.setattr(te, "trace_repository", lambda trace: ri.REPOSITORY)
     monkeypatch.setattr(te, "extract_failure_details", lambda trace, node: DETAILS)
     monkeypatch.setattr(
-        wdyt, "ask", lambda cfg, prompt, emit, sid="": prompts.append(prompt) or "A"
+        wdyt,
+        "ask",
+        lambda cfg, prompt, emit, sid="", system="": prompts.append(prompt) or "A",
     )
     body = {
         "trace_id": TRACE,
@@ -395,7 +399,9 @@ def test_cache_clear_route(server, monkeypatch):
 
 
 def test_answer_keeps_related_threads_for_links(monkeypatch):
-    monkeypatch.setattr(wdyt, "ask", lambda cfg, prompt, emit, sid="": "see #7")
+    monkeypatch.setattr(
+        wdyt, "ask", lambda cfg, prompt, emit, sid="", system="": "see #7"
+    )
     hit = {
         "number": 7,
         "url": "https://github.com/x/y/issues/7",
@@ -427,7 +433,9 @@ def billing(session_id, cents="12.5", calls=2):
 def test_fresh_answer_carries_a_billing_session(monkeypatch):
     headers = []
     monkeypatch.setattr(
-        wdyt, "ask", lambda cfg, prompt, emit, sid: headers.append(sid) or "A"
+        wdyt,
+        "ask",
+        lambda cfg, prompt, emit, sid, system="": headers.append(sid) or "A",
     )
     result = wdyt.answer("u", TRACE, NODE, lambda emit: ("p", []))
     assert result["session_id"] == headers[0] and len(headers[0]) == 36

@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import time
+from datetime import date, timedelta
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable
@@ -601,6 +602,68 @@ def _issue_draft(login: str, title: str, body: str) -> dict:
     while len(_drafts) > 256:
         _drafts.popitem(last=False)
     return {"status": "ok", "draft_id": draft_id, "title": title, "body": body}
+
+
+def _seconds(value: float) -> str:
+    return f"{value / 60:.1f} min" if value >= 120 else f"{value:.0f} s"
+
+
+def slow_draft(
+    login: str,
+    nodeid: str,
+    job: str,
+    runner: str,
+    durations: list[float | None],
+    first_day: str,
+) -> dict:
+    """A New issue draft for a slow test on main: no trace, no model, just its timings.
+
+    ``durations`` are the test's longest duration per UTC day from ``first_day``
+    (None on a day it was not among the slowest).
+    """
+    measured = [value for value in durations if value is not None]
+    average = sum(measured) / len(measured)
+    test = nodeid.split("::")[-1]
+    start = date.fromisoformat(first_day)
+    days = [
+        (start + timedelta(days=i)).strftime("%b %d") for i in range(len(durations))
+    ]
+    timings = "\n".join(
+        f"| {day} | {_seconds(value) if value is not None else '—'} |"
+        for day, value in zip(days, durations)
+    )
+    quoted = "'" + nodeid.replace("'", "'\\''") + "'"
+    run_slow = "RUN_SLOW=1 " if runner == "GPU" else ""
+    title = f"[CI] {test} is slow on main ({_seconds(average)} on {runner})"
+    body = f"""### System Info
+
+- CI job: `{job}` ({runner} runner), branch `main`
+
+### Who can help?
+
+_Not looked up for slow tests yet._
+
+### Reproduction
+
+`{nodeid}` is one of the slowest tests on `main` for {runner}: it took {_seconds(average)} on average over the last {len(durations)} days.
+
+| Day (UTC) | Longest run |
+| --- | --- |
+{timings}
+
+To time it locally:
+
+```bash
+{run_slow}python -m pytest {quoted} --durations=0
+```
+
+### Expected behavior
+
+The test takes a reasonable time for its job: for example a smaller model config, fewer steps, or a cached fixture.
+
+{AI_FOOTER.replace("drafted by AI from the CI failure trace and the repository history", "drafted from CI timings on main")}"""
+    with _lock:
+        return _issue_draft(login, title, body)
 
 
 def publish(login: str, draft_id: str, title: str, body: str, create_issue) -> dict:

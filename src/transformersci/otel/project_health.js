@@ -1,7 +1,7 @@
 (() => {
   'use strict';
   const RUNNERS = [['gpu', 'GPU'], ['cpu', 'CPU']];
-  const CATEGORIES = [['failure', 'Failure']];
+  const CATEGORIES = [['failure', 'Failure'], ['slow', 'Slow']];
   // The Test page's Serge Actions (button id in /serge-actions, label).
   const ACTIONS = [['new-issue', 'New issue', 'Draft a GitHub issue for this failure'],
     ['wdyt', 'WDYT?', 'Serge takes a quick look and tells you what it thinks'],
@@ -27,6 +27,11 @@
       if (seconds >= size) return `${Math.floor(seconds / size)}${suffix} ago`;
     }
     return 'just now';
+  }
+  // Slow timings are per UTC day, so their "seen" is a day, not a time.
+  function daysAgo(ts) {
+    const days = Math.floor((generatedAt || Date.now() / 1000) / DAY) - Math.floor(ts / DAY);
+    return days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days}d ago`;
   }
   const dayLabel = ts => new Date(ts * 1000).toLocaleDateString('en', {month: 'short', day: 'numeric', timeZone: 'UTC'});
 
@@ -161,7 +166,7 @@
     test: row => row.test.includes('::') ? row.test.split('::')[0] : fn(row),
     function: fn,
     test_model: row => `${row.model} · ${fn(row)}`,
-    error: row => row.signal,
+    error: row => row.category === 'slow' ? 'Slow (no error)' : row.signal,
   };
   // Sort toggle: most failing runs first, or alphabetical by name.
   const byName = (a, b) => `${a.model} ${a.test}`.localeCompare(`${b.model} ${b.test}`) || a.job.localeCompare(b.job);
@@ -201,20 +206,26 @@
   }
 
   function actionButton(id, label, help, k, index, row) {
-    const blocked = id === 'new-issue' ? newIssueBlocked(row) : '';
+    let blocked = id === 'new-issue' ? newIssueBlocked(row) : '';
+    if (row.category === 'slow' && !row.nodeid.startsWith('tests/')) blocked = 'Not a pytest test';
     if (blocked) return `<button type="button" class="act" disabled title="${esc(blocked)}">${label}</button>`;
     return `<button type="button" class="act${k ? '' : ' pri'}" data-act="${id}" data-i="${index}" title="${help}">${label}</button>`;
   }
 
   function rowHtml(row, index) {
-    const fails = `${row.fails} fail${row.fails === 1 ? '' : 's'}`;
+    const slow = row.category === 'slow';
+    const fails = slow ? `slowest ${row.fails} of ${row.days.length} days` : `${row.fails} fail${row.fails === 1 ? '' : 's'}`;
+    const cell = slow ? 's' : 'f';
+    const cellTitle = (count, i) => slow
+      ? `${dayLabel(rowsFirstDay + i * DAY)}: ${row.durations[i] == null ? 'not among the slowest' : `${Math.round(row.durations[i])} s`}`
+      : `${dayLabel(rowsFirstDay + i * DAY)}: ${count} failing run${count === 1 ? '' : 's'}`;
     return `<tr class="${claimState(row) === 'fixed' ? 'fixed' : ''}">
       <td class="test"><div class="tags"><span class="badge k-${row.category}">${row.category.toUpperCase()}</span><span class="rn">${row.runner}</span>${row.sticky ? '<span class="sticky">sticky</span>' : ''}<b>${esc(row.model)}</b><span class="job">${esc(row.job)}</span></div>
         <div class="nodeid">${esc(row.test)}</div></td>
-      <td class="sig" data-i="${index}" tabindex="0" title="${esc(row.signal)}">${esc(row.signal)}</td>
+      <td class="sig${slow ? ' slow' : ''}"><span class="sigtext" title="${esc(row.signal)}">${esc(row.signal)}</span><button type="button" class="why" data-why="${index}" aria-label="${slow ? 'Timings' : 'Traceback'} for ${esc(row.test)}" title="${slow ? 'Show the timings' : 'Show the traceback'}">?</button></td>
       <td class="days"><span class="num">${fails}</span><span class="strip">${row.days.map((count, i) =>
-        `<i class="${count ? 'f' : ''}" title="${dayLabel(rowsFirstDay + i * DAY)}: ${count} failing run${count === 1 ? '' : 's'}"></i>`).join('')}</span></td>
-      <td title="${new Date(row.last_seen * 1000).toISOString()}">${ago(row.last_seen)}</td>
+        `<i class="${count ? cell : ''}" title="${cellTitle(count, i)}"></i>`).join('')}</span></td>
+      <td title="${slow ? 'Day of its latest timing (UTC)' : new Date(row.last_seen * 1000).toISOString()}">${slow ? daysAgo(row.last_seen) : ago(row.last_seen)}</td>
       <td class="claim">${claimHtml(row)}</td>
       <td><span class="acts">${ACTIONS.map(([id, label, help], k) =>
         actionButton(id, label, help, k, index, row)).join('')}</span></td></tr>`;
@@ -298,33 +309,50 @@
     }
   }
 
-  // ---- traceback popup -----------------------------------------------------
-  const tip = $('tip'), frame = $('tip-frame');
-  let hideTimer = null, tipRow = null;
-  function showTip(cell) {
-    clearTimeout(hideTimer);
-    const row = current[Number(cell.dataset.i)];
-    if (!row) return;
-    if (row !== tipRow) {
-      tipRow = row;
-      $('tip-title').textContent = row.signal;
-      $('tip-sub').textContent = `${row.model} · ${row.job} · last failure ${ago(row.last_seen)}`;
-      $('tip-more').href = testUrl(row);
-      frame.src = `/failure?${new URLSearchParams({trace_id: row.trace_id, test_nodeid: row.nodeid})}`;
+  // ---- signal popup --------------------------------------------------------
+  // The ? after a row's signal opens a centred popup: the traceback for a
+  // failure, the daily timings for a slow test. It is centred on the part of
+  // this page the viewer can see: inside Grafana the page is a tall iframe.
+  const modal = $('modal'), box = $('modal-box'), frame = $('modal-frame');
+  let modalRow = null;
+  function visibleArea() {
+    try {
+      const rect = window.frameElement.getBoundingClientRect();
+      const top = Math.max(0, -rect.top);
+      return [top, Math.min(innerHeight, parent.innerHeight - rect.top) - top];
+    } catch (_) {
+      return [0, innerHeight];
     }
-    tip.classList.add('show');
-    const box = cell.getBoundingClientRect();
-    const top = Math.min(box.bottom + 4, innerHeight - tip.offsetHeight - 8);
-    tip.style.top = `${Math.max(8, top)}px`;
-    tip.style.left = `${Math.max(8, Math.min(box.left, innerWidth - tip.offsetWidth - 8))}px`;
   }
-  const hideTip = () => { hideTimer = setTimeout(() => tip.classList.remove('show'), 200); };
-  $('rows').addEventListener('mouseover', event => { const cell = event.target.closest('td.sig'); if (cell) showTip(cell); });
-  $('rows').addEventListener('mouseout', event => { if (event.target.closest('td.sig')) hideTip(); });
-  $('rows').addEventListener('focusin', event => { const cell = event.target.closest('td.sig'); if (cell) showTip(cell); });
-  tip.addEventListener('mouseenter', () => clearTimeout(hideTimer));
-  tip.addEventListener('mouseleave', hideTip);
-  document.addEventListener('keydown', event => { if (event.key === 'Escape') tip.classList.remove('show'); });
+  function openSignal(row) {
+    const slow = row.category === 'slow';
+    if (row !== modalRow) {
+      modalRow = row;
+      $('modal-title').textContent = `${row.model} · ${slow ? `slow: ${row.signal}` : row.signal}`;
+      $('modal-sub').textContent = `${row.nodeid} · ${row.job} · ${slow ? 'longest run per day on main' : `last failure ${ago(row.last_seen)}`}`;
+      $('modal-more').hidden = slow;
+      frame.hidden = slow; $('modal-text').hidden = !slow;
+      if (slow) {
+        frame.removeAttribute('src');
+        $('modal-text').textContent = row.durations.map((value, i) =>
+          `${dayLabel(rowsFirstDay + i * DAY).padEnd(8)} ${value == null ? '—  (not among the day\'s slowest)' : `${Math.round(value)} s${row.days[i] ? '' : '  (outside the top 20 that day)'}`}`).join('\n')
+          + `\n\nAmong the ${row.runner} top 20 on ${row.fails} of ${row.days.length} days.`;
+      } else {
+        $('modal-more').href = testUrl(row);
+        frame.src = `/failure?${new URLSearchParams({trace_id: row.trace_id, test_nodeid: row.nodeid})}`;
+      }
+    }
+    const [top, height] = visibleArea();
+    const boxHeight = Math.max(240, Math.min(slow ? 420 : 640, height - 24));
+    box.style.height = `${boxHeight}px`;
+    box.style.top = `${top + Math.max(12, (height - boxHeight) / 2)}px`;
+    modal.classList.add('show');
+    $('modal-close').focus();
+  }
+  const closeSignal = () => modal.classList.remove('show');
+  $('modal-close').addEventListener('click', closeSignal);
+  modal.addEventListener('click', event => { if (event.target === modal) closeSignal(); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') closeSignal(); });
 
   // ---- actions -------------------------------------------------------------
   // Each row's buttons drive the Test page's own Serge Actions, unchanged: a
@@ -335,15 +363,18 @@
   const FRAME_LIMIT = 8;
   const frames = new Map();
   function sergeFrame(row) {
-    const key = `${row.nodeid}\n${row.job}`;
+    const key = `${row.category}\n${row.nodeid}\n${row.job}`;
     let entry = frames.get(key);
     if (entry) { frames.delete(key); frames.set(key, entry); return entry; }
     const frame = document.createElement('iframe');
     frame.className = 'serge'; frame.title = 'Serge Actions'; frame.tabIndex = -1;
-    frame.src = `/serge-actions?${new URLSearchParams({
-      trace_id: row.trace_id, test_nodeid: row.nodeid, job: row.job, status: 'ERROR',
-      module: row.nodeid.split('::')[0].split('/').pop(), pr: 'main', run_id: row.run_id,
-    })}`;
+    const context = row.category === 'slow'
+      ? {kind: 'slow', test_nodeid: row.nodeid, job: row.job, runner: row.runner,
+        first_day: new Date(rowsFirstDay * 1000).toISOString().slice(0, 10),
+        durations: JSON.stringify(row.durations.map(value => value == null ? null : Math.round(value)))}
+      : {trace_id: row.trace_id, test_nodeid: row.nodeid, job: row.job, status: 'ERROR',
+        module: row.nodeid.split('::')[0].split('/').pop(), pr: 'main', run_id: row.run_id};
+    frame.src = `/serge-actions?${new URLSearchParams(context)}`;
     entry = {frame, loaded: new Promise(resolve => frame.addEventListener('load', resolve, {once: true}))};
     $('serge-frames').append(frame);
     frames.set(key, entry);
@@ -371,6 +402,8 @@
     }
   }
   $('rows').addEventListener('click', event => {
+    const why = event.target.closest('button[data-why]');
+    if (why) { const row = current[Number(why.dataset.why)]; if (row) openSignal(row); return; }
     const button = event.target.closest('button[data-act]');
     if (button) { runAction(button); return; }
     const header = event.target.closest('tr.grp');

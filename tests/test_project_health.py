@@ -327,3 +327,67 @@ def test_rows_endpoint_reports_prometheus_failure(monkeypatch) -> None:
             raise AssertionError("expected a 502")
     finally:
         server.shutdown()
+
+
+def matrix(*series: tuple[str, str, dict[int, float]]) -> list[dict]:
+    """(nodeid, job, {day: seconds}) -> a range-query result, one point per day end."""
+    return [
+        {
+            "metric": {"test_nodeid": nodeid, "test_job": job},
+            "values": [
+                [(day + 1) * DAY - 1, str(value)] for day, value in points.items()
+            ],
+        }
+        for nodeid, job, points in series
+    ]
+
+
+def test_slow_rows_rank_by_average_and_mark_the_days_a_test_ranked(monkeypatch) -> None:
+    monkeypatch.setattr(project_health, "SLOW_TOP", 2)
+    slow = (
+        "tests/models/llama4/test_modeling_llama4.py::Llama4IntegrationTest::test_fp32"
+    )
+    steady = "tests/models/swin/test_modeling_swin.py::SwinModelTest::test_compile"
+    quick = "tests/models/bert/test_modeling_bert.py::BertModelTest::test_x"
+    rows = project_health.slow_rows(
+        {
+            "GPU": matrix(
+                (slow, "run_models_gpu", {99: 4000.0, 100: 5000.0}),
+                (
+                    steady,
+                    "run_models_gpu",
+                    {96: 300.0, 97: 300.0, 98: 300.0, 100: 300.0},
+                ),
+                (quick, "run_models_gpu", {96: 100.0, 97: 900.0, 100: 50.0}),
+            ),
+            "CPU": [],
+        },
+        now=NOW,
+        days=7,
+    )
+    assert [row["nodeid"] for row in rows] == [slow, quick]  # top 2 by average
+    first = rows[0]
+    assert (first["category"], first["runner"], first["signal"]) == (
+        "slow",
+        "GPU",
+        "4500 s avg",
+    )
+    assert first["days"] == [0, 0, 0, 0, 0, 1, 1]
+    assert first["durations"][5:] == [4000.0, 5000.0]
+    # quick ranked in the top 2 on days 96 and 97 only (day 100: slow and steady win).
+    assert rows[1]["days"] == [0, 0, 1, 1, 0, 0, 0]
+    assert rows[1]["fails"] == 2
+
+
+def test_build_rows_adds_slow_rows_from_two_range_queries() -> None:
+    asked = []
+
+    def query_range(expr, start, end, step):
+        asked.append((expr, start, end, step))
+        return []
+
+    project_health.build_rows(lambda expr: [], now=NOW, days=7, query_range=query_range)
+    assert len(asked) == 2
+    assert all(step == DAY for *_, step in asked)
+    assert asked[0][1] == 95 * DAY - 1 and asked[0][2] == 101 * DAY - 1
+    assert 'test_job=~"' in asked[0][0] and 'test_job!~"' in asked[1][0]

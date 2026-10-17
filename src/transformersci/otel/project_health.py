@@ -42,6 +42,15 @@ MERGE_SELECTORS = {
 }
 
 Query = Callable[[str], list[dict[str, Any]]]
+# (expr, start, end, step) -> a Prometheus matrix result.
+RangeQuery = Callable[[str, float, float, float], list[dict[str, Any]]]
+
+# Slow: the N slowest tests on main per runner, ranked by their average daily
+# duration. No threshold, only a ranking (plan, 2026-10-17).
+SLOW_TOP = 20
+# Each day's slowest tests per runner fetched from Prometheus; ranking happens
+# over those, so a test must be among a day's slowest to count that day.
+SLOW_DAILY_POOL = 60
 
 
 def is_gpu_job(job: str) -> bool:
@@ -199,7 +208,90 @@ def failure_rows(
     return rows
 
 
-def build_rows(query: Query, *, now: float, days: int) -> dict[str, Any]:
+def slow_queries() -> dict[str, str]:
+    """Per runner, each day's slowest main tests (evaluated once per UTC day)."""
+    duration = (
+        "max by (test_nodeid, test_job) "
+        '(max_over_time(pytest_main_test_duration_seconds{{pr="main",test_job{op}"{jobs}"}}[1d]))'
+    )
+    return {
+        runner: f"topk({SLOW_DAILY_POOL}, {duration.format(op=op, jobs=GPU_JOB_PATTERN)})"
+        for runner, op in (("GPU", "=~"), ("CPU", "!~"))
+    }
+
+
+def slow_rows(
+    matrices: dict[str, list[dict[str, Any]]], *, now: float, days: int
+) -> list[dict[str, Any]]:
+    """One row per (test, job) among each runner's SLOW_TOP slowest on main."""
+    first_day = int(now // DAY) - days + 1
+    rows = []
+    for runner, result in matrices.items():
+        per_test: dict[tuple[str, str], dict[int, float]] = defaultdict(dict)
+        for item in result:
+            labels = item.get("metric") or {}
+            key = (str(labels.get("test_nodeid", "")), str(labels.get("test_job", "")))
+            if not key[0] or not key[1]:
+                continue
+            for point in item.get("values") or []:
+                try:
+                    ts, value = float(point[0]), float(point[1])
+                except (IndexError, TypeError, ValueError):
+                    continue
+                index = int(ts // DAY) - first_day
+                if 0 <= index < days:
+                    per_test[key][index] = value
+        # A day "ranks" a test when it is among that day's SLOW_TOP for its runner.
+        ranked_days: dict[tuple[str, str], set[int]] = defaultdict(set)
+        for index in range(days):
+            day = sorted(
+                (values[index], key)
+                for key, values in per_test.items()
+                if index in values
+            )
+            for _, key in day[-SLOW_TOP:]:
+                ranked_days[key].add(index)
+        averages = sorted(
+            ((sum(v.values()) / len(v), key) for key, v in per_test.items() if v),
+            reverse=True,
+        )[:SLOW_TOP]
+        for average, (nodeid, job) in averages:
+            values = per_test[(nodeid, job)]
+            strip = [
+                1 if index in ranked_days[(nodeid, job)] else 0 for index in range(days)
+            ]
+            last_index = max(values)
+            rows.append(
+                {
+                    "category": "slow",
+                    "nodeid": nodeid,
+                    "job": job,
+                    "runner": runner,
+                    "model": model_name(nodeid),
+                    "test": nodeid.split("::", 1)[1] if "::" in nodeid else nodeid,
+                    "signal": f"{average:.0f} s avg",
+                    "seconds": average,
+                    "durations": [values.get(index) for index in range(days)],
+                    "trace_id": "",
+                    "run_id": "",
+                    "fails": sum(strip),
+                    "bad_days": sum(strip),
+                    "days": strip,
+                    "last_seen": min(now, (first_day + last_index + 1) * DAY - 1),
+                    "sticky": False,
+                    "cleared": False,
+                }
+            )
+    return rows
+
+
+def build_rows(
+    query: Query,
+    *,
+    now: float,
+    days: int,
+    query_range: RangeQuery | None = None,
+) -> dict[str, Any]:
     replies = {name: query(expr) for name, expr in failure_queries(days).items()}
     rows = failure_rows(
         replies["failures"],
@@ -209,6 +301,15 @@ def build_rows(query: Query, *, now: float, days: int) -> dict[str, Any]:
         now=now,
         days=days,
     )
+    if query_range is not None:
+        today = int(now // DAY)
+        start = (today - days + 2) * DAY - 1  # end of the window's first UTC day
+        end = (today + 1) * DAY - 1  # end of today
+        matrices = {
+            runner: query_range(expr, start, end, DAY)
+            for runner, expr in slow_queries().items()
+        }
+        rows += slow_rows(matrices, now=now, days=days)
     return {
         "days": days,
         "generated_at": now,

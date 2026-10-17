@@ -53,16 +53,17 @@ th{font-weight:600;text-align:left;color:var(--muted);padding:7px 6px;border-bot
 td{padding:6px 6px;border-bottom:1px solid var(--soft);vertical-align:middle;white-space:nowrap}
 tbody tr:hover{background:var(--hover)}
 .badge{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.3px;padding:1px 5px;border-radius:3px;color:#fff}
-.k-failure{background:#c4162a}
+.k-failure{background:#c4162a}.k-slow{background:#b35c00}
 .rn{font-weight:600;font-size:9.5px;padding:0 4px;border-radius:3px;border:1px solid var(--line);color:var(--muted)}
 td.test{white-space:normal;word-break:break-all;width:46%}.test b{color:var(--strong);font-weight:500}
 .tags{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
 .test .nodeid{color:var(--muted);font:11.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:2px}
 .job{color:var(--muted);font-size:11px}
-td.sig{max-width:150px;overflow:hidden;text-overflow:ellipsis;cursor:help;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--red)}td.sig:hover{background:var(--soft)}
+td.sig .sigtext{display:inline-block;max-width:150px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
+td.sig{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--red)}td.sig.slow{color:var(--gpu)}
 .sticky{display:inline-block;padding:0 4px;border:1px solid var(--line);border-radius:3px;color:var(--muted);font:600 9.5px Inter,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.04em}
 .strip{display:flex;gap:1px;margin-top:3px}
-.strip i{width:3px;height:11px;background:var(--cell);border-radius:1px}.strip i.f{background:var(--red)}
+.strip i{width:3px;height:11px;background:var(--cell);border-radius:1px}.strip i.f{background:var(--red)}.strip i.s{background:var(--gpu)}
 .num{font-variant-numeric:tabular-nums}
 .foot{padding:8px 12px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .state{padding:24px 12px;color:var(--muted)}
@@ -83,13 +84,21 @@ tr.fixed td{opacity:.55}
 .claim{font-size:12px;white-space:normal;min-width:90px;max-width:150px}
 td.days .num{display:block;font-size:12px}.claim .drafting{color:var(--muted);font-style:italic}
 .tog[hidden]{display:none}
-.tip{position:fixed;z-index:20;width:min(720px,calc(100vw - 16px));height:min(440px,calc(100vh - 16px));display:none;flex-direction:column;
-background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
-.tip.show{display:flex}
-.tip .th{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid var(--line);font-size:12px;min-width:0}
-.tip .th b{color:var(--strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tip .more{margin-left:auto;flex:none;background:var(--sel);color:#fff;border-radius:4px;padding:3px 10px;font-weight:600;font-size:12px}
-.tip iframe{flex:1;border:0;width:100%;min-height:0;background:var(--panel)}
+.why{margin-left:5px;width:16px;height:16px;padding:0;border:1px solid var(--line);border-radius:50%;background:transparent;color:var(--muted);font:600 10px/14px Inter,system-ui,sans-serif;cursor:pointer;vertical-align:1px}
+.why:hover,.why:focus-visible{color:var(--fg);border-color:var(--sel)}
+.modal{position:fixed;inset:0;z-index:30;display:none;background:rgba(0,0,0,.55)}
+.modal.show{display:block}
+.modal .box{position:absolute;left:50%;transform:translateX(-50%);width:min(860px,calc(100vw - 24px));display:flex;flex-direction:column;
+background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 12px 36px rgba(0,0,0,.55)}
+.modal .mh{padding:10px 14px;border-bottom:1px solid var(--line);min-width:0}
+.modal .mh b{display:block;color:var(--strong);font-size:14px;overflow-wrap:anywhere}
+.modal .mh .sub{display:block;margin-top:2px;overflow-wrap:anywhere}
+.modal iframe{flex:1;border:0;width:100%;min-height:0;background:var(--panel)}
+.modal pre{flex:1;margin:0;padding:12px 14px;overflow:auto;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg);white-space:pre}
+.modal iframe[hidden],.modal pre[hidden],.modal a[hidden]{display:none}
+.modal .mf{display:flex;justify-content:flex-end;gap:8px;padding:10px 14px;border-top:1px solid var(--line)}
+.modal .mf a,.modal .mf button{border:1px solid var(--line);border-radius:4px;padding:5px 14px;font:600 12px Inter,system-ui,sans-serif;cursor:pointer;background:transparent;color:var(--fg)}
+.modal .mf a{background:var(--sel);border-color:var(--sel);color:#fff;text-decoration:none}
 </style>
 </head>
 <body>
@@ -132,7 +141,11 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
   <div class="foot"><span id="count"></span><span>Failures on main only · sticky = failed on 2+ days and not cleared by 4 full runs since</span></div>
 </div>
 
-<div class="tip" id="tip"><div class="th"><b id="tip-title"></b><span class="sub" id="tip-sub"></span><a class="more" id="tip-more" target="_top">more…</a></div><iframe id="tip-frame" title="Traceback"></iframe></div>
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="box" id="modal-box">
+  <div class="mh"><b id="modal-title"></b><span class="sub" id="modal-sub"></span></div>
+  <iframe id="modal-frame" title="Traceback"></iframe><pre id="modal-text" hidden></pre>
+  <div class="mf"><a id="modal-more" target="_top">more…</a><button type="button" id="modal-close">Close</button></div>
+</div></div>
 <div id="serge-frames"></div>
 <script src="/project-health/app.js"></script>
 </body>
