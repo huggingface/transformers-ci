@@ -3,7 +3,9 @@
   const RUNNERS = [['gpu', 'GPU'], ['cpu', 'CPU']];
   const CATEGORIES = [['failure', 'Failure']];
   // The Test page's Serge Actions (button id in /serge-actions, label).
-  const ACTIONS = [['new-issue', 'New issue'], ['wdyt', 'WDYT?'], ['who-can-help', 'Who can help']];
+  const ACTIONS = [['new-issue', 'New issue', 'Draft a GitHub issue for this failure'],
+    ['wdyt', 'WDYT?', 'Serge takes a quick look and tells you what it thinks'],
+    ['who-can-help', 'Who?', 'Who can help: people connected to the failing line']];
   const DAY = 86400;
   const $ = id => document.getElementById(id);
   const esc = value => String(value).replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
@@ -185,24 +187,24 @@
     return claim.login === me ? '' : `@${claim.login} is drafting an issue for this test`;
   }
 
-  function actionButton(id, label, k, index, row) {
+  function actionButton(id, label, help, k, index, row) {
     const blocked = id === 'new-issue' ? newIssueBlocked(claims[row.nodeid]) : '';
     if (blocked) return `<button type="button" class="act" disabled title="${esc(blocked)}">${label}</button>`;
-    return `<button type="button" class="act${k ? '' : ' pri'}" data-act="${id}" data-i="${index}">${label}</button>`;
+    return `<button type="button" class="act${k ? '' : ' pri'}" data-act="${id}" data-i="${index}" title="${help}">${label}</button>`;
   }
 
   function rowHtml(row, index) {
+    const fails = `${row.fails} fail${row.fails === 1 ? '' : 's'}`;
     return `<tr>
-      <td><span class="badge k-${row.category}">${row.category.toUpperCase()}</span></td>
-      <td class="test"><b>${esc(row.model)}</b><div>${esc(row.test)}</div></td>
-      <td class="sig" data-i="${index}" tabindex="0">${esc(row.signal)}</td>
-      <td><span class="rn">${row.runner}</span> <span class="job">${esc(row.job)}</span></td>
-      <td class="num">${row.fails} fail${row.fails === 1 ? '' : 's'}${row.sticky ? '<span class="sticky">sticky</span>' : ''}<span class="strip">${row.days.map((count, i) =>
+      <td class="test"><div class="tags"><span class="badge k-${row.category}">${row.category.toUpperCase()}</span><span class="rn">${row.runner}</span>${row.sticky ? '<span class="sticky">sticky</span>' : ''}<b>${esc(row.model)}</b><span class="job">${esc(row.job)}</span></div>
+        <div class="nodeid">${esc(row.test)}</div></td>
+      <td class="sig" data-i="${index}" tabindex="0" title="${esc(row.signal)}">${esc(row.signal)}</td>
+      <td class="days"><span class="num">${fails}</span><span class="strip">${row.days.map((count, i) =>
         `<i class="${count ? 'f' : ''}" title="${dayLabel(rowsFirstDay + i * DAY)}: ${count} failing run${count === 1 ? '' : 's'}"></i>`).join('')}</span></td>
       <td title="${new Date(row.last_seen * 1000).toISOString()}">${ago(row.last_seen)}</td>
       <td class="claim">${claimHtml(claims[row.nodeid])}</td>
-      <td><span class="acts">${ACTIONS.map(([id, label], k) =>
-        actionButton(id, label, k, index, row)).join('')}</span></td></tr>`;
+      <td><span class="acts">${ACTIONS.map(([id, label, help], k) =>
+        actionButton(id, label, help, k, index, row)).join('')}</span></td></tr>`;
   }
 
   function groupedHtml(shown) {
@@ -232,7 +234,7 @@
       const summary = state.group === 'error' ? '' : ` · ${[...errors].sort((a, b) => b[1] - a[1]).slice(0, 3)
         .map(([error, count]) => `${count}× ${esc(error)}`).join(', ')}${errors.size > 3 ? ', …' : ''}`;
       const sticky = members.filter(([row]) => row.sticky).length;
-      return `<tr class="grp" data-group="${esc(name)}" aria-expanded="${open}"><td colspan="8"><span class="caret">${open ? '▾' : '▸'}</span>${esc(name)}
+      return `<tr class="grp" data-group="${esc(name)}" aria-expanded="${open}"><td colspan="6"><span class="caret">${open ? '▾' : '▸'}</span>${esc(name)}
         <span class="meta"> — ${members.length} test${members.length === 1 ? '' : 's'}, ${fails(members)} failing run${fails(members) === 1 ? '' : 's'}${sticky ? `, ${sticky} sticky` : ''}${summary}</span></td></tr>`
         + (open ? members.map(([row, index]) => rowHtml(row, index)).join('') : '');
     }).join('');
@@ -257,7 +259,7 @@
     drawCategories(base);
     $('days-head').textContent = `Last ${state.days} days`;
     $('rows').innerHTML = (state.group === 'none' ? shown.map(rowHtml).join('') : groupedHtml(shown))
-      || `<tr><td colspan="8" class="state">${rows.length ? 'Nothing matches these filters.' : 'No failures on main in this window.'}</td></tr>`;
+      || `<tr><td colspan="6" class="state">${rows.length ? 'Nothing matches these filters.' : 'No failures on main in this window.'}</td></tr>`;
     $('count').textContent = `Showing ${shown.length} of ${rows.length}`;
     current = shown;
     drawFold();
@@ -277,7 +279,7 @@
       $('s-sticky').textContent = fails.filter(row => row.sticky).length;
     } catch (error) {
       if (quiet) return;
-      $('rows').innerHTML = `<tr><td colspan="8" class="state">Could not load failures (${esc(error.message)}).</td></tr>`;
+      $('rows').innerHTML = `<tr><td colspan="6" class="state">Could not load failures (${esc(error.message)}).</td></tr>`;
     } finally {
       $('rows-progress').hidden = true;
     }
