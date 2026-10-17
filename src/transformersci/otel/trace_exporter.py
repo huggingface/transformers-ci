@@ -6198,6 +6198,45 @@ def _draft_nodeid(draft_id: str) -> str:
         return _draft_nodeids.get(draft_id, "")
 
 
+_claim_refresher_lock = threading.Lock()
+_claim_refresher_started = False
+CLAIM_REFRESH_SECONDS = 60.0
+
+
+def _read_claim_issue(number: int) -> object:
+    api_base = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
+    return _github_api_get(
+        f"{api_base}/repos/{related_issues.REPOSITORY}/issues/{number}"
+    )
+
+
+def _ensure_claim_refresher() -> None:
+    """Keep published claims in step with their GitHub issues (closed, reopened).
+
+    Started by the first Project health request; one read per issue per
+    claims.CHECK_SECONDS, with the dashboard's read-only GitHub token.
+    """
+    global _claim_refresher_started
+    with _claim_refresher_lock:
+        if _claim_refresher_started:
+            return
+        _claim_refresher_started = True
+
+    def loop() -> None:
+        while True:
+            try:
+                claims.store().refresh(_read_claim_issue)
+            except Exception as exc:  # never let the loop die
+                print(
+                    f"[pytest-trace-exporter] claim refresh failed: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            time.sleep(CLAIM_REFRESH_SECONDS)
+
+    threading.Thread(target=loop, name="claim-refresh", daemon=True).start()
+
+
 def claim_line(login: str) -> str:
     """Appended to a published issue: GitHub shows the shared token as author."""
     return f"Picked up by @{login} from the transformers-ci dashboard."
@@ -9216,6 +9255,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                     payload,
                 )
         if path == "/project-health/rows":
+            _ensure_claim_refresher()
             # Claims change by the second (someone just clicked New issue), so
             # they are joined per request, never cached with the rows.
             live = json.dumps(claims.store().snapshot(), separators=(",", ":"))

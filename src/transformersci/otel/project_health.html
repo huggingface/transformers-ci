@@ -6,9 +6,9 @@
 <title>Project health</title>
 <style>
 :root{color-scheme:dark;--bg:#111217;--panel:#181b1f;--fg:#d8d9da;--strong:#fff;--muted:#9fa3a9;--line:#2c3036;--soft:#22252b;--hover:#1f2430;
---accent:#6e9fff;--sel:#3d71d9;--red:#f2495c;--cell:#2c3036;--cpu:#5794f2;--gpu:#d9731c}
+--accent:#6e9fff;--sel:#3d71d9;--red:#f2495c;--green:#73bf69;--amber:#f2cc60;--cell:#2c3036;--cpu:#5794f2;--gpu:#d9731c}
 body.light{color-scheme:light;--bg:#f4f5f5;--panel:#fff;--fg:#24292e;--strong:#000;--muted:#656d76;--line:#d0d7de;--soft:#eaeef2;--hover:#f3f4f6;
---accent:#1f6feb;--red:#d1242f;--cell:#e1e4e8;--cpu:#3d71d9;--gpu:#c4600e}
+--accent:#1f6feb;--red:#d1242f;--green:#1a7f37;--amber:#9a6700;--cell:#e1e4e8;--cpu:#3d71d9;--gpu:#c4600e}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.4 Inter,system-ui,sans-serif}
 body{padding:12px 16px 24px}
@@ -78,6 +78,8 @@ tr.grp:hover td{background:var(--hover)}tr.grp .meta{font:12px Inter,system-ui,s
 tr.grp .caret{display:inline-block;width:12px;color:var(--muted)}
 .fold{display:inline-flex;align-items:center;justify-content:center;width:26px;height:24px;padding:0;border:1px solid var(--line);border-radius:4px;background:transparent;color:var(--muted);cursor:pointer}
 .fold:hover{color:var(--fg);border-color:var(--sel)}.fold svg{width:15px;height:15px}.fold[hidden]{display:none}
+.claim .fixed-mark{color:var(--green);font-weight:600}.claim .again{color:var(--amber);font-weight:600}
+tr.fixed td{opacity:.55}
 .claim{font-size:12px;white-space:normal;min-width:90px;max-width:150px}
 td.days .num{display:block;font-size:12px}.claim .drafting{color:var(--muted);font-style:italic}
 .tog[hidden]{display:none}
@@ -114,7 +116,7 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
     <span class="seg" id="cat"></span>
     <span class="seg" id="runner"><button data-v="all" aria-pressed="true">Any</button><button data-v="CPU">CPU</button><button data-v="GPU">GPU</button></span>
     <label class="tog"><input type="checkbox" id="sticky-only">Sticky only</label>
-    <label class="tog" title="Hide tests someone picked up or is drafting an issue for"><input type="checkbox" id="unclaimed-only">Unclaimed only</label>
+    <label class="tog" title="Hide tests someone is on (or drafting an issue for) and tests fixed since their issue closed"><input type="checkbox" id="unclaimed-only">Unclaimed only</label>
     <label class="tog" id="mine-toggle" hidden title="Tests you picked up"><input type="checkbox" id="mine-only">My stuff</label>
     <span class="ctl"><span class="lbl">Days</span><span class="seg" id="days"><button data-v="7">7</button><button data-v="14">14</button><button data-v="30">30</button></span></span>
     <span class="ctl"><span class="lbl">Group by</span><span class="seg" id="group"><button data-v="none" aria-pressed="true">None</button><button data-v="model">Model</button><button data-v="test">Test</button><button data-v="function">Function</button><button data-v="test_model">Test + Model</button><button data-v="error">Error</button></span></span>
@@ -127,7 +129,7 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
     <thead><tr><th>Test</th><th>Signal</th><th id="days-head">Last 14 days</th><th>Seen</th><th>Picked up by</th><th>Actions</th></tr></thead>
     <tbody id="rows"></tbody>
   </table></div>
-  <div class="foot"><span id="count"></span><span>Failures on main only · sticky = Main health's rule</span></div>
+  <div class="foot"><span id="count"></span><span>Failures on main only · sticky = failed on 2+ days and not cleared by 4 full runs since</span></div>
 </div>
 
 <div class="tip" id="tip"><div class="th"><b id="tip-title"></b><span class="sub" id="tip-sub"></span><a class="more" id="tip-more" target="_top">more…</a></div><iframe id="tip-frame" title="Traceback"></iframe></div>

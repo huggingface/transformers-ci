@@ -140,7 +140,7 @@
     const q = state.q;
     const base = rows.filter(row => (state.runner === 'all' || row.runner === state.runner)
       && (!state.sticky || row.sticky)
-      && (!state.unclaimed || !claims[row.nodeid])
+      && (!state.unclaimed || ['free', 'again'].includes(claimState(row)))
       && (!state.mine || claims[row.nodeid]?.login === me)
       && (!q || `${row.model} ${row.nodeid} ${row.job} ${row.signal}`.toLowerCase().includes(q)));
     return {base, shown: base.filter(row => state.cat === 'all' || row.category === state.cat)};
@@ -170,39 +170,52 @@
   const openGroups = new Set();
   let groupsSeen = '', groupNames = [];
 
-  function claimHtml(claim) {
-    if (!claim) return '<span class="sub">—</span>';
-    const who = `<a href="https://github.com/${encodeURIComponent(claim.login)}" target="_blank" rel="noopener noreferrer">@${esc(claim.login)}</a>`;
-    if (claim.state === 'claimed') {
-      return `${who} is on it · <a href="${esc(claim.url)}" target="_blank" rel="noopener noreferrer">#${claim.number}</a>`;
-    }
-    return `${who} <span class="drafting">is drafting…</span>`;
+  // A published claim whose issue was closed: "fixed" if the test has not failed
+  // since, else "failing again" (and free to pick up).
+  function claimState(row) {
+    const claim = claims[row.nodeid];
+    if (!claim) return 'free';
+    if (claim.state !== 'claimed') return 'drafting';
+    if (claim.issue_state !== 'closed') return 'on-it';
+    return row.last_seen > (claim.closed_at || 0) ? 'again' : 'fixed';
   }
 
-  // New issue is off once someone has the test: its issue is the place to talk.
+  function claimHtml(row) {
+    const claim = claims[row.nodeid], state = claimState(row);
+    if (state === 'free') return '<span class="sub">—</span>';
+    const who = `<a href="https://github.com/${encodeURIComponent(claim.login)}" target="_blank" rel="noopener noreferrer">@${esc(claim.login)}</a>`;
+    const issue = claim.url ? `<a href="${esc(claim.url)}" target="_blank" rel="noopener noreferrer">#${claim.number}</a>` : '';
+    if (state === 'drafting') return `${who} <span class="drafting">is drafting…</span>`;
+    if (state === 'on-it') return `${who} is on it · ${issue}`;
+    if (state === 'fixed') return `<span class="fixed-mark">✓ fixed</span> · ${issue} <span class="sub">by ${who}</span>`;
+    return `<span class="again" title="The issue was closed but the test failed after that">↺ failing again</span> · ${issue} closed`;
+  }
+
+  // New issue is off while someone has the test: its issue is the place to talk.
   // Your own unpublished draft stays reachable, to reopen it.
-  function newIssueBlocked(claim) {
-    if (!claim) return '';
-    if (claim.state === 'claimed') return `@${claim.login} is on it in #${claim.number}`;
-    return claim.login === me ? '' : `@${claim.login} is drafting an issue for this test`;
+  function newIssueBlocked(row) {
+    const claim = claims[row.nodeid], state = claimState(row);
+    if (state === 'on-it') return `@${claim.login} is on it in #${claim.number}`;
+    if (state === 'drafting' && claim.login !== me) return `@${claim.login} is drafting an issue for this test`;
+    return '';
   }
 
   function actionButton(id, label, help, k, index, row) {
-    const blocked = id === 'new-issue' ? newIssueBlocked(claims[row.nodeid]) : '';
+    const blocked = id === 'new-issue' ? newIssueBlocked(row) : '';
     if (blocked) return `<button type="button" class="act" disabled title="${esc(blocked)}">${label}</button>`;
     return `<button type="button" class="act${k ? '' : ' pri'}" data-act="${id}" data-i="${index}" title="${help}">${label}</button>`;
   }
 
   function rowHtml(row, index) {
     const fails = `${row.fails} fail${row.fails === 1 ? '' : 's'}`;
-    return `<tr>
+    return `<tr class="${claimState(row) === 'fixed' ? 'fixed' : ''}">
       <td class="test"><div class="tags"><span class="badge k-${row.category}">${row.category.toUpperCase()}</span><span class="rn">${row.runner}</span>${row.sticky ? '<span class="sticky">sticky</span>' : ''}<b>${esc(row.model)}</b><span class="job">${esc(row.job)}</span></div>
         <div class="nodeid">${esc(row.test)}</div></td>
       <td class="sig" data-i="${index}" tabindex="0" title="${esc(row.signal)}">${esc(row.signal)}</td>
       <td class="days"><span class="num">${fails}</span><span class="strip">${row.days.map((count, i) =>
         `<i class="${count ? 'f' : ''}" title="${dayLabel(rowsFirstDay + i * DAY)}: ${count} failing run${count === 1 ? '' : 's'}"></i>`).join('')}</span></td>
       <td title="${new Date(row.last_seen * 1000).toISOString()}">${ago(row.last_seen)}</td>
-      <td class="claim">${claimHtml(claims[row.nodeid])}</td>
+      <td class="claim">${claimHtml(row)}</td>
       <td><span class="acts">${ACTIONS.map(([id, label, help], k) =>
         actionButton(id, label, help, k, index, row)).join('')}</span></td></tr>`;
   }
