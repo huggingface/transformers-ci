@@ -50,10 +50,10 @@ tbody tr:hover{background:var(--hover)}
 .badge{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.3px;padding:3px 7px;border-radius:3px;color:#fff;min-width:70px;text-align:center}
 .k-failure{background:#c4162a}
 .rn{font-weight:600;font-size:11px;padding:2px 6px;border-radius:3px;border:1px solid var(--line)}
-td.test{white-space:normal;word-break:break-all;min-width:280px}.test b{color:var(--strong);font-weight:500}
+td.test{white-space:normal;word-break:break-all;min-width:260px;width:40%}.test b{color:var(--strong);font-weight:500}
 .test div{color:var(--muted);font:11.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:2px}
 .job{color:var(--muted);font-size:11.5px}
-td.sig{cursor:help;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--red)}td.sig:hover{background:var(--soft)}
+td.sig{max-width:200px;overflow:hidden;text-overflow:ellipsis;cursor:help;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--red)}td.sig:hover{background:var(--soft)}
 .sticky{display:inline-block;margin-left:6px;padding:1px 5px;border:1px solid var(--line);border-radius:3px;color:var(--muted);font:600 10px Inter,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.04em}
 .strip{display:inline-flex;gap:2px;vertical-align:middle;margin-left:8px}
 .strip i{width:5px;height:13px;background:var(--cell);border-radius:1px}.strip i.f{background:var(--red)}
@@ -63,6 +63,13 @@ td.sig{cursor:help;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:v
 .progress{height:2px;overflow:hidden}.progress span{display:block;width:28%;height:100%;background:var(--accent);animation:progress 1.35s ease-in-out infinite}
 .progress[hidden]{display:none}
 @keyframes progress{from{transform:translateX(-100%)}to{transform:translateX(360%)}}
+.acts{display:flex;gap:4px}
+.act{border:1px solid var(--line);background:transparent;color:var(--fg);border-radius:4px;padding:3px 7px;font:600 11.5px Inter,system-ui,sans-serif;cursor:pointer;white-space:nowrap}
+.act:hover{border-color:var(--sel)}.act.pri{border-color:var(--sel);color:var(--accent)}.act[aria-busy=true]{cursor:progress;opacity:.6}
+iframe.serge{position:absolute;width:0;height:0;border:0;visibility:hidden}
+tr.grp td{background:var(--soft);cursor:pointer;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--strong);padding:6px 8px}
+tr.grp:hover td{background:var(--hover)}tr.grp .meta{font:12px Inter,system-ui,sans-serif;color:var(--muted)}
+tr.grp .caret{display:inline-block;width:12px;color:var(--muted)}
 .tip{position:fixed;z-index:20;width:min(720px,calc(100vw - 16px));height:min(440px,calc(100vh - 16px));display:none;flex-direction:column;
 background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
 .tip.show{display:flex}
@@ -94,17 +101,19 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
     <span class="seg" id="runner"><button data-v="all" aria-pressed="true">Any runner</button><button data-v="CPU">CPU</button><button data-v="GPU">GPU</button></span>
     <label class="tog"><input type="checkbox" id="sticky-only">Sticky only</label>
     <span class="lbl">Days</span><span class="seg" id="days"><button data-v="7">7</button><button data-v="14">14</button><button data-v="30">30</button></span>
+    <span class="lbl">Group by</span><span class="seg" id="group"><button data-v="none" aria-pressed="true">None</button><button data-v="model">Model</button><button data-v="test">Test</button><button data-v="function">Function</button><button data-v="test_model">Test + Model</button><button data-v="error">Error</button></span>
     <input class="search" id="q" type="search" placeholder="Search model, test or job" aria-label="Search">
   </div>
   <div class="progress" id="rows-progress"><span></span></div>
   <div class="scroll"><table>
-    <thead><tr><th>Category</th><th>Model / test</th><th>Signal</th><th>Runner</th><th id="days-head">Last 14 days</th><th>Last seen</th></tr></thead>
+    <thead><tr><th>Category</th><th>Model / test</th><th>Signal</th><th>Runner</th><th id="days-head">Last 14 days</th><th>Last seen</th><th>Actions</th></tr></thead>
     <tbody id="rows"></tbody>
   </table></div>
   <div class="foot"><span id="count"></span><span>Failures on main only · sticky = Main health's rule · sorted by bad days, then most recent</span></div>
 </div>
 
 <div class="tip" id="tip"><div class="th"><b id="tip-title"></b><span class="sub" id="tip-sub"></span><a class="more" id="tip-more" target="_top">more…</a></div><iframe id="tip-frame" title="Traceback"></iframe></div>
+<div id="serge-frames"></div>
 <script src="/project-health/app.js"></script>
 </body>
 </html>

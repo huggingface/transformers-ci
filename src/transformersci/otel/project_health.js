@@ -2,6 +2,8 @@
   'use strict';
   const RUNNERS = [['gpu', 'GPU'], ['cpu', 'CPU']];
   const CATEGORIES = [['failure', 'Failure']];
+  // The Test page's Serge Actions (button id in /serge-actions, label).
+  const ACTIONS = [['new-issue', 'New issue'], ['wdyt', 'WDYT?'], ['who-can-help', 'Who can help']];
   const DAY = 86400;
   const $ = id => document.getElementById(id);
   const esc = value => String(value).replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
@@ -9,7 +11,7 @@
   const params = new URLSearchParams(location.search);
   const state = {
     days: [7, 14, 30].includes(Number(params.get('days'))) ? Number(params.get('days')) : 14,
-    cat: 'all', runner: 'all', sticky: false, q: '',
+    cat: 'all', runner: 'all', sticky: false, q: '', group: 'none',
   };
   let rows = [], generatedAt = 0;
 
@@ -146,19 +148,67 @@
     }).join('');
   }
 
-  function drawRows() {
-    const {base, shown} = visible();
-    drawCategories(base);
-    $('days-head').textContent = `Last ${state.days} days`;
-    $('rows').innerHTML = shown.map((row, index) => `<tr>
+  // Group keys, as on the PR CI view. "Test" is the test class, "Function" the
+  // test function without its parameters.
+  const fn = row => row.test.split('::').pop().replace(/\[.*\]$/, '');
+  const GROUP_KEYS = {
+    model: row => row.model,
+    test: row => row.test.includes('::') ? row.test.split('::')[0] : fn(row),
+    function: fn,
+    test_model: row => `${row.model} · ${fn(row)}`,
+    error: row => row.signal,
+  };
+  const openGroups = new Set();
+  let groupsSeen = '';
+
+  function rowHtml(row, index) {
+    return `<tr>
       <td><span class="badge k-${row.category}">${row.category.toUpperCase()}</span></td>
       <td class="test"><b>${esc(row.model)}</b><div>${esc(row.test)}</div></td>
       <td class="sig" data-i="${index}" tabindex="0">${esc(row.signal)}</td>
       <td><span class="rn">${row.runner}</span> <span class="job">${esc(row.job)}</span></td>
       <td class="num">${row.fails} fail${row.fails === 1 ? '' : 's'}${row.sticky ? '<span class="sticky">sticky</span>' : ''}<span class="strip">${row.days.map((count, i) =>
         `<i class="${count ? 'f' : ''}" title="${dayLabel(rowsFirstDay + i * DAY)}: ${count} failing run${count === 1 ? '' : 's'}"></i>`).join('')}</span></td>
-      <td title="${new Date(row.last_seen * 1000).toISOString()}">${ago(row.last_seen)}</td></tr>`).join('')
-      || `<tr><td colspan="6" class="state">${rows.length ? 'Nothing matches these filters.' : 'No failures on main in this window.'}</td></tr>`;
+      <td title="${new Date(row.last_seen * 1000).toISOString()}">${ago(row.last_seen)}</td>
+      <td><span class="acts">${ACTIONS.map(([id, label], k) =>
+        `<button type="button" class="act${k ? '' : ' pri'}" data-act="${id}" data-i="${index}">${label}</button>`).join('')}</span></td></tr>`;
+  }
+
+  function groupedHtml(shown) {
+    const key = GROUP_KEYS[state.group];
+    const groups = new Map();
+    shown.forEach((row, index) => {
+      const name = key(row) || '(unknown)';
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name).push([row, index]);
+    });
+    const ordered = [...groups].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+    // A new grouping opens its small groups, as the PR CI view does; after that
+    // the viewer's own choices stick.
+    const seen = `${state.group}|${state.days}`;
+    if (seen !== groupsSeen) {
+      groupsSeen = seen; openGroups.clear();
+      for (const [name, members] of ordered) if (members.length <= 5) openGroups.add(name);
+    }
+    return ordered.map(([name, members]) => {
+      const open = openGroups.has(name);
+      const errors = new Map();
+      for (const [row] of members) errors.set(row.signal, (errors.get(row.signal) || 0) + 1);
+      const summary = state.group === 'error' ? '' : ` · ${[...errors].sort((a, b) => b[1] - a[1]).slice(0, 3)
+        .map(([error, count]) => `${count}× ${esc(error)}`).join(', ')}${errors.size > 3 ? ', …' : ''}`;
+      const sticky = members.filter(([row]) => row.sticky).length;
+      return `<tr class="grp" data-group="${esc(name)}" aria-expanded="${open}"><td colspan="7"><span class="caret">${open ? '▾' : '▸'}</span>${esc(name)}
+        <span class="meta"> — ${members.length} test${members.length === 1 ? '' : 's'}${sticky ? `, ${sticky} sticky` : ''}${summary}</span></td></tr>`
+        + (open ? members.map(([row, index]) => rowHtml(row, index)).join('') : '');
+    }).join('');
+  }
+
+  function drawRows() {
+    const {base, shown} = visible();
+    drawCategories(base);
+    $('days-head').textContent = `Last ${state.days} days`;
+    $('rows').innerHTML = (state.group === 'none' ? shown.map(rowHtml).join('') : groupedHtml(shown))
+      || `<tr><td colspan="7" class="state">${rows.length ? 'Nothing matches these filters.' : 'No failures on main in this window.'}</td></tr>`;
     $('count').textContent = `Showing ${shown.length} of ${rows.length}`;
     current = shown;
   }
@@ -175,7 +225,7 @@
       $('s-fail-n').textContent = `${fails.filter(row => row.runner === 'GPU').length} GPU · ${fails.filter(row => row.runner === 'CPU').length} CPU · ${state.days} days`;
       $('s-sticky').textContent = fails.filter(row => row.sticky).length;
     } catch (error) {
-      $('rows').innerHTML = `<tr><td colspan="6" class="state">Could not load failures (${esc(error.message)}).</td></tr>`;
+      $('rows').innerHTML = `<tr><td colspan="7" class="state">Could not load failures (${esc(error.message)}).</td></tr>`;
     } finally {
       $('rows-progress').hidden = true;
     }
@@ -209,6 +259,60 @@
   tip.addEventListener('mouseleave', hideTip);
   document.addEventListener('keydown', event => { if (event.key === 'Escape') tip.classList.remove('show'); });
 
+  // ---- actions -------------------------------------------------------------
+  // Each row's buttons drive the Test page's own Serge Actions, unchanged: a
+  // hidden /serge-actions frame per test, whose button we click. It handles
+  // sign-in, the streamed steps and the dialogs (opened in the top-most page),
+  // so the behaviour matches the Test page exactly. A frame is kept per test
+  // because reloading it would abort a question still running in it.
+  const FRAME_LIMIT = 8;
+  const frames = new Map();
+  function sergeFrame(row) {
+    const key = `${row.nodeid}\n${row.job}`;
+    let entry = frames.get(key);
+    if (entry) { frames.delete(key); frames.set(key, entry); return entry; }
+    const frame = document.createElement('iframe');
+    frame.className = 'serge'; frame.title = 'Serge Actions'; frame.tabIndex = -1;
+    frame.src = `/serge-actions?${new URLSearchParams({
+      trace_id: row.trace_id, test_nodeid: row.nodeid, job: row.job, status: 'ERROR',
+      module: row.nodeid.split('::')[0].split('/').pop(), pr: 'main', run_id: row.run_id,
+    })}`;
+    entry = {frame, loaded: new Promise(resolve => frame.addEventListener('load', resolve, {once: true}))};
+    $('serge-frames').append(frame);
+    frames.set(key, entry);
+    while (frames.size > FRAME_LIMIT) {
+      const [oldest, old] = frames.entries().next().value;
+      old.frame.remove(); frames.delete(oldest);
+    }
+    return entry;
+  }
+  async function runAction(button) {
+    const row = current[Number(button.dataset.i)];
+    if (!row || button.getAttribute('aria-busy') === 'true') return;
+    button.setAttribute('aria-busy', 'true');
+    try {
+      const {frame, loaded} = sergeFrame(row);
+      await loaded;
+      // The frame enables its buttons once it knows whether the viewer is signed in.
+      for (let tries = 0; tries < 100; tries++) {
+        const target = frame.contentDocument?.getElementById(button.dataset.act);
+        if (target && !target.disabled) { target.click(); return; }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    } finally {
+      button.removeAttribute('aria-busy');
+    }
+  }
+  $('rows').addEventListener('click', event => {
+    const button = event.target.closest('button[data-act]');
+    if (button) { runAction(button); return; }
+    const header = event.target.closest('tr.grp');
+    if (!header) return;
+    const name = header.dataset.group;
+    if (openGroups.has(name)) openGroups.delete(name); else openGroups.add(name);
+    drawRows();
+  });
+
   // ---- controls ------------------------------------------------------------
   function press(seg, value) {
     seg.querySelectorAll('button').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.v === String(value))));
@@ -227,6 +331,10 @@
     params.set('days', String(state.days));
     history.replaceState(null, '', `${location.pathname}?${params}`);
     loadRows(); loadTrend();
+  });
+  $('group').addEventListener('click', event => {
+    const button = event.target.closest('button'); if (!button) return;
+    state.group = button.dataset.v; press($('group'), state.group); drawRows();
   });
   $('sticky-only').addEventListener('change', event => { state.sticky = event.target.checked; drawRows(); });
   $('q').addEventListener('input', event => { state.q = event.target.value.trim().toLowerCase(); drawRows(); });
