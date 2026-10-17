@@ -82,6 +82,7 @@ from transformersci.otel import new_issue
 from transformersci.otel import patch_view
 from transformersci.otel import merge_queue
 from transformersci.otel import pr_ci_view
+from transformersci.otel import claims
 from transformersci.otel import probable_fix
 from transformersci.otel import project_health
 from transformersci.otel import test_page
@@ -6179,6 +6180,29 @@ def _badge_prometheus_lookback() -> str:
     )
 
 
+# New issue drafts by id -> the test they reserve (see claims.py). Bounded like
+# new_issue's own draft table, whose ids these are.
+_draft_nodeids: "OrderedDict[str, str]" = OrderedDict()
+_draft_nodeids_lock = threading.Lock()
+
+
+def _remember_draft(draft_id: str, nodeid: str) -> None:
+    with _draft_nodeids_lock:
+        _draft_nodeids[draft_id] = nodeid
+        while len(_draft_nodeids) > 256:
+            _draft_nodeids.popitem(last=False)
+
+
+def _draft_nodeid(draft_id: str) -> str:
+    with _draft_nodeids_lock:
+        return _draft_nodeids.get(draft_id, "")
+
+
+def claim_line(login: str) -> str:
+    """Appended to a published issue: GitHub shows the shared token as author."""
+    return f"Picked up by @{login} from the transformers-ci dashboard."
+
+
 # Project health reads a few wide Prometheus queries per window (30 days of
 # failures is ~4 MB); every viewer shares one answer per (endpoint, days).
 _PROJECT_HEALTH_CACHE_TTL_SECONDS = 60.0
@@ -7972,6 +7996,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
             "/serge-actions/who-can-help",
             "/serge-actions/new-issue/draft",
             "/serge-actions/new-issue/publish",
+            "/serge-actions/new-issue/release",
             "/rerun-failed",
         ):
             self._send(404, JSON_CONTENT_TYPE, b'{"error":"not found"}')
@@ -7989,6 +8014,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._serve_new_issue_draft()
         elif path == "/serge-actions/new-issue/publish":
             self._serve_new_issue_publish()
+        elif path == "/serge-actions/new-issue/release":
+            self._serve_new_issue_release()
         else:
             self._serve_wdyt()
 
@@ -8140,9 +8167,16 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if not details:
             self._reply_json(404, {"status": "invalid"})
             return
+        # One issue per test: whoever starts the draft holds the test until
+        # they publish or close it; everyone else is told who has it.
+        reservation = claims.store().reserve(nodeid, login)
+        if reservation["status"] != "ok":
+            self._reply_json(409, reservation)
+            return
         environment = issue_environment(trace, nodeid)
-        self._stream_action(
-            lambda emit: new_issue.prepare(
+
+        def draft(emit: Callable[[dict], None]) -> dict:
+            result = new_issue.prepare(
                 login,
                 trace_id,
                 nodeid,
@@ -8150,9 +8184,14 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 _github_api_get,
                 emit=emit,
                 environment=environment,
-            ),
-            "Reading the selected failure",
-        )
+            )
+            if result.get("status") == "ok":
+                _remember_draft(result["draft_id"], nodeid)
+            else:
+                claims.store().release(nodeid, login)
+            return result
+
+        self._stream_action(draft, "Reading the selected failure")
 
     def _serve_new_issue_publish(self) -> None:
         if not self._action_allowed():
@@ -8173,16 +8212,48 @@ class MetricsHandler(BaseHTTPRequestHandler):
         ):
             self._reply_json(400, {"status": "invalid"})
             return
-        self._reply_json(
-            200,
-            new_issue.publish(
-                login,
-                body["draft_id"],
-                body["title"],
-                body["body"],
-                _github_create_issue,
-            ),
+        nodeid = _draft_nodeid(body["draft_id"])
+        if nodeid:
+            # The reservation may have lapsed and been taken while the draft sat open.
+            reservation = claims.store().reserve(nodeid, login)
+            if reservation["status"] != "ok":
+                self._reply_json(409, reservation)
+                return
+        text = body["body"].rstrip()
+        if claim_line(login) not in text:
+            text = f"{text}\n\n{claim_line(login)}"
+        result = new_issue.publish(
+            login, body["draft_id"], body["title"], text, _github_create_issue
         )
+        if (
+            nodeid
+            and result.get("status") == "ok"
+            and isinstance(result.get("number"), int)
+        ):
+            claims.store().confirm(
+                nodeid, login, result["number"], str(result.get("url") or "")
+            )
+        self._reply_json(200, result)
+
+    def _serve_new_issue_release(self) -> None:
+        """Closing a draft without publishing frees the test for others."""
+        if not self._action_allowed():
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length)) if 0 < length <= 1024 else None
+        except (ValueError, TypeError):
+            body = None
+        if not isinstance(body, dict) or not isinstance(body.get("draft_id"), str):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        login = self._action_user()
+        if not login:
+            return
+        nodeid = _draft_nodeid(body["draft_id"])
+        if nodeid:
+            claims.store().release(nodeid, login)
+        self._reply_json(200, {"status": "ok"})
 
     def _serve_wdyt(self) -> None:
         reply = self._reply_json
@@ -9126,24 +9197,29 @@ class MetricsHandler(BaseHTTPRequestHandler):
             hit = _project_health_cache.get(key)
         if hit is not None and hit[0] > now:
             self._request_cache = "hit"
-            self._send(200, JSON_CONTENT_TYPE, hit[1], cache_control="no-store")
-            return
-        build = (
-            project_health.build_rows
-            if path == "/project-health/rows"
-            else project_health.build_trend
-        )
-        try:
-            body = build(_prometheus_vector, now=time.time(), days=days)
-        except Exception as exc:
-            self._reply_json(502, {"error": f"Prometheus unavailable: {exc}"})
-            return
-        payload = json.dumps(body, separators=(",", ":")).encode()
-        with _project_health_cache_lock:
-            _project_health_cache[key] = (
-                now + _PROJECT_HEALTH_CACHE_TTL_SECONDS,
-                payload,
+            payload = hit[1]
+        else:
+            build = (
+                project_health.build_rows
+                if path == "/project-health/rows"
+                else project_health.build_trend
             )
+            try:
+                body = build(_prometheus_vector, now=time.time(), days=days)
+            except Exception as exc:
+                self._reply_json(502, {"error": f"Prometheus unavailable: {exc}"})
+                return
+            payload = json.dumps(body, separators=(",", ":")).encode()
+            with _project_health_cache_lock:
+                _project_health_cache[key] = (
+                    now + _PROJECT_HEALTH_CACHE_TTL_SECONDS,
+                    payload,
+                )
+        if path == "/project-health/rows":
+            # Claims change by the second (someone just clicked New issue), so
+            # they are joined per request, never cached with the rows.
+            live = json.dumps(claims.store().snapshot(), separators=(",", ":"))
+            payload = payload[:-1] + b',"claims":' + live.encode() + b"}"
         self._send(200, JSON_CONTENT_TYPE, payload, cache_control="no-store")
 
     def _serve_pr_ci_view(self, params: dict[str, list[str]]) -> None:

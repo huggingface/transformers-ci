@@ -43,6 +43,7 @@ box-shadow:0 6px 18px rgba(0,0,0,.35);white-space:nowrap;display:none;z-index:5}
 .seg button:last-child{border-right:0}.seg button[aria-pressed=true]{background:var(--sel);color:#fff}
 .seg button small{opacity:.75;margin-left:4px;font-size:11px}
 .lbl{color:var(--muted);font-size:12px}
+.ctl{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .tog{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--fg);cursor:pointer;white-space:nowrap}
 .tog input{accent-color:var(--sel);margin:0}
 input.search{margin-left:auto;border:1px solid var(--line);border-radius:4px;padding:5px 9px;width:240px;max-width:100%;color:var(--fg);background:var(--bg);font:12px Inter,system-ui,sans-serif;outline:none}
@@ -76,6 +77,8 @@ tr.grp:hover td{background:var(--hover)}tr.grp .meta{font:12px Inter,system-ui,s
 tr.grp .caret{display:inline-block;width:12px;color:var(--muted)}
 .fold{display:inline-flex;align-items:center;justify-content:center;width:26px;height:24px;padding:0;border:1px solid var(--line);border-radius:4px;background:transparent;color:var(--muted);cursor:pointer}
 .fold:hover{color:var(--fg);border-color:var(--sel)}.fold svg{width:15px;height:15px}.fold[hidden]{display:none}
+.claim{font-size:12px}.claim .drafting{color:var(--muted);font-style:italic}
+.tog[hidden]{display:none}
 .tip{position:fixed;z-index:20;width:min(720px,calc(100vw - 16px));height:min(440px,calc(100vh - 16px));display:none;flex-direction:column;
 background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
 .tip.show{display:flex}
@@ -109,15 +112,17 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
     <span class="seg" id="cat"></span>
     <span class="seg" id="runner"><button data-v="all" aria-pressed="true">Any runner</button><button data-v="CPU">CPU</button><button data-v="GPU">GPU</button></span>
     <label class="tog"><input type="checkbox" id="sticky-only">Sticky only</label>
-    <span class="lbl">Days</span><span class="seg" id="days"><button data-v="7">7</button><button data-v="14">14</button><button data-v="30">30</button></span>
-    <span class="lbl">Group by</span><span class="seg" id="group"><button data-v="none" aria-pressed="true">None</button><button data-v="model">Model</button><button data-v="test">Test</button><button data-v="function">Function</button><button data-v="test_model">Test + Model</button><button data-v="error">Error</button></span>
-    <span class="lbl">Sort</span><span class="seg" id="sort"><button data-v="fails" aria-pressed="true" title="Most failing runs first">Failures</button><button data-v="alpha" title="Alphabetical by name">A–Z</button></span>
+    <label class="tog" title="Hide tests someone picked up or is drafting an issue for"><input type="checkbox" id="unclaimed-only">Unclaimed only</label>
+    <label class="tog" id="mine-toggle" hidden title="Tests you picked up"><input type="checkbox" id="mine-only">My stuff</label>
+    <span class="ctl"><span class="lbl">Days</span><span class="seg" id="days"><button data-v="7">7</button><button data-v="14">14</button><button data-v="30">30</button></span></span>
+    <span class="ctl"><span class="lbl">Group by</span><span class="seg" id="group"><button data-v="none" aria-pressed="true">None</button><button data-v="model">Model</button><button data-v="test">Test</button><button data-v="function">Function</button><button data-v="test_model">Test + Model</button><button data-v="error">Error</button></span></span>
+    <span class="ctl"><span class="lbl">Sort</span><span class="seg" id="sort"><button data-v="fails" aria-pressed="true" title="Most failing runs first">Failures</button><button data-v="alpha" title="Alphabetical by name">A–Z</button></span></span>
     <button type="button" class="fold" id="fold" hidden></button>
     <input class="search" id="q" type="search" placeholder="Search model, test or job" aria-label="Search">
   </div>
   <div class="progress" id="rows-progress"><span></span></div>
   <div class="scroll"><table>
-    <thead><tr><th>Category</th><th>Model / test</th><th>Signal</th><th>Runner</th><th id="days-head">Last 14 days</th><th>Last seen</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Category</th><th>Model / test</th><th>Signal</th><th>Runner</th><th id="days-head">Last 14 days</th><th>Last seen</th><th>Picked up by</th><th>Actions</th></tr></thead>
     <tbody id="rows"></tbody>
   </table></div>
   <div class="foot"><span id="count"></span><span>Failures on main only · sticky = Main health's rule</span></div>

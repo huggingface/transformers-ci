@@ -10,9 +10,9 @@
   const params = new URLSearchParams(location.search);
   const state = {
     days: [7, 14, 30].includes(Number(params.get('days'))) ? Number(params.get('days')) : 14,
-    cat: 'all', runner: 'all', sticky: false, q: '', group: 'none', sort: 'fails',
+    cat: 'all', runner: 'all', sticky: false, q: '', group: 'none', sort: 'fails', unclaimed: false, mine: false,
   };
-  let rows = [], generatedAt = 0;
+  let rows = [], generatedAt = 0, claims = {}, me = '';
 
   try {
     const body = parent.document.body;
@@ -138,6 +138,8 @@
     const q = state.q;
     const base = rows.filter(row => (state.runner === 'all' || row.runner === state.runner)
       && (!state.sticky || row.sticky)
+      && (!state.unclaimed || !claims[row.nodeid])
+      && (!state.mine || claims[row.nodeid]?.login === me)
       && (!q || `${row.model} ${row.nodeid} ${row.job} ${row.signal}`.toLowerCase().includes(q)));
     return {base, shown: base.filter(row => state.cat === 'all' || row.category === state.cat)};
   }
@@ -166,6 +168,15 @@
   const openGroups = new Set();
   let groupsSeen = '', groupNames = [];
 
+  function claimHtml(claim) {
+    if (!claim) return '<span class="sub">—</span>';
+    const who = `<a href="https://github.com/${encodeURIComponent(claim.login)}" target="_blank" rel="noopener noreferrer">@${esc(claim.login)}</a>`;
+    if (claim.state === 'claimed') {
+      return `${who} · <a href="${esc(claim.url)}" target="_blank" rel="noopener noreferrer">#${claim.number}</a>`;
+    }
+    return `${who} <span class="drafting">drafting…</span>`;
+  }
+
   function rowHtml(row, index) {
     return `<tr>
       <td><span class="badge k-${row.category}">${row.category.toUpperCase()}</span></td>
@@ -175,6 +186,7 @@
       <td class="num">${row.fails} fail${row.fails === 1 ? '' : 's'}${row.sticky ? '<span class="sticky">sticky</span>' : ''}<span class="strip">${row.days.map((count, i) =>
         `<i class="${count ? 'f' : ''}" title="${dayLabel(rowsFirstDay + i * DAY)}: ${count} failing run${count === 1 ? '' : 's'}"></i>`).join('')}</span></td>
       <td title="${new Date(row.last_seen * 1000).toISOString()}">${ago(row.last_seen)}</td>
+      <td class="claim">${claimHtml(claims[row.nodeid])}</td>
       <td><span class="acts">${ACTIONS.map(([id, label], k) =>
         `<button type="button" class="act${k ? '' : ' pri'}" data-act="${id}" data-i="${index}">${label}</button>`).join('')}</span></td></tr>`;
   }
@@ -206,7 +218,7 @@
       const summary = state.group === 'error' ? '' : ` · ${[...errors].sort((a, b) => b[1] - a[1]).slice(0, 3)
         .map(([error, count]) => `${count}× ${esc(error)}`).join(', ')}${errors.size > 3 ? ', …' : ''}`;
       const sticky = members.filter(([row]) => row.sticky).length;
-      return `<tr class="grp" data-group="${esc(name)}" aria-expanded="${open}"><td colspan="7"><span class="caret">${open ? '▾' : '▸'}</span>${esc(name)}
+      return `<tr class="grp" data-group="${esc(name)}" aria-expanded="${open}"><td colspan="8"><span class="caret">${open ? '▾' : '▸'}</span>${esc(name)}
         <span class="meta"> — ${members.length} test${members.length === 1 ? '' : 's'}, ${fails(members)} failing run${fails(members) === 1 ? '' : 's'}${sticky ? `, ${sticky} sticky` : ''}${summary}</span></td></tr>`
         + (open ? members.map(([row, index]) => rowHtml(row, index)).join('') : '');
     }).join('');
@@ -231,25 +243,27 @@
     drawCategories(base);
     $('days-head').textContent = `Last ${state.days} days`;
     $('rows').innerHTML = (state.group === 'none' ? shown.map(rowHtml).join('') : groupedHtml(shown))
-      || `<tr><td colspan="7" class="state">${rows.length ? 'Nothing matches these filters.' : 'No failures on main in this window.'}</td></tr>`;
+      || `<tr><td colspan="8" class="state">${rows.length ? 'Nothing matches these filters.' : 'No failures on main in this window.'}</td></tr>`;
     $('count').textContent = `Showing ${shown.length} of ${rows.length}`;
     current = shown;
     drawFold();
   }
 
   let current = [], rowsFirstDay = 0;
-  async function loadRows() {
-    $('rows-progress').hidden = false;
+  async function loadRows(quiet = false) {
+    if (!quiet) $('rows-progress').hidden = false;
     try {
       const data = await getJson('/project-health/rows');
       rows = data.rows; generatedAt = data.generated_at; rowsFirstDay = data.first_day;
+      claims = data.claims || {};
       drawRows();
       const fails = rows.filter(row => row.category === 'failure');
       $('s-fail').textContent = fails.length;
       $('s-fail-n').textContent = `${fails.filter(row => row.runner === 'GPU').length} GPU · ${fails.filter(row => row.runner === 'CPU').length} CPU · ${state.days} days`;
       $('s-sticky').textContent = fails.filter(row => row.sticky).length;
     } catch (error) {
-      $('rows').innerHTML = `<tr><td colspan="7" class="state">Could not load failures (${esc(error.message)}).</td></tr>`;
+      if (quiet) return;
+      $('rows').innerHTML = `<tr><td colspan="8" class="state">Could not load failures (${esc(error.message)}).</td></tr>`;
     } finally {
       $('rows-progress').hidden = true;
     }
@@ -369,10 +383,19 @@
     else groupNames.forEach(name => openGroups.add(name));
     drawRows();
   });
+  $('unclaimed-only').addEventListener('change', event => { state.unclaimed = event.target.checked; drawRows(); });
+  $('mine-only').addEventListener('change', event => { state.mine = event.target.checked; drawRows(); });
   $('sticky-only').addEventListener('change', event => { state.sticky = event.target.checked; drawRows(); });
   $('q').addEventListener('input', event => { state.q = event.target.value.trim().toLowerCase(); drawRows(); });
 
   press($('days'), state.days);
   loadTrend();
   loadRows();
+  // Claims move while people work (Bug Days): refresh the rows quietly. The
+  // server caches the Prometheus part, so this only re-reads the claims.
+  setInterval(() => { if (!document.hidden) loadRows(true); }, 30000);
+  fetch('/api/user', {credentials: 'same-origin', cache: 'no-store'})
+    .then(response => response.ok ? response.json() : null)
+    .then(user => { if (user?.login) { me = user.login; $('mine-toggle').hidden = false; } })
+    .catch(() => {});
 })();

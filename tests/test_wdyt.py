@@ -375,7 +375,7 @@ def test_new_issue_draft_uses_selected_trace_and_publish_uses_draft(
         "octocat",
         "f" * 32,
         "Edited",
-        "Edited body",
+        "Edited body\n\n" + te.claim_line("octocat"),
         te._github_create_issue,
     )
 

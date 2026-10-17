@@ -349,7 +349,17 @@ function issuePopup(){
     'border:1px solid #657083;border-radius:4px;padding:6px 12px;font:inherit;cursor:pointer';
   actions.append(close,publish);box.append(title,progressHost,content,actions);
   overlay.append(box);host.append(overlay);
-  const hide=()=>{overlay.remove();doc.removeEventListener('keydown',onKey);};
+  // An open draft reserves the test (one issue per test); closing it unpublished
+  // frees the test for the next person.
+  let heldDraft=null;
+  const release=()=>{
+    if(!heldDraft)return;
+    const draftId=heldDraft;heldDraft=null;
+    fetch('/serge-actions/new-issue/release',{method:'POST',credentials:'same-origin',keepalive:true,
+      headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
+      body:JSON.stringify({draft_id:draftId})}).catch(()=>{});
+  };
+  const hide=()=>{release();overlay.remove();doc.removeEventListener('keydown',onKey);};
   const onKey=event=>{if(event.key==='Escape')hide();};
   const show=()=>{if(!overlay.isConnected){host.append(overlay);doc.addEventListener('keydown',onKey);}
     close.focus();};
@@ -358,6 +368,9 @@ function issuePopup(){
   return {show,progress:steps.progress,finish(data){
     steps.finish(data.status==='ok');
     content.replaceChildren();
+    if(data.status==='claimed'||data.status==='drafting'){
+      content.append(heldBy(doc,data));return;
+    }
     if(data.status!=='ok'){
       const messages={invalid:'The selected failure is unavailable.',
         unauthorized:'Your Grafana session expired. Sign in again.',
@@ -366,6 +379,7 @@ function issuePopup(){
         unavailable:'Could not draft the issue right now. Try again shortly.'};
       content.textContent=messages[data.status]||messages.unavailable;return;
     }
+    heldDraft=data.draft_id;
     const form=el('form');form.id='tci-new-issue-form';form.style.margin='0';
     publish.setAttribute('form',form.id);
     const note=el('p','Draft based on the Transformers bug report template. Edit both fields before publishing. The connected GitHub account will create the issue.');
@@ -397,7 +411,12 @@ function issuePopup(){
           headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
           body:JSON.stringify({draft_id:data.draft_id,title:titleInput.value,body:bodyInput.value})});
         const result=await response.json();
+        if(result.status==='claimed'||result.status==='drafting'){
+          heldDraft=null;steps.finish(false);publish.hidden=true;
+          content.replaceChildren(heldBy(doc,result));return;
+        }
         if(result.status==='ok'){
+          heldDraft=null;
           const link=el('a','Issue #'+result.number);link.href=result.url;
           link.target='_blank';link.rel='noopener noreferrer';
           steps.finish(true);content.replaceChildren(el('p','Published '),link);
@@ -410,6 +429,23 @@ function issuePopup(){
       publish.disabled=false;publish.textContent='Publish issue';
     };
   }};
+}
+
+// Someone else holds this test: a published issue, or a draft in progress.
+function heldBy(doc,data){
+  const p=doc.createElement('p'),who=doc.createElement('a');
+  who.href='https://github.com/'+encodeURIComponent(data.login);who.target='_blank';
+  who.rel='noopener noreferrer';who.textContent='@'+data.login;
+  if(data.status==='claimed'){
+    const issue=doc.createElement('a');issue.href=data.url;issue.target='_blank';
+    issue.rel='noopener noreferrer';issue.textContent='#'+data.number;
+    p.append('Already picked up by ',who,' in ',issue,'. Comment there instead of opening a second issue.');
+  }else{
+    const minutes=Math.max(1,Math.round((Date.now()/1000-data.since)/60));
+    p.append(who,' started an issue for this test '+minutes+' min ago. '+
+      'It frees up if they close it without publishing.');
+  }
+  return p;
 }
 
 function helperRefs(doc,parent,value,evidenceUrl,prLinks){
