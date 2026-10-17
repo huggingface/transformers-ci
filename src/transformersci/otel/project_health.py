@@ -416,6 +416,7 @@ ACTIVITY_SEARCHES = {
     "prs_opened": "is:pr created:{day}",
     "prs_merged": "is:pr merged:{day}",
     "issues_opened": "is:issue created:{day}",
+    "issues_closed": "is:issue closed:{day}",
 }
 
 # query -> the GraphQL reply's `data` object.

@@ -7,10 +7,10 @@
 <style>
 :root{color-scheme:dark;--bg:#111217;--panel:#181b1f;--fg:#d8d9da;--strong:#fff;--muted:#9fa3a9;--line:#2c3036;--soft:#22252b;--hover:#1f2430;
 --accent:#6e9fff;--sel:#3d71d9;--red:#f2495c;--green:#73bf69;--amber:#f2cc60;--cell:#2c3036;--cpu:#5794f2;--gpu:#d9731c;
---ev-opened:#5794f280;--ev-merged:#a371f7;--ev-model:#73bf69;--ev-dep:#ff9830}
+--ev-opened:#5794f280;--ev-merged:#a371f7;--ev-model:#73bf69;--ev-dep:#ff9830;--ev-closed:#8ab8ff}
 body.light{color-scheme:light;--bg:#f4f5f5;--panel:#fff;--fg:#24292e;--strong:#000;--muted:#656d76;--line:#d0d7de;--soft:#eaeef2;--hover:#f3f4f6;
 --accent:#1f6feb;--red:#d1242f;--green:#1a7f37;--amber:#9a6700;--cell:#e1e4e8;--cpu:#3d71d9;--gpu:#c4600e;
---ev-opened:#3d71d966;--ev-merged:#8250df;--ev-model:#1a7f37;--ev-dep:#bc4c00}
+--ev-opened:#3d71d966;--ev-merged:#8250df;--ev-model:#1a7f37;--ev-dep:#bc4c00;--ev-closed:#0969da}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.4 Inter,system-ui,sans-serif}
 body{padding:12px 16px 24px}
@@ -118,7 +118,7 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
 
 <div class="panel">
   <div class="ph"><h2>What changed on main</h2>
-    <span class="sub">models added and dependency changes merged to main · PRs and issues opened per day on huggingface/transformers</span></div>
+    <span class="sub">models added and dependency changes merged to main · PRs and issues per day on huggingface/transformers</span></div>
   <div class="chart" id="chart-events"><svg role="img" aria-label="Models added, dependency changes, and PRs and issues per day"></svg><div class="hover"></div></div>
   <div class="legend ev-legend" id="ev-legend"></div>
   <div class="progress" id="events-progress"><span></span></div>

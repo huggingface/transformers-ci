@@ -416,7 +416,7 @@ def test_events_keep_the_window_and_name_each_kind() -> None:
 
 def test_activity_query_counts_every_series_per_utc_day() -> None:
     query = project_health.activity_query(first_day=20377, days=2)
-    assert query.count("issueCount") == 6
+    assert query.count("issueCount") == 8
     assert (
         'prs_opened_0: search(query: "repo:huggingface/transformers is:pr created:2025-10-16"'
         in query
@@ -427,8 +427,18 @@ def test_activity_query_counts_every_series_per_utc_day() -> None:
     )
     data = {"prs_opened_0": {"issueCount": 25}, "issues_opened_1": {"issueCount": 7}}
     assert project_health.activity_counts(data, 2) == [
-        {"prs_opened": 25, "prs_merged": None, "issues_opened": None},
-        {"prs_opened": None, "prs_merged": None, "issues_opened": 7},
+        {
+            "prs_opened": 25,
+            "prs_merged": None,
+            "issues_opened": None,
+            "issues_closed": None,
+        },
+        {
+            "prs_opened": None,
+            "prs_merged": None,
+            "issues_opened": 7,
+            "issues_closed": None,
+        },
     ]
 
 

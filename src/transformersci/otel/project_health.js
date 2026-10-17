@@ -134,7 +134,7 @@
   // ---- events --------------------------------------------------------------
   // Bars and the issue line are per UTC day; markers sit at their merge time.
   const EVENT_KINDS = {model: ['Model added', 'var(--ev-model)'], dependency: ['Dependency change', 'var(--ev-dep)']};
-  const SERIES = [['prs_opened', 'PRs opened', 'var(--ev-opened)', 'PRs opened'], ['prs_merged', 'PRs merged', 'var(--ev-merged)', 'PRs merged'], ['issues_opened', 'Issues opened', 'var(--amber)', 'issues opened']];
+  const SERIES = [['prs_opened', 'PRs opened', 'var(--ev-opened)', 'PRs opened'], ['prs_merged', 'PRs merged', 'var(--ev-merged)', 'PRs merged'], ['issues_opened', 'Issues opened', 'var(--amber)', 'issues opened'], ['issues_closed', 'Issues closed', 'var(--ev-closed)', 'issues closed']];
   const prPage = pr => `/d/pytest-observability-by-pr/branch?var-pr=${encodeURIComponent(pr)}&from=now-90d&to=now`;
   function drawEvents(data) {
     const host = $('chart-events'), svg = host.querySelector('svg'), hover = host.querySelector('.hover');
@@ -164,10 +164,12 @@
           out += `<rect x="${dayX(i) + offset}" y="${y(value)}" width="${barW}" height="${y(0) - y(value)}" rx="1.5" fill="${SERIES.find(s => s[0] === key)[2]}"/>`;
         });
       });
-      let path = '';
-      counts.forEach((day, i) => { if (day.issues_opened != null) path += `${path ? 'L' : 'M'}${dayX(i).toFixed(1)},${y(day.issues_opened).toFixed(1)}`; });
-      out += `<path class="line" d="${path}" stroke="var(--amber)"/>`;
-      counts.forEach((day, i) => { if (day.issues_opened != null) out += `<circle class="dot" cx="${dayX(i)}" cy="${y(day.issues_opened)}" r="2.5" fill="var(--amber)"/>`; });
+      for (const [key, , color] of SERIES.filter(([key]) => key.startsWith('issues_'))) {
+        let path = '';
+        counts.forEach((day, i) => { if (day[key] != null) path += `${path ? 'L' : 'M'}${dayX(i).toFixed(1)},${y(day[key]).toFixed(1)}`; });
+        out += `<path class="line" d="${path}" stroke="${color}"/>`;
+        counts.forEach((day, i) => { if (day[key] != null) out += `<circle class="dot" cx="${dayX(i)}" cy="${y(day[key])}" r="2.5" fill="${color}"/>`; });
+      }
     }
     out += `<line class="cross" y1="${top}" y2="${top + plotH}" visibility="hidden"/>`;
     out += `<rect x="${left}" y="${top}" width="${plotW}" height="${plotH}" fill="transparent" class="hit"/>`;
@@ -217,7 +219,7 @@
     });
     const total = key => counts ? counts.reduce((sum, day) => sum + (day[key] || 0), 0).toLocaleString('en') : '–';
     const kinds = kind => data.events.filter(event => event.kind === kind).length;
-    $('ev-legend').innerHTML = SERIES.map(([key, name, color]) => `<span style="--c:${color}"><i class="${key === 'issues_opened' ? 'ln' : ''}"></i>${name} <b>${total(key)}</b></span>`).join('')
+    $('ev-legend').innerHTML = SERIES.map(([key, name, color]) => `<span style="--c:${color}"><i class="${key.startsWith('issues_') ? 'ln' : ''}"></i>${name} <b>${total(key)}</b></span>`).join('')
       + `<span style="--c:var(--ev-model)"><i class="mk"></i>Models added <b>${kinds('model')}</b></span>`
       + `<span style="--c:var(--ev-dep)"><i class="dm"></i>Dependency changes <b>${kinds('dependency')}</b></span>`
       + (counts ? '' : `<span>PR and issue counts unavailable${data.counts_error ? ` (${esc(data.counts_error)})` : ''}</span>`);
