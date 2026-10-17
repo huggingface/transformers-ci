@@ -137,10 +137,11 @@ jobs:
 
       - name: Run tests fetcher
         run: |
+          set -o pipefail
           uv pip install -U -e .
           mkdir -p test_preparation
-          python utils/tests_fetcher.py | tee tests_fetched_summary.txt || true
-          python utils/tests_fetcher.py --filter_tests || true
+          python utils/tests_fetcher.py | tee tests_fetched_summary.txt
+          python utils/tests_fetcher.py --filter_tests
 
       - name: Check which jobs have tests to run
         id: check
