@@ -25,20 +25,7 @@
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
   "id": null,
-  "links": [
-    {
-      "targetBlank": false,
-      "title": "CI Health",
-      "type": "link",
-      "url": "/login/github?redirectTo=%2Fd%2Fpytest-observability-stack-health%2Fci-health%3ForgId%3D1%26from%3Dnow-24h%26to%3Dnow%26timezone%3Dbrowser%26refresh%3D30s"
-    },
-    {
-      "targetBlank": false,
-      "title": "Daily runs",
-      "type": "link",
-      "url": "/d/pytest-observability-daily/daily"
-    }
-  ],
+  "links": [],
   "panels": [
     {
       "gridPos": {

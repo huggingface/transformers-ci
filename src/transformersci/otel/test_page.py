@@ -41,6 +41,9 @@ a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
 .card{min-width:0}
 .head{display:flex;gap:16px;align-items:flex-start;padding:0 0 14px;margin:0 0 16px;border-bottom:1px solid var(--line)}
 .head-main{flex:1 1 auto;min-width:0}
+.subnav{flex:none;display:flex;gap:6px;margin:0}
+.subnav a{display:inline-flex;align-items:center;box-sizing:border-box;height:32px;padding:0 9px;border:1px solid rgba(128,128,128,.4);border-radius:4px;color:inherit;text-decoration:none;font:600 12px/18px Inter,system-ui,sans-serif}
+.subnav a:hover{background:rgba(128,128,128,.15)}.subnav a:focus-visible{outline:2px solid #6e9fff;outline-offset:-2px}
 .facts{flex:none;display:grid;grid-template-columns:auto auto;gap:4px 14px;align-items:baseline;margin:0;padding:8px 12px;border:1px solid var(--line);border-radius:5px;font-size:12px}
 .facts dt{color:var(--muted)}.facts dd{margin:0;font-weight:500;white-space:nowrap}
 .facts .sep{color:var(--muted);margin:0 5px}
@@ -248,6 +251,10 @@ def reproduce_command(nodeid: str) -> str:
     return "pytest -svx " + quoted
 
 
+RUN_PAGE = "/d/pytest-observability-by-run/pytest-observability-run?"
+PR_PAGE = "/d/pytest-observability-by-pr/pytest-observability-branch?"
+
+
 def _link(url: str, text: str, *, github: bool = False, top: bool = False) -> str:
     esc = html.escape
     if not url:
@@ -386,6 +393,23 @@ def render_test_page(data: dict) -> str:
         )
     when.append(esc(format_duration(data.get("duration_seconds"))))
     leak, leak_class, leak_title = memory_leak(data)
+    # The page's sub menu, left of the facts: the pages this failure belongs to.
+    # They open in the top window, since this page runs in a Grafana iframe.
+    sub = [
+        (RUN_PAGE + urlencode({"var-run_id": run_id}), "Run") if run_id else None,
+        (job_page, "Job") if job_page else None,
+        (PR_PAGE + urlencode({"var-pr": pr}), "PR") if pr and pr != "none" else None,
+    ]
+    sub = [item for item in sub if item]
+    if sub:
+        out.append(
+            "<nav class='subnav' aria-label='This failure'>"
+            + "".join(
+                f"<a href='{esc(url)}' target='_top'>{esc(label)}</a>"
+                for url, label in sub
+            )
+            + "</nav>"
+        )
     out.append(
         "<dl class='facts'><dt>Duration</dt><dd>"
         + "<span class='sep'>·</span>".join(when)

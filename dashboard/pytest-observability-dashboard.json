@@ -23,34 +23,7 @@
   },
   "editable": true,
   "graphTooltip": 0,
-  "links": [
-    {
-      "targetBlank": false,
-      "title": "CI Health",
-      "type": "link",
-      "url": "/login/github?redirectTo=%2Fd%2Fpytest-observability-stack-health%2Fci-health%3ForgId%3D1%26from%3Dnow-24h%26to%3Dnow%26timezone%3Dbrowser%26refresh%3D30s"
-    },
-    {
-      "targetBlank": false,
-      "title": "Daily runs",
-      "type": "link",
-      "url": "/d/pytest-observability-daily/daily"
-    },
-    {
-      "targetBlank": false,
-      "title": "Project health",
-      "type": "link",
-      "url": "/d/pytest-test-health/test-health"
-    },
-    {
-      "targetBlank": false,
-      "title": "Runners",
-      "type": "link",
-      "url": "/d/ci-runners/runners",
-      "icon": "info",
-      "tooltip": "Runner types and the hardware each job gets"
-    }
-  ],
+  "links": [],
   "refresh": "10s",
   "panels": [
     {

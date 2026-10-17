@@ -23,26 +23,7 @@
   },
   "editable": true,
   "graphTooltip": 0,
-  "links": [
-    {
-      "targetBlank": false,
-      "title": "Run",
-      "type": "link",
-      "url": "/d/pytest-observability-by-run/pytest-observability-run?var-run_id=${link_run_id:raw}"
-    },
-    {
-      "targetBlank": false,
-      "title": "Job",
-      "type": "link",
-      "url": "/failure/job-page?trace_id=${trace_id:percentencode}&latest_trace=${latest_trace:percentencode}&test_nodeid=${test_nodeid:percentencode}&job=${test_job:percentencode}&run_id=${link_run_id:percentencode}&pr=${link_pr:percentencode}&status=${status_code:percentencode}"
-    },
-    {
-      "targetBlank": false,
-      "title": "PR",
-      "type": "link",
-      "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${link_pr:raw}"
-    }
-  ],
+  "links": [],
   "panels": [
     {
       "id": 1,

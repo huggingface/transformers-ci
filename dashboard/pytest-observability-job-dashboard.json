@@ -25,10 +25,11 @@
   "graphTooltip": 0,
   "links": [
     {
-      "targetBlank": false,
-      "title": "Back to PR",
+      "title": "PR",
       "type": "link",
-      "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr}"
+      "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr}",
+      "targetBlank": false,
+      "tooltip": "This run's PR or branch page"
     }
   ],
   "panels": [
@@ -297,7 +298,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (job_id, gh_run, name, conclusion) ((ci_github_job_status{run_id=~\"$run_id\"}) * on (repository, run_id, job_id) group_left(name, conclusion, gh_run) ((label_replace(ci_github_job_info{run_id=~\"$run_id\",test_job=~\"$job\"}, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info{run_id=~\"$run_id\"}) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info{run_id=~\"$run_id\",test_job=~\"$job\"}, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")))"
+          "expr": "max by (job_id, gh_run, name, conclusion) ((ci_github_job_status{run_id=~\"$run_id\"}) * on (repository, run_id, job_id) group_left(name, conclusion, gh_run) ((label_replace(ci_github_job_info{run_id=~\"$run_id\",test_job=~\"$job\"}, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info{run_id=~\"$run_id\"}) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info{run_id=~\"$run_id\",test_job=~\"$job\"}, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"—\", \"\", \"\")))"
         },
         {
           "refId": "Started",
@@ -310,7 +311,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (job_id, gh_run, name, conclusion) ((ci_github_job_started_timestamp_seconds{run_id=~\"$run_id\"} * 1000) * on (repository, run_id, job_id) group_left(name, conclusion, gh_run) ((label_replace(ci_github_job_info{run_id=~\"$run_id\",test_job=~\"$job\"}, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info{run_id=~\"$run_id\"}) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info{run_id=~\"$run_id\",test_job=~\"$job\"}, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")))"
+          "expr": "max by (job_id, gh_run, name, conclusion) ((ci_github_job_started_timestamp_seconds{run_id=~\"$run_id\"} * 1000) * on (repository, run_id, job_id) group_left(name, conclusion, gh_run) ((label_replace(ci_github_job_info{run_id=~\"$run_id\",test_job=~\"$job\"}, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info{run_id=~\"$run_id\"}) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info{run_id=~\"$run_id\",test_job=~\"$job\"}, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"—\", \"\", \"\")))"
         },
         {
           "refId": "Duration",
@@ -323,7 +324,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (job_id, gh_run, name, conclusion) (((ci_github_job_completed_timestamp_seconds{run_id=~\"$run_id\"} or on (repository, run_id, job_id) (ci_github_job_started_timestamp_seconds{run_id=~\"$run_id\"} * 0 + time())) - ci_github_job_started_timestamp_seconds{run_id=~\"$run_id\"}) * on (repository, run_id, job_id) group_left(name, conclusion, gh_run) ((label_replace(ci_github_job_info{run_id=~\"$run_id\",test_job=~\"$job\"}, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info{run_id=~\"$run_id\"}) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info{run_id=~\"$run_id\",test_job=~\"$job\"}, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"\u2014\", \"\", \"\")))"
+          "expr": "max by (job_id, gh_run, name, conclusion) (((ci_github_job_completed_timestamp_seconds{run_id=~\"$run_id\"} or on (repository, run_id, job_id) (ci_github_job_started_timestamp_seconds{run_id=~\"$run_id\"} * 0 + time())) - ci_github_job_started_timestamp_seconds{run_id=~\"$run_id\"}) * on (repository, run_id, job_id) group_left(name, conclusion, gh_run) ((label_replace(ci_github_job_info{run_id=~\"$run_id\",test_job=~\"$job\"}, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\") * on (repository, run_id, job_id) group_left(conclusion) ci_github_job_conclusion_info{run_id=~\"$run_id\"}) or on (repository, run_id, job_id) label_replace(label_replace(ci_github_job_info{run_id=~\"$run_id\",test_job=~\"$job\"}, \"gh_run\", \"$1\", \"run_id\", \"([0-9]+):.*\"), \"conclusion\", \"—\", \"\", \"\")))"
         }
       ],
       "transformations": [
@@ -438,7 +439,7 @@
                         "color": "text",
                         "index": 4
                       },
-                      "\u2014": {
+                      "—": {
                         "text": "",
                         "index": 5
                       }

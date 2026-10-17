@@ -152,8 +152,15 @@ def test_render_full_failure_page():
         "/serge-actions?",
     ):
         assert text in page, text
-    # No Run/Job/PR buttons: in Grafana the dashboard's own link bar has them.
-    assert "pytest-observability-run?" not in page
+    # Run / Job / PR: the page's sub menu, left of Duration, opening in the top window.
+    nav = page.split("<nav class='subnav'", 1)[1].split("</nav>", 1)[0]
+    assert [part.split("<", 1)[0] for part in nav.split("target='_top'>")[1:]] == [
+        "Run",
+        "Job",
+        "PR",
+    ]
+    assert "pytest-observability-run?var-run_id=" in nav and "/failure/job-page?" in nav
+    assert page.index("class='subnav'") < page.index("class='facts'")
     # The Job chip opens the Job page in the top window (the page runs in an iframe).
     assert "/failure/job-page?" in page and "target='_top'" in page
 

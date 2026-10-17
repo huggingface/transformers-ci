@@ -23,20 +23,7 @@
  },
  "editable": true,
  "graphTooltip": 0,
- "links": [
-  {
-   "targetBlank": false,
-   "title": "Daily runs",
-   "type": "link",
-   "url": "/d/pytest-observability-daily/daily"
-  },
-  {
-   "targetBlank": false,
-   "title": "Project health",
-   "type": "link",
-   "url": "/d/pytest-test-health/test-health"
-  }
- ],
+ "links": [],
  "panels": [
   {
    "datasource": null,

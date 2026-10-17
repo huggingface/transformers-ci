@@ -147,20 +147,20 @@ a.row.sel,a.row:hover{background:var(--hover)}
   }
 
   // Keep this customization in the shared loader rather than each dashboard.
-  // Clone dashboard links: moving React-owned nodes breaks later renders.
-  var overviewLinks = null, overviewLinksTriedAt = 0;
-  function loadOverviewLinks() {
-    if (Date.now() - overviewLinksTriedAt < 30000) return;
-    overviewLinksTriedAt = Date.now();
-    fetch('/api/dashboards/uid/pytest-observability', {credentials:'same-origin'})
-      .then(function (response) { return response.ok ? response.json() : null; })
-      .then(function (data) {
-        var links = data && data.dashboard && data.dashboard.links;
-        if (!Array.isArray(links)) return;
-        overviewLinks = links.filter(function (link) { return link.title && link.url; });
-        header();
-      })
-      .catch(function () {});
+  // The site menu: the same four entries on every page. A dashboard's own
+  // links are its sub menu, which Grafana shows in the variables row.
+  var MENU = [
+    {title: 'Overview', url: '/', uids: ['pytest-observability', 'default-home-dashboard']},
+    {title: 'Project health', url: '/d/pytest-test-health/project-health', uids: ['pytest-test-health']},
+    {title: 'Daily runs', url: '/d/pytest-observability-daily/daily', uids: ['pytest-observability-daily']},
+    {title: 'CI Health', lock: true, tooltip: 'CI Health: Hugging Face members only (sign in with GitHub)',
+     url: '/login/github?redirectTo=%2Fd%2Fpytest-observability-stack-health%2Fci-health%3ForgId%3D1%26from%3Dnow-24h%26to%3Dnow%26timezone%3Dbrowser%26refresh%3D30s',
+     uids: ['pytest-observability-stack-health']},
+  ];
+  function current(item) {
+    var path = parent.location.pathname;
+    if (item.url === '/' && path === '/') return true;
+    return item.uids.some(function (uid) { return path.indexOf('/d/' + uid + '/') === 0 || path === '/d/' + uid; });
   }
   function header() {
     var h = pd.querySelector('header'), crumbs = h && h.querySelector('nav[aria-label="Breadcrumbs"]');
@@ -173,7 +173,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
         '[data-testid="data-testid navigation mega-menu"],button[aria-label="Open menu"],' +
         'button[aria-label="Toggle menu"],button[aria-label="Close menu"],button[aria-label="Main menu"],' +
         'header:has(#tci-header-nav) [data-testid="data-testid Home breadcrumb"],' +
-        'header nav[aria-label="Breadcrumbs"],body:has(#tci-header-nav) [data-testid="data-testid Dashboard link"]{display:none!important}' +
+        'header nav[aria-label="Breadcrumbs"]{display:none!important}' +
         'body:has(#tci-header-nav) [data-testid="data-testid new share link-button"],' +
         '[data-tci-empty-controls="true"]{display:none!important}' +
         'body:has(#tci-header-nav) [data-testid="data-testid Sidebar container"]{display:none!important}' +
@@ -185,6 +185,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
         '#tci-header-nav a:hover{background:rgba(128,128,128,.15)}' +
         '#tci-header-nav a:focus-visible{outline:2px solid #6e9fff;outline-offset:-2px}' +
         '#tci-header-nav a[aria-current="page"]{border-color:#6e9fff}' +
+        '#tci-header-nav .tci-lock{width:11px;height:11px;margin-left:5px;opacity:.75}' +
         '#tci-header-nav .tci-home{display:flex;align-items:center;gap:8px;font-size:14px;border:0;padding:0 4px;line-height:32px}' +
         '#tci-header-nav .tci-home .tci-emoji{font-size:26px}' +
         '@media(max-width:1250px){header:has(#tci-header-nav){height:128px!important}' +
@@ -201,20 +202,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
       nav.setAttribute('aria-label', 'CI dashboards');
       crumbs.parentNode.insertBefore(nav, crumbs);
     }
-    var links = Array.from(pd.querySelectorAll('[data-testid="data-testid Dashboard link"]'));
-    if (!links.length) {
-      if (!overviewLinks) loadOverviewLinks();
-      if (overviewLinks) links = overviewLinks.map(function (item) {
-        var link = pd.createElement('a');
-        link.href = item.url;
-        link.textContent = item.title;
-        link.title = item.tooltip || item.title;
-        if (item.targetBlank) link.target = '_blank';
-        return link;
-      });
-      else if (nav.children.length > 1) return;
-    }
-    var signature = JSON.stringify(links.map(function (a) { return [a.textContent, a.getAttribute('href')]; }));
+    var signature = parent.location.pathname;
     if (nav.dataset.links !== signature) {
       nav.dataset.links = signature;
       nav.replaceChildren();
@@ -230,15 +218,20 @@ a.row.sel,a.row:hover{background:var(--hover)}
       home.appendChild(pd.createTextNode('Transformers CI'));
       home.setAttribute('aria-label', 'Transformers CI home');
       nav.appendChild(home);
-      links.forEach(function (a) {
-        var copy = pd.createElement('a');
-        copy.href = a.getAttribute('href');
-        copy.textContent = a.textContent;
-        copy.title = a.title || a.textContent;
-        if (a.target) copy.target = a.target;
-        if (a.rel) copy.rel = a.rel;
-        if (a.pathname === parent.location.pathname) copy.setAttribute('aria-current', 'page');
-        nav.appendChild(copy);
+      MENU.forEach(function (item) {
+        var link = pd.createElement('a');
+        link.href = item.url;
+        link.textContent = item.title;
+        link.title = item.tooltip || item.title;
+        if (item.lock) {
+          // A small padlock: the page needs a Hugging Face sign-in.
+          var lock = pd.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          lock.setAttribute('class', 'tci-lock'); lock.setAttribute('viewBox', '0 0 16 16'); lock.setAttribute('aria-hidden', 'true');
+          lock.innerHTML = '<path fill="currentColor" d="M4 7V5a4 4 0 1 1 8 0v2h.5A1.5 1.5 0 0 1 14 8.5v5A1.5 1.5 0 0 1 12.5 15h-9A1.5 1.5 0 0 1 2 13.5v-5A1.5 1.5 0 0 1 3.5 7H4zm2 0h4V5a2 2 0 1 0-4 0v2z"/>';
+          link.appendChild(lock);
+        }
+        if (current(item)) link.setAttribute('aria-current', 'page');
+        nav.appendChild(link);
       });
     }
     // Remove the empty controls row, but retain rows with variables or time controls.

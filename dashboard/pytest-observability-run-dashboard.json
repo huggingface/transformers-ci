@@ -25,10 +25,11 @@
   "graphTooltip": 0,
   "links": [
     {
-      "targetBlank": false,
-      "title": "Back to PR",
+      "title": "PR",
       "type": "link",
-      "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr}"
+      "url": "/d/pytest-observability-by-pr/pytest-observability-branch?var-pr=${pr}",
+      "targetBlank": false,
+      "tooltip": "This run's PR or branch page"
     }
   ],
   "panels": [
