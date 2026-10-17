@@ -2166,6 +2166,7 @@ def test_span_facts(trace: dict | None, test_nodeid: str) -> dict[str, object]:
         ("pytest.cuda_inherited_bytes", "cuda_inherited_bytes"),
         ("pytest.cuda_retained_bytes", "cuda_retained_bytes"),
         ("pytest.cuda_delta_bytes", "cuda_delta_bytes"),
+        ("pytest.cuda_scope_leak_bytes", "cuda_scope_leak_bytes"),
     ):
         try:
             if tag in tags:
@@ -2615,6 +2616,8 @@ def extract_trace_rows(
             # and no series is emitted, exactly as before they existed.
             ("pytest.cuda_inherited_bytes", "cuda_inherited_bytes"),
             ("pytest.cuda_retained_bytes", "cuda_retained_bytes"),
+            # Only on the last test of a class/module in which every test passed.
+            ("pytest.cuda_scope_leak_bytes", "cuda_scope_leak_bytes"),
         ):
             if tag in span_tags:
                 try:
@@ -3907,7 +3910,7 @@ def extract_per_test_duration_metrics(
     lines = [
         "# HELP pytest_test_duration_seconds Duration of the most recent run of each pytest test span (current state; not keyed by run).",
         "# TYPE pytest_test_duration_seconds gauge",
-        "# HELP pytest_test_cuda_delta_bytes Device memory the most recent run of each test left allocated for the next test in its process. Only emitted for tests whose span carries it (GPU jobs).",
+        "# HELP pytest_test_cuda_delta_bytes Device memory the most recent run of each test left allocated for the next test in its process. Only emitted for tests whose span carries it (GPU jobs). Not a leak measure on its own: a failing run's traceback keeps the test's locals alive past teardown (select status_code=\"OK\"), and a class-level cache is charged to the first test that loads it (see pytest_test_cuda_scope_leak_bytes).",
         "# TYPE pytest_test_cuda_delta_bytes gauge",
         "# HELP pytest_test_cuda_delta_after_gc_bytes Of that retained memory, how much survives a gc.collect(). Near zero means uncollected garbage a tearDown would free; a large value means a live reference no tearDown can free. Only emitted when the pytest gc probe is enabled.",
         "# TYPE pytest_test_cuda_delta_after_gc_bytes gauge",
@@ -3915,13 +3918,15 @@ def extract_per_test_duration_metrics(
         "# TYPE pytest_test_cuda_inherited_bytes gauge",
         "# HELP pytest_test_cuda_retained_bytes Device memory still allocated when the test finished, i.e. what the next test in its process inherits. Absolute, so unlike the delta it is never negative.",
         "# TYPE pytest_test_cuda_retained_bytes gauge",
+        "# HELP pytest_test_cuda_scope_leak_bytes Device memory a whole test class (or module, for module-level tests) left allocated after pytest tore it down, tearDownClass included: read before its first test's setup and after its last test's teardown. Emitted on the scope's last test, and only when every test in the scope passed.",
+        "# TYPE pytest_test_cuda_scope_leak_bytes gauge",
     ]
     # key -> (trace_start_time, duration_seconds, retained|None, after_gc|None). On
     # collision the later run (higher start time) wins, so the metric reflects
     # the test's latest result. Retained memory rides the SAME key on purpose:
     # per-run labels are what OOM-killed Prometheus (see above), so this metric
     # must not reintroduce them.
-    latest: dict[tuple[str, ...], tuple[int, float, float | None, float | None]] = {}
+    latest: dict[tuple[str, ...], tuple[float | None, ...]] = {}
     for trace_info, rows in extracted:
         trace_start = int(
             trace_info.get("latest_start_time", 0)
@@ -3944,6 +3949,7 @@ def extract_per_test_duration_metrics(
             after_gc = row.get("cuda_delta_after_gc_bytes")
             inherited_abs = row.get("cuda_inherited_bytes")
             retained_abs = row.get("cuda_retained_bytes")
+            scope_leak = row.get("cuda_scope_leak_bytes")
             existing = latest.get(key)
             if existing is None or trace_start >= existing[0]:
                 latest[key] = (
@@ -3953,6 +3959,7 @@ def extract_per_test_duration_metrics(
                     float(after_gc) if after_gc is not None else None,
                     float(inherited_abs) if inherited_abs is not None else None,
                     float(retained_abs) if retained_abs is not None else None,
+                    float(scope_leak) if scope_leak is not None else None,
                 )
     for key, (
         _trace_start,
@@ -3961,6 +3968,7 @@ def extract_per_test_duration_metrics(
         after_gc,
         inherited_abs,
         retained_abs,
+        scope_leak,
     ) in sorted(latest.items()):
         (
             provider,
@@ -4000,6 +4008,10 @@ def extract_per_test_duration_metrics(
         if retained_abs is not None:
             lines.append(
                 f"pytest_test_cuda_retained_bytes{metric_labels(test_labels)} {retained_abs:.0f}"
+            )
+        if scope_leak is not None:
+            lines.append(
+                f"pytest_test_cuda_scope_leak_bytes{metric_labels(test_labels)} {scope_leak:.0f}"
             )
     return lines
 

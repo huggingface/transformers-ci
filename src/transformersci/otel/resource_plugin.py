@@ -456,6 +456,95 @@ CUDA_DELTA_AFTER_GC_PROPERTY = "cuda_delta_after_gc_bytes"
 CUDA_INHERITED_PROPERTY = "cuda_inherited_bytes"
 CUDA_RETAINED_PROPERTY = "cuda_retained_bytes"
 
+# What a whole test class (or, for module-level tests, a module) left allocated
+# once pytest had torn it down. The per-test delta cannot answer "did this class
+# leak": it is read AFTER setup, so a model loaded in `setUpClass` sits inside
+# every baseline, and the common lazy pattern —
+#
+#     @classmethod
+#     def get_model(cls):
+#         if cls.model is None:
+#             cls.model = Model.from_pretrained(...)
+#
+# — charges the whole model to whichever test calls it first, whether or not
+# `tearDownClass` frees it (qwen2_moe never does: +26.7 GiB on its first test;
+# a class that does free it reads exactly the same on that test). So the scope
+# is read before its first test's setup and after its last test's teardown,
+# which is when pytest runs `tearDownClass`, and the difference is stamped on
+# that last test.
+#
+# Only for scopes in which every test passed. A failed test's traceback keeps
+# its frames — and the model in their locals — alive past teardown, through a
+# reference cycle for unittest or `sys.last_traceback` for plain functions; 25 of
+# the 40 largest per-test deltas on 2026-10-17 were failing tests.
+CUDA_SCOPE_LEAK_PROPERTY = "cuda_scope_leak_bytes"
+
+# Scope nodeid -> CUDA bytes allocated before the scope's first setup. Worker-side,
+# like _cuda_at_setup. A scope pytest re-opens later on the same worker (xdist
+# `load` can split a class) is measured again from the new opening.
+_cuda_at_scope_entry: dict[str, int] = {}
+# Scopes in which some phase of some test failed: their leak is not stamped.
+_failed_scopes: set[str] = set()
+# Test nodeid -> the scope pytest tears down after it, from `nextitem`.
+_scope_closing_after: dict[str, str] = {}
+
+
+def _leak_scope(item: Any) -> str | None:
+    """The nodeid of the narrowest class around ``item``, else its module."""
+    try:
+        parent = item.getparent(pytest.Class) or item.getparent(pytest.Module)
+    except Exception:  # stub items, or a collector we do not know
+        return None
+    return parent.nodeid if parent is not None else None
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> Any:
+    """Read the scope's entry baseline before pytest sets anything up, so a
+    class fixture (`setUpClass`) lands inside the measured window."""
+    scope = _leak_scope(item)
+    if scope is not None and scope not in _cuda_at_scope_entry:
+        allocated = _cuda_allocated_now()
+        if allocated is not None:
+            _cuda_at_scope_entry[scope] = allocated
+    yield
+
+
+def _note_scope_failure(item: Any, outcome: Any) -> None:
+    """Remember that a test in this scope failed (or xfailed: its exception
+    keeps the frames alive just the same), so the scope's leak is not stamped."""
+    try:
+        report = outcome.get_result()
+        failed = report.failed or getattr(report, "wasxfail", None) is not None
+    except Exception:
+        return
+    if failed:
+        scope = _leak_scope(item)
+        if scope is not None:
+            _failed_scopes.add(scope)
+
+
+def _stamp_scope_leak(item: Any, report: Any, end: int | None) -> None:
+    """On the teardown that closed a scope, stamp what the scope left behind."""
+    scope = _scope_closing_after.pop(item.nodeid, None)
+    if scope is None:
+        return
+    entry = _cuda_at_scope_entry.pop(scope, None)
+    failed = scope in _failed_scopes
+    _failed_scopes.discard(scope)
+    if report is None or entry is None or end is None or failed:
+        return
+    report.user_properties.append((CUDA_SCOPE_LEAK_PROPERTY, end - entry))
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
+    """Note when this teardown also closes the scope. pytest decides that from
+    the same `nextitem` (SetupState.teardown_exact), so the two agree."""
+    scope = _leak_scope(item)
+    if scope is not None and (nextitem is None or _leak_scope(nextitem) != scope):
+        _scope_closing_after[item.nodeid] = scope
+
 
 def _cuda_allocated_now() -> int | None:
     """CUDA bytes currently allocated, or ``None`` when there is no CUDA to read
@@ -490,6 +579,7 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> Any:
     inherit if something collected first.
     """
     outcome = yield
+    _note_scope_failure(item, outcome)
     if call.when == "setup":
         allocated = _cuda_allocated_now()
         if allocated is not None:
@@ -499,19 +589,25 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> Any:
         return
     start = _cuda_at_setup.pop(item.nodeid, None)
     end = _cuda_allocated_now()
-    if start is None or end is None:
-        return
     try:
         report = outcome.get_result()
     except Exception:  # pragma: no cover - a failed report is not ours to fix
-        return
-    report.user_properties.append((CUDA_DELTA_PROPERTY, end - start))
-    # Both sides of that subtraction, so the delta stops being ambiguous: `end`
-    # is what the next test really inherits (never negative), `start` is what
-    # this one was handed.
-    report.user_properties.append((CUDA_INHERITED_PROPERTY, start))
-    report.user_properties.append((CUDA_RETAINED_PROPERTY, end))
-    if not gc_probe_enabled(item.config):
+        report = None
+    if report is not None and start is not None and end is not None:
+        report.user_properties.append((CUDA_DELTA_PROPERTY, end - start))
+        # Both sides of that subtraction, so the delta stops being ambiguous: `end`
+        # is what the next test really inherits (never negative), `start` is what
+        # this one was handed.
+        report.user_properties.append((CUDA_INHERITED_PROPERTY, start))
+        report.user_properties.append((CUDA_RETAINED_PROPERTY, end))
+    # Before the gc probe, which would change the reading it is computed from.
+    _stamp_scope_leak(item, report, end)
+    if (
+        report is None
+        or start is None
+        or end is None
+        or not gc_probe_enabled(item.config)
+    ):
         return
     # Opt-in second reading: how much of that delta survives a collection. It is
     # what separates "a tearDown would fix this" from "something holds a live
@@ -573,6 +669,8 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     for prop, attribute in (
         (CUDA_INHERITED_PROPERTY, "pytest.cuda_inherited_bytes"),
         (CUDA_RETAINED_PROPERTY, "pytest.cuda_retained_bytes"),
+        # Only on the last test of a class/module that passed in full.
+        (CUDA_SCOPE_LEAK_PROPERTY, "pytest.cuda_scope_leak_bytes"),
     ):
         value = properties.get(prop)
         if isinstance(value, int):

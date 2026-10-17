@@ -5218,6 +5218,33 @@ def test_spans_from_an_older_plugin_emit_only_the_delta() -> None:
     assert len(metric_lines(metrics, "pytest_test_cuda_delta_bytes")) == 1
     assert metric_lines(metrics, "pytest_test_cuda_inherited_bytes") == []
     assert metric_lines(metrics, "pytest_test_cuda_retained_bytes") == []
+    assert metric_lines(metrics, "pytest_test_cuda_scope_leak_bytes") == []
+
+
+def test_scope_leak_becomes_its_own_metric_on_the_closing_test() -> None:
+    """What a class left behind after tearDownClass. The plugin stamps it on the
+    class's last test only, so it rides that test's labels; test_class and
+    test_module are what a Leak view groups by."""
+    gib = 1024**3
+    span = _span_with_retained_memory("t.py::Qwen2MoeIntegrationTest::test_z_last", 0)
+    span["tags"].append(make_tag("pytest.cuda_scope_leak_bytes", 26 * gib))
+    metrics = trace_exporter.extract_per_test_duration_metrics(
+        [
+            make_trace(
+                trace_id="t-scope",
+                run_id="run-scope",
+                job="run_models_gpu",
+                spans=[span],
+            )
+        ]
+    )
+    lines = metric_lines(metrics, "pytest_test_cuda_scope_leak_bytes")
+    assert len(lines) == 1 and lines[0].endswith(f" {26 * gib}")
+    assert 'test_class="Qwen2MoeIntegrationTest"' in lines[0]
+    for forbidden in ('run_id="', 'trace_id="', 'pr="'):
+        assert forbidden not in lines[0]
+    # The per-test delta on the same span is untouched.
+    assert metric_lines(metrics, "pytest_test_cuda_delta_bytes")[0].endswith(" 0")
 
 
 def test_no_retained_memory_metric_for_tests_that_did_not_report_it() -> None:

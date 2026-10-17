@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -717,3 +718,164 @@ def test_empty_env_values_mean_off(monkeypatch) -> None:
     monkeypatch.delenv("TRANSFORMERS_TEST_RESOURCE_METRICS_FILE", raising=False)
     assert resource_plugin.gc_probe_enabled(None) is False
     assert resource_plugin.metrics_file_path(None) is None
+
+
+_SCOPE_CONFTEST = """
+import json, os
+from transformersci.otel import resource_plugin
+
+FAKE = {"allocated": 0}
+resource_plugin._cuda_allocated_now = lambda: FAKE["allocated"]
+
+
+def pytest_runtest_logreport(report):
+    if report.when == "teardown":
+        with open(os.environ["SCOPE_PROBE_OUT"], "a") as out:
+            out.write(json.dumps([report.nodeid, dict(report.user_properties)]) + "\\n")
+"""
+
+_SCOPE_TESTS = '''
+import unittest
+from conftest import FAKE
+
+GIB = 1024**3
+
+
+class LazyNeverFreed(unittest.TestCase):
+    """qwen2_moe's shape: the first test to call get_model loads it, nothing frees it."""
+    model = None
+
+    @classmethod
+    def get_model(cls):
+        if cls.model is None:
+            cls.model = object()
+            FAKE["allocated"] += 20 * GIB
+        return cls.model
+
+    def test_a(self):
+        self.get_model()
+
+    def test_b(self):
+        self.get_model()
+
+
+class FreedInTearDownClass(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        FAKE["allocated"] += 18 * GIB
+
+    @classmethod
+    def tearDownClass(cls):
+        FAKE["allocated"] -= 18 * GIB
+
+    def test_a(self):
+        pass
+
+    def test_b(self):
+        pass
+
+
+class Failing(unittest.TestCase):
+    def test_a(self):
+        FAKE["allocated"] += 5 * GIB  # what a traceback keeps alive
+        self.fail("boom")
+
+
+def test_module_level():
+    FAKE["allocated"] += 1 * GIB
+'''
+
+
+def test_scope_leak_is_measured_across_setUpClass_and_tearDownClass(tmp_path) -> None:
+    """A real pytest session, so setUpClass and tearDownClass run where pytest
+    really runs them (inside the first setup and the last teardown), and the
+    plugin loads through its entry point as in CI."""
+    import json
+    import subprocess
+    import sys
+
+    (tmp_path / "conftest.py").write_text(_SCOPE_CONFTEST)
+    (tmp_path / "test_scopes.py").write_text(_SCOPE_TESTS)
+    out = tmp_path / "reports.jsonl"
+    src = str(Path(resource_plugin.__file__).resolve().parents[2])
+    env = dict(
+        os.environ,
+        SCOPE_PROBE_OUT=str(out),
+        PYTHONPATH=os.pathsep.join([src, os.environ.get("PYTHONPATH", "")]),
+    )
+    env.pop("PYTEST_DISABLE_PLUGIN_AUTOLOAD", None)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            "no:xdist",
+            "-q",
+            "test_scopes.py",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        check=False,  # Failing.test_a fails on purpose
+    )
+    props = {
+        nodeid.split("::", 1)[1]: p
+        for nodeid, p in (json.loads(line) for line in out.read_text().splitlines())
+    }
+    leak = resource_plugin.CUDA_SCOPE_LEAK_PROPERTY
+    delta = resource_plugin.CUDA_DELTA_PROPERTY
+    gib = 1024**3
+
+    # The per-test delta blames the first caller and cannot tell these apart...
+    assert props["LazyNeverFreed::test_a"][delta] == 20 * gib
+    assert props["FreedInTearDownClass::test_a"][delta] == 0
+    assert props["FreedInTearDownClass::test_b"][delta] == -18 * gib
+    # ...the scope leak can: stamped once, on the class's last test.
+    assert leak not in props["LazyNeverFreed::test_a"]
+    assert props["LazyNeverFreed::test_b"][leak] == 20 * gib
+    assert props["FreedInTearDownClass::test_b"][leak] == 0
+    # A failed test's memory is its traceback's, not a leak: nothing stamped.
+    assert leak not in props["Failing::test_a"]
+    # A module-level test is its own scope's only test.
+    assert props["test_module_level"][leak] == 1 * gib
+
+
+def test_scope_leak_is_not_stamped_on_stub_items(monkeypatch) -> None:
+    # Items without a parent chain (and older callers) keep exactly the
+    # properties they had: no scope, no claim.
+    gib = 1024**3
+    readings = iter([1 * gib, 3 * gib])
+    monkeypatch.setattr(resource_plugin, "_cuda_allocated_now", lambda: next(readings))
+    resource_plugin._cuda_at_setup.clear()
+    item = _StubItem("t.py::A::test_x")
+    _drive_makereport(
+        item, _StubCall("setup"), _StubOutcome(_make_report(item.nodeid, "setup", 0.1))
+    )
+    teardown_report = _make_report(item.nodeid, "teardown", 0.05)
+    _drive_makereport(item, _StubCall("teardown"), _StubOutcome(teardown_report))
+    assert resource_plugin.CUDA_SCOPE_LEAK_PROPERTY not in dict(
+        teardown_report.user_properties
+    )
+
+
+def test_scope_leak_rides_the_span() -> None:
+    from unittest.mock import patch
+
+    attributes: dict = {}
+
+    class _StubSpan:
+        def is_recording(self):
+            return True
+
+        def set_attribute(self, key, value):
+            attributes[key] = value
+
+    resource_plugin._worker_durations.clear()
+    report = _make_report("t.py::A::test_last", "teardown", 0.05)
+    report.user_properties.append((resource_plugin.CUDA_SCOPE_LEAK_PROPERTY, 7))
+    with patch("opentelemetry.trace.get_current_span", return_value=_StubSpan()):
+        resource_plugin.pytest_runtest_logreport(report)
+    assert attributes["pytest.cuda_scope_leak_bytes"] == 7

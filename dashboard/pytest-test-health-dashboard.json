@@ -993,7 +993,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "GPU tests that finished still holding device memory, worst first. That memory is handed to the next test in the same process.",
+      "description": "Passing GPU tests that finished still holding device memory, worst first; the next test in the same process inherits it. Failing runs are left out because their traceback keeps the model alive.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1085,7 +1085,7 @@
           "range": false,
           "legendFormat": "__auto",
           "refId": "A",
-          "expr": "sort_desc(topk(20, last_over_time(pytest_test_cuda_delta_bytes[8d])))"
+          "expr": "sort_desc(topk(20, last_over_time(pytest_test_cuda_delta_bytes{status_code=\"OK\"}[8d])))"
         }
       ],
       "title": "Device memory left for the next test (GPU)",
