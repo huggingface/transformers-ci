@@ -1,7 +1,9 @@
 """Project health: failing tests on ``main`` that people can pick up.
 
-``GET /project-health`` is the page, ``/project-health/rows`` the table and
-``/project-health/trend`` the chart above it. Everything is read from
+``GET /project-health`` is the page, ``/project-health/rows`` the table,
+``/project-health/trend`` the merge-run chart above it and
+``/project-health/events`` the models, dependency changes and PR/issue counts
+above that. Everything is read from
 Prometheus; this module owns the queries and turns their replies into rows, so
 the rules (sticky, the day strip, which runs count as merges) are Python with
 tests instead of PromQL in a dashboard.
@@ -16,6 +18,7 @@ since the test last failed.
 from __future__ import annotations
 
 import re
+import time
 from collections import defaultdict
 from collections.abc import Callable
 from typing import Any
@@ -395,3 +398,108 @@ def merge_trend(
 def build_trend(query: Query, *, now: float, days: int) -> dict[str, Any]:
     replies = {name: query(expr) for name, expr in trend_queries(days).items()}
     return merge_trend(replies, now=now, days=days)
+
+
+# ---- events: what changed on main, next to how busy the repository was ----
+# Both series are info gauges whose value is the merge time in epoch ms, so
+# the window's max_over_time keeps every event that was exported in it.
+EVENT_QUERIES = {
+    "model": "max by (model, pr) (max_over_time(pytest_model_added_info[{window}]))",
+    "dependency": (
+        "max by (dependency, change, pr) "
+        "(max_over_time(pytest_dependency_change_info[{window}]))"
+    ),
+}
+ACTIVITY_REPOSITORY = "huggingface/transformers"
+# One GitHub search per series and day; each is an issueCount, never a page.
+ACTIVITY_SEARCHES = {
+    "prs_opened": "is:pr created:{day}",
+    "prs_merged": "is:pr merged:{day}",
+    "issues_opened": "is:issue created:{day}",
+}
+
+# query -> the GraphQL reply's `data` object.
+GraphQL = Callable[[str], dict[str, Any]]
+
+
+def _utc_day(ts: float) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(ts))
+
+
+def activity_query(first_day: int, days: int) -> str:
+    """One GraphQL query counting every series for every day of the window."""
+    fields = []
+    for index in range(days):
+        day = _utc_day((first_day + index) * DAY)
+        for name, search in ACTIVITY_SEARCHES.items():
+            text = f"repo:{ACTIVITY_REPOSITORY} {search.format(day=day)}"
+            fields.append(
+                f'{name}_{index}: search(query: "{text}", type: ISSUE, first: 0) '
+                "{ issueCount }"
+            )
+    return "{ " + " ".join(fields) + " }"
+
+
+def activity_counts(data: dict[str, Any], days: int) -> list[dict[str, int | None]]:
+    return [
+        {
+            name: (data.get(f"{name}_{index}") or {}).get("issueCount")
+            for name in ACTIVITY_SEARCHES
+        }
+        for index in range(days)
+    ]
+
+
+def project_events(
+    replies: dict[str, list[dict[str, Any]]], *, now: float, days: int
+) -> list[dict[str, Any]]:
+    """Models added and dependency changes merged inside the window, oldest first."""
+    start = (int(now // DAY) - days + 1) * DAY
+    events = []
+    for kind, result in replies.items():
+        for labels, value in _samples(result):
+            at = value / 1000
+            if not start <= at <= now:
+                continue
+            pr = labels.get("pr", "none")
+            event: dict[str, Any] = {
+                "kind": kind,
+                "at": at,
+                "pr": "" if pr == "none" else pr,
+            }
+            if kind == "model":
+                event["title"] = labels.get("model", "")
+            else:
+                event["title"] = (
+                    f"{labels.get('dependency', '')} {labels.get('change', '')}".strip()
+                )
+            events.append(event)
+    return sorted(events, key=lambda event: (event["at"], event["title"]))
+
+
+def build_events(
+    query: Query, graphql: GraphQL | None, *, now: float, days: int
+) -> dict[str, Any]:
+    """Events from Prometheus plus per-day GitHub counts. Counts are best effort:
+    without GitHub the chart still shows the events."""
+    first_day = int(now // DAY) - days + 1
+    replies = {
+        kind: query(expr.format(window=f"{days}d"))
+        for kind, expr in EVENT_QUERIES.items()
+    }
+    counts = None
+    error = ""
+    if graphql is not None:
+        try:
+            counts = activity_counts(graphql(activity_query(first_day, days)), days)
+        except Exception as exc:
+            error = str(exc) or type(exc).__name__
+    return {
+        "days": days,
+        "first_day": first_day * DAY,
+        "generated_at": now,
+        "repository": ACTIVITY_REPOSITORY,
+        "events": project_events(replies, now=now, days=days),
+        "counts": counts,
+        "counts_error": error,
+    }

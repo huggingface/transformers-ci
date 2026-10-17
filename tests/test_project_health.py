@@ -391,3 +391,77 @@ def test_build_rows_adds_slow_rows_from_two_range_queries() -> None:
     assert all(step == DAY for *_, step in asked)
     assert asked[0][1] == 95 * DAY - 1 and asked[0][2] == 101 * DAY - 1
     assert 'test_job=~"' in asked[0][0] and 'test_job!~"' in asked[1][0]
+
+
+def test_events_keep_the_window_and_name_each_kind() -> None:
+    now = 100 * DAY + 3600
+    replies = {
+        "model": vector(
+            ({"model": "beam", "pr": "49664"}, (99 * DAY + 10) * 1000),
+            ({"model": "old", "pr": "1"}, (80 * DAY) * 1000),
+        ),
+        "dependency": vector(
+            (
+                {"dependency": "python", "change": "→ 3.11", "pr": "none"},
+                (98 * DAY) * 1000,
+            ),
+        ),
+    }
+    events = project_health.project_events(replies, now=now, days=7)
+    assert events == [
+        {"kind": "dependency", "at": 98 * DAY, "pr": "", "title": "python → 3.11"},
+        {"kind": "model", "at": 99 * DAY + 10, "pr": "49664", "title": "beam"},
+    ]
+
+
+def test_activity_query_counts_every_series_per_utc_day() -> None:
+    query = project_health.activity_query(first_day=20377, days=2)
+    assert query.count("issueCount") == 6
+    assert (
+        'prs_opened_0: search(query: "repo:huggingface/transformers is:pr created:2025-10-16"'
+        in query
+    )
+    assert (
+        'prs_merged_1: search(query: "repo:huggingface/transformers is:pr merged:2025-10-17"'
+        in query
+    )
+    data = {"prs_opened_0": {"issueCount": 25}, "issues_opened_1": {"issueCount": 7}}
+    assert project_health.activity_counts(data, 2) == [
+        {"prs_opened": 25, "prs_merged": None, "issues_opened": None},
+        {"prs_opened": None, "prs_merged": None, "issues_opened": 7},
+    ]
+
+
+def test_events_survive_github_being_down() -> None:
+    def graphql(query: str) -> dict:
+        raise RuntimeError("rate limited")
+
+    body = project_health.build_events(lambda expr: [], graphql, now=100 * DAY, days=7)
+    assert body["counts"] is None
+    assert body["counts_error"] == "rate limited"
+    assert body["events"] == []
+    assert body["first_day"] == 94 * DAY
+
+
+def test_events_endpoint_caches_github_counts(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def graphql(query: str) -> dict:
+        calls.append(query)
+        return {"prs_opened_0": {"issueCount": 3}}
+
+    monkeypatch.setattr(trace_exporter, "_prometheus_vector", lambda expr: [])
+    monkeypatch.setattr(trace_exporter, "_github_graphql", graphql)
+    monkeypatch.setattr(trace_exporter, "_project_health_cache", {})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        body = json.loads(urlopen(f"{base}/project-health/events?days=7").read())
+        assert body["days"] == 7 and len(body["counts"]) == 7
+        assert body["counts"][0]["prs_opened"] == 3
+        urlopen(f"{base}/project-health/events?days=7").read()
+        assert len(calls) == 1
+    finally:
+        server.shutdown()

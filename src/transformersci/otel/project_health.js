@@ -131,6 +131,112 @@
     }
   }
 
+  // ---- events --------------------------------------------------------------
+  // Bars and the issue line are per UTC day; markers sit at their merge time.
+  const EVENT_KINDS = {model: ['Model added', 'var(--ev-model)'], dependency: ['Dependency change', 'var(--ev-dep)']};
+  const SERIES = [['prs_opened', 'PRs opened', 'var(--ev-opened)', 'PRs opened'], ['prs_merged', 'PRs merged', 'var(--ev-merged)', 'PRs merged'], ['issues_opened', 'Issues opened', 'var(--amber)', 'issues opened']];
+  const prPage = pr => `/d/pytest-observability-by-pr/branch?var-pr=${encodeURIComponent(pr)}&from=now-90d&to=now`;
+  function drawEvents(data) {
+    const host = $('chart-events'), svg = host.querySelector('svg'), hover = host.querySelector('.hover');
+    const width = svg.clientWidth || 900, height = 244;
+    const left = 46, right = 12, lane = 58, bottom = 24;
+    const top = lane + 6, plotW = width - left - right, plotH = height - top - bottom;
+    const n = data.days, band = plotW / n, counts = data.counts;
+    const dayX = i => left + band * (i + 0.5);
+    const timeX = ts => left + ((ts - data.first_day) / DAY) * band;
+    const peak = counts ? Math.max(1, ...counts.flatMap(day => SERIES.map(([key]) => day[key] ?? 0))) : 1;
+    const top_ = Math.ceil(niceMax(peak * 1.1));
+    const y = value => top + plotH * (1 - value / top_);
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    let out = '<g class="grid">';
+    for (const tick of [0, 0.5, 1]) out += `<line x1="${left}" x2="${left + plotW}" y1="${y(tick * top_)}" y2="${y(tick * top_)}"/>`;
+    out += '</g><g class="axis">';
+    if (counts) for (const tick of [0, 0.5, 1]) out += `<text x="${left - 6}" y="${y(tick * top_) + 4}" text-anchor="end">${Math.round(tick * top_)}</text>`;
+    const step = Math.max(1, Math.ceil(n / (width < 500 ? 4 : 8)));
+    for (let i = 0; i < n; i += step) out += `<text x="${dayX(i)}" y="${height - 6}" text-anchor="middle">${dayLabel(data.first_day + i * DAY)}</text>`;
+    out += '</g>';
+    if (counts) {
+      const barW = Math.max(2, Math.min(12, band * 0.32));
+      counts.forEach((day, i) => {
+        [['prs_opened', -barW - 1], ['prs_merged', 1]].forEach(([key, offset]) => {
+          const value = day[key];
+          if (!value) return;
+          out += `<rect x="${dayX(i) + offset}" y="${y(value)}" width="${barW}" height="${y(0) - y(value)}" rx="1.5" fill="${SERIES.find(s => s[0] === key)[2]}"/>`;
+        });
+      });
+      let path = '';
+      counts.forEach((day, i) => { if (day.issues_opened != null) path += `${path ? 'L' : 'M'}${dayX(i).toFixed(1)},${y(day.issues_opened).toFixed(1)}`; });
+      out += `<path class="line" d="${path}" stroke="var(--amber)"/>`;
+      counts.forEach((day, i) => { if (day.issues_opened != null) out += `<circle class="dot" cx="${dayX(i)}" cy="${y(day.issues_opened)}" r="2.5" fill="var(--amber)"/>`; });
+    }
+    out += `<line class="cross" y1="${top}" y2="${top + plotH}" visibility="hidden"/>`;
+    out += `<rect x="${left}" y="${top}" width="${plotW}" height="${plotH}" fill="transparent" class="hit"/>`;
+    // Markers stack upwards when they would overlap: four models merged within
+    // a few hours of each other must stay four clickable dots.
+    const levels = [];
+    data.events.forEach((event, index) => {
+      const cx = timeX(event.at);
+      let level = levels.findIndex(last => cx - last > 13);
+      if (level === -1) level = levels.length < 4 ? levels.length : levels.length - 1;
+      levels[level] = cx;
+      const cy = lane - 7 - level * 13, color = EVENT_KINDS[event.kind][1];
+      const mark = event.kind === 'model'
+        ? `<circle class="mark" cx="${cx}" cy="${cy}" r="5" fill="${color}" stroke="var(--panel)" stroke-width="1.5"/>`
+        : `<rect class="mark" x="${cx - 4.5}" y="${cy - 4.5}" width="9" height="9" transform="rotate(45 ${cx} ${cy})" fill="${color}" stroke="var(--panel)" stroke-width="1.5"/>`;
+      const body = `<line class="guide" x1="${cx}" x2="${cx}" y1="${cy + 5}" y2="${top + plotH}" stroke="${color}"/>${mark}`;
+      out += event.pr
+        ? `<a class="ev" data-i="${index}" href="${prPage(event.pr)}" target="_top">${body}</a>`
+        : `<g class="ev" data-i="${index}">${body}</g>`;
+    });
+    svg.innerHTML = out;
+    const place = (event, html) => {
+      hover.innerHTML = html; hover.style.display = 'block';
+      const chartBox = host.getBoundingClientRect();
+      hover.style.left = `${Math.max(4, Math.min(event.clientX - chartBox.left + 14, chartBox.width - hover.offsetWidth - 4))}px`;
+      hover.style.top = `${event.clientY - chartBox.top + 12}px`;
+    };
+    const eventLine = event => `<div class="evline"><i style="background:${EVENT_KINDS[event.kind][1]}"></i>${esc(event.title)}${event.pr ? ` <span class="sub">#${esc(event.pr)}</span>` : ''}</div>`;
+    const cross = svg.querySelector('.cross'), hit = svg.querySelector('.hit');
+    hit.addEventListener('mousemove', event => {
+      const box = svg.getBoundingClientRect();
+      const px = ((event.clientX - box.left) / box.width) * width;
+      const i = Math.max(0, Math.min(n - 1, Math.floor((px - left) / band)));
+      cross.setAttribute('x1', dayX(i)); cross.setAttribute('x2', dayX(i)); cross.setAttribute('visibility', 'visible');
+      const start = data.first_day + i * DAY;
+      const today = data.events.filter(item => item.at >= start && item.at < start + DAY);
+      place(event, `<b>${dayLabel(start)}</b>${counts
+        ? SERIES.map(([key, , color, inline]) => `<div><i style="background:${color}"></i>${counts[i][key] ?? '–'} ${inline}</div>`).join('')
+        : ''}${today.map(eventLine).join('')}`);
+    });
+    hit.addEventListener('mouseleave', () => { hover.style.display = 'none'; cross.setAttribute('visibility', 'hidden'); });
+    svg.querySelectorAll('.ev').forEach(node => {
+      const item = data.events[Number(node.dataset.i)];
+      node.addEventListener('mousemove', event => place(event,
+        `<b>${EVENT_KINDS[item.kind][0]}</b>${eventLine(item)}<div class="sub">${new Date(item.at * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC${item.pr ? ' · click for the PR page' : ''}</div>`));
+      node.addEventListener('mouseleave', () => { hover.style.display = 'none'; });
+    });
+    const total = key => counts ? counts.reduce((sum, day) => sum + (day[key] || 0), 0).toLocaleString('en') : '–';
+    const kinds = kind => data.events.filter(event => event.kind === kind).length;
+    $('ev-legend').innerHTML = SERIES.map(([key, name, color]) => `<span style="--c:${color}"><i class="${key === 'issues_opened' ? 'ln' : ''}"></i>${name} <b>${total(key)}</b></span>`).join('')
+      + `<span style="--c:var(--ev-model)"><i class="mk"></i>Models added <b>${kinds('model')}</b></span>`
+      + `<span style="--c:var(--ev-dep)"><i class="dm"></i>Dependency changes <b>${kinds('dependency')}</b></span>`
+      + (counts ? '' : `<span>PR and issue counts unavailable${data.counts_error ? ` (${esc(data.counts_error)})` : ''}</span>`);
+  }
+
+  async function loadEvents() {
+    $('events-progress').hidden = false;
+    try {
+      const data = await getJson('/project-health/events');
+      drawEvents(data);
+      window.addEventListener('resize', () => drawEvents(data), {once: true});
+    } catch (error) {
+      $('chart-events').querySelector('svg').innerHTML = '';
+      $('ev-legend').textContent = `Could not load events (${error.message}).`;
+    } finally {
+      $('events-progress').hidden = true;
+    }
+  }
+
   // ---- table ---------------------------------------------------------------
   function testUrl(row) {
     const query = new URLSearchParams({
@@ -436,7 +542,7 @@
     state.days = Number(button.dataset.v); press($('days'), state.days);
     params.set('days', String(state.days));
     history.replaceState(null, '', `${location.pathname}?${params}`);
-    loadRows(); loadTrend();
+    loadRows(); loadTrend(); loadEvents();
   });
   $('group').addEventListener('click', event => {
     const button = event.target.closest('button'); if (!button) return;
@@ -457,6 +563,7 @@
   $('q').addEventListener('input', event => { state.q = event.target.value.trim().toLowerCase(); drawRows(); });
 
   press($('days'), state.days);
+  loadEvents();
   loadTrend();
   loadRows();
   // Claims move while people work (Bug Days): refresh the rows quietly. The

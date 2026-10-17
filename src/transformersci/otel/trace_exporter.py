@@ -1691,6 +1691,38 @@ def _github_api_get(api_url: str, timeout: float = 5.0) -> object:
     return json.loads(body)
 
 
+def _github_graphql(query: str, timeout: float = 20.0) -> dict:
+    """POST one GraphQL query with the read token; returns its ``data``."""
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "transformersci-trace-exporter",
+    }
+    token = github_api_token()
+    if not token:
+        raise ValueError("GitHub token unavailable")
+    headers["Authorization"] = f"Bearer {token}"
+    api_base = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
+    request = Request(
+        f"{api_base}/graphql",
+        data=json.dumps({"query": query}).encode(),
+        headers=headers,
+        method="POST",
+    )
+    started = time.monotonic()
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            _observe_github_rate_limit(getattr(response, "headers", None))
+            body = response.read()
+    except Exception:
+        _observe_upstream_request("github", "error", time.monotonic() - started, 0)
+        raise
+    _observe_upstream_request("github", "ok", time.monotonic() - started, len(body))
+    reply = json.loads(body)
+    if reply.get("errors"):
+        raise RuntimeError(reply["errors"][0].get("message") or "GraphQL error")
+    return reply.get("data") or {}
+
+
 def _github_write(method: str, path: str, payload: dict) -> object:
     # The dashboard App is read-only. Use the separately configured PAT for writes.
     token = os.getenv("PYTEST_GITHUB_TOKEN", "").strip()
@@ -6267,6 +6299,9 @@ def reopen_line(login: str) -> str:
 # Project health reads a few wide Prometheus queries per window (30 days of
 # failures is ~4 MB); every viewer shares one answer per (endpoint, days).
 _PROJECT_HEALTH_CACHE_TTL_SECONDS = 60.0
+# Events carry GitHub counts; a day's count barely moves in ten minutes and the
+# token's hourly budget is shared (one GraphQL call costs a point or two).
+_PROJECT_HEALTH_EVENTS_CACHE_TTL_SECONDS = 600.0
 _project_health_cache: dict[tuple[str, int], tuple[float, bytes]] = {}
 _project_health_cache_lock = threading.Lock()
 
@@ -8775,9 +8810,14 @@ class MetricsHandler(BaseHTTPRequestHandler):
             "/project-health/app.js",
             "/project-health/rows",
             "/project-health/trend",
+            "/project-health/events",
         }:
             self._request_route = parsed.path
-            if parsed.path in {"/project-health/rows", "/project-health/trend"}:
+            if parsed.path in {
+                "/project-health/rows",
+                "/project-health/trend",
+                "/project-health/events",
+            }:
                 self._serve_project_health_data(parsed.path, parse_qs(parsed.query))
             else:
                 name, content_type = (
@@ -9453,6 +9493,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
                         days=days,
                         query_range=_prometheus_matrix,
                     )
+                elif path == "/project-health/events":
+                    body = project_health.build_events(
+                        _prometheus_vector, _github_graphql, now=time.time(), days=days
+                    )
                 else:
                     body = project_health.build_trend(
                         _prometheus_vector, now=time.time(), days=days
@@ -9463,7 +9507,12 @@ class MetricsHandler(BaseHTTPRequestHandler):
             payload = json.dumps(body, separators=(",", ":")).encode()
             with _project_health_cache_lock:
                 _project_health_cache[key] = (
-                    now + _PROJECT_HEALTH_CACHE_TTL_SECONDS,
+                    now
+                    + (
+                        _PROJECT_HEALTH_EVENTS_CACHE_TTL_SECONDS
+                        if path == "/project-health/events"
+                        else _PROJECT_HEALTH_CACHE_TTL_SECONDS
+                    ),
                     payload,
                 )
         if path == "/project-health/rows":
