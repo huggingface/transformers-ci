@@ -148,3 +148,72 @@ def test_only_fixes_of_this_test_count():
     # The class matches but the named function is another one.
     named = index((2, "Fix Gemma3nVision2TextModelTest::test_model_parallelism", None))
     assert pf.for_test(other + "test_generate", 0, named) is None
+
+
+FIX = {
+    "number": 49147,
+    "title": "Fix Gemma3n fp16 loading",
+    "url": "https://github.com/huggingface/transformers/pull/49147",
+    "verdict": "merged_before",
+    "merged_at": MERGED_TS,
+    "author": "octocat",
+    "others": 0,
+}
+
+
+def test_the_actions_get_the_same_answer_as_the_column():
+    from transformersci.otel import new_issue, wdyt, who_can_help
+
+    text = pf.describe(FIX)
+    assert "merged on 2026-10-08" in text and "did not fix this failure" in text
+    assert "probably fixed" in pf.describe({**FIX, "verdict": "merged_after"})
+    assert "Not verified" in pf.describe({**FIX, "verdict": "open"})
+
+    prompt = wdyt.build_prompt(NODE, {}, [], [], FIX)
+    assert prompt.endswith("<probable_fix>\n" + text + "\n</probable_fix>")
+    assert "<probable_fix>" not in wdyt.build_prompt(NODE, {}, [], [])
+    assert "<probable_fix>" in wdyt.SYSTEM_PROMPT
+    slow = wdyt.build_slow_prompt(
+        NODE, "run_models_gpu", "GPU", [60.0], "2026-10-15", "", FIX
+    )
+    assert "PR #49147" in slow
+
+    people = [
+        {"login": "octocat", "evidence": "reviewed", "url": "u"},
+        {"login": "b", "evidence": "e", "url": "u"},
+    ]
+    ranked = who_can_help.with_fix_author(people, FIX)
+    assert [p["login"] for p in ranked] == ["octocat", "b"]
+    assert "authored PR #49147" in ranked[0]["evidence"]
+    assert who_can_help.with_fix_author(people, None) == people
+    assert (
+        who_can_help.with_fix_author(people, {**FIX, "author": "bad login"}) == people
+    )
+
+    draft = new_issue.slow_draft(
+        "alice", NODE, "run_models_gpu", "GPU", [60.0], "2026-10-15", FIX
+    )
+    assert "Probable fix: [#49147](" in draft["body"]
+
+
+def test_the_new_issue_model_sees_the_fix(monkeypatch):
+    from transformersci.otel import llm, new_issue
+
+    sent = []
+    monkeypatch.setattr(
+        llm, "config", lambda: {"api_base": "a", "model": "m", "api_key": "k"}
+    )
+    monkeypatch.setattr(
+        llm,
+        "chat_json",
+        lambda cfg, messages, **kw: (
+            sent.append(messages) or {"title": "t", "sections": {}}
+        ),
+    )
+    new_issue.model_draft(NODE, [], {}, [], [], [], [], "", FIX)
+    context = sent[0][1]["content"]
+    assert (
+        '"probable_fix": {"pr": "https://github.com/huggingface/transformers/pull/49147"'
+        in context
+    )
+    assert "probable_fix" in sent[0][0]["content"]

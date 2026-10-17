@@ -392,7 +392,7 @@ def test_slow_who_can_help_looks_at_the_test_without_a_trace(
     base, _ = server
     asked = {}
 
-    def suggest(login, trace_id, nodeid, details, github_get=None, emit=None):
+    def suggest(login, trace_id, nodeid, details, github_get=None, emit=None, fix=None):
         asked.update(login=login, trace_id=trace_id, nodeid=nodeid, details=details)
         return {"status": "ok", "people": [], "location": "tests/x.py:1"}
 

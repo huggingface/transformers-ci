@@ -14,7 +14,7 @@ from typing import Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from transformersci.otel import llm, pr_search, related_issues
+from transformersci.otel import llm, pr_search, probable_fix, related_issues
 
 _FRAME = re.compile(
     r'(?:File ["\'](?:[^"\'\n]*/)?|^\s*)(?P<path>(?:src/|tests/)[\w./-]+\.py)["\s,:]+(?:line\s+)?(?P<line>\d+)',
@@ -158,6 +158,15 @@ def candidates(history: dict, hits: list[dict]) -> list[dict]:
                 hit["url"],
             )
     return list(people.values())
+
+
+def with_fix_author(people: list[dict], fix: dict | None) -> list[dict]:
+    """The probable fix's author first: they already worked on this test."""
+    person = probable_fix.as_person(fix)
+    if person is None:
+        return people
+    rest = [p for p in people if p["login"].lower() != person["login"].lower()]
+    return [person, *rest][:12]
 
 
 def frequent_test_modifier(
@@ -320,9 +329,11 @@ def suggest(
     github_get: Callable[[str], object] | None = None,
     emit: Callable[[dict], None] = lambda event: None,
     evidence: tuple | None = None,
+    fix: dict | None = None,
 ) -> dict:
     """``evidence`` is ``(location, history, hits, people)`` already gathered by
-    the caller (the New issue draft), so the lookups are not made twice."""
+    the caller (the New issue draft), so the lookups are not made twice.
+    ``fix`` is the test's probable fix, whose author is evidence too."""
     key = (trace_id, nodeid)
     with _lock:
         cached = _cache.get(key)
@@ -389,6 +400,8 @@ def suggest(
                     }
                 )
                 people = frequent_test_modifier(nodeid, github_get)
+            if evidence is None:
+                people = with_fix_author(people, fix)
             if people:
                 emit(
                     {

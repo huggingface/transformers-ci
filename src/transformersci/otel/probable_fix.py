@@ -66,7 +66,8 @@ def index_query(search: str, after: str | None) -> str:
     return (
         f"{{ search(query: {text}, type: ISSUE, first: 50{cursor}) "
         "{ pageInfo { hasNextPage endCursor } nodes { ... on PullRequest "
-        "{ number title isDraft mergedAt files(first: 100) { nodes { path } } } } } }"
+        "{ number title isDraft mergedAt author { login } "
+        "files(first: 100) { nodes { path } } } } } }"
     )
 
 
@@ -89,6 +90,7 @@ def build_index(graphql: Callable[[str], dict], now: float) -> dict[str, list[di
                     "title": str(node.get("title") or "")[:300],
                     "url": f"https://github.com/{REPOSITORY}/pull/{number}",
                     "state": "merged" if merged_at else "open",
+                    "author": str((node.get("author") or {}).get("login") or ""),
                     "merged_at": datetime.fromisoformat(
                         merged_at.replace("Z", "+00:00")
                     ).timestamp()
@@ -166,6 +168,7 @@ def for_test(
         "url": best["url"],
         "verdict": verdict(best),
         "merged_at": best["merged_at"],
+        "author": best.get("author", ""),
         "others": len(matches) - 1,
     }
 
@@ -173,3 +176,47 @@ def for_test(
 def index_built_at() -> float:
     with _index_lock:
         return _index["built_at"]
+
+
+# ---- the same answer for the model calls (WDYT?, New issue, Who can help) ----
+def describe(fix: dict) -> str:
+    """One plain sentence about the probable fix, for a prompt. The title is
+    GitHub text: callers fence it as untrusted."""
+    who = f" by @{fix['author']}" if fix.get("author") else ""
+    pr = f'PR #{fix["number"]} "{fix["title"]}"{who}'
+    when = (
+        time.strftime("%Y-%m-%d", time.gmtime(fix["merged_at"]))
+        if fix.get("merged_at")
+        else ""
+    )
+    if fix["verdict"] == "open":
+        return (
+            f"{pr} is open, changes this test's file and reads as a fix for it. "
+            "Not verified: it may fix this failure or something else in the file."
+        )
+    if fix["verdict"] == "merged_after":
+        return (
+            f"{pr} was merged on {when}, changes this test's file, and the test has "
+            "not failed on main since: it probably fixed this failure."
+        )
+    return (
+        f"{pr} was merged on {when} and changes this test's file, but the test "
+        "failed on main after it: it did not fix this failure."
+    )
+
+
+def as_person(fix: dict | None) -> dict | None:
+    """The fix PR's author as Who can help evidence, or None."""
+    login = (fix or {}).get("author") or ""
+    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login):
+        return None
+    status = {
+        "open": "an open probable fix",
+        "merged_after": "a merged probable fix",
+        "merged_before": "a merged fix attempt the test failed after",
+    }[fix["verdict"]]
+    return {
+        "login": login,
+        "evidence": f"authored PR #{fix['number']}, {status} for this test",
+        "url": fix["url"],
+    }

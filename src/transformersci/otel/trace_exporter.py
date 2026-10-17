@@ -6319,6 +6319,40 @@ def _ensure_fix_index() -> None:
     threading.Thread(target=loop, name="fix-index", daemon=True).start()
 
 
+def _fix_threads(fix: dict | None) -> list[dict]:
+    """The fix PR as a thread the WDYT? popup may link (#N is linked only for
+    threads the model saw)."""
+    if not fix:
+        return []
+    return [{"number": fix["number"], "url": fix["url"], "title": fix["title"]}]
+
+
+_FIX_VERDICT_TEXT = {
+    "open": "open",
+    "merged_after": "merged, no failure since",
+    "merged_before": "merged, still failing",
+}
+
+
+def _probable_fix_for(
+    nodeid: str, emit: Callable[[dict], None] | None = None
+) -> dict | None:
+    """The probable fix the column shows, for the model calls; None when the
+    index or the last failure is unavailable (the call goes on without it)."""
+    _ensure_fix_index()
+    fix = None
+    if probable_fix.index_built_at():
+        try:
+            last = project_health.last_failure(_prometheus_vector, nodeid)
+            fix = probable_fix.for_test(nodeid, last)
+        except Exception:
+            fix = None
+    if emit is not None and fix:
+        verdict = _FIX_VERDICT_TEXT[fix["verdict"]]
+        emit({"event": "step", "text": f"Probable fix: #{fix['number']} ({verdict})"})
+    return fix
+
+
 def claim_line(login: str) -> str:
     """Appended to a published issue: GitHub shows the shared token as author."""
     return f"Picked up by @{login} from the transformers-ci dashboard."
@@ -8300,6 +8334,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 details,
                 github_get=_github_api_get,
                 emit=emit,
+                fix=_probable_fix_for(nodeid, emit),
             ),
             "Reading the selected failure",
         )
@@ -8357,6 +8392,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 _github_api_get,
                 emit=emit,
                 environment=environment,
+                fix=_probable_fix_for(nodeid, emit),
             )
             if result.get("status") == "ok":
                 _remember_draft(result["draft_id"], nodeid)
@@ -8428,7 +8464,13 @@ class MetricsHandler(BaseHTTPRequestHandler):
         def draft(emit: Callable[[dict], None]) -> dict:
             emit({"event": "step", "text": "Drafting the issue from the timings"})
             result = new_issue.slow_draft(
-                login, nodeid, job, runner, durations, first_day
+                login,
+                nodeid,
+                job,
+                runner,
+                durations,
+                first_day,
+                _probable_fix_for(nodeid, emit),
             )
             _remember_draft(result["draft_id"], nodeid)
             return result
@@ -8446,7 +8488,13 @@ class MetricsHandler(BaseHTTPRequestHandler):
         nodeid = target[0]
         self._stream_action(
             lambda emit: who_can_help.suggest(
-                login, "slow", nodeid, [], github_get=_github_api_get, emit=emit
+                login,
+                "slow",
+                nodeid,
+                [],
+                github_get=_github_api_get,
+                emit=emit,
+                fix=_probable_fix_for(nodeid, emit),
             ),
             "Reading the slow test",
         )
@@ -8472,10 +8520,11 @@ class MetricsHandler(BaseHTTPRequestHandler):
                     else "Test source not found",
                 }
             )
+            fix = _probable_fix_for(nodeid, emit)
             prompt = wdyt.build_slow_prompt(
-                nodeid, job, runner, durations, first_day, source
+                nodeid, job, runner, durations, first_day, source, fix
             )
-            return prompt, []
+            return prompt, _fix_threads(fix)
 
         self._stream_action(
             lambda emit: wdyt.answer(
@@ -8669,9 +8718,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
                     "text": f"Found {count} related thread{'s' if count != 1 else ''}",
                 }
             )
+            fix = _probable_fix_for(nodeid, emit)
             return (
-                wdyt.build_prompt(nodeid, labels, details, related["hits"]),
-                related["hits"],
+                wdyt.build_prompt(nodeid, labels, details, related["hits"], fix),
+                related["hits"] + _fix_threads(fix),
             )
 
         result = wdyt.answer(login, trace_id, nodeid, make_prompt, emit)
