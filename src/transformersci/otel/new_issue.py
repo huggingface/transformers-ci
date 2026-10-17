@@ -522,7 +522,15 @@ def prepare(
             while len(_draft_cache) > 256:
                 _draft_cache.popitem(last=False)
             return _issue_draft(login, title, body)
-    except (OSError, ValueError, KeyError, IndexError, TypeError, UnicodeError):
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        IndexError,
+        TypeError,
+        UnicodeError,
+    ) as error:
+        llm.log_failure("new-issue", nodeid, error)
         return {"status": "unavailable"}
     finally:
         _slots.release()

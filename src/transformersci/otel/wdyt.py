@@ -262,7 +262,15 @@ def answer(
             ],
         }
         ttl = 3600
-    except (OSError, URLError, ValueError, KeyError, IndexError, HTTPException):
+    except (
+        OSError,
+        URLError,
+        ValueError,
+        KeyError,
+        IndexError,
+        HTTPException,
+    ) as error:
+        llm.log_failure("wdyt", nodeid, error)
         result = {"status": "unavailable"}
         ttl = 30
     finally:

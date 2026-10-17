@@ -122,7 +122,7 @@ def test_model_cannot_add_or_repeat_people(monkeypatch):
 
     class Opener:
         def open(self, request, timeout):
-            assert timeout == 45
+            assert 44 < timeout <= 45  # the call's remaining budget
             assert json.loads(request.data)["max_tokens"] == 2000
 
             class Reply:

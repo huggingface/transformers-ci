@@ -75,6 +75,7 @@ from transformersci.otel import related_issues
 from transformersci.otel import rerun_actions
 from transformersci.otel import rerun_failed
 from transformersci.otel import serge_actions
+from transformersci.otel import llm
 from transformersci.otel import wdyt
 from transformersci.otel import who_can_help
 from transformersci.otel import test_markers
@@ -8112,7 +8113,11 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 pass
 
         emit({"event": "step", "text": initial_step})
-        result = run(emit)
+        try:
+            result = run(emit)
+        except Exception as error:  # the dialog still gets an answer
+            llm.log_failure("serge-action", self.path, error)
+            result = {"status": "unavailable"}
         emit({"event": "done", **result})
         self._observe_response(200, sent)
 

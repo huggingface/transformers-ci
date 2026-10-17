@@ -407,7 +407,14 @@ def suggest(
                             details,
                             timeout=20,
                         )
-                    except (OSError, ValueError, KeyError, IndexError, TypeError):
+                    except (
+                        OSError,
+                        ValueError,
+                        KeyError,
+                        IndexError,
+                        TypeError,
+                    ) as error:
+                        llm.log_failure("who-can-help", nodeid, error)
                         picks = []
                     if picks:
                         break
@@ -454,7 +461,8 @@ def suggest(
                 emit({"event": "step", "text": "Checking linked PR destinations"})
                 result["pr_links"] = recent_pr_links(result["people"], github_get)
             ttl = 3600
-        except (OSError, ValueError, KeyError, IndexError, TypeError):
+        except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
+            llm.log_failure("who-can-help", nodeid, error)
             result, ttl = {"status": "unavailable"}, 30
         finally:
             _slots.release()
