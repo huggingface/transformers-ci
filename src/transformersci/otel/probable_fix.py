@@ -1,31 +1,34 @@
-"""Find a recent PR plausibly fixing the selected test.
+"""The probable fix for a failing test: one rule for the Test page and Project health.
 
-Relore's inflight edge finds PRs that explicitly close a related issue. Recent
-PRs without such an edge are found by title, then checked against changed files.
-Neither signal proves the failing run is fixed, so the UI says "probable".
+An index of the recent PRs that are open or merged (a paged GraphQL search, ~17
+pages of 1 point each, rebuilt in the background) maps each test file to the
+PRs that change it. A PR is a candidate when it changes the test file and names
+the file's topic (usually the model) in its title. Each candidate is judged by
+when the test last failed on main: a PR merged before that failure did not fix
+it. None of this proves a fix, so the UI says "probable".
 """
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import threading
 import time
-from collections import OrderedDict
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from datetime import datetime
 
 from transformersci.otel import related_issues
 
 REPOSITORY = related_issues.REPOSITORY
-_cache: OrderedDict[tuple[str, str], tuple[float, dict]] = OrderedDict()
-_inflight: dict[tuple[str, str], threading.Event] = {}
-_lock = threading.Lock()
-_slots = threading.BoundedSemaphore(2)
 _TOPIC_SKIP = {"test", "tests", "modeling", "utils", "integration", "model", "models"}
+# A PR that changes the test file and names the model is often a feature PR;
+# a fix says so. Checked on prod rows on 2026-10-17: without it the best match
+# for gemma3n's failing test was "dummy: trigger CI on gemma3n ...".
+_FIX_WORDS = re.compile(
+    r"\b(fix\w*|revert\w*|skip\w*|flak\w*|expect\w*|regression\w*|broke\w*|"
+    r"restor\w*|repair\w*|resolv\w*|correct\w*|crash\w*|fail\w*|nan|oom)\b",
+    re.IGNORECASE,
+)
 
 
 def test_file(nodeid: str) -> str | None:
@@ -46,158 +49,127 @@ def title_topic(path: str) -> str | None:
     return word[:-1] if word.endswith("s") and not word.endswith("ss") else word
 
 
-def inflight(issue: int) -> list[dict]:
-    base = os.getenv("PYTEST_TRACE_EXPORTER_RELORE_URL", "").strip()
-    if not base:
-        return []
-    query = urlencode({"repo": REPOSITORY})
-    request = Request(
-        f"{base.rstrip('/')}/api/v1/inflight/{issue}?{query}",
-        headers={"x-relore-client": related_issues.WIRE_VERSION},
+INDEX_DAYS = 45
+INDEX_REFRESH_SECONDS = 15 * 60
+INDEX_SEARCHES = (
+    "is:pr is:open created:>={since}",
+    "is:pr is:merged merged:>={since}",
+)
+_INDEX_MAX_PAGES = 25  # 1250 PRs per search; 45 days is ~300 open + ~500 merged
+_index: dict = {"built_at": 0.0, "by_file": {}}
+_index_lock = threading.Lock()
+
+
+def index_query(search: str, after: str | None) -> str:
+    text = json.dumps(f"repo:{REPOSITORY} {search}")
+    cursor = f", after: {json.dumps(after)}" if after else ""
+    return (
+        f"{{ search(query: {text}, type: ISSUE, first: 50{cursor}) "
+        "{ pageInfo { hasNextPage endCursor } nodes { ... on PullRequest "
+        "{ number title isDraft mergedAt files(first: 100) { nodes { path } } } } } }"
     )
-    with urlopen(request, timeout=8) as response:
-        if response.headers.get("x-relore-version") != related_issues.WIRE_VERSION:
-            raise ValueError("Relore wire version mismatch")
-        raw = response.read(128 * 1024 + 1)
-    if len(raw) > 128 * 1024:
-        raise ValueError("Relore response too large")
-    data = json.loads(raw)
-    if (
-        not isinstance(data, dict)
-        or data.get("repo") != REPOSITORY
-        or data.get("number") != issue
-    ):
-        raise ValueError("Invalid Relore inflight response")
-    return data.get("claims") if isinstance(data.get("claims"), list) else []
 
 
-def _candidate(item: dict, *, issue: int | None = None) -> dict | None:
-    number = item.get("number")
-    if type(number) is not int or number <= 0:
+def build_index(graphql: Callable[[str], dict], now: float) -> dict[str, list[dict]]:
+    """Test file -> the recent open or merged PRs that change it."""
+    since = time.strftime("%Y-%m-%d", time.gmtime(now - INDEX_DAYS * 86400))
+    by_file: dict[str, list[dict]] = {}
+    for search in INDEX_SEARCHES:
+        after = None
+        for _page in range(_INDEX_MAX_PAGES):
+            reply = graphql(index_query(search.format(since=since), after))["search"]
+            for node in reply.get("nodes") or []:
+                number = node.get("number") if isinstance(node, dict) else None
+                # A draft is not up for review; "dummy: trigger CI" PRs live there.
+                if type(number) is not int or node.get("isDraft"):
+                    continue
+                merged_at = node.get("mergedAt")
+                pr = {
+                    "number": number,
+                    "title": str(node.get("title") or "")[:300],
+                    "url": f"https://github.com/{REPOSITORY}/pull/{number}",
+                    "state": "merged" if merged_at else "open",
+                    "merged_at": datetime.fromisoformat(
+                        merged_at.replace("Z", "+00:00")
+                    ).timestamp()
+                    if merged_at
+                    else None,
+                }
+                for file in (node.get("files") or {}).get("nodes") or []:
+                    path = (file or {}).get("path") or ""
+                    if test_file(path):
+                        by_file.setdefault(path, []).append(pr)
+            info = reply.get("pageInfo") or {}
+            if not info.get("hasNextPage"):
+                break
+            after = info.get("endCursor")
+    return by_file
+
+
+def refresh_index(graphql: Callable[[str], dict], now: float | None = None) -> int:
+    """Rebuild the index; on failure the previous one stays. Returns its size."""
+    now = time.time() if now is None else now
+    by_file = build_index(graphql, now)
+    with _index_lock:
+        _index["built_at"], _index["by_file"] = now, by_file
+    return len(by_file)
+
+
+def _names_this_test(title: str, nodeid: str) -> bool:
+    """False when the title names tests (``test_x``, ``FooTest``) but not this one:
+    "Fix Gemma3nVision2TextModelTest::test_model_parallelism" fixes another test
+    in the same file."""
+    parts = re.split(r"::|\[", nodeid)
+    # A named function is the most specific: it must be this one.
+    names = re.findall(r"\btest_\w+", title) or re.findall(r"\b\w+Test\b", title)
+    return not names or any(name in parts for name in names)
+
+
+def for_test(
+    nodeid: str, last_failed: float | None, by_file: dict | None = None
+) -> dict | None:
+    """The PR to show for a test, best first: an open one, then one merged after
+    the test last failed on main, then one merged before (it did not fix it).
+    ``last_failed`` None means no failure on main is known: a merge counts as after."""
+    path = test_file(nodeid)
+    if by_file is None:
+        with _index_lock:
+            by_file = _index["by_file"]
+    topic = title_topic(path) if path else None
+    if not topic:
         return None
-    if (
-        item.get("state") != "open"
-        and not item.get("merged")
-        and not (
-            isinstance(item.get("pull_request"), dict)
-            and item["pull_request"].get("merged_at")
+    matches = {
+        pr["number"]: pr
+        for pr in by_file.get(path, [])
+        if topic in pr["title"].lower()
+        and _FIX_WORDS.search(pr["title"])
+        and _names_this_test(pr["title"], nodeid)
+    }
+    if not matches:
+        return None
+
+    def verdict(pr: dict) -> str:
+        if pr["state"] == "open":
+            return "open"
+        return (
+            "merged_after" if pr["merged_at"] > (last_failed or 0) else "merged_before"
         )
-    ):
-        return None
-    if issue is not None:
-        if item.get("repo") != REPOSITORY or item.get("type") != "pr":
-            return None
-    elif not isinstance(item.get("pull_request"), dict):
-        return None
+
+    rank = {"open": 0, "merged_after": 1, "merged_before": 2}
+    best = min(
+        matches.values(),
+        key=lambda pr: (rank[verdict(pr)], -(pr["merged_at"] or 0), -pr["number"]),
+    )
     return {
-        "number": number,
-        "title": str(item.get("title") or "")[:300],
-        "url": f"https://github.com/{REPOSITORY}/pull/{number}",
-        "state": "merged"
-        if item.get("merged") or (item.get("pull_request") or {}).get("merged_at")
-        else "open",
-        "issue": issue,
+        "number": best["number"],
+        "title": best["title"],
+        "url": best["url"],
+        "verdict": verdict(best),
+        "merged_at": best["merged_at"],
+        "others": len(matches) - 1,
     }
 
 
-def _search_query(path: str) -> str | None:
-    topic = title_topic(path)
-    if not topic:
-        return None
-    since = (datetime.now(timezone.utc) - timedelta(days=45)).date().isoformat()
-    return f"repo:{REPOSITORY} is:pr in:title {topic} created:>={since}"
-
-
-def find(
-    trace_id: str,
-    nodeid: str,
-    load_details: Callable[[], list[dict]],
-    search_prs: Callable[..., list],
-    github_get: Callable[[str], object],
-) -> dict:
-    """Rank only recent, live PRs that change this exact test file."""
-    path = test_file(nodeid)
-    if not path:
-        return {"status": "none"}
-    key = (trace_id, nodeid)
-    with _lock:
-        cached = _cache.get(key)
-        if cached and cached[0] > time.monotonic():
-            return cached[1]
-        pending = _inflight.get(key)
-        if pending is None:
-            done = _inflight[key] = threading.Event()
-    if pending is not None:
-        pending.wait(45)
-        with _lock:
-            cached = _cache.get(key)
-        return cached[1] if cached else {"status": "busy"}
-    if not _slots.acquire(timeout=5):
-        result, ttl = {"status": "busy"}, 5
-    else:
-        try:
-            candidates: dict[int, dict] = {}
-            related = related_issues.lookup(trace_id, nodeid, load_details)
-            for hit in related.get("hits", [])[:3]:
-                if hit.get("type") != "issue":
-                    continue
-                try:
-                    claims = inflight(hit["number"])
-                except (OSError, ValueError):
-                    continue  # direct PR discovery can still answer
-                for claim in claims[:10]:
-                    if isinstance(claim, dict) and (
-                        pr := _candidate(claim, issue=hit["number"])
-                    ):
-                        candidates[pr["number"]] = pr
-                if len(candidates) >= 5:
-                    break
-            query = _search_query(path)
-            if query:
-                try:
-                    recent = search_prs(query, limit=20)
-                except (OSError, ValueError):
-                    if not candidates:
-                        raise
-                    recent = []
-                for item in recent:
-                    if isinstance(item, dict) and (pr := _candidate(item)):
-                        candidates.setdefault(pr["number"], pr)
-            api = os.getenv("PYTEST_GITHUB_API_URL", "https://api.github.com").rstrip(
-                "/"
-            )
-            best = None
-            topic = title_topic(path) or ""
-            # Inflight matches lead; the title search only supplies a fallback.
-            ordered = sorted(
-                candidates.values(), key=lambda pr: (pr["issue"] is None, -pr["number"])
-            )
-            for pr in ordered[:5]:
-                try:
-                    files = github_get(
-                        f"{api}/repos/{REPOSITORY}/pulls/{pr['number']}/files?per_page=100"
-                    )
-                except (OSError, ValueError):
-                    continue
-                if not isinstance(files, list) or not any(
-                    isinstance(file, dict) and file.get("filename") == path
-                    for file in files
-                ):
-                    continue
-                if pr["issue"] is None and topic not in pr["title"].lower():
-                    continue
-                best = pr
-                break
-            result = {"status": "ok", "pr": best} if best else {"status": "none"}
-            ttl = 600 if best else 120
-        except (OSError, ValueError, KeyError, TypeError):
-            result, ttl = {"status": "unavailable"}, 30
-        finally:
-            _slots.release()
-    with _lock:
-        _cache[key] = (time.monotonic() + ttl, result)
-        while len(_cache) > 256:
-            _cache.popitem(last=False)
-        _inflight.pop(key, None)
-        done.set()
-    return result
+def index_built_at() -> float:
+    with _index_lock:
+        return _index["built_at"]

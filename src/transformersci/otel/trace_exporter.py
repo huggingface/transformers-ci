@@ -6288,6 +6288,37 @@ def _ensure_claim_refresher() -> None:
     threading.Thread(target=loop, name="claim-refresh", daemon=True).start()
 
 
+_fix_index_lock = threading.Lock()
+_fix_index_started = False
+
+
+def _ensure_fix_index() -> None:
+    """Keep Project health's probable-fix index fresh (probable_fix.refresh_index).
+
+    Started by the first Project health request; ~17 GraphQL points per
+    rebuild with the read-only token. Rows show no fixes until the first build.
+    """
+    global _fix_index_started
+    with _fix_index_lock:
+        if _fix_index_started:
+            return
+        _fix_index_started = True
+
+    def loop() -> None:
+        while True:
+            try:
+                probable_fix.refresh_index(_github_graphql)
+            except Exception as exc:  # the previous index stays
+                print(
+                    f"[pytest-trace-exporter] probable-fix index failed: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            time.sleep(probable_fix.INDEX_REFRESH_SECONDS)
+
+    threading.Thread(target=loop, name="fix-index", daemon=True).start()
+
+
 def claim_line(login: str) -> str:
     """Appended to a published issue: GitHub shows the shared token as author."""
     return f"Picked up by @{login} from the transformers-ci dashboard."
@@ -9117,6 +9148,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         )
 
     def _serve_probable_fix(self, params: dict[str, list[str]]) -> None:
+        """The Test page's probable fix: Project health's rule and index."""
         trace_id = (params.get("trace_id") or [""])[0].strip()
         nodeid = (params.get("test_nodeid") or [""])[0].strip()
         if (
@@ -9127,17 +9159,20 @@ class MetricsHandler(BaseHTTPRequestHandler):
         ):
             self._reply_json(400, {"status": "invalid"})
             return
-
-        def load_details() -> list[dict[str, str]]:
-            trace = get_trace(trace_id) if trace_id else None
-            if not trace or trace_repository(trace) != related_issues.REPOSITORY:
-                return []
-            return extract_failure_details(trace, nodeid)
-
-        result = probable_fix.find(
-            trace_id, nodeid, load_details, search_github_issues, _github_api_get
+        _ensure_fix_index()
+        if not probable_fix.index_built_at():
+            self._reply_json(200, {"status": "pending"})
+            return
+        try:
+            last = project_health.last_failure(_prometheus_vector, nodeid)
+        except Exception:
+            # Without the last failure a merged PR cannot be judged.
+            self._reply_json(200, {"status": "unavailable"})
+            return
+        fix = probable_fix.for_test(nodeid, last)
+        self._reply_json(
+            200, {"status": "ok", "pr": fix} if fix else {"status": "none"}
         )
-        self._reply_json(200, result)
 
     def _serve_related_issues(self, params: dict[str, list[str]]) -> None:
         if (params.get("format") or [""])[0] != "json":
@@ -9552,6 +9587,11 @@ class MetricsHandler(BaseHTTPRequestHandler):
                         days=days,
                         query_range=_prometheus_matrix,
                     )
+                    for row in body["rows"]:
+                        fix = probable_fix.for_test(row["nodeid"], row["last_seen"])
+                        if fix:
+                            row["fix"] = fix
+                    body["fix_index_at"] = probable_fix.index_built_at()
                 elif path == "/project-health/events":
                     body = project_health.build_events(
                         _prometheus_vector, _github_graphql, now=time.time(), days=days
@@ -9576,6 +9616,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 )
         if path == "/project-health/rows":
             _ensure_claim_refresher()
+            _ensure_fix_index()
             # Claims change by the second (someone just clicked New issue), so
             # they are joined per request, never cached with the rows.
             live = json.dumps(claims.store().snapshot(), separators=(",", ":"))

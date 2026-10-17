@@ -348,27 +348,39 @@ def test_fix_prs_route(server, monkeypatch):
     assert err.value.code == 400
 
 
-def test_probable_fix_route_uses_selected_test(server, monkeypatch):
-    seen = []
-
-    def find(trace, node, details, search, github):
-        seen.append((trace, node, details()))
-        return {"status": "none"}
-
-    monkeypatch.setattr(pf, "find", find)
-    monkeypatch.setattr(te, "get_trace", lambda trace: {"trace": trace})
-    monkeypatch.setattr(te, "trace_repository", lambda trace: ri.REPOSITORY)
-    monkeypatch.setattr(
-        te, "extract_failure_details", lambda trace, node: [{"node": node}]
-    )
-    with urlopen(
+def test_probable_fix_route_uses_the_shared_index_and_last_failure(server, monkeypatch):
+    monkeypatch.setattr(te, "_fix_index_started", True)
+    monkeypatch.setitem(pf._index, "built_at", 0.0)
+    url = (
         server
         + "/serge-actions/probable-fix?"
         + urlencode({"trace_id": TRACE, "test_nodeid": NODE})
-    ) as response:
+    )
+    with urlopen(url) as response:
+        assert json.load(response) == {"status": "pending"}
+
+    path = NODE.split("::")[0]
+    pr = {
+        "number": 7,
+        "title": f"Fix {pf.title_topic(path)}",
+        "url": "https://github.com/huggingface/transformers/pull/7",
+        "state": "merged",
+        "merged_at": 100.0,
+    }
+    monkeypatch.setitem(pf._index, "built_at", 1.0)
+    monkeypatch.setitem(pf._index, "by_file", {path: [pr]})
+    monkeypatch.setattr(te.project_health, "last_failure", lambda query, node: 200.0)
+    with urlopen(url) as response:
         assert response.headers["Cache-Control"] == "no-store"
-        assert json.load(response) == {"status": "none"}
-    assert seen == [(TRACE, NODE, [{"node": NODE}])]
+        reply = json.load(response)
+    assert (reply["pr"]["number"], reply["pr"]["verdict"]) == (7, "merged_before")
+
+    def down(query, node):
+        raise OSError("Prometheus down")
+
+    monkeypatch.setattr(te.project_health, "last_failure", down)
+    with urlopen(url) as response:
+        assert json.load(response) == {"status": "unavailable"}
     with pytest.raises(HTTPError) as err:
         urlopen(server + "/serge-actions/probable-fix?test_nodeid=../../etc/passwd")
     assert err.value.code == 400

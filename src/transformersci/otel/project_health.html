@@ -89,6 +89,7 @@ tr.grp .caret{display:inline-block;width:12px;color:var(--muted)}
 .fold:hover{color:var(--fg);border-color:var(--sel)}.fold svg{width:15px;height:15px}.fold[hidden]{display:none}
 .claim .closed{font-weight:600}.claim .again{color:var(--amber);font-weight:600}
 .claim{font-size:12px;white-space:normal;min-width:90px;max-width:150px}
+.fix{font-size:12px;white-space:normal;min-width:80px;max-width:140px}.fix .ok{color:var(--green)}.fix .open{color:var(--blue,#6ab0ff)}
 td.days .num{display:block;font-size:12px}.claim .drafting{color:var(--muted);font-style:italic}
 .tog[hidden]{display:none}
 .why{margin-left:5px;width:16px;height:16px;padding:0;border:1px solid var(--line);border-radius:50%;background:transparent;color:var(--muted);font:600 10px/14px Inter,system-ui,sans-serif;cursor:pointer;vertical-align:1px}
@@ -150,7 +151,7 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
   </div>
   <div class="progress" id="rows-progress"><span></span></div>
   <div class="scroll"><table>
-    <thead><tr><th>Test</th><th>Signal</th><th id="days-head">Last 14 days</th><th>Seen</th><th>Picked up by</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Test</th><th>Signal</th><th id="days-head">Last 14 days</th><th>Seen</th><th>Picked up by</th><th title="A recent PR that changes the test file and names the model in its title. Not proof: check it">Probable fix</th><th>Actions</th></tr></thead>
     <tbody id="rows"></tbody>
   </table></div>
   <div class="foot"><span id="count"></span><span>Failures on main only · sticky = failed on 2+ days and not cleared by 4 full runs since</span></div>

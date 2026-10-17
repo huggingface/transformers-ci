@@ -118,6 +118,35 @@ def failure_queries(days: int) -> dict[str, str]:
     }
 
 
+def _label_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def last_failure(query: Query, nodeid: str, days: int = 30) -> float | None:
+    """When ``nodeid`` last failed on main: the start of its latest failing run,
+    as a row's ``last_seen`` (None when it did not fail in ``days``)."""
+    window = f"{days}d"
+    failing = query(
+        "max by (run_id) (last_over_time(pytest_test_last_failure_info"
+        f'{{pr="main",test_nodeid="{_label_value(nodeid)}"}}[{window}]))'
+    )
+    run_ids = sorted(
+        {
+            labels.get("run_id", "")
+            for labels, _ in _samples(failing)
+            if re.fullmatch(r"[0-9:]+", labels.get("run_id", ""))
+        }
+    )
+    if not run_ids:
+        return None
+    starts = query(
+        "max by (run_id) (last_over_time(pytest_run_start_time_seconds"
+        f'{{pr="main",run_id=~"{"|".join(run_ids)}"}}[{window}]))'
+    )
+    times = [value for _, value in _samples(starts)]
+    return max(times) if times else None
+
+
 def _cleared_after(
     job_runs: list[tuple[dict[str, str], float]],
     job_max: list[tuple[dict[str, str], float]],

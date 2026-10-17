@@ -289,6 +289,18 @@
     return claim.issue_state === 'closed' ? 'closed' : 'on-it';
   }
 
+  // The probable fix, judged by when the test last failed: a PR merged before
+  // that did not fix it (the Test page cannot tell, the table can).
+  function fixHtml(row) {
+    const fix = row.fix;
+    if (!fix) return '<span class="sub">—</span>';
+    const link = `<a href="${esc(fix.url)}" target="_blank" rel="noopener noreferrer" title="${esc(fix.title)}">#${fix.number}</a>`;
+    const more = fix.others ? ` <span class="sub" title="${fix.others} more PR${fix.others === 1 ? '' : 's'} change this test file and name the model">+${fix.others}</span>` : '';
+    if (fix.verdict === 'open') return `${link} <span class="open">open</span>${more}`;
+    if (fix.verdict === 'merged_after') return `${link} <span class="ok" title="Merged ${ago(fix.merged_at)}, and the test has not failed since">merged, no failure since</span>${more}`;
+    return `${link} <span class="sub" title="Merged ${ago(fix.merged_at)}, but the test failed after that">merged, still failing</span>${more}`;
+  }
+
   function claimHtml(row) {
     const claim = claims[row.nodeid], state = claimState(row);
     if (state === 'free') return '<span class="sub">—</span>';
@@ -338,6 +350,7 @@
         `<i class="${count ? cell : ''}" title="${cellTitle(count, i)}"></i>`).join('')}</span></td>
       <td title="${slow ? 'Day of its latest timing (UTC)' : new Date(row.last_seen * 1000).toISOString()}">${slow ? daysAgo(row.last_seen) : ago(row.last_seen)}</td>
       <td class="claim">${claimHtml(row)}</td>
+      <td class="fix">${fixHtml(row)}</td>
       <td><span class="acts">${ACTIONS.map(([id, label, help], k) =>
         actionButton(id, label, help, k, index, row)).join('')}</span></td></tr>`;
   }
@@ -369,7 +382,7 @@
       const summary = state.group === 'error' ? '' : ` · ${[...errors].sort((a, b) => b[1] - a[1]).slice(0, 3)
         .map(([error, count]) => `${count}× ${esc(error)}`).join(', ')}${errors.size > 3 ? ', …' : ''}`;
       const sticky = members.filter(([row]) => row.sticky).length;
-      return `<tr class="grp" data-group="${esc(name)}" aria-expanded="${open}"><td colspan="6"><span class="caret">${open ? '▾' : '▸'}</span>${esc(name)}
+      return `<tr class="grp" data-group="${esc(name)}" aria-expanded="${open}"><td colspan="7"><span class="caret">${open ? '▾' : '▸'}</span>${esc(name)}
         <span class="meta"> — ${members.length} test${members.length === 1 ? '' : 's'}, ${fails(members)} failing run${fails(members) === 1 ? '' : 's'}${sticky ? `, ${sticky} sticky` : ''}${summary}</span></td></tr>`
         + (open ? members.map(([row, index]) => rowHtml(row, index)).join('') : '');
     }).join('');
@@ -394,7 +407,7 @@
     drawCategories(base);
     $('days-head').textContent = `Last ${state.days} days`;
     $('rows').innerHTML = (state.group === 'none' ? shown.map(rowHtml).join('') : groupedHtml(shown))
-      || `<tr><td colspan="6" class="state">${rows.length ? 'Nothing matches these filters.' : 'No failures on main in this window.'}</td></tr>`;
+      || `<tr><td colspan="7" class="state">${rows.length ? 'Nothing matches these filters.' : 'No failures on main in this window.'}</td></tr>`;
     $('count').textContent = `Showing ${shown.length} of ${rows.length}`;
     current = shown;
     drawFold();
@@ -414,7 +427,7 @@
       $('s-sticky').textContent = fails.filter(row => row.sticky).length;
     } catch (error) {
       if (quiet) return;
-      $('rows').innerHTML = `<tr><td colspan="6" class="state">Could not load failures (${esc(error.message)}).</td></tr>`;
+      $('rows').innerHTML = `<tr><td colspan="7" class="state">Could not load failures (${esc(error.message)}).</td></tr>`;
     } finally {
       $('rows-progress').hidden = true;
     }

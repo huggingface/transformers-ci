@@ -11,6 +11,7 @@ def _fresh_claims(monkeypatch):
     background issue refresh reaches GitHub."""
     monkeypatch.setattr(claims, "_store", claims.Store(":memory:"))
     monkeypatch.setattr(trace_exporter, "_claim_refresher_started", True)
+    monkeypatch.setattr(trace_exporter, "_fix_index_started", True)
     # Slow rows come from a range query; tests that need them patch it again.
     monkeypatch.setattr(trace_exporter, "_prometheus_matrix", lambda *args: [])
 

@@ -1,164 +1,150 @@
-"""A probable fix needs a live PR that changes the selected test file."""
+"""One probable-fix rule for the Test page and Project health: a recent open or
+merged PR that changes the test file and names its topic, judged by when the
+test last failed on main. The Test page used to show #49147 as the probable fix
+of gemma3n's test_flash_attn_2_equivalence: merged 2026-10-08, and the test
+failed every day after it."""
 
 from __future__ import annotations
 
-import io
-import json
-
 from transformersci.otel import probable_fix as pf
-from transformersci.otel import related_issues as ri
+from transformersci.otel import project_health as ph
 
-NODE = "tests/generation/test_streamers.py::StreamerTest"
-TRACE = "f8a67fa26dd021980a0457850169694a"
-
-
-def setup_function():
-    pf._cache.clear()
-    pf._inflight.clear()
+NODE = "tests/models/gemma3n/test_modeling_gemma3n.py::Gemma3nTextModelTest::test_fa2"
+FILE = NODE.split("::")[0]
+MERGED = "2026-10-08T11:52:46Z"
+MERGED_TS = 1791460366.0
 
 
-def pr(number: int, title: str, state: str = "open") -> dict:
+def node(number, title, files, merged_at=None, draft=False):
     return {
         "number": number,
         "title": title,
-        "state": state,
-        "pull_request": {"merged_at": None},
+        "isDraft": draft,
+        "mergedAt": merged_at,
+        "files": {"nodes": [{"path": path} for path in files]},
     }
 
 
-def test_recent_pr_without_closing_issue_can_be_found(monkeypatch):
-    monkeypatch.setattr(ri, "lookup", lambda *args: {"status": "ok", "hits": []})
-    queries, files = [], []
+def pages(*replies):
+    """A GraphQL stub answering each search with its pages in turn."""
+    queries = []
+    script = {search: list(page) for search, page in replies}
 
-    def search(query, *, limit):
-        queries.append((query, limit))
-        return [pr(49583, "Fix flaky streamer timeout tests")]
+    def graphql(query):
+        queries.append(query)
+        search = next(key for key in script if key in query)
+        nodes, more = script[search].pop(0)
+        return {
+            "search": {
+                "nodes": nodes,
+                "pageInfo": {"hasNextPage": more, "endCursor": f"c{len(queries)}"},
+            }
+        }
 
-    def get(url):
-        files.append(url)
+    return graphql, queries
+
+
+def test_index_maps_test_files_to_open_and_merged_prs():
+    graphql, queries = pages(
+        (
+            "is:open",
+            [
+                (
+                    [
+                        node(2, "Gemma3n: fix fa2", [FILE, "src/x.py"]),
+                        node(4, "dummy: trigger CI on gemma3n", [FILE], draft=True),
+                    ],
+                    True,
+                ),
+                ([node(3, "Docs", ["docs/a.md"])], False),
+            ],
+        ),
+        ("is:merged", [([node(1, "Fix Gemma3n fp16 loading", [FILE], MERGED)], False)]),
+    )
+    by_file = pf.build_index(graphql, now=MERGED_TS + 86400)
+    assert sorted(by_file) == [FILE]
+    assert [(pr["number"], pr["state"]) for pr in by_file[FILE]] == [
+        (2, "open"),
+        (1, "merged"),
+    ]
+    assert by_file[FILE][1]["merged_at"] == MERGED_TS
+    assert len(queries) == 3 and 'after: "c1"' in queries[1]
+    assert "created:>=2026-08-25" in queries[0] and "merged:>=2026-08-25" in queries[2]
+
+
+def index(*prs):
+    return {
+        FILE: [
+            {
+                "number": number,
+                "title": title,
+                "url": f"https://github.com/huggingface/transformers/pull/{number}",
+                "state": "merged" if merged_at else "open",
+                "merged_at": merged_at,
+            }
+            for number, title, merged_at in prs
+        ]
+    }
+
+
+def test_a_pr_merged_before_the_last_failure_did_not_fix_it():
+    by_file = index((49147, "This PR fixes Gemma3n fp16 loading", MERGED_TS))
+    still = pf.for_test(NODE, MERGED_TS + 9 * 86400, by_file)
+    assert (still["number"], still["verdict"]) == (49147, "merged_before")
+    fixed = pf.for_test(NODE, MERGED_TS - 3600, by_file)
+    assert fixed["verdict"] == "merged_after"
+    # No failure on main known: the merge is not contradicted.
+    assert pf.for_test(NODE, None, by_file)["verdict"] == "merged_after"
+
+
+def test_open_beats_merged_and_the_title_must_name_the_topic():
+    by_file = index(
+        (1, "Fix Gemma3n fp16 loading", MERGED_TS),
+        (2, "Gemma3n: fix fa2 equivalence", None),
+        (3, "Refactor every test file", None),
+    )
+    best = pf.for_test(NODE, MERGED_TS + 86400, by_file)
+    assert (best["number"], best["verdict"], best["others"]) == (2, "open", 1)
+    assert (
+        pf.for_test("tests/models/bert/test_modeling_bert.py::T::t", 0, by_file) is None
+    )
+    assert pf.for_test("../etc/passwd", 0, by_file) is None
+
+
+def test_last_failure_is_the_latest_failing_run_start():
+    seen = []
+
+    def query(expr):
+        seen.append(expr)
+        if "pytest_test_last_failure_info" in expr:
+            return [
+                {"metric": {"run_id": "11:1"}, "value": [0, "1"]},
+                {"metric": {"run_id": "12:1"}, "value": [0, "1"]},
+                {"metric": {"run_id": 'x"}'}, "value": [0, "1"]},  # never in a regex
+            ]
         return [
-            {"filename": "tests/generation/test_streamers.py"},
-            {"filename": "docs/source/en/fsdp.md"},
+            {"metric": {"run_id": "11:1"}, "value": [0, "100"]},
+            {"metric": {"run_id": "12:1"}, "value": [0, "200"]},
         ]
 
-    result = pf.find(TRACE, NODE, list, search, get)
-    assert result == {
-        "status": "ok",
-        "pr": {
-            "number": 49583,
-            "title": "Fix flaky streamer timeout tests",
-            "url": "https://github.com/huggingface/transformers/pull/49583",
-            "state": "open",
-            "issue": None,
-        },
-    }
-    assert "in:title streamer" in queries[0][0]
-    assert files[0].endswith("/pulls/49583/files?per_page=100")
-    assert pf.find(TRACE, NODE, list, search, get) == result
-    assert len(queries) == 1
+    assert ph.last_failure(query, 'tests/a.py::T::t["q"]') == 200.0
+    assert 'test_nodeid="tests/a.py::T::t[\\"q\\"]"' in seen[0]
+    assert 'run_id=~"11:1|12:1"' in seen[1]
+    assert ph.last_failure(lambda expr: [], NODE) is None
 
 
-def test_inflight_claim_is_checked_against_changed_file(monkeypatch):
-    monkeypatch.setattr(
-        ri,
-        "lookup",
-        lambda *args: {"status": "ok", "hits": [{"number": 48, "type": "issue"}]},
+def test_only_fixes_of_this_test_count():
+    by_file = index(
+        (1, "Add contrastive loss to Gemma3n", None),  # a feature, not a fix
+        (2, "Fix Gemma3nVision2TextModelTest::test_model_parallelism split", None),
+        (3, "[serge] Fix 2 integration tests for model `gemma3n`", None),
     )
-    calls = []
-    monkeypatch.setattr(
-        pf,
-        "inflight",
-        lambda number: (
-            calls.append(number)
-            or [
-                {
-                    "repo": ri.REPOSITORY,
-                    "type": "pr",
-                    "number": 50,
-                    "title": "Fix the queue race",
-                    "state": "open",
-                    "merged": False,
-                }
-            ]
-        ),
+    assert pf.for_test(NODE, 0, by_file)["number"] == 3
+    other = (
+        "tests/models/gemma3n/test_modeling_gemma3n.py::Gemma3nVision2TextModelTest::"
     )
-    result = pf.find(
-        TRACE,
-        NODE,
-        list,
-        lambda *args, **kwargs: [],
-        lambda url: [{"filename": "tests/generation/test_streamers.py"}],
-    )
-    assert calls == [48]
-    assert result["pr"]["issue"] == 48
-    assert result["pr"]["number"] == 50
-
-
-def test_inflight_survives_github_search_failure(monkeypatch):
-    monkeypatch.setattr(
-        ri,
-        "lookup",
-        lambda *args: {"status": "ok", "hits": [{"number": 48, "type": "issue"}]},
-    )
-    monkeypatch.setattr(
-        pf,
-        "inflight",
-        lambda number: [
-            {
-                "repo": ri.REPOSITORY,
-                "type": "pr",
-                "number": 50,
-                "title": "Fix the queue race",
-                "state": "open",
-                "merged": False,
-            }
-        ],
-    )
-
-    def failed_search(*args, **kwargs):
-        raise OSError("search down")
-
-    result = pf.find(
-        TRACE,
-        NODE,
-        list,
-        failed_search,
-        lambda url: [{"filename": "tests/generation/test_streamers.py"}],
-    )
-    assert result["pr"]["number"] == 50
-
-
-def test_unrelated_file_and_closed_pr_are_not_probable(monkeypatch):
-    monkeypatch.setattr(ri, "lookup", lambda *args: {"status": "ok", "hits": []})
-    result = pf.find(
-        TRACE,
-        NODE,
-        list,
-        lambda *args, **kwargs: [
-            pr(1, "Fix streamer tests", "closed"),
-            pr(2, "Fix streamer tests"),
-        ],
-        lambda url: [{"filename": "tests/generation/test_beam_search.py"}],
-    )
-    assert result == {"status": "none"}
-
-
-def test_inflight_uses_repo_and_version(monkeypatch):
-    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_RELORE_URL", "https://relore.test")
-
-    def open_request(request, timeout):
-        assert timeout == 8
-        assert request.get_header("X-relore-client") == ri.WIRE_VERSION
-        assert request.full_url.endswith(
-            "/api/v1/inflight/48?repo=huggingface%2Ftransformers"
-        )
-        response = io.BytesIO(
-            json.dumps(
-                {"repo": ri.REPOSITORY, "number": 48, "claims": [{"number": 50}]}
-            ).encode()
-        )
-        response.headers = {"x-relore-version": ri.WIRE_VERSION}
-        return response
-
-    monkeypatch.setattr(pf, "urlopen", open_request)
-    assert pf.inflight(48) == [{"number": 50}]
+    assert pf.for_test(other + "test_model_parallelism", 0, by_file)["number"] == 3
+    assert pf.for_test(other + "test_model_parallelism", 0, by_file)["others"] == 1
+    # The class matches but the named function is another one.
+    named = index((2, "Fix Gemma3nVision2TextModelTest::test_model_parallelism", None))
+    assert pf.for_test(other + "test_generate", 0, named) is None

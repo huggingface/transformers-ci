@@ -212,8 +212,11 @@ if(context.get('test_nodeid'))fetch('/serge-actions/probable-fix?'+
     const a=document.createElement('a');a.href=pr.url;a.target='_blank';
     a.rel='noopener noreferrer';a.title=pr.title;
     a.textContent='PR #'+pr.number;
-    p.append('🔎 Probable fix: ',a,' ('+pr.state+') · '+pr.title);
-    if(pr.issue)p.append(' · linked to issue #'+pr.issue);
+    // Same rule and words as Project health's Probable fix column.
+    const verdict={open:'open',merged_after:'merged, no failure on main since',
+      merged_before:'merged, but the test failed on main after it'}[pr.verdict]||'';
+    p.append(pr.verdict==='merged_before'?'🔎 Tried in ':'🔎 Probable fix: ',a,
+      ' ('+verdict+') · '+pr.title);
     p.hidden=false;fitFrame();
   }).catch(()=>{});
 const MESSAGES={disabled:'WDYT? is not configured on this server yet.',
