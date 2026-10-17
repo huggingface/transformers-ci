@@ -75,6 +75,10 @@ def _transient(error: BaseException) -> bool:
     return isinstance(error, TRANSIENT)
 
 
+# Page sizes a listing tries in turn when GitHub answers 502 (see _paged).
+PAGE_SIZES = (100, 50, 25)
+
+
 class Throttled(Exception):
     """GitHub asked us to stop until ``resume_at``."""
 
@@ -303,16 +307,34 @@ class Reconciler:
     def _paged(
         self, path: str, key: str, max_pages: int, params: dict
     ) -> tuple[list[dict], bool]:
-        """Items of a paginated list and whether the listing is complete."""
+        """Items of a paginated list and whether the listing is complete.
+
+        GitHub answers some large lists with a 502 at 100 per page and a 200 at
+        50: the jobs of a re-run attempt with ~100 jobs and their steps
+        (2026-10-17: 15 such runs failed every pass, so no pass completed and
+        the status read stale for good). A 502 retries the listing smaller,
+        keeping the same cap on items."""
+        for size in PAGE_SIZES:
+            try:
+                return self._paged_at(path, key, max_pages * 100 // size, params, size)
+            except urllib.error.HTTPError as error:
+                if error.code != 502 or size == PAGE_SIZES[-1]:
+                    raise
+                self.client._count("smaller_page")
+        raise AssertionError("unreachable")
+
+    def _paged_at(
+        self, path: str, key: str, max_pages: int, params: dict, size: int
+    ) -> tuple[list[dict], bool]:
         items: list[dict] = []
         for page in range(1, max_pages + 1):
-            body = self._get(path, {**params, "per_page": 100, "page": page})
+            body = self._get(path, {**params, "per_page": size, "page": page})
             batch = body.get(key) if isinstance(body, dict) else None
             if not isinstance(batch, list):
                 return items, False
             items.extend(item for item in batch if isinstance(item, dict))
             total = body.get("total_count")
-            if len(batch) < 100 or (isinstance(total, int) and len(items) >= total):
+            if len(batch) < size or (isinstance(total, int) and len(items) >= total):
                 return items, True
         return items, False
 

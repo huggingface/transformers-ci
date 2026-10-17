@@ -514,3 +514,45 @@ def test_a_run_github_no_longer_has_stops_being_polled(tmp_path) -> None:
     (run,) = store.runs()
     assert run["gone"] is True and run["status"] == "in_progress"  # never inferred done
     assert store.runs_needing_reconcile(touched_since=0) == []
+
+
+def test_a_list_github_502s_at_100_per_page_is_read_at_50(tmp_path) -> None:
+    # Prod, 2026-10-17: the jobs of a re-run attempt with ~100 jobs 502 at
+    # per_page=100 and load at 50, so every pass was partial and stale stuck.
+    all_jobs = [api_job(i) for i in range(1, 102)]
+
+    def job_pages(params, _headers):
+        size, page = int(params["per_page"]), int(params["page"])
+        if size == 100:
+            return (502, {})
+        batch = all_jobs[(page - 1) * size : page * size]
+        return (200, {"total_count": len(all_jobs), "jobs": batch})
+
+    store, reconciler, fake = setup(
+        tmp_path,
+        {RUNS: listing(), ATTEMPT: (200, api_run()), ATTEMPT + "/jobs": job_pages},
+    )
+    reconciler.client._sleep = lambda _seconds: None
+    store.apply(
+        [
+            RunUpdate(
+                REPO,
+                900,
+                1,
+                "in_progress",
+                workflow="PR CI",
+                event="pull_request",
+                prs=(4321,),
+            )
+        ]
+    )
+
+    assert reconciler.run_once(now=NOW) is True
+    assert len(store.jobs()) == 101
+    sizes = [
+        params.get("per_page")
+        for path, params, _ in fake.calls
+        if path == ATTEMPT + "/jobs"
+    ]
+    assert sizes[0] == "100" and set(sizes[-3:]) == {"50"}
+    assert reconciler.snapshot(now=NOW)["stale"] == 0
