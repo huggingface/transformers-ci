@@ -28,10 +28,7 @@
     openButton.setAttribute('aria-checked', String(hideClosed));
     dayButtons.forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.days) === days)));
   }
-  function message(value, error = false) {
-    status.textContent = value;
-    status.classList.toggle('error', error);
-  }
+  const message = (value, error = false) => tci.status(status, value, error);
   function fail(value) {
     rows.replaceChildren();
     empty.hidden = false;

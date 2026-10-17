@@ -45,6 +45,11 @@
   const stored = key => { try { return localStorage.getItem(key); } catch (_) { return null; } };
   const save = (key, value) => { try { localStorage.setItem(key, String(value)); } catch (_) {} };
   const esc = value => String(value).replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
+  // A page header's status line: "Loading…" while a refresh runs, an error in red.
+  function status(element, text, error = false) {
+    element.textContent = text;
+    element.classList.toggle('error', error);
+  }
   function spinner(label) {
     const spin = node('span', 'live');
     if (label) { spin.title = label; spin.setAttribute('role', 'img'); spin.setAttribute('aria-label', label); }
@@ -100,5 +105,5 @@
     return wrap;
   }
 
-  window.tci = {applyTheme, node, esc, spinner, stored, save, laneName: (hardware, laneId) => lane(hardware, laneId).name, laneIcon, laneIcons};
+  window.tci = {applyTheme, node, esc, spinner, status, stored, save, laneName: (hardware, laneId) => lane(hardware, laneId).name, laneIcon, laneIcons};
 })();

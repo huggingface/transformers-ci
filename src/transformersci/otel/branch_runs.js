@@ -85,15 +85,16 @@
     if ((loading && !force) || document.hidden) return;
     const query = new URLSearchParams({days: state.days, limit: state.limit, main: state.main ? '1' : '0'}).toString();
     wanted = query; loading = true;
+    tci.status(status, 'Loading…');
     try {
       const response = await fetch(`/branch-runs/rows?${query}`, {credentials: 'same-origin', cache: 'no-store'});
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       if (query !== wanted) return;
       render(data);
-      status.textContent = ''; status.className = '';
+      tci.status(status, '');
     } catch (error) {
-      status.textContent = `Could not load runs (${error.message}). Retrying…`; status.className = 'error';
+      tci.status(status, `Could not load runs (${error.message}). Retrying…`, true);
     } finally { loading = false; }
   }
   refresh();
