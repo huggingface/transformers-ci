@@ -145,7 +145,7 @@
     const q = state.q;
     const base = rows.filter(row => (state.runner === 'all' || row.runner === state.runner)
       && (!state.sticky || row.sticky)
-      && (!state.unclaimed || ['free', 'again'].includes(claimState(row)))
+      && (!state.unclaimed || ['free', 'closed'].includes(claimState(row)))
       && (!state.mine || claims[row.nodeid]?.login === me)
       && (!q || `${row.model} ${row.nodeid} ${row.job} ${row.signal}`.toLowerCase().includes(q)));
     return {base, shown: base.filter(row => state.cat === 'all' || row.category === state.cat)};
@@ -175,14 +175,13 @@
   const openGroups = new Set();
   let groupsSeen = '', groupNames = [];
 
-  // A published claim whose issue was closed: "fixed" if the test has not failed
-  // since, else "failing again" (and free to pick up).
+  // A closed issue is only "closed": it is not proof of a fix. Its row offers
+  // Reopen instead of New issue, and says if the test failed after the close.
   function claimState(row) {
     const claim = claims[row.nodeid];
     if (!claim) return 'free';
     if (claim.state !== 'claimed') return 'drafting';
-    if (claim.issue_state !== 'closed') return 'on-it';
-    return row.last_seen > (claim.closed_at || 0) ? 'again' : 'fixed';
+    return claim.issue_state === 'closed' ? 'closed' : 'on-it';
   }
 
   function claimHtml(row) {
@@ -192,8 +191,9 @@
     const issue = claim.url ? `<a href="${esc(claim.url)}" target="_blank" rel="noopener noreferrer">#${claim.number}</a>` : '';
     if (state === 'drafting') return `${who} <span class="drafting">is drafting…</span>`;
     if (state === 'on-it') return `${who} is on it · ${issue}`;
-    if (state === 'fixed') return `<span class="fixed-mark">✓ fixed</span> · ${issue} <span class="sub">by ${who}</span>`;
-    return `<span class="again" title="The issue was closed but the test failed after that">↺ failing again</span> · ${issue} closed`;
+    const since = claim.closed_at && row.last_seen > claim.closed_at
+      ? ' · <span class="again" title="The test failed after the issue was closed">failed since</span>' : '';
+    return `${issue} <span class="closed">closed</span>${since} <span class="sub">· was ${who}</span>`;
   }
 
   // New issue is off while someone has the test: its issue is the place to talk.
@@ -207,6 +207,12 @@
 
   function actionButton(id, label, help, k, index, row) {
     let blocked = id === 'new-issue' ? newIssueBlocked(row) : '';
+    if (id === 'new-issue' && claimState(row) === 'closed') {
+      // Same button: the dialog finds the closed issue and offers to reopen it.
+      const claim = claims[row.nodeid];
+      label = 'Reopen';
+      help = `Reopen #${claim.number}, closed, instead of opening a second issue`;
+    }
     if (row.category === 'slow' && !row.nodeid.startsWith('tests/')) blocked = 'Not a pytest test';
     if (blocked) return `<button type="button" class="act" disabled title="${esc(blocked)}">${label}</button>`;
     return `<button type="button" class="act${k ? '' : ' pri'}" data-act="${id}" data-i="${index}" title="${help}">${label}</button>`;
@@ -219,7 +225,7 @@
     const cellTitle = (count, i) => slow
       ? `${dayLabel(rowsFirstDay + i * DAY)}: ${row.durations[i] == null ? 'not among the slowest' : `${Math.round(row.durations[i])} s`}`
       : `${dayLabel(rowsFirstDay + i * DAY)}: ${count} failing run${count === 1 ? '' : 's'}`;
-    return `<tr class="${claimState(row) === 'fixed' ? 'fixed' : ''}">
+    return `<tr>
       <td class="test"><div class="tags"><span class="badge k-${row.category}">${row.category.toUpperCase()}</span><span class="rn">${row.runner}</span>${row.sticky ? '<span class="sticky">sticky</span>' : ''}<b>${esc(row.model)}</b><span class="job">${esc(row.job)}</span></div>
         <div class="nodeid">${esc(row.test)}</div></td>
       <td class="sig${slow ? ' slow' : ''}"><span class="sigtext" title="${esc(row.signal)}">${esc(row.signal)}</span><button type="button" class="why" data-why="${index}" aria-label="${slow ? 'Timings' : 'Traceback'} for ${esc(row.test)}" title="${slow ? 'Show the timings' : 'Show the traceback'}">?</button></td>

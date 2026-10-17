@@ -79,7 +79,7 @@ def test_concurrent_new_issue_clicks_reserve_exactly_once(tmp_path) -> None:
     assert all(r["login"] == holder for r in results if r["status"] != "ok")
 
 
-def test_a_closed_issue_frees_the_test_and_a_reopened_one_holds_it_again() -> None:
+def test_a_closed_issue_is_offered_for_reopening_not_replaced() -> None:
     store = claims.Store(":memory:")
     url = "https://github.com/huggingface/transformers/issues/7"
     store.reserve(NODEID, "alice", now=100)
@@ -93,12 +93,46 @@ def test_a_closed_issue_frees_the_test_and_a_reopened_one_holds_it_again() -> No
     assert store.refresh(lambda number: closed, now=later) == 1
     claim = store.snapshot(now=later)[NODEID]
     assert (claim["issue_state"], claim["closed_at"]) == ("closed", 1792235537.0)
-    assert store.reserve(NODEID, "bob", now=later + 1) == {"status": "ok"}
+    # Closed is not proof of a fix: no second issue, reopen this one.
+    assert store.reserve(NODEID, "bob", now=later + 1) == {
+        "status": "closed",
+        "login": "alice",
+        "number": 7,
+        "url": url,
+    }
 
-    store.confirm(NODEID, "bob", 8, url.replace("7", "8"), now=later + 2)
-    reopened = later + 2 + claims.CHECK_SECONDS + 1
+    # Reopened on GitHub by hand: the next read holds the test again.
+    reopened = later + claims.CHECK_SECONDS + 1
     store.refresh(lambda number: {"state": "open"}, now=reopened)
     assert store.reserve(NODEID, "carol", now=reopened)["status"] == "claimed"
+
+
+def test_reopen_hands_the_claim_over_once_and_can_be_undone() -> None:
+    store = claims.Store(":memory:")
+    url = "https://github.com/huggingface/transformers/issues/7"
+    store.confirm(NODEID, "alice", 7, url, now=200)
+    assert store.reopen(NODEID, "bob", now=300)["status"] == "claimed"  # still open
+    store.set_issue_state(NODEID, 7, "closed", 250.0, now=260)
+
+    taken = store.reopen(NODEID, "bob", now=300)
+    assert (taken["status"], taken["number"], taken["url"]) == ("ok", 7, url)
+    claim = store.snapshot(now=301)[NODEID]
+    assert (claim["login"], claim["issue_state"], claim["closed_at"]) == (
+        "bob",
+        "open",
+        None,
+    )
+    # A second person reopening at the same time is told who has it now.
+    assert store.reopen(NODEID, "carol", now=302)["login"] == "bob"
+
+    store.undo_reopen(NODEID, 7, taken["previous"])
+    claim = store.snapshot(now=303)[NODEID]
+    assert (claim["login"], claim["issue_state"], claim["closed_at"]) == (
+        "alice",
+        "closed",
+        250.0,
+    )
+    assert store.reopen("tests/other.py::t", "bob")["status"] == "invalid"
 
 
 def test_refresh_skips_failed_reads_and_leaves_newer_claims_alone() -> None:
@@ -136,7 +170,7 @@ def test_an_existing_database_gains_the_issue_columns(tmp_path) -> None:
     store = claims.Store(path)
     assert store.due(now=10.0) == [(NODEID, 49691)]
     store.refresh(lambda number: {"state": "closed", "closed_at": None}, now=10.0)
-    assert store.reserve(NODEID, "bob", now=11.0) == {"status": "ok"}
+    assert store.reserve(NODEID, "bob", now=11.0)["status"] == "closed"
 
 
 @pytest.fixture
@@ -375,3 +409,57 @@ def test_slow_who_can_help_looks_at_the_test_without_a_trace(
         base, "/serge-actions/who-can-help?kind=slow", "bob", {**SLOW, "runner": "TPU"}
     )
     assert (status, refused["status"]) == (400, "invalid")
+
+
+def test_reopen_reopens_the_closed_issue_and_says_who(server, monkeypatch) -> None:
+    base, _ = server
+    url = "https://github.com/huggingface/transformers/issues/7"
+    claims.store().confirm(NODEID, "alice", 7, url)
+    claims.store().set_issue_state(NODEID, 7, "closed", 1.0)
+    writes = []
+
+    def write(method, path, payload):
+        writes.append((method, path, payload))
+        return {"state": "open"}
+
+    monkeypatch.setattr(trace_exporter, "_github_write", write)
+    target = {"trace_id": TRACE, "test_nodeid": NODEID}
+    status, held = post(base, "/serge-actions/new-issue/draft", "bob", target)
+    assert (status, held["status"], held["number"]) == (409, "closed", 7)
+
+    status, reply = post(
+        base, "/serge-actions/new-issue/reopen", "bob", {"test_nodeid": NODEID}
+    )
+    assert (status, reply) == (200, {"status": "ok", "number": 7, "url": url})
+    assert writes == [
+        ("PATCH", "issues/7", {"state": "open"}),
+        ("POST", "issues/7/comments", {"body": trace_exporter.reopen_line("bob")}),
+    ]
+    claim = claims.store().snapshot()[NODEID]
+    assert (claim["login"], claim["issue_state"]) == ("bob", "open")
+    status, again = post(
+        base, "/serge-actions/new-issue/reopen", "carol", {"test_nodeid": NODEID}
+    )
+    assert (status, again["status"], again["login"]) == (409, "claimed", "bob")
+
+
+def test_a_failed_reopen_leaves_the_issue_closed_and_its_claimant(
+    server, monkeypatch
+) -> None:
+    base, _ = server
+    url = "https://github.com/huggingface/transformers/issues/7"
+    claims.store().confirm(NODEID, "alice", 7, url)
+    claims.store().set_issue_state(NODEID, 7, "closed", 1.0)
+
+    def refuse(method, path, payload):
+        raise HTTPError(path, 403, "Forbidden", None, None)
+
+    monkeypatch.setattr(trace_exporter, "_github_write", refuse)
+    status, reply = post(
+        base, "/serge-actions/new-issue/reopen", "bob", {"test_nodeid": NODEID}
+    )
+    assert (status, reply["status"]) == (200, "unavailable")
+    claim = claims.store().snapshot()[NODEID]
+    assert (claim["login"], claim["issue_state"]) == ("alice", "closed")
+    status, reply = post(base, "/serge-actions/new-issue/reopen", "bob", {})
+    assert (status, reply["status"]) == (400, "invalid")

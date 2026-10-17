@@ -377,9 +377,10 @@ function issuePopup(){
   doc.addEventListener('keydown',onKey);close.onclick=hide;
   overlay.onclick=event=>{if(event.target===overlay)hide();};close.focus();
   return {show,progress:steps.progress,finish(data){
-    steps.finish(data.status==='ok');
+    steps.finish(data.status==='ok'||data.status==='closed');
     content.replaceChildren();
-    if(data.status==='claimed'||data.status==='drafting'){
+    if(data.status==='closed'){title.textContent='Reopen issue';box.setAttribute('aria-label','Reopen issue');}
+    if(['claimed','drafting','closed'].includes(data.status)){
       content.append(heldBy(doc,data));return;
     }
     if(data.status!=='ok'){
@@ -422,7 +423,7 @@ function issuePopup(){
           headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
           body:JSON.stringify({draft_id:data.draft_id,title:titleInput.value,body:bodyInput.value})});
         const result=await response.json();
-        if(result.status==='claimed'||result.status==='drafting'){
+        if(['claimed','drafting','closed'].includes(result.status)){
           heldDraft=null;steps.finish(false);publish.hidden=true;
           content.replaceChildren(heldBy(doc,result));return;
         }
@@ -443,13 +444,19 @@ function issuePopup(){
 }
 
 // Someone else holds this test: a published issue, or a draft in progress.
+// A closed issue is offered for reopening: closed is not proof it was fixed.
 function heldBy(doc,data){
   const p=doc.createElement('p'),who=doc.createElement('a');
   who.href='https://github.com/'+encodeURIComponent(data.login);who.target='_blank';
   who.rel='noopener noreferrer';who.textContent='@'+data.login;
+  const issue=doc.createElement('a');issue.href=data.url;issue.target='_blank';
+  issue.rel='noopener noreferrer';issue.textContent='#'+data.number;
+  if(data.status==='closed'){
+    p.append('This test already has an issue, ',issue,', picked up by ',who,
+      ', and it was closed. Reopen it rather than opening a second one.');
+    return reopenIssue(doc,data,p);
+  }
   if(data.status==='claimed'){
-    const issue=doc.createElement('a');issue.href=data.url;issue.target='_blank';
-    issue.rel='noopener noreferrer';issue.textContent='#'+data.number;
     p.append('Already picked up by ',who,' in ',issue,'. Comment there instead of opening a second issue.');
   }else{
     const minutes=Math.round((Date.now()/1000-data.since)/60);
@@ -457,6 +464,38 @@ function heldBy(doc,data){
       'It frees up if they close it without publishing.');
   }
   return p;
+}
+function reopenIssue(doc,data,p){
+  const box=doc.createElement('div'),note=doc.createElement('p');
+  note.setAttribute('role','status');
+  const button=doc.createElement('button');button.type='button';
+  button.textContent='Reopen #'+data.number;
+  button.style.cssText='background:#242b35;color:#d8d9da;border:1px solid #657083;'+
+    'border-radius:4px;padding:6px 12px;font:inherit;cursor:pointer';
+  button.onclick=async()=>{
+    button.disabled=true;button.textContent='Reopening…';note.textContent='';
+    let result={status:'unavailable'};
+    try{
+      const response=await fetch('/serge-actions/new-issue/reopen',{
+        method:'POST',credentials:'same-origin',
+        headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
+        body:JSON.stringify({test_nodeid:context.get('test_nodeid')||''})});
+      result=await response.json();
+    }catch(error){}
+    if(result.status==='ok'){
+      const link=doc.createElement('a');link.href=result.url;link.target='_blank';
+      link.rel='noopener noreferrer';link.textContent='#'+result.number;
+      box.replaceChildren(doc.createElement('p'));
+      box.firstChild.append('Reopened ',link,'. You are on it now: the issue says so.');
+      return;
+    }
+    if(result.status==='claimed'){box.replaceChildren(heldBy(doc,result));return;}
+    button.disabled=false;button.textContent='Reopen #'+data.number;
+    note.textContent=result.status==='unauthorized'?'Your Grafana session expired. Sign in again.':
+      'Could not reopen the issue. Check GitHub permissions and try again.';
+  };
+  box.append(p,button,note);
+  return box;
 }
 
 function helperRefs(doc,parent,value,evidenceUrl,prLinks){

@@ -79,8 +79,7 @@ tr.grp:hover td{background:var(--hover)}tr.grp .meta{font:12px Inter,system-ui,s
 tr.grp .caret{display:inline-block;width:12px;color:var(--muted)}
 .fold{display:inline-flex;align-items:center;justify-content:center;width:26px;height:24px;padding:0;border:1px solid var(--line);border-radius:4px;background:transparent;color:var(--muted);cursor:pointer}
 .fold:hover{color:var(--fg);border-color:var(--sel)}.fold svg{width:15px;height:15px}.fold[hidden]{display:none}
-.claim .fixed-mark{color:var(--green);font-weight:600}.claim .again{color:var(--amber);font-weight:600}
-tr.fixed td{opacity:.55}
+.claim .closed{font-weight:600}.claim .again{color:var(--amber);font-weight:600}
 .claim{font-size:12px;white-space:normal;min-width:90px;max-width:150px}
 td.days .num{display:block;font-size:12px}.claim .drafting{color:var(--muted);font-style:italic}
 .tog[hidden]{display:none}
@@ -125,7 +124,7 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
     <span class="seg" id="cat"></span>
     <span class="seg" id="runner"><button data-v="all" aria-pressed="true">Any</button><button data-v="CPU">CPU</button><button data-v="GPU">GPU</button></span>
     <label class="tog"><input type="checkbox" id="sticky-only">Sticky only</label>
-    <label class="tog" title="Hide tests someone is on (or drafting an issue for) and tests fixed since their issue closed"><input type="checkbox" id="unclaimed-only">Unclaimed only</label>
+    <label class="tog" title="Hide tests someone is on or drafting an issue for. Tests whose issue was closed stay listed"><input type="checkbox" id="unclaimed-only">Unclaimed only</label>
     <label class="tog" id="mine-toggle" hidden title="Tests you picked up"><input type="checkbox" id="mine-only">My stuff</label>
     <span class="ctl"><span class="lbl">Days</span><span class="seg" id="days"><button data-v="7">7</button><button data-v="14">14</button><button data-v="30">30</button></span></span>
     <span class="ctl"><span class="lbl">Group by</span><span class="seg" id="group"><button data-v="none" aria-pressed="true">None</button><button data-v="model">Model</button><button data-v="test">Test</button><button data-v="function">Function</button><button data-v="test_model">Test + Model</button><button data-v="error">Error</button></span></span>

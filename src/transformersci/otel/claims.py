@@ -4,9 +4,10 @@ New issue *reserves* the test for whoever starts the draft; everyone else is
 told who is drafting instead of getting a second draft. Publishing turns the
 reservation into a claim with the issue's number; closing the draft releases
 it, and an abandoned one lapses after ``RESERVE_SECONDS``. A published claim's
-issue is re-read from GitHub every ``CHECK_SECONDS``: once it is closed the test
-is free again, and the page tells "fixed" from "failing again" by comparing the
-close time with the test's last failure.
+issue is re-read from GitHub every ``CHECK_SECONDS``. A closed issue still
+holds the test: the page says it was closed (a close is not proof of a fix) and
+offers to reopen it instead of a second issue. Reopening makes the person who
+reopened it the claimant.
 
 One row per test node id, in ``$RUN_STORE/claims.sqlite3``. The exporter runs
 as a single replica, so a process lock around each SQLite transaction makes a
@@ -80,23 +81,21 @@ class Store:
     def reserve(self, nodeid: str, login: str, now: float | None = None) -> dict:
         """Reserve ``nodeid`` for ``login``, or say who already has it.
 
-        ``{"status": "ok"}``, ``{"status": "claimed", login, number, url}`` or
-        ``{"status": "drafting", login, since}``. The same person may reserve
-        again (a second tab, or publishing after a while): it refreshes.
+        ``{"status": "ok"}``, ``{"status": "claimed", login, number, url}``,
+        ``{"status": "closed", login, number, url}`` (reopen that issue instead)
+        or ``{"status": "drafting", login, since}``. The same person may
+        reserve again (a second tab, or publishing after a while): it refreshes.
         """
         now = time.time() if now is None else now
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 current = self._row(nodeid)
-                # A closed issue no longer holds the test: a new draft replaces it.
-                if (
-                    current
-                    and current["state"] == "claimed"
-                    and current["issue_state"] != "closed"
-                ):
+                if current and current["state"] == "claimed":
                     return {
-                        "status": "claimed",
+                        "status": "closed"
+                        if current["issue_state"] == "closed"
+                        else "claimed",
                         "login": current["login"],
                         "number": current["number"],
                         "url": current["url"],
@@ -133,6 +132,56 @@ class Store:
                 " (nodeid, login, state, created, number, url, issue_state, checked_at)"
                 " VALUES (?, ?, 'claimed', ?, ?, ?, 'open', ?)",
                 (nodeid, login, now, number, url, now),
+            )
+
+    def reopen(self, nodeid: str, login: str, now: float | None = None) -> dict:
+        """Take a closed claim for ``login`` before its issue is reopened.
+
+        ``{"status": "ok", number, url, previous}`` (``previous`` restores the
+        claim with ``undo_reopen`` if GitHub refuses), or the claim's status
+        when it is not closed: one of two people reopening at once wins.
+        """
+        now = time.time() if now is None else now
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                current = self._row(nodeid)
+                if not current or current["state"] != "claimed":
+                    return {"status": "invalid"}
+                if current["issue_state"] != "closed":
+                    return {
+                        "status": "claimed",
+                        "login": current["login"],
+                        "number": current["number"],
+                        "url": current["url"],
+                    }
+                previous = self._db.execute(
+                    "SELECT login, created, closed_at, checked_at FROM claims"
+                    " WHERE nodeid = ?",
+                    (nodeid,),
+                ).fetchone()
+                self._db.execute(
+                    "UPDATE claims SET login = ?, created = ?, issue_state = 'open',"
+                    " closed_at = NULL, checked_at = ? WHERE nodeid = ?",
+                    (login, now, now, nodeid),
+                )
+                return {
+                    "status": "ok",
+                    "number": current["number"],
+                    "url": current["url"],
+                    "previous": previous,
+                }
+            finally:
+                self._db.execute("COMMIT")
+
+    def undo_reopen(self, nodeid: str, number: int, previous: tuple) -> None:
+        login, created, closed_at, checked_at = previous
+        with self._lock:
+            self._db.execute(
+                "UPDATE claims SET login = ?, created = ?, issue_state = 'closed',"
+                " closed_at = ?, checked_at = ?"
+                " WHERE nodeid = ? AND number = ? AND state = 'claimed'",
+                (login, created, closed_at, checked_at, nodeid, number),
             )
 
     def release(self, nodeid: str, login: str) -> None:

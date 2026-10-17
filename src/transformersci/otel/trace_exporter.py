@@ -1691,15 +1691,15 @@ def _github_api_get(api_url: str, timeout: float = 5.0) -> object:
     return json.loads(body)
 
 
-def _github_create_issue(title: str, body: str) -> object:
+def _github_write(method: str, path: str, payload: dict) -> object:
     # The dashboard App is read-only. Use the separately configured PAT for writes.
     token = os.getenv("PYTEST_GITHUB_TOKEN", "").strip()
     if not token:
         raise ValueError("GitHub write token unavailable")
     api_base = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
     request = Request(
-        f"{api_base}/repos/{related_issues.REPOSITORY}/issues",
-        data=json.dumps({"title": title, "body": body, "labels": ["bug"]}).encode(),
+        f"{api_base}/repos/{related_issues.REPOSITORY}/{path}",
+        data=json.dumps(payload).encode(),
         headers={
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
@@ -1707,10 +1707,27 @@ def _github_create_issue(title: str, body: str) -> object:
             "User-Agent": "transformersci-trace-exporter",
             "X-GitHub-Api-Version": "2022-11-28",
         },
-        method="POST",
+        method=method,
     )
     with urlopen(request, timeout=30) as response:
         return json.loads(response.read(64 * 1024))
+
+
+def _github_create_issue(title: str, body: str) -> object:
+    return _github_write(
+        "POST", "issues", {"title": title, "body": body, "labels": ["bug"]}
+    )
+
+
+def _github_reopen_issue(number: int, login: str) -> None:
+    """Reopen, then say who did: GitHub shows the shared token as the actor."""
+    issue = _github_write("PATCH", f"issues/{number}", {"state": "open"})
+    if not isinstance(issue, dict) or issue.get("state") != "open":
+        raise ValueError("GitHub did not reopen the issue")
+    try:
+        _github_write("POST", f"issues/{number}/comments", {"body": reopen_line(login)})
+    except Exception as error:  # reopened all the same
+        llm.log_failure("reopen-comment", f"#{number}", error)
 
 
 def search_github_issues(query: str, *, sort: str = "created", limit: int = 20) -> list:
@@ -6243,6 +6260,10 @@ def claim_line(login: str) -> str:
     return f"Picked up by @{login} from the transformers-ci dashboard."
 
 
+def reopen_line(login: str) -> str:
+    return f"Reopened by @{login} from the transformers-ci dashboard."
+
+
 # Project health reads a few wide Prometheus queries per window (30 days of
 # failures is ~4 MB); every viewer shares one answer per (endpoint, days).
 _PROJECT_HEALTH_CACHE_TTL_SECONDS = 60.0
@@ -8056,6 +8077,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
             "/serge-actions/new-issue/draft",
             "/serge-actions/new-issue/publish",
             "/serge-actions/new-issue/release",
+            "/serge-actions/new-issue/reopen",
             "/rerun-failed",
         ):
             self._send(404, JSON_CONTENT_TYPE, b'{"error":"not found"}')
@@ -8078,6 +8100,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._serve_new_issue_publish()
         elif path == "/serge-actions/new-issue/release":
             self._serve_new_issue_release()
+        elif path == "/serge-actions/new-issue/reopen":
+            self._serve_new_issue_reopen()
         elif parse_qs(urlparse(self.path).query).get("kind") == ["slow"]:
             self._serve_slow_wdyt()
         else:
@@ -8443,6 +8467,39 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if nodeid:
             claims.store().release(nodeid, login)
         self._reply_json(200, {"status": "ok"})
+
+    def _serve_new_issue_reopen(self) -> None:
+        """Reopen a test's closed issue instead of opening a second one; the
+        person who reopens it becomes the one on it."""
+        if not self._action_allowed():
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length)) if 0 < length <= 2048 else None
+        except (ValueError, TypeError):
+            body = None
+        nodeid = body.get("test_nodeid") if isinstance(body, dict) else None
+        if not isinstance(nodeid, str) or not 0 < len(nodeid) <= 1000:
+            self._reply_json(400, {"status": "invalid"})
+            return
+        login = self._action_user()
+        if not login:
+            return
+        store = claims.store()
+        taken = store.reopen(nodeid, login)
+        if taken["status"] != "ok":
+            self._reply_json(400 if taken["status"] == "invalid" else 409, taken)
+            return
+        try:
+            _github_reopen_issue(taken["number"], login)
+        except Exception as error:
+            llm.log_failure("reopen", f"{nodeid} #{taken['number']}", error)
+            store.undo_reopen(nodeid, taken["number"], taken["previous"])
+            self._reply_json(200, {"status": "unavailable"})
+            return
+        self._reply_json(
+            200, {"status": "ok", "number": taken["number"], "url": taken["url"]}
+        )
 
     def _serve_wdyt(self) -> None:
         reply = self._reply_json
