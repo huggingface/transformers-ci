@@ -32,7 +32,7 @@
   },
   {
    "targetBlank": false,
-   "title": "Main health",
+   "title": "Project health",
    "type": "link",
    "url": "/d/pytest-test-health/test-health"
   }
