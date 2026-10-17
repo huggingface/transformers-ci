@@ -13,7 +13,17 @@
     '.lane-icon{display:inline-flex;gap:1px;vertical-align:middle;color:var(--muted)}',
     '.lane-icon svg{width:18px;height:18px}.lane-icon.nvidia{color:#76b900}.lane-icon.amd{color:#ed1c24}',
     '.lanes{display:inline-flex;gap:6px;vertical-align:middle}',
-    '@media(prefers-reduced-motion:reduce){.live{animation:none}}',
+    // Toggles: an on/off switch and a group of choice buttons (Days 7 14 21).
+    '.switch{display:inline-flex;align-items:center;gap:7px;padding:5px 9px;border:1px solid var(--line);border-radius:14px;background:transparent;color:var(--muted);font:600 12px Inter,system-ui,sans-serif;cursor:pointer}',
+    '.switch:hover{background:var(--hover);color:var(--fg)}.switch[aria-checked=true]{border-color:var(--accent);color:var(--fg)}',
+    '.switch:focus-visible,.choice button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}',
+    '.track{display:block;width:25px;height:15px;border-radius:9px;background:var(--line);padding:2px;box-sizing:border-box}',
+    '.knob{display:block;width:11px;height:11px;border-radius:50%;background:var(--muted);transition:transform .15s}',
+    '.switch[aria-checked=true] .track{background:#3d71d9}.switch[aria-checked=true] .knob{background:white;transform:translateX(10px)}',
+    '.choice{display:inline-flex;align-items:center;gap:3px;color:var(--muted);font-size:12px}',
+    '.choice button{padding:5px 7px;border:1px solid var(--line);border-radius:4px;background:transparent;color:var(--muted);font:600 12px Inter,system-ui,sans-serif;cursor:pointer}',
+    '.choice button:hover{background:var(--hover);color:var(--fg)}.choice button[aria-pressed=true]{border-color:var(--accent);background:var(--hover);color:var(--fg)}',
+    '@media(prefers-reduced-motion:reduce){.live{animation:none}.knob{transition:none}}',
   ].join('\n');
   // Prepended so a page's own rules (e.g. a pulsing queued spinner) still win.
   document.head.prepend(style);
@@ -31,6 +41,9 @@
     if (value != null) item.textContent = String(value);
     return item;
   };
+  // Per-viewer choices; storage can be blocked (private window), so never throw.
+  const stored = key => { try { return localStorage.getItem(key); } catch (_) { return null; } };
+  const save = (key, value) => { try { localStorage.setItem(key, String(value)); } catch (_) {} };
   const esc = value => String(value).replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
   function spinner(label) {
     const spin = node('span', 'live');
@@ -87,5 +100,5 @@
     return wrap;
   }
 
-  window.tci = {applyTheme, node, esc, spinner, laneName: (hardware, laneId) => lane(hardware, laneId).name, laneIcon, laneIcons};
+  window.tci = {applyTheme, node, esc, spinner, stored, save, laneName: (hardware, laneId) => lane(hardware, laneId).name, laneIcon, laneIcons};
 })();

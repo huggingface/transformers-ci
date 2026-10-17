@@ -6302,7 +6302,7 @@ def reopen_line(login: str) -> str:
 _PROJECT_HEALTH_CACHE_TTL_SECONDS = 60.0
 # Branch Runs refreshes every 10 s in every open tab; one answer serves them all.
 _BRANCH_RUNS_CACHE_TTL_SECONDS = 10.0
-_branch_runs_cache: dict[str, tuple[float, bytes]] = {}
+_branch_runs_cache: dict[tuple[int, int, bool], tuple[float, bytes]] = {}
 _branch_runs_cache_lock = threading.Lock()
 # common.js (theme, spinner, lane icons) is shared by the exporter's pages; each
 # loads it under its own prefix, which the ingress already routes here.
@@ -8970,7 +8970,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path in {"/branch-runs", "/branch-runs/app.js", "/branch-runs/rows"}:
             self._request_route = parsed.path
             if parsed.path == "/branch-runs/rows":
-                self._serve_branch_runs()
+                self._serve_branch_runs(parse_qs(parsed.query))
                 return
             name, content_type = (
                 ("branch_runs.html", "text/html; charset=utf-8")
@@ -9510,22 +9510,23 @@ class MetricsHandler(BaseHTTPRequestHandler):
                     _queue_history_cache.popitem(last=False)
         self._send(200, JSON_CONTENT_TYPE, payload, cache_control="no-store")
 
-    def _serve_branch_runs(self) -> None:
+    def _serve_branch_runs(self, params: dict[str, list[str]]) -> None:
+        key = branch_runs.parse_params(params)
         now = time.monotonic()
         with _branch_runs_cache_lock:
-            hit = _branch_runs_cache.get("rows")
+            hit = _branch_runs_cache.get(key)
         if hit is not None and hit[0] > now:
             self._request_cache = "hit"
             payload = hit[1]
         else:
             try:
-                body = branch_runs.build_rows(_prometheus_vector)
+                body = branch_runs.build_rows(_prometheus_vector, *key)
             except Exception as exc:
                 self._reply_json(502, {"error": f"Prometheus unavailable: {exc}"})
                 return
             payload = json.dumps(body, separators=(",", ":")).encode()
             with _branch_runs_cache_lock:
-                _branch_runs_cache["rows"] = (
+                _branch_runs_cache[key] = (
                     now + _BRANCH_RUNS_CACHE_TTL_SECONDS,
                     payload,
                 )

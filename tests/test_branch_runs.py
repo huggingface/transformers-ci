@@ -46,9 +46,30 @@ def test_rows_keep_the_ten_newest() -> None:
 
 
 def test_every_query_keeps_branches_without_a_pr_only() -> None:
-    for name, expr in branch_runs.QUERIES.items():
+    for name, expr in branch_runs.queries().items():
         assert 'pr!~"[0-9]' in expr, name
         assert 'pr=~"' not in expr, name
+
+
+def test_main_only_window_and_limit_reach_every_query() -> None:
+    picked = branch_runs.queries(days=21, limit=30, main_only=True)
+    for name, expr in picked.items():
+        assert "pr!~" not in expr and 'pr="main"' in expr, name
+        assert "[7d]" not in expr, name
+    assert "topk(30," in picked["start"] and "[21d]" in picked["start"]
+
+
+def test_params_only_accept_the_offered_choices() -> None:
+    assert branch_runs.parse_params({}) == (7, 10, False)
+    assert branch_runs.parse_params(
+        {"days": ["14"], "limit": ["30"], "main": ["1"]}
+    ) == (14, 30, True)
+    assert branch_runs.parse_params({"days": ["90"], "limit": ["x"]}) == (7, 10, False)
+
+
+def test_rows_keep_the_requested_count() -> None:
+    replies = {"start": vector(*((run(str(i)), float(i)) for i in range(40)))}
+    assert len(branch_runs.branch_rows(replies, 30)) == 30
 
 
 def test_pages_share_one_common_js(monkeypatch) -> None:
@@ -74,5 +95,8 @@ def test_pages_share_one_common_js(monkeypatch) -> None:
         first = len(calls)
         urlopen(f"{base}/branch-runs/rows").read()
         assert len(calls) == first
+        body = json.loads(urlopen(f"{base}/branch-runs/rows?main=1&limit=20").read())
+        assert (body["main_only"], body["limit"], body["days"]) == (True, 20, 7)
+        assert len(calls) > first
     finally:
         server.shutdown()

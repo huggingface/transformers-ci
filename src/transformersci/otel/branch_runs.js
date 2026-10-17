@@ -2,6 +2,30 @@
   'use strict';
   const rows = document.getElementById('rows'), empty = document.getElementById('empty'), status = document.getElementById('status');
   tci.applyTheme();
+  // Choices persist per viewer, like Last 20 PRs' toggles.
+  const pick = (key, choices) => { const value = Number(tci.stored(key)); return choices.includes(value) ? value : choices[0]; };
+  const state = {
+    days: pick('tci-branch-days', [7, 14, 21]),
+    limit: pick('tci-branch-limit', [10, 20, 30]),
+    main: tci.stored('tci-branch-main') === 'true',
+  };
+  const mainButton = document.getElementById('main');
+  const dayButtons = [...document.querySelectorAll('[data-days]')], limitButtons = [...document.querySelectorAll('[data-limit]')];
+  function controls() {
+    mainButton.setAttribute('aria-checked', String(state.main));
+    dayButtons.forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.days) === state.days)));
+    limitButtons.forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.limit) === state.limit)));
+  }
+  function choose(key, value) {
+    state[key] = value;
+    tci.save({days: 'tci-branch-days', limit: 'tci-branch-limit', main: 'tci-branch-main'}[key], value);
+    controls();
+    refresh(true);
+  }
+  mainButton.addEventListener('click', () => choose('main', !state.main));
+  dayButtons.forEach(button => button.addEventListener('click', () => choose('days', Number(button.dataset.days))));
+  limitButtons.forEach(button => button.addEventListener('click', () => choose('limit', Number(button.dataset.limit))));
+  controls();
   const cell = (cls, text) => tci.node('td', cls, text);
   // Grafana's `s` unit, which the table used: 9.77 s, 2.47 mins, 3.27 hours, 3.23 days.
   function seconds(value) {
@@ -30,6 +54,7 @@
   function render(data) {
     rows.replaceChildren();
     empty.hidden = data.rows.length > 0;
+    empty.textContent = `No ${data.main_only ? 'main' : 'branch'} runs in the last ${data.days} days.`;
     for (const run of data.rows) {
       const tr = document.createElement('tr');
       const live = cell('');
@@ -54,14 +79,18 @@
       rows.append(tr);
     }
   }
-  let loading = false;
-  async function refresh() {
-    if (loading || document.hidden) return;
-    loading = true;
+  let loading = false, wanted = '';
+  // A click while a refresh is in flight must not lose to the older answer.
+  async function refresh(force = false) {
+    if ((loading && !force) || document.hidden) return;
+    const query = new URLSearchParams({days: state.days, limit: state.limit, main: state.main ? '1' : '0'}).toString();
+    wanted = query; loading = true;
     try {
-      const response = await fetch('/branch-runs/rows', {credentials: 'same-origin', cache: 'no-store'});
+      const response = await fetch(`/branch-runs/rows?${query}`, {credentials: 'same-origin', cache: 'no-store'});
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      render(await response.json());
+      const data = await response.json();
+      if (query !== wanted) return;
+      render(data);
       status.textContent = ''; status.className = '';
     } catch (error) {
       status.textContent = `Could not load runs (${error.message}). Retrying…`; status.className = 'error';

@@ -7,9 +7,8 @@
   const status = document.getElementById('status');
   const rows = document.getElementById('rows');
   const empty = document.getElementById('empty');
-  const stored = (key) => { try { return localStorage.getItem(key); } catch (_) { return null; } };
+  const {stored, save} = tci;
   const storage = (key) => stored(key) === 'true';
-  const save = (key, value) => { try { localStorage.setItem(key, String(value)); } catch (_) {} };
   let mine = storage('tci-my-stuff');
   let hideClosed = storage('tci-hide-closed-prs');
   const storedDays = Number(stored('tci-pr-days'));
