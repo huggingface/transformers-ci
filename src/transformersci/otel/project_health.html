@@ -142,6 +142,7 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
     <span class="seg" id="runner"><button data-v="all" aria-pressed="true">Any</button><button data-v="CPU">CPU</button><button data-v="GPU">GPU</button></span>
     <label class="tog"><input type="checkbox" id="sticky-only">Sticky only</label>
     <label class="tog" title="Hide tests someone is on or drafting an issue for. Tests whose issue was closed stay listed"><input type="checkbox" id="unclaimed-only">Unclaimed only</label>
+    <label class="tog" title="Tests with an open fix PR, or one merged after their last failure"><input type="checkbox" id="fix-only">Has probable fix</label>
     <label class="tog" id="mine-toggle" hidden title="Tests you picked up"><input type="checkbox" id="mine-only">My stuff</label>
     <span class="ctl"><span class="lbl">Days</span><span class="seg" id="days"><button data-v="7">7</button><button data-v="14">14</button><button data-v="30">30</button></span></span>
     <span class="ctl"><span class="lbl">Group by</span><span class="seg" id="group"><button data-v="none" aria-pressed="true">None</button><button data-v="model">Model</button><button data-v="test">Test</button><button data-v="function">Function</button><button data-v="test_model">Test + Model</button><button data-v="error">Error</button></span></span>

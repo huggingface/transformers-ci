@@ -12,7 +12,7 @@
   const params = new URLSearchParams(location.search);
   const state = {
     days: [7, 14, 30].includes(Number(params.get('days'))) ? Number(params.get('days')) : 14,
-    cat: 'all', runner: 'all', sticky: false, q: '', group: 'none', sort: 'fails', unclaimed: false, mine: false,
+    cat: 'all', runner: 'all', sticky: false, q: '', group: 'none', sort: 'fails', unclaimed: false, mine: false, fix: false,
   };
   let rows = [], generatedAt = 0, claims = {}, me = '';
 
@@ -252,6 +252,7 @@
       && (!state.sticky || row.sticky)
       && (!state.unclaimed || ['free', 'closed'].includes(claimState(row)))
       && (!state.mine || claims[row.nodeid]?.login === me)
+      && (!state.fix || hasProbableFix(row))
       && (!q || `${row.model} ${row.nodeid} ${row.job} ${row.signal}`.toLowerCase().includes(q)));
     return {base, shown: base.filter(row => state.cat === 'all' || row.category === state.cat)};
   }
@@ -288,6 +289,9 @@
     if (claim.state !== 'claimed') return 'drafting';
     return claim.issue_state === 'closed' ? 'closed' : 'on-it';
   }
+
+  // A PR merged before the last failure did not fix it: not a probable fix.
+  const hasProbableFix = row => Boolean(row.fix) && row.fix.verdict !== 'merged_before';
 
   // The probable fix, judged by when the test last failed: a PR merged before
   // that did not fix it (the Test page cannot tell, the table can).
@@ -572,6 +576,7 @@
   $('unclaimed-only').addEventListener('change', event => { state.unclaimed = event.target.checked; drawRows(); });
   $('mine-only').addEventListener('change', event => { state.mine = event.target.checked; drawRows(); });
   $('sticky-only').addEventListener('change', event => { state.sticky = event.target.checked; drawRows(); });
+  $('fix-only').addEventListener('change', event => { state.fix = event.target.checked; drawRows(); });
   $('q').addEventListener('input', event => { state.q = event.target.value.trim().toLowerCase(); drawRows(); });
 
   press($('days'), state.days);
