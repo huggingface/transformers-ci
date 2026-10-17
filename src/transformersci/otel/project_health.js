@@ -172,9 +172,23 @@
     if (!claim) return '<span class="sub">—</span>';
     const who = `<a href="https://github.com/${encodeURIComponent(claim.login)}" target="_blank" rel="noopener noreferrer">@${esc(claim.login)}</a>`;
     if (claim.state === 'claimed') {
-      return `${who} · <a href="${esc(claim.url)}" target="_blank" rel="noopener noreferrer">#${claim.number}</a>`;
+      return `${who} is on it · <a href="${esc(claim.url)}" target="_blank" rel="noopener noreferrer">#${claim.number}</a>`;
     }
-    return `${who} <span class="drafting">drafting…</span>`;
+    return `${who} <span class="drafting">is drafting…</span>`;
+  }
+
+  // New issue is off once someone has the test: its issue is the place to talk.
+  // Your own unpublished draft stays reachable, to reopen it.
+  function newIssueBlocked(claim) {
+    if (!claim) return '';
+    if (claim.state === 'claimed') return `@${claim.login} is on it in #${claim.number}`;
+    return claim.login === me ? '' : `@${claim.login} is drafting an issue for this test`;
+  }
+
+  function actionButton(id, label, k, index, row) {
+    const blocked = id === 'new-issue' ? newIssueBlocked(claims[row.nodeid]) : '';
+    if (blocked) return `<button type="button" class="act" disabled title="${esc(blocked)}">${label}</button>`;
+    return `<button type="button" class="act${k ? '' : ' pri'}" data-act="${id}" data-i="${index}">${label}</button>`;
   }
 
   function rowHtml(row, index) {
@@ -188,7 +202,7 @@
       <td title="${new Date(row.last_seen * 1000).toISOString()}">${ago(row.last_seen)}</td>
       <td class="claim">${claimHtml(claims[row.nodeid])}</td>
       <td><span class="acts">${ACTIONS.map(([id, label], k) =>
-        `<button type="button" class="act${k ? '' : ' pri'}" data-act="${id}" data-i="${index}">${label}</button>`).join('')}</span></td></tr>`;
+        actionButton(id, label, k, index, row)).join('')}</span></td></tr>`;
   }
 
   function groupedHtml(shown) {
@@ -394,8 +408,15 @@
   // Claims move while people work (Bug Days): refresh the rows quietly. The
   // server caches the Prometheus part, so this only re-reads the claims.
   setInterval(() => { if (!document.hidden) loadRows(true); }, 30000);
+  // Show a claim as soon as its dialog closes (published, or a draft released),
+  // not on the next tick. The Serge dialogs open in the top-most same-origin page.
+  let dialogHost = document;
+  try { for (let w = window; w.parent !== w;) { w = w.parent; if (w.document.body) dialogHost = w.document; } } catch (_) {}
+  new MutationObserver(records => {
+    if (records.some(record => [...record.removedNodes].some(node => node.id === 'tci-new-issue'))) loadRows(true);
+  }).observe(dialogHost.body, {childList: true});
   fetch('/api/user', {credentials: 'same-origin', cache: 'no-store'})
     .then(response => response.ok ? response.json() : null)
-    .then(user => { if (user?.login) { me = user.login; $('mine-toggle').hidden = false; } })
+    .then(user => { if (user?.login) { me = user.login; $('mine-toggle').hidden = false; if (rows.length) drawRows(); } })
     .catch(() => {});
 })();

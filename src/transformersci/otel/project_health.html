@@ -70,7 +70,7 @@ td.sig{max-width:200px;overflow:hidden;text-overflow:ellipsis;cursor:help;font:1
 @keyframes progress{from{transform:translateX(-100%)}to{transform:translateX(360%)}}
 .acts{display:flex;gap:4px}
 .act{border:1px solid var(--line);background:transparent;color:var(--fg);border-radius:4px;padding:3px 7px;font:600 11.5px Inter,system-ui,sans-serif;cursor:pointer;white-space:nowrap}
-.act:hover{border-color:var(--sel)}.act.pri{border-color:var(--sel);color:var(--accent)}.act[aria-busy=true]{cursor:progress;opacity:.6}
+.act:hover{border-color:var(--sel)}.act.pri{border-color:var(--sel);color:var(--accent)}.act[aria-busy=true]{cursor:progress;opacity:.6}.act:disabled{opacity:.4;cursor:not-allowed;border-color:var(--line);color:var(--muted)}
 iframe.serge{position:absolute;width:0;height:0;border:0;visibility:hidden}
 tr.grp td{background:var(--soft);cursor:pointer;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--strong);padding:6px 8px}
 tr.grp:hover td{background:var(--hover)}tr.grp .meta{font:12px Inter,system-ui,sans-serif;color:var(--muted)}
