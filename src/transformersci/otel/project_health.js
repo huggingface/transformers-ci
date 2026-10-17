@@ -14,7 +14,7 @@
     days: [7, 14, 30].includes(Number(params.get('days'))) ? Number(params.get('days')) : 14,
     cat: 'all', runner: 'all', sticky: false, q: '', group: 'none', sort: 'fails', unclaimed: false, mine: false, fix: false,
   };
-  let rows = [], generatedAt = 0, claims = {}, me = '';
+  let rows = [], generatedAt = 0, claims = {}, me = '', fixIndexAt = 0;
 
   tci.applyTheme();
 
@@ -297,6 +297,7 @@
   // that did not fix it (the Test page cannot tell, the table can).
   function fixHtml(row) {
     const fix = row.fix;
+    if (!fix && !fixIndexAt) return '<span class="sub" title="Looking up recent PRs: about a minute after an update">looking up…</span>';
     if (!fix) return '<span class="sub">—</span>';
     const link = `<a href="${esc(fix.url)}" target="_blank" rel="noopener noreferrer" title="${esc(fix.title)}">#${fix.number}</a>`;
     const more = fix.others ? ` <span class="sub" title="${fix.others} more PR${fix.others === 1 ? '' : 's'} change this test file and name the model">+${fix.others}</span>` : '';
@@ -423,6 +424,9 @@
     try {
       const data = await getJson('/project-health/rows');
       rows = data.rows; generatedAt = data.generated_at; rowsFirstDay = data.first_day;
+      fixIndexAt = data.fix_index_at || 0;
+      // Right after an update the fix index is still building: look again soon.
+      if (!fixIndexAt) setTimeout(() => loadRows(true), 10000);
       claims = data.claims || {};
       drawRows();
       const fails = rows.filter(row => row.category === 'failure');

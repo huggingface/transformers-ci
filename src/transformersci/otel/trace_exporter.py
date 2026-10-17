@@ -6331,6 +6331,7 @@ def reopen_line(login: str) -> str:
 # Project health reads a few wide Prometheus queries per window (30 days of
 # failures is ~4 MB); every viewer shares one answer per (endpoint, days).
 _PROJECT_HEALTH_CACHE_TTL_SECONDS = 60.0
+_PROJECT_HEALTH_UNINDEXED_TTL_SECONDS = 5.0
 # Branch Runs refreshes every 10 s in every open tab; one answer serves them all.
 _BRANCH_RUNS_CACHE_TTL_SECONDS = 10.0
 _branch_runs_cache: dict[tuple[int, int, bool], tuple[float, bytes]] = {}
@@ -9581,6 +9582,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         else:
             try:
                 if path == "/project-health/rows":
+                    _ensure_fix_index()
                     body = project_health.build_rows(
                         _prometheus_vector,
                         now=time.time(),
@@ -9604,16 +9606,17 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 self._reply_json(502, {"error": f"Prometheus unavailable: {exc}"})
                 return
             payload = json.dumps(body, separators=(",", ":")).encode()
+            ttl = (
+                _PROJECT_HEALTH_EVENTS_CACHE_TTL_SECONDS
+                if path == "/project-health/events"
+                else _PROJECT_HEALTH_CACHE_TTL_SECONDS
+            )
+            if path == "/project-health/rows" and not body.get("fix_index_at"):
+                # The fix index takes ~40 s after a restart: rows built before it
+                # would hold an empty Probable fix column for the full TTL.
+                ttl = _PROJECT_HEALTH_UNINDEXED_TTL_SECONDS
             with _project_health_cache_lock:
-                _project_health_cache[key] = (
-                    now
-                    + (
-                        _PROJECT_HEALTH_EVENTS_CACHE_TTL_SECONDS
-                        if path == "/project-health/events"
-                        else _PROJECT_HEALTH_CACHE_TTL_SECONDS
-                    ),
-                    payload,
-                )
+                _project_health_cache[key] = (now + ttl, payload)
         if path == "/project-health/rows":
             _ensure_claim_refresher()
             _ensure_fix_index()

@@ -475,3 +475,43 @@ def test_events_endpoint_caches_github_counts(monkeypatch) -> None:
         assert len(calls) == 1
     finally:
         server.shutdown()
+
+
+def test_rows_built_before_the_fix_index_are_not_cached_for_long(monkeypatch) -> None:
+    """Right after a restart the fix index is still building: those rows must
+    not hold an empty Probable fix column for the full cache TTL."""
+    from transformersci.otel import probable_fix
+
+    def prometheus(query: str) -> list[dict]:
+        if "pytest_test_last_failure_info" in query:
+            return vector(failure(GPU_TEST, "run_models_gpu", "r1", "a" * 32))
+        if "pytest_run_start_time_seconds" in query:
+            return vector(run("r1", 99 * DAY))
+        return []
+
+    monkeypatch.setattr(trace_exporter, "_prometheus_vector", prometheus)
+    monkeypatch.setattr(trace_exporter, "_project_health_cache", {})
+    monkeypatch.setattr(trace_exporter, "_PROJECT_HEALTH_UNINDEXED_TTL_SECONDS", 0.0)
+    monkeypatch.setitem(probable_fix._index, "built_at", 0.0)
+    monkeypatch.setitem(probable_fix._index, "by_file", {})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/project-health/rows?days=7"
+        body = json.loads(urlopen(url).read())
+        assert body["fix_index_at"] == 0.0 and "fix" not in body["rows"][0]
+        path = GPU_TEST.split("::")[0]
+        topic = probable_fix.title_topic(path)
+        pr = {
+            "number": 7,
+            "title": f"Fix {topic}",
+            "url": "https://github.com/huggingface/transformers/pull/7",
+            "state": "open",
+            "merged_at": None,
+        }
+        monkeypatch.setitem(probable_fix._index, "by_file", {path: [pr]})
+        monkeypatch.setitem(probable_fix._index, "built_at", 1.0)
+        body = json.loads(urlopen(url).read())
+        assert body["rows"][0]["fix"]["number"] == 7
+    finally:
+        server.shutdown()

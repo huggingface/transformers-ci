@@ -40,6 +40,9 @@ def test_every_loader_carries_the_same_deploy_guard() -> None:
         assert len(loaders) == 1, path.name
         guards[path.name] = _guard(loaders[0])
     assert len(set(guards.values())) == 1, guards.keys()
+    # Project health and the Test page load the exporter through a srcdoc
+    # loading screen that navigates, so they have no src to match on.
+    assert "!f.hasAttribute('srcdoc')" in next(iter(guards.values()))
 
 
 def test_parent_realm_functions_have_no_backslashes() -> None:
