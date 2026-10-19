@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 import threading
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
@@ -617,3 +618,46 @@ def test_a_packet_everyone_else_has_is_refused(server) -> None:
     one = {**packet, "tests": packet["tests"][:1]}
     status, _ = post(base, "/serge-actions/new-issue/draft", "alice", {"packet": one})
     assert status == 400
+
+
+def test_packet_keys_read_each_trace_once_and_cache(server, monkeypatch) -> None:
+    base, _ = server
+    reads = []
+    monkeypatch.setattr(trace_exporter, "_packet_keys", OrderedDict())
+    monkeypatch.setattr(
+        trace_exporter,
+        "get_trace",
+        lambda trace_id: reads.append(trace_id) or {"spans": []},
+    )
+    monkeypatch.setattr(
+        trace_exporter,
+        "extract_failure_details",
+        lambda trace: [
+            {
+                "test_nodeid": "t1",
+                "exception_message": "CUDA error: device-side assert triggered\nmore",
+            },
+            {
+                "test_nodeid": "t2",
+                "exception_message": "Lists differ: ['a b'] != ['a c']",
+            },
+            {"test_nodeid": "other", "exception_message": "not asked"},
+        ],
+    )
+    tests = [{"trace_id": TRACE, "test_nodeid": n} for n in ("t1", "t2")]
+
+    def request(body: dict) -> dict:
+        sent = Request(
+            base + "/project-health/packets",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        return json.loads(urlopen(sent).read())
+
+    assert request({"tests": tests})["keys"] == {
+        "t1": "CUDA error: device-side assert triggered",
+        "t2": "Lists differ: ['…'] != ['…']",
+    }
+    assert request({"tests": tests})["keys"]["t1"].startswith("CUDA error")
+    assert reads == [TRACE]  # once, then cached

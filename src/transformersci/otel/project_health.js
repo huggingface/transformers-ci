@@ -399,24 +399,51 @@
     }).join('');
   }
 
-  // Work on all: one issue for a group's unclaimed failures that share an
-  // error, a bucket per error. A bucket of one is that row's own Work on it.
+  // Work on all: one issue for a group's unclaimed failures that fail the
+  // same way, a bucket per error type and message key (the message with its
+  // run-specific parts taken out, read from the traces when the group opens).
+  // A bucket of one is that row's own Work on it.
   let packets = [];
   const PACKET_LIMIT = 60;  // new_issue.PACKET_LIMIT
-  function packetHtml(name, members) {
-    const buckets = new Map();
-    for (const [row] of members) {
-      if (row.category === 'slow' || !row.trace_id || claimState(row) !== 'free') continue;
-      if (!buckets.has(row.signal)) buckets.set(row.signal, []);
-      buckets.get(row.signal).push(row);
+  const messageKeys = {};  // nodeid -> message key, '' when it could not be read
+  const keysPending = new Set();  // nodeids being read
+  async function loadKeys(rows) {
+    for (const row of rows) keysPending.add(row.nodeid);
+    try {
+      const response = await fetch('/project-health/packets', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tests: rows.map(row => ({trace_id: row.trace_id, test_nodeid: row.nodeid}))})});
+      const data = response.ok ? await response.json() : {};
+      for (const row of rows) messageKeys[row.nodeid] = data.keys?.[row.nodeid] ?? '';
+    } catch (_) {
+      for (const row of rows) messageKeys[row.nodeid] = '';
     }
-    const buttons = [...buckets].filter(([, rows]) => rows.length > 1)
-      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
-      .map(([signal, rows]) => {
+    for (const row of rows) keysPending.delete(row.nodeid);
+    drawRows();
+  }
+  function packetHtml(name, members) {
+    const eligible = members.map(([row]) => row)
+      .filter(row => row.category !== 'slow' && row.trace_id && claimState(row) === 'free');
+    const unknown = eligible.filter(row => !(row.nodeid in messageKeys));
+    const ask = unknown.filter(row => !keysPending.has(row.nodeid));
+    if (ask.length) loadKeys(ask);
+    if (unknown.length && eligible.length > 1)
+      return '<tr class="pk"><td colspan="7"><span class="lbl">Work on all:</span><span class="sub">reading the errors…</span></td></tr>';
+    const buckets = new Map();
+    for (const row of eligible) {
+      const key = messageKeys[row.nodeid] || '';
+      const id = `${row.signal}\n${key}`;
+      if (!buckets.has(id)) buckets.set(id, {signal: row.signal, key, rows: []});
+      buckets.get(id).rows.push(row);
+    }
+    const buttons = [...buckets.values()].filter(bucket => bucket.rows.length > 1)
+      .sort((a, b) => b.rows.length - a.rows.length || a.signal.localeCompare(b.signal))
+      .map(({signal, key, rows}) => {
         const tests = rows.slice(0, PACKET_LIMIT);
-        packets.push({group: name, signal, tests: tests.map(row => ({trace_id: row.trace_id, test_nodeid: row.nodeid}))});
+        const error = key ? `${signal}: ${key}` : signal;
+        packets.push({group: name, signal: error, tests: tests.map(row => ({trace_id: row.trace_id, test_nodeid: row.nodeid}))});
         const more = rows.length > tests.length ? ` (the first ${tests.length} of ${rows.length})` : '';
-        return `<button type="button" class="act" data-packet="${packets.length - 1}" title="One issue for these ${tests.length} unclaimed tests${more}, with Serge's take and related threads">${rows.length} × ${esc(signal)}</button>`;
+        const short = key.length > 48 ? `${key.slice(0, 47)}…` : key;
+        return `<button type="button" class="act" data-packet="${packets.length - 1}" title="One issue for these ${tests.length} unclaimed tests${more}, all failing with ${esc(error)}">${rows.length} × ${esc(signal)}${short ? `: <span class="pkm">${esc(short)}</span>` : ''}</button>`;
       });
     return buttons.length ? `<tr class="pk"><td colspan="7"><span class="lbl">Work on all:</span>${buttons.join('')}</td></tr>` : '';
   }

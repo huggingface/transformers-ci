@@ -517,3 +517,34 @@ def test_rows_built_before_the_fix_index_are_not_cached_for_long(monkeypatch) ->
         assert body["rows"][0]["fix"]["number"] == 7
     finally:
         server.shutdown()
+
+
+def test_message_key_buckets_failures_that_fail_the_same_way() -> None:
+    key = project_health.message_key
+    # Real messages from main (2026-10-19).
+    assert (
+        key(
+            "CUDA error: device-side assert triggered\nSearch for `cudaErrorAssert' in https://docs.nvidia.com/cuda/"
+        )
+        == "CUDA error: device-side assert triggered"
+    )
+    lists = [
+        "Lists differ: [\" and the food is delicious. I'm so glad [24 chars]re'\"] != ['and the food']",
+        'Lists differ: [" and I\'m"] != [" and I\'ll"]',
+    ]
+    assert key(lists[0]) == key(lists[1]) == "Lists differ: ['…'] != ['…']"
+    assert key("'a b' != \"a c\"") == key("'x y' != 'x z'") == "'…' != '…'"
+    device_map = "The device_map provided does not give any device for the following parameters: "
+    assert key(device_map + "model.a.weight, model.b.weight, " * 4) == key(
+        device_map + "model.visual.patch_embed.proj.weight, " * 3
+    )
+    assert (
+        key(
+            "Expected all tensors to be on the same device, but got mat2 is on cuda:1, different from other tensors on cuda:0"
+        )
+        == "Expected all tensors to be on the same device, but got mat2 is on cuda:N, different from other tensors on cuda:N"
+    )
+    # A short quoted name tells causes apart, and colour codes go.
+    assert key("No module named 'flash_attn'") != key("No module named 'kernels'")
+    assert key("\x1b[96mThis is step 2/3\x1b[0m") == "This is step …/…"
+    assert key("") == ""

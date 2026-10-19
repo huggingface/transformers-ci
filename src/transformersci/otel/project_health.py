@@ -240,6 +240,44 @@ def failure_rows(
     return rows
 
 
+_DOUBLE_QUOTED = re.compile(r'"[^"\n]*"')
+_SINGLE_QUOTED = re.compile(r"'[^'\n]*'")
+_HEX = re.compile(r"\b0x[0-9a-fA-F]+\b")
+_ANSI = re.compile(r"\x1b?\[[0-9;]*m")
+_PATH = re.compile(r"(?:[\w.-]*/)+[\w.-]+")
+_NUMBER = re.compile(r"(?<![\w.])[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?(?![\w])", re.I)
+
+
+def _quoted_data(match: re.Match) -> str:
+    """Text and values in quotes are data; a short bare name (a missing
+    module, an attribute) stays, since it tells causes apart."""
+    text = match.group(0)
+    inner = text[1:-1]
+    return text if len(inner) <= 40 and not re.search(r"\s", inner) else "'…'"
+
+
+def message_key(message: str) -> str:
+    """The failure's message with its run-specific parts taken out, so tests
+    that fail the same way share a key (Work on all buckets by it).
+
+    The first non-empty line, with quoted text, numbers, hex ids and paths
+    replaced, and a long data tail after ``: `` (a list of parameters, two
+    differing lists) cut.
+    """
+    message = _ANSI.sub("", message)
+    line = next((part.strip() for part in message.splitlines() if part.strip()), "")
+    line = line[:600]
+    line = _DOUBLE_QUOTED.sub(_quoted_data, line)
+    line = _SINGLE_QUOTED.sub(_quoted_data, line)
+    head, sep, tail = line.partition(": ")
+    if sep and len(head) >= 8 and len(tail) > 60:
+        line = head + ": …"
+    line = _HEX.sub("0x…", line)
+    line = _PATH.sub("…/…", line)
+    line = _NUMBER.sub("N", line)
+    return re.sub(r"\s+", " ", line).strip()[:160]
+
+
 def slow_queries() -> dict[str, str]:
     """Per runner, each day's slowest main tests (evaluated once per UTC day)."""
     duration = (

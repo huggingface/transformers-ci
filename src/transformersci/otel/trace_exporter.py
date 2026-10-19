@@ -6243,6 +6243,13 @@ def _badge_prometheus_lookback() -> str:
     )
 
 
+# Work on all buckets: (trace_id, nodeid) -> message key. A run's failure
+# messages never change, so this is a plain bounded cache.
+_packet_keys: "OrderedDict[tuple[str, str], str]" = OrderedDict()
+_packet_keys_lock = threading.Lock()
+PACKET_KEY_TRACES = 20
+
+
 # New issue drafts by id -> the tests they reserve (see claims.py): one, or a
 # packet's. Bounded like new_issue's own draft table, whose ids these are.
 _draft_nodeids: "OrderedDict[str, tuple[str, ...]]" = OrderedDict()
@@ -8224,6 +8231,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
             "/serge-actions/new-issue/publish",
             "/serge-actions/new-issue/release",
             "/serge-actions/new-issue/reopen",
+            "/project-health/packets",
             "/rerun-failed",
         ):
             self._send(404, JSON_CONTENT_TYPE, b'{"error":"not found"}')
@@ -8231,6 +8239,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self._request_route = path
         if path == "/rerun-failed":
             self._serve_rerun_failed_action()
+        elif path == "/project-health/packets":
+            self._serve_packet_keys()
         elif path == "/serge-actions/wdyt/cache":
             self._serve_wdyt_cache_clear()
         elif path == "/serge-actions/wdyt/cost":
@@ -8443,6 +8453,56 @@ class MetricsHandler(BaseHTTPRequestHandler):
             return result
 
         self._stream_action(draft, "Reading the selected failure")
+
+    def _serve_packet_keys(self) -> None:
+        """Each test's message key (project_health.message_key), for the Work
+        on all buckets of one open group. One trace read serves every test of
+        that run; at most PACKET_KEY_TRACES are read per request, and a test
+        whose trace is not read has no key (it buckets by error type alone)."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length)) if 0 < length <= 65536 else None
+        except (ValueError, TypeError):
+            body = None
+        tests = body.get("tests") if isinstance(body, dict) else None
+        if not isinstance(tests, list) or len(tests) > 400:
+            self._reply_json(400, {"status": "invalid"})
+            return
+        wanted: dict[str, set[str]] = {}
+        keys: dict[str, str] = {}
+        for test in tests:
+            trace_id = normalize_trace_id(str((test or {}).get("trace_id") or ""))
+            nodeid = str((test or {}).get("test_nodeid") or "")
+            if not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id) or not nodeid:
+                continue
+            with _packet_keys_lock:
+                cached = _packet_keys.get((trace_id, nodeid))
+            if cached is not None:
+                keys[nodeid] = cached
+            else:
+                wanted.setdefault(trace_id, set()).add(nodeid)
+        for trace_id in list(wanted)[:PACKET_KEY_TRACES]:
+            try:
+                trace = get_trace(trace_id)
+            except Exception:
+                trace = None
+            if not trace or trace_repository(trace) != related_issues.REPOSITORY:
+                continue
+            found = {}
+            for detail in extract_failure_details(trace):
+                nodeid = detail.get("test_nodeid", "")
+                if nodeid in wanted[trace_id] and nodeid not in found:
+                    found[nodeid] = project_health.message_key(
+                        detail.get("exception_message", "")
+                    )
+            with _packet_keys_lock:
+                for nodeid, key in found.items():
+                    _packet_keys[(trace_id, nodeid)] = key
+                    _packet_keys.move_to_end((trace_id, nodeid))
+                while len(_packet_keys) > 8192:
+                    _packet_keys.popitem(last=False)
+            keys.update(found)
+        self._reply_json(200, {"status": "ok", "keys": keys})
 
     def _serve_packet_draft(self, packet: object) -> None:
         """Work on it for several tests (Project health): one group, one error.
