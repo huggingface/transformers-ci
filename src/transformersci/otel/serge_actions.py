@@ -114,7 +114,7 @@ button:disabled{opacity:.55;cursor:not-allowed}
 p{margin:6px 0 0;color:#8e9197;font-size:12px}a{color:#6ab0ff;text-decoration:none}
 button.locked{color:#aeb7c2}
 button.thinking{border-color:#6ab0ff;color:#6ab0ff}
-button.thinking:is(#who-can-help,#new-issue)::before{content:'';display:inline-block;
+button.thinking:is(#who-can-help,#new-issue,#work-on-it)::before{content:'';display:inline-block;
 width:10px;height:10px;margin-right:6px;border:2px solid #657083;border-top-color:#6ab0ff;
 border-radius:50%;vertical-align:-2px;animation:serge-spin .8s linear infinite}
 @keyframes serge-spin{to{transform:rotate(360deg)}}
@@ -125,7 +125,11 @@ border-radius:50%;vertical-align:-2px;animation:serge-spin .8s linear infinite}
 <p id="probable" hidden></p>
 <p id="note" role="status" aria-live="polite"></p>
 <script>
-const ACTIONS=__ACTIONS__,LOCK=__LOCK__;
+// Project health asks for one action (work=1), Work on it: New issue with
+// Serge's WDYT? answer in the draft and related threads in place of people.
+const WORK=new URLSearchParams(location.search).get('work')==='1';
+const ACTIONS=WORK?[['work-on-it','Work on it',
+  "Draft an issue with Serge's take and the related issues and PRs.",true]]:__ACTIONS__,LOCK=__LOCK__;
 const row=document.getElementById('actions'),note=document.getElementById('note');
 // Every button shows at once; signed out, each carries a lock and goes to the
 // Grafana sign-in, which brings the viewer back to the page they were on.
@@ -162,7 +166,7 @@ function render(signedIn){
     if(signedIn){
       b.textContent=label;b.title=help;b.disabled=!enabled;b.classList.remove('locked');
       b.onclick=id==='wdyt'?wdyt:id==='who-can-help'?whoCanHelp:
-        id==='new-issue'?newIssue:null;
+        id==='new-issue'?()=>newIssue(false):id==='work-on-it'?()=>newIssue(true):null;
     }else{
       b.insertAdjacentHTML('afterbegin',LOCK);b.append(label);
       b.title='Sign in to use Serge. '+help;b.disabled=false;b.classList.add('locked');
@@ -282,22 +286,24 @@ async function whoCanHelp(){
 }
 
 let issueRun=null;
-async function newIssue(){
+async function newIssue(work){
   if(issueRun){issueRun.view.show();return;}
-  const button=buttons['new-issue'],view=issuePopup();
+  const id=work?'work-on-it':'new-issue',button=buttons[id],view=issuePopup();
   issueRun={view};
   button.classList.add('thinking');button.textContent='Drafting…';
   let result={status:'unavailable'};
   try{
     const draft=slowTarget()||
       {trace_id:context.get('trace_id')||'',test_nodeid:context.get('test_nodeid')||''};
+    if(work)draft.work=true;
     const response=await fetch('/serge-actions/new-issue/draft',{
       method:'POST',credentials:'same-origin',
       headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
       body:JSON.stringify(draft)});
     result=await actionResponse(response,event=>view.progress(event));
   }catch(error){}
-  button.classList.remove('thinking');button.textContent='New issue';issueRun=null;
+  button.classList.remove('thinking');
+  button.textContent=ACTIONS.find(action=>action[0]===id)[1];issueRun=null;
   view.finish(result);
 }
 

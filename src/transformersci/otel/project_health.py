@@ -301,7 +301,7 @@ def slow_rows(
                     "runner": runner,
                     "model": model_name(nodeid),
                     "test": nodeid.split("::", 1)[1] if "::" in nodeid else nodeid,
-                    "signal": f"{average:.0f} s avg",
+                    "signal": f"{average / 60:.1f} min avg",
                     "seconds": average,
                     "durations": [values.get(index) for index in range(days)],
                     "trace_id": "",

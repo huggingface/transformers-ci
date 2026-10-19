@@ -550,3 +550,185 @@ def test_who_can_help_comes_from_the_helper_findings():
         fields, {"who-can-help": "model text"}, TRACE, NODE, [], {}, []
     )
     assert "model text" in body
+
+
+WORK_FIX = {
+    "number": 49147,
+    "url": "https://github.com/huggingface/transformers/pull/49147",
+    "title": "Fix the streamer for @someone",
+    "author": "octocat",
+    "verdict": "open",
+}
+
+
+def test_work_on_it_lists_related_threads_and_names_no_one():
+    fields = [
+        {
+            "id": "who-can-help",
+            "type": "textarea",
+            "label": "Who can help?",
+            "required": False,
+        },
+        {
+            "id": "reproduction",
+            "type": "textarea",
+            "label": "Reproduction",
+            "required": True,
+        },
+        {"id": "expected", "type": "textarea", "label": "Expected", "required": False},
+    ]
+    hits = [
+        {
+            "number": 7,
+            "type": "issue",
+            "url": "https://github.com/huggingface/transformers/issues/7",
+            "title": "Streamer hangs",
+        },
+        {
+            "number": 49147,
+            "type": "pr",
+            "url": WORK_FIX["url"],
+            "title": "dup of the fix",
+        },
+    ]
+    history = {
+        "number": 12,
+        "thread": {"title": "Refactor streamers", "author": "author"},
+    }
+    related = new_issue.related_text(hits, history, WORK_FIX)
+    assert related.splitlines() == [
+        "- [#49147](https://github.com/huggingface/transformers/pull/49147) Fix the streamer for `@someone` (probable fix, open)",
+        "- [#12](https://github.com/huggingface/transformers/pull/12) Refactor streamers (last changed the failing line)",
+        "- [#7](https://github.com/huggingface/transformers/issues/7) Streamer hangs (issue)",
+    ]
+    body = new_issue.render_body(
+        fields,
+        {"who-can-help": "ask @maintainer", "expected": "cc @x, mail a@b.co"},
+        TRACE,
+        NODE,
+        [],
+        {},
+        related=related,
+        take="It looks like a race. @octocat knows.",
+    )
+    assert "### Who can help?" not in body and "### Related\n\n- [#49147]" in body
+    assert "ask" not in body and "octocat" not in body.replace("`@octocat`", "")
+    assert "cc `@x`, mail a@b.co" in body
+    # Serge's take sits right after Reproduction.
+    assert (
+        body.index("### Reproduction")
+        < body.index("### What Serge thinks\n\nIt looks like a race.")
+        < body.index("### Expected")
+    )
+    empty = new_issue.render_body(fields, {}, TRACE, NODE, [], {}, related="")
+    assert (
+        "_No related issues or PRs found._" in empty
+        and "What Serge thinks" not in empty
+    )
+
+
+def test_work_on_it_slow_draft():
+    plain = new_issue.slow_draft(
+        "alice", NODE, "run_models_gpu", "GPU", [600.0], "2026-10-15", WORK_FIX
+    )
+    assert (
+        "### Who can help?" in plain["body"]
+        and "What Serge thinks" not in plain["body"]
+    )
+    work = new_issue.slow_draft(
+        "alice",
+        NODE,
+        "run_models_gpu",
+        "GPU",
+        [600.0],
+        "2026-10-15",
+        WORK_FIX,
+        "Use a tiny config, says @x.",
+    )["body"]
+    assert "### Who can help?" not in work and "### Related\n\n- [#49147]" in work
+    assert "octocat" not in work and "says `@x`." in work
+    assert (
+        work.index("--durations=0")
+        < work.index("### What Serge thinks")
+        < work.index("### Expected behavior")
+    )
+
+
+def test_work_on_it_prepare_adds_serge_take_and_skips_people(monkeypatch):
+    fields = [
+        {
+            "id": "who-can-help",
+            "type": "textarea",
+            "label": "Who can help?",
+            "required": False,
+        },
+        {
+            "id": "reproduction",
+            "type": "textarea",
+            "label": "Reproduction",
+            "required": True,
+        },
+    ]
+    monkeypatch.setattr(new_issue, "bug_template", lambda *args: fields)
+    monkeypatch.setattr(new_issue.who_can_help, "source_line", lambda *args: None)
+    hit = {
+        "number": 7,
+        "type": "issue",
+        "url": "https://github.com/huggingface/transformers/issues/7",
+        "title": "Streamer hangs",
+        "author": "someone",
+        "trust": "authoritative",
+    }
+    monkeypatch.setattr(
+        new_issue.related_issues, "lookup", lambda *args: {"hits": [hit]}
+    )
+
+    def no_people(*args, **kwargs):
+        raise AssertionError("Work on it looks up no people")
+
+    monkeypatch.setattr(new_issue.who_can_help, "suggest", no_people)
+    monkeypatch.setattr(new_issue.who_can_help, "frequent_test_modifier", no_people)
+    asked = []
+    monkeypatch.setattr(
+        new_issue.wdyt,
+        "answer",
+        lambda login, trace_id, nodeid, make_prompt, *rest, **kw: (
+            asked.append(make_prompt(lambda event: None))
+            or {"status": "ok", "answer": "A race in the streamer."}
+        ),
+    )
+    drafted = []
+    monkeypatch.setattr(
+        new_issue,
+        "model_draft",
+        lambda *args, **kwargs: (
+            drafted.append((args, kwargs))
+            or {
+                "title": "Streamer fails",
+                "sections": {"reproduction": "Observed in CI"},
+            }
+        ),
+    )
+    events = []
+    draft = new_issue.prepare(
+        "alice",
+        "c" * 32,
+        NODE,
+        [{"exception_message": "bad stream"}],
+        lambda url: {},
+        events.append,
+        fix=WORK_FIX,
+        work=True,
+    )
+    assert draft["status"] == "ok"
+    body = draft["body"]
+    assert "### What Serge thinks\n\nA race in the streamer." in body
+    assert "### Related\n\n- [#49147]" in body and "- [#7]" in body
+    assert "@" not in body.replace("`@someone`", "")
+    # WDYT? saw the same related threads, plus the fix PR.
+    assert [thread["number"] for thread in asked[0][1]] == [7, 49147]
+    args, kwargs = drafted[0]
+    assert kwargs == {"contacts": False} and args[8]["author"] == ""
+    steps = [event["text"] for event in events if event["event"] == "step"]
+    assert "Asking Serge what it thinks (slow)" in steps
+    assert "Finding people who can help (slow)" not in steps

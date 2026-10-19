@@ -3,16 +3,16 @@
   const RUNNERS = [['gpu', 'GPU'], ['cpu', 'CPU']];
   const CATEGORIES = [['failure', 'Failure'], ['slow', 'Slow']];
   // The Test page's Serge Actions (button id in /serge-actions, label).
-  const ACTIONS = [['new-issue', 'New issue', 'Draft a GitHub issue for this failure'],
-    ['wdyt', 'WDYT?', 'Serge takes a quick look and tells you what it thinks'],
-    ['who-can-help', 'Who?', 'Who can help: people connected to the failing line']];
+  // One action: a New issue draft that carries Serge's WDYT? answer and lists
+  // related issues and PRs instead of people.
+  const ACTIONS = [['work-on-it', 'Work on it', "Draft a GitHub issue with Serge's take and the related issues and PRs"]];
   const DAY = 86400;
   const $ = id => document.getElementById(id);
   const {esc} = tci;
   const params = new URLSearchParams(location.search);
   const state = {
     days: [7, 14, 30].includes(Number(params.get('days'))) ? Number(params.get('days')) : 14,
-    cat: 'all', runner: 'all', sticky: false, q: '', group: 'none', sort: 'fails', unclaimed: false, mine: false, fix: false,
+    cat: 'all', runner: 'all', sticky: false, q: '', group: 'test_model', sort: 'fails', unclaimed: false, mine: false, fix: false,
   };
   let rows = [], generatedAt = 0, claims = {}, me = '', fixIndexAt = 0;
 
@@ -279,7 +279,10 @@
   };
   // Sort toggle: most failing runs first, or alphabetical by name.
   const byName = (a, b) => `${a.model} ${a.test}`.localeCompare(`${b.model} ${b.test}`) || a.job.localeCompare(b.job);
-  const byFails = (a, b) => b.fails - a.fails || b.bad_days - a.bad_days || b.last_seen - a.last_seen || byName(a, b);
+  // Slow rows: longest first.
+  const longer = (a, b) => a.category === 'slow' && b.category === 'slow' ? b.seconds - a.seconds : 0;
+  const byFails = (a, b) => longer(a, b) || b.fails - a.fails || b.bad_days - a.bad_days || b.last_seen - a.last_seen || byName(a, b);
+  const minutes = value => `${(value / 60).toFixed(1)} min`;
   const sortRows = list => [...list].sort(state.sort === 'alpha' ? byName : byFails);
   const openGroups = new Set();
   let groupsSeen = '', groupNames = [];
@@ -331,8 +334,8 @@
   }
 
   function actionButton(id, label, help, k, index, row) {
-    let blocked = id === 'new-issue' ? newIssueBlocked(row) : '';
-    if (id === 'new-issue' && claimState(row) === 'closed') {
+    let blocked = newIssueBlocked(row);
+    if (claimState(row) === 'closed') {
       // Same button: the dialog finds the closed issue and offers to reopen it.
       const claim = claims[row.nodeid];
       label = 'Reopen';
@@ -348,7 +351,7 @@
     const fails = slow ? `slowest ${row.fails} of ${row.days.length} days` : `${row.fails} fail${row.fails === 1 ? '' : 's'}`;
     const cell = slow ? 's' : 'f';
     const cellTitle = (count, i) => slow
-      ? `${dayLabel(rowsFirstDay + i * DAY)}: ${row.durations[i] == null ? 'not among the slowest' : `${Math.round(row.durations[i])} s`}`
+      ? `${dayLabel(rowsFirstDay + i * DAY)}: ${row.durations[i] == null ? 'not among the slowest' : minutes(row.durations[i])}`
       : `${dayLabel(rowsFirstDay + i * DAY)}: ${count} failing run${count === 1 ? '' : 's'}`;
     return `<tr>
       <td class="test"><div class="tags"><span class="badge k-${row.category}">${row.category.toUpperCase()}</span><span class="rn">${row.runner}</span>${row.sticky ? '<span class="sticky">sticky</span>' : ''}<b>${esc(row.model)}</b><span class="job">${esc(row.job)}</span></div>
@@ -372,9 +375,11 @@
       groups.get(name).push([row, index]);
     });
     const fails = members => members.reduce((sum, [row]) => sum + row.fails, 0);
+    const slowest = members => members.every(([row]) => row.category === 'slow') ? Math.max(...members.map(([row]) => row.seconds)) : null;
+    const longest = (a, b) => slowest(a) != null && slowest(b) != null ? slowest(b) - slowest(a) : 0;
     const ordered = [...groups].sort(state.sort === 'alpha'
       ? (a, b) => a[0].localeCompare(b[0])
-      : (a, b) => fails(b[1]) - fails(a[1]) || b[1].length - a[1].length || a[0].localeCompare(b[0]));
+      : (a, b) => longest(a[1], b[1]) || fails(b[1]) - fails(a[1]) || b[1].length - a[1].length || a[0].localeCompare(b[0]));
     // A new grouping opens its small groups, as the PR CI view does; after that
     // the viewer's own choices stick.
     const seen = `${state.group}|${state.days}`;
@@ -470,7 +475,7 @@
       if (slow) {
         frame.removeAttribute('src');
         $('modal-text').textContent = row.durations.map((value, i) =>
-          `${dayLabel(rowsFirstDay + i * DAY).padEnd(8)} ${value == null ? '—  (not among the day\'s slowest)' : `${Math.round(value)} s${row.days[i] ? '' : '  (outside the top 20 that day)'}`}`).join('\n')
+          `${dayLabel(rowsFirstDay + i * DAY).padEnd(8)} ${value == null ? '—  (not among the day\'s slowest)' : `${minutes(value)}${row.days[i] ? '' : '  (outside the top 20 that day)'}`}`).join('\n')
           + `\n\nAmong the ${row.runner} top 20 on ${row.fails} of ${row.days.length} days.`;
       } else {
         $('modal-more').href = testUrl(row);
@@ -509,7 +514,7 @@
         durations: JSON.stringify(row.durations.map(value => value == null ? null : Math.round(value)))}
       : {trace_id: row.trace_id, test_nodeid: row.nodeid, job: row.job, status: 'ERROR',
         module: row.nodeid.split('::')[0].split('/').pop(), pr: 'main', run_id: row.run_id};
-    frame.src = `/serge-actions?${new URLSearchParams(context)}`;
+    frame.src = `/serge-actions?${new URLSearchParams({...context, work: "1"})}`;
     entry = {frame, loaded: new Promise(resolve => frame.addEventListener('load', resolve, {once: true}))};
     $('serge-frames').append(frame);
     frames.set(key, entry);

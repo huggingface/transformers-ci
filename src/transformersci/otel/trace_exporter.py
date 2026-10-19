@@ -6319,6 +6319,26 @@ def _ensure_fix_index() -> None:
     threading.Thread(target=loop, name="fix-index", daemon=True).start()
 
 
+def _slow_wdyt_prompt(
+    target: tuple, emit: Callable[[dict], None]
+) -> tuple[str, list[dict]]:
+    """WDYT?'s prompt for a slow test: its source and timings."""
+    nodeid, job, runner, durations, first_day = target
+    emit({"event": "step", "text": "Reading the test's source"})
+    source = new_issue.failing_test_source(nodeid, [], "", _github_api_get)
+    emit(
+        {
+            "event": "step",
+            "text": "Found the test function" if source else "Test source not found",
+        }
+    )
+    fix = _probable_fix_for(nodeid, emit)
+    prompt = wdyt.build_slow_prompt(
+        nodeid, job, runner, durations, first_day, source, fix
+    )
+    return prompt, _fix_threads(fix)
+
+
 def _fix_threads(fix: dict | None) -> list[dict]:
     """The fix PR as a thread the WDYT? popup may link (#N is linked only for
     threads the model saw)."""
@@ -8350,8 +8370,11 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             self._reply_json(400, {"status": "invalid"})
             return
+        # Work on it (Project health): related threads instead of people, plus
+        # Serge's WDYT? answer in the draft.
+        work = body.get("work") is True
         if body.get("kind") == "slow":
-            self._serve_slow_issue_draft(body)
+            self._serve_slow_issue_draft(body, work)
             return
         trace_id = normalize_trace_id(str(body.get("trace_id") or ""))
         nodeid = str(body.get("test_nodeid") or "").strip()
@@ -8393,6 +8416,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 emit=emit,
                 environment=environment,
                 fix=_probable_fix_for(nodeid, emit),
+                work=work,
             )
             if result.get("status") == "ok":
                 _remember_draft(result["draft_id"], nodeid)
@@ -8446,7 +8470,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._reply_json(400, {"status": "invalid"})
         return target
 
-    def _serve_slow_issue_draft(self, body: dict) -> None:
+    def _serve_slow_issue_draft(self, body: dict, work: bool = False) -> None:
         """New issue for a slow test (Project health): timings, no trace."""
         target = self._slow_target(body)
         if target is None:
@@ -8462,6 +8486,32 @@ class MetricsHandler(BaseHTTPRequestHandler):
             return
 
         def draft(emit: Callable[[dict], None]) -> dict:
+            take = None
+            if work:
+                # Through _in_parallel for its keepalives: the answer can take
+                # longer than the load balancer's idle timeout.
+                (answer,) = new_issue._in_parallel(
+                    [
+                        (
+                            new_issue.TAKE_STEP,
+                            lambda: wdyt.answer(
+                                login,
+                                "slow",
+                                nodeid,
+                                lambda _emit: _slow_wdyt_prompt(
+                                    target, lambda event: None
+                                ),
+                                system=wdyt.SLOW_SYSTEM_PROMPT,
+                            ),
+                        )
+                    ],
+                    emit,
+                )
+                take = (
+                    answer.get("answer", "")
+                    if isinstance(answer, dict) and answer.get("status") == "ok"
+                    else ""
+                )
             emit({"event": "step", "text": "Drafting the issue from the timings"})
             result = new_issue.slow_draft(
                 login,
@@ -8471,6 +8521,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 durations,
                 first_day,
                 _probable_fix_for(nodeid, emit),
+                take,
             )
             _remember_draft(result["draft_id"], nodeid)
             return result
@@ -8507,28 +8558,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
         login = self._action_user()
         if not login:
             return
-        nodeid, job, runner, durations, first_day = target
-
-        def make_prompt(emit: Callable[[dict], None]) -> tuple[str, list[dict]]:
-            emit({"event": "step", "text": "Reading the test's source"})
-            source = new_issue.failing_test_source(nodeid, [], "", _github_api_get)
-            emit(
-                {
-                    "event": "step",
-                    "text": "Found the test function"
-                    if source
-                    else "Test source not found",
-                }
-            )
-            fix = _probable_fix_for(nodeid, emit)
-            prompt = wdyt.build_slow_prompt(
-                nodeid, job, runner, durations, first_day, source, fix
-            )
-            return prompt, _fix_threads(fix)
-
+        nodeid = target[0]
         self._stream_action(
             lambda emit: wdyt.answer(
-                login, "slow", nodeid, make_prompt, emit, wdyt.SLOW_SYSTEM_PROMPT
+                login,
+                "slow",
+                nodeid,
+                lambda emit: _slow_wdyt_prompt(target, emit),
+                emit,
+                wdyt.SLOW_SYSTEM_PROMPT,
             ),
             "Reading the slow test",
         )

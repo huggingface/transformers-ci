@@ -148,7 +148,7 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
     <label class="tog" title="Tests with an open fix PR, or one merged after their last failure"><input type="checkbox" id="fix-only">Has probable fix</label>
     <label class="tog" id="mine-toggle" hidden title="Tests you picked up"><input type="checkbox" id="mine-only">My stuff</label>
     <span class="ctl"><span class="lbl">Days</span><span class="seg" id="days"><button data-v="7">7</button><button data-v="14">14</button><button data-v="30">30</button></span></span>
-    <span class="ctl"><span class="lbl">Group by</span><span class="seg" id="group"><button data-v="none" aria-pressed="true">None</button><button data-v="model">Model</button><button data-v="test">Test</button><button data-v="function">Function</button><button data-v="test_model">Test + Model</button><button data-v="error">Error</button></span></span>
+    <span class="ctl"><span class="lbl">Group by</span><span class="seg" id="group"><button data-v="none">None</button><button data-v="model">Model</button><button data-v="test">Test</button><button data-v="function">Function</button><button data-v="test_model" aria-pressed="true">Test + Model</button><button data-v="error">Error</button></span></span>
     <span class="ctl"><span class="lbl">Sort</span><span class="seg" id="sort"><button data-v="fails" aria-pressed="true" title="Most failing runs first">Failures</button><button data-v="alpha" title="Alphabetical by name">A–Z</button></span></span>
     <button type="button" class="fold" id="fold" hidden></button>
     <input class="search" id="q" type="search" placeholder="Search model, test or job" aria-label="Search">

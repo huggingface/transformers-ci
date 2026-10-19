@@ -267,7 +267,7 @@ def test_serge_actions_shell(server):
     assert "__ACTIONS__" not in page and "__LOCK__" not in page
     # Only the two loading buttons animate, with reduced-motion support.
     assert "nyan" not in page
-    assert "button.thinking:is(#who-can-help,#new-issue)::before" in page
+    assert "button.thinking:is(#who-can-help,#new-issue,#work-on-it)::before" in page
     assert "prefers-reduced-motion:reduce" in page
     for label in ("New issue", "Fix it!", "WDYT?"):
         assert label in page

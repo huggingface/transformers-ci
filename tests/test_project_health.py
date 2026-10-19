@@ -370,7 +370,7 @@ def test_slow_rows_rank_by_average_and_mark_the_days_a_test_ranked(monkeypatch) 
     assert (first["category"], first["runner"], first["signal"]) == (
         "slow",
         "GPU",
-        "4500 s avg",
+        "75.0 min avg",
     )
     assert first["days"] == [0, 0, 0, 0, 0, 1, 1]
     assert first["durations"][5:] == [4000.0, 5000.0]
