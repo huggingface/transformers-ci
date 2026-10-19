@@ -258,7 +258,7 @@ def _quoted_data(match: re.Match) -> str:
 
 def message_key(message: str) -> str:
     """The failure's message with its run-specific parts taken out, so tests
-    that fail the same way share a key (Work on all buckets by it).
+    that fail the same way share a key (Work on a batch buckets by it).
 
     The first non-empty line, with quoted text, numbers, hex ids and paths
     replaced, and a long data tail after ``: `` (a list of parameters, two

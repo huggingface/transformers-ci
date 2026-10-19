@@ -399,7 +399,7 @@
     }).join('');
   }
 
-  // Work on all: one issue for a group's unclaimed failures that fail the
+  // Work on a batch: one issue for a group's unclaimed failures that fail the
   // same way, a bucket per error type and message key (the message with its
   // run-specific parts taken out, read from the traces when the group opens).
   // A bucket of one is that row's own Work on it.
@@ -427,7 +427,7 @@
     const ask = unknown.filter(row => !keysPending.has(row.nodeid));
     if (ask.length) loadKeys(ask);
     if (unknown.length && eligible.length > 1)
-      return '<tr class="pk"><td colspan="7"><span class="lbl">Work on all:</span><span class="sub">reading the errors…</span></td></tr>';
+      return '<tr class="pk"><td colspan="7"><span class="lbl">Work on a batch:</span><span class="sub">reading the errors…</span></td></tr>';
     const buckets = new Map();
     for (const row of eligible) {
       const key = messageKeys[row.nodeid] || '';
@@ -443,9 +443,9 @@
         packets.push({group: name, signal: error, tests: tests.map(row => ({trace_id: row.trace_id, test_nodeid: row.nodeid}))});
         const more = rows.length > tests.length ? ` (the first ${tests.length} of ${rows.length})` : '';
         const short = key.length > 48 ? `${key.slice(0, 47)}…` : key;
-        return `<button type="button" class="act" data-packet="${packets.length - 1}" title="One issue for these ${tests.length} unclaimed tests${more}, all failing with ${esc(error)}">${rows.length} × ${esc(signal)}${short ? `: <span class="pkm">${esc(short)}</span>` : ''}</button>`;
+        return `<button type="button" class="act pri" data-packet="${packets.length - 1}" title="One issue for these ${tests.length} unclaimed tests${more}, all failing with ${esc(error)}">${rows.length} × ${esc(signal)}${short ? `: ${esc(short)}` : ''}</button>`;
       });
-    return buttons.length ? `<tr class="pk"><td colspan="7"><span class="lbl">Work on all:</span>${buttons.join('')}</td></tr>` : '';
+    return buttons.length ? `<tr class="pk"><td colspan="7"><span class="lbl">Work on a batch:</span>${buttons.join('')}</td></tr>` : '';
   }
 
   const FOLD_PATHS = {

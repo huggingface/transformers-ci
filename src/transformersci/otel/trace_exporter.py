@@ -6243,7 +6243,7 @@ def _badge_prometheus_lookback() -> str:
     )
 
 
-# Work on all buckets: (trace_id, nodeid) -> message key. A run's failure
+# Work on a batch buckets: (trace_id, nodeid) -> message key. A run's failure
 # messages never change, so this is a plain bounded cache.
 _packet_keys: "OrderedDict[tuple[str, str], str]" = OrderedDict()
 _packet_keys_lock = threading.Lock()
