@@ -6243,22 +6243,24 @@ def _badge_prometheus_lookback() -> str:
     )
 
 
-# New issue drafts by id -> the test they reserve (see claims.py). Bounded like
-# new_issue's own draft table, whose ids these are.
-_draft_nodeids: "OrderedDict[str, str]" = OrderedDict()
+# New issue drafts by id -> the tests they reserve (see claims.py): one, or a
+# packet's. Bounded like new_issue's own draft table, whose ids these are.
+_draft_nodeids: "OrderedDict[str, tuple[str, ...]]" = OrderedDict()
 _draft_nodeids_lock = threading.Lock()
 
 
-def _remember_draft(draft_id: str, nodeid: str) -> None:
+def _remember_draft(draft_id: str, nodeids: str | list[str]) -> None:
     with _draft_nodeids_lock:
-        _draft_nodeids[draft_id] = nodeid
+        _draft_nodeids[draft_id] = (
+            (nodeids,) if isinstance(nodeids, str) else tuple(nodeids)
+        )
         while len(_draft_nodeids) > 256:
             _draft_nodeids.popitem(last=False)
 
 
-def _draft_nodeid(draft_id: str) -> str:
+def _draft_tests(draft_id: str) -> tuple[str, ...]:
     with _draft_nodeids_lock:
-        return _draft_nodeids.get(draft_id, "")
+        return _draft_nodeids.get(draft_id, ())
 
 
 _claim_refresher_lock = threading.Lock()
@@ -8376,7 +8378,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            body = json.loads(self.rfile.read(length)) if 0 < length <= 8192 else None
+            # A packet carries up to new_issue.PACKET_LIMIT tests.
+            body = json.loads(self.rfile.read(length)) if 0 < length <= 32768 else None
         except (ValueError, TypeError):
             body = None
         if not isinstance(body, dict):
@@ -8385,6 +8388,9 @@ class MetricsHandler(BaseHTTPRequestHandler):
         # Work on it (Project health): related threads instead of people, plus
         # Serge's WDYT? answer in the draft.
         work = body.get("work") is True
+        if "packet" in body:
+            self._serve_packet_draft(body.get("packet"))
+            return
         if body.get("kind") == "slow":
             self._serve_slow_issue_draft(body, work)
             return
@@ -8437,6 +8443,105 @@ class MetricsHandler(BaseHTTPRequestHandler):
             return result
 
         self._stream_action(draft, "Reading the selected failure")
+
+    def _serve_packet_draft(self, packet: object) -> None:
+        """Work on it for several tests (Project health): one group, one error.
+
+        Reserves every test it can; a test someone else already has is left
+        out, not a reason to refuse. The draft is built from the first one.
+        """
+        tests = packet.get("tests") if isinstance(packet, dict) else None
+        if not isinstance(tests, list) or not 2 <= len(tests) <= new_issue.PACKET_LIMIT:
+            self._reply_json(400, {"status": "invalid"})
+            return
+        pairs: list[tuple[str, str]] = []
+        for test in tests:
+            trace_id = normalize_trace_id(str((test or {}).get("trace_id") or ""))
+            nodeid = str((test or {}).get("test_nodeid") or "").strip()
+            if (
+                not re.fullmatch(r"[0-9a-fA-F]{32}", trace_id)
+                or not re.fullmatch(
+                    r"tests/[\w./-]+\.py(?:::[^\x00-\x1f]{1,1800})?", nodeid
+                )
+                or ".." in nodeid.split("::", 1)[0].split("/")
+                or nodeid in (pair[1] for pair in pairs)
+            ):
+                self._reply_json(400, {"status": "invalid"})
+                return
+            pairs.append((trace_id, nodeid))
+        signal = re.sub(r"\s+", " ", str(packet.get("signal") or "")).strip()[:200]
+        group = re.sub(r"\s+", " ", str(packet.get("group") or "")).strip()[:200]
+        if not signal or not group:
+            self._reply_json(400, {"status": "invalid"})
+            return
+        login = self._action_user()
+        if not login:
+            return
+        store = claims.store()
+        held, refused = [], None
+        for pair in pairs:
+            reservation = store.reserve(pair[1], login)
+            if reservation["status"] == "ok":
+                held.append(pair)
+            elif refused is None:
+                refused = reservation
+        if not held:
+            self._reply_json(409, refused)
+            return
+
+        def release_all() -> None:
+            for _trace, nodeid in held:
+                store.release(nodeid, login)
+
+        trace_id, nodeid = held[0]
+        trace = get_trace(trace_id)
+        details = (
+            extract_failure_details(trace, nodeid)
+            if trace and trace_repository(trace) == related_issues.REPOSITORY
+            else []
+        )
+        if not details:
+            release_all()
+            self._reply_json(404, {"status": "invalid"})
+            return
+        environment = issue_environment(trace, nodeid)
+
+        def draft(emit: Callable[[dict], None]) -> dict:
+            if len(held) < len(pairs):
+                emit(
+                    {
+                        "event": "step",
+                        "text": f"Left out {len(pairs) - len(held)} tests someone else has",
+                    }
+                )
+            fix = _probable_fix_for(nodeid, emit)
+            # The column's lookup per test; the first few are enough for Related.
+            fixes = [_probable_fix_for(other) for _trace, other in held[1:10]]
+            result = new_issue.prepare(
+                login,
+                trace_id,
+                nodeid,
+                details,
+                _github_api_get,
+                emit=emit,
+                environment=environment,
+                fix=fix,
+                packet={
+                    "signal": signal,
+                    "group": group,
+                    "tests": held,
+                    "fixes": [item for item in fixes if item],
+                },
+            )
+            if result.get("status") == "ok":
+                _remember_draft(result["draft_id"], [test for _trace, test in held])
+            else:
+                release_all()
+            return result
+
+        self._stream_action(
+            draft, f"Reading {len(held)} failing tests ({signal} in {group})"
+        )
 
     @staticmethod
     def _slow_target(body: dict) -> tuple | None:
@@ -8602,8 +8707,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         ):
             self._reply_json(400, {"status": "invalid"})
             return
-        nodeid = _draft_nodeid(body["draft_id"])
-        if nodeid:
+        nodeids = _draft_tests(body["draft_id"])
+        for nodeid in nodeids:
             # The reservation may have lapsed and been taken while the draft sat open.
             reservation = claims.store().reserve(nodeid, login)
             if reservation["status"] != "ok":
@@ -8615,14 +8720,11 @@ class MetricsHandler(BaseHTTPRequestHandler):
         result = new_issue.publish(
             login, body["draft_id"], body["title"], text, _github_create_issue
         )
-        if (
-            nodeid
-            and result.get("status") == "ok"
-            and isinstance(result.get("number"), int)
-        ):
-            claims.store().confirm(
-                nodeid, login, result["number"], str(result.get("url") or "")
-            )
+        if result.get("status") == "ok" and isinstance(result.get("number"), int):
+            for nodeid in nodeids:
+                claims.store().confirm(
+                    nodeid, login, result["number"], str(result.get("url") or "")
+                )
         # Work on it (Project health): whoever starts work is the assignee.
         if body.get("work") is True and result.get("status") == "ok":
             try:
@@ -8647,8 +8749,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         login = self._action_user()
         if not login:
             return
-        nodeid = _draft_nodeid(body["draft_id"])
-        if nodeid:
+        for nodeid in _draft_tests(body["draft_id"]):
             claims.store().release(nodeid, login)
         self._reply_json(200, {"status": "ok"})
 

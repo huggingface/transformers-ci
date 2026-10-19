@@ -128,6 +128,10 @@ border-radius:50%;vertical-align:-2px;animation:serge-spin .8s linear infinite}
 // Project health asks for one action (work=1), Work on it: New issue with
 // Serge's WDYT? answer in the draft and related threads in place of people.
 const WORK=new URLSearchParams(location.search).get('work')==='1';
+// Work on all (Project health): {group,signal,tests:[{trace_id,test_nodeid}]}
+// in the fragment, too long for a query string. One issue for all of them.
+const PACKET=(()=>{try{return WORK&&location.hash.length>1?
+  JSON.parse(decodeURIComponent(location.hash.slice(1))):null;}catch(error){return null;}})();
 const ACTIONS=WORK?[['work-on-it','Work on it',
   "Draft an issue with Serge's take and the related issues and PRs.",true]]:__ACTIONS__,LOCK=__LOCK__;
 const row=document.getElementById('actions'),note=document.getElementById('note');
@@ -293,7 +297,7 @@ async function newIssue(work){
   button.classList.add('thinking');button.textContent='Drafting…';
   let result={status:'unavailable'};
   try{
-    const draft=slowTarget()||
+    const draft=PACKET?{packet:PACKET}:slowTarget()||
       {trace_id:context.get('trace_id')||'',test_nodeid:context.get('test_nodeid')||''};
     if(work)draft.work=true;
     const response=await fetch('/serge-actions/new-issue/draft',{

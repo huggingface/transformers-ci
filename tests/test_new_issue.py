@@ -728,7 +728,51 @@ def test_work_on_it_prepare_adds_serge_take_and_skips_people(monkeypatch):
     # WDYT? saw the same related threads, plus the fix PR.
     assert [thread["number"] for thread in asked[0][1]] == [7, 49147]
     args, kwargs = drafted[0]
-    assert kwargs == {"contacts": False} and args[8]["author"] == ""
+    assert kwargs == {"contacts": False, "packet": None} and args[8]["author"] == ""
     steps = [event["text"] for event in events if event["event"] == "step"]
     assert "Asking Serge what it thinks (slow)" in steps
     assert "Finding people who can help (slow)" not in steps
+
+
+def test_a_packet_body_lists_its_tests_and_reruns_them_all():
+    fields = [
+        {
+            "id": "who-can-help",
+            "type": "textarea",
+            "label": "Who can help?",
+            "required": False,
+        },
+        {
+            "id": "reproduction",
+            "type": "textarea",
+            "label": "Reproduction",
+            "required": True,
+        },
+    ]
+    other = "tests/models/bert/test_modeling_bert.py::BertTest::test_b"
+    packet = {
+        "group": "bert",
+        "signal": "AssertionError",
+        "tests": [(TRACE, NODE), ("b" * 32, other)],
+        "fixes": [],
+    }
+    body = new_issue.render_body(
+        fields,
+        {"reproduction": "Shared cause"},
+        TRACE,
+        NODE,
+        [{"exception_message": "bad", "exception_stacktrace": "tb"}],
+        {},
+        related="",
+        packet=packet,
+    )
+    assert "2 failing CI tests in `bert`, all with `AssertionError`:" in body
+    assert f"- [`{other}`](" in body and "var-trace_id=" + "b" * 32 in body
+    assert f"RUN_SLOW=1 python -m pytest \\\n  '{NODE}' \\\n  '{other}'" in body
+    assert (
+        "Observed error (first test):" in body
+        and "Traceback (first test) (tail):" in body
+    )
+    assert body.index("Shared cause") < body.index("2 failing CI tests")
+    fix = {"number": 3, "url": "u3", "title": "t", "verdict": "open"}
+    assert new_issue.packet_fixes({"fixes": [fix, {**fix}]}, None) == [fix]

@@ -535,3 +535,85 @@ def test_github_assign_issue_reports_whether_github_assigned(monkeypatch) -> Non
         trace_exporter, "_github_write", lambda *args: {"assignees": []}
     )
     assert trace_exporter._github_assign_issue(7, "alice") is False
+
+
+def test_a_packet_reserves_publishes_and_releases_all_its_tests(
+    server, monkeypatch
+) -> None:
+    base, created = server
+    seen = []
+    monkeypatch.setattr(
+        new_issue,
+        "prepare",
+        lambda login, trace_id, nodeid, *args, **kwargs: (
+            seen.append((nodeid, kwargs["packet"]))
+            or new_issue._issue_draft(login, "[CI] packet", "body")
+        ),
+    )
+    others = [NODEID + str(i) for i in range(3)]
+    store = claims.store()
+    assert store.reserve(others[2], "carol")["status"] == "ok"  # someone else has it
+    packet = {
+        "group": "bert",
+        "signal": "AssertionError",
+        "tests": [{"trace_id": TRACE, "test_nodeid": NODEID}]
+        + [{"trace_id": "b" * 32, "test_nodeid": other} for other in others],
+    }
+    status, draft = post(
+        base, "/serge-actions/new-issue/draft", "alice", {"packet": packet}
+    )
+    assert (status, draft["status"]) == (200, "ok")
+    nodeid, sent = seen[0]
+    assert nodeid == NODEID and (sent["group"], sent["signal"]) == (
+        "bert",
+        "AssertionError",
+    )
+    assert sent["tests"] == [
+        (TRACE, NODEID),
+        ("b" * 32, others[0]),
+        ("b" * 32, others[1]),
+    ]
+    snapshot = store.snapshot()
+    assert [snapshot[n]["login"] for n in (NODEID, *others)] == ["alice"] * 3 + [
+        "carol"
+    ]
+
+    # Closing the draft frees every test it held, and only those.
+    post(
+        base,
+        "/serge-actions/new-issue/release",
+        "alice",
+        {"draft_id": draft["draft_id"]},
+    )
+    assert set(store.snapshot()) == {others[2]}
+
+    _, draft = post(base, "/serge-actions/new-issue/draft", "alice", {"packet": packet})
+    _, issue = post(
+        base,
+        "/serge-actions/new-issue/publish",
+        "alice",
+        {"draft_id": draft["draft_id"], "title": "[CI] packet", "body": "b"},
+    )
+    assert issue["status"] == "ok" and len(created) == 1
+    snapshot = store.snapshot()
+    assert {snapshot[n]["number"] for n in (NODEID, *others[:2])} == {issue["number"]}
+
+
+def test_a_packet_everyone_else_has_is_refused(server) -> None:
+    base, _ = server
+    store = claims.store()
+    tests = [NODEID, NODEID + "x"]
+    for nodeid in tests:
+        store.reserve(nodeid, "carol")
+    packet = {
+        "group": "bert",
+        "signal": "AssertionError",
+        "tests": [{"trace_id": TRACE, "test_nodeid": nodeid} for nodeid in tests],
+    }
+    status, refused = post(
+        base, "/serge-actions/new-issue/draft", "alice", {"packet": packet}
+    )
+    assert (status, refused["status"], refused["login"]) == (409, "drafting", "carol")
+    one = {**packet, "tests": packet["tests"][:1]}
+    status, _ = post(base, "/serge-actions/new-issue/draft", "alice", {"packet": one})
+    assert status == 400

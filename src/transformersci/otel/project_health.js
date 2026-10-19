@@ -385,6 +385,7 @@
     const seen = `${state.group}|${state.days}`;
     if (seen !== groupsSeen) { groupsSeen = seen; openGroups.clear(); }
     groupNames = ordered.map(([name]) => name);
+    packets = [];
     return ordered.map(([name, members]) => {
       const open = openGroups.has(name);
       const errors = new Map();
@@ -394,8 +395,30 @@
       const sticky = members.filter(([row]) => row.sticky).length;
       return `<tr class="grp" data-group="${esc(name)}" aria-expanded="${open}"><td colspan="7"><span class="caret">${open ? '▾' : '▸'}</span>${esc(name)}
         <span class="meta"> — ${members.length} test${members.length === 1 ? '' : 's'}, ${fails(members)} failing run${fails(members) === 1 ? '' : 's'}${sticky ? `, ${sticky} sticky` : ''}${summary}</span></td></tr>`
-        + (open ? members.map(([row, index]) => rowHtml(row, index)).join('') : '');
+        + (open ? packetHtml(name, members) + members.map(([row, index]) => rowHtml(row, index)).join('') : '');
     }).join('');
+  }
+
+  // Work on all: one issue for a group's unclaimed failures that share an
+  // error, a bucket per error. A bucket of one is that row's own Work on it.
+  let packets = [];
+  const PACKET_LIMIT = 60;  // new_issue.PACKET_LIMIT
+  function packetHtml(name, members) {
+    const buckets = new Map();
+    for (const [row] of members) {
+      if (row.category === 'slow' || !row.trace_id || claimState(row) !== 'free') continue;
+      if (!buckets.has(row.signal)) buckets.set(row.signal, []);
+      buckets.get(row.signal).push(row);
+    }
+    const buttons = [...buckets].filter(([, rows]) => rows.length > 1)
+      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+      .map(([signal, rows]) => {
+        const tests = rows.slice(0, PACKET_LIMIT);
+        packets.push({group: name, signal, tests: tests.map(row => ({trace_id: row.trace_id, test_nodeid: row.nodeid}))});
+        const more = rows.length > tests.length ? ` (the first ${tests.length} of ${rows.length})` : '';
+        return `<button type="button" class="act" data-packet="${packets.length - 1}" title="One issue for these ${tests.length} unclaimed tests${more}, with Serge's take and related threads">${rows.length} × ${esc(signal)}</button>`;
+      });
+    return buttons.length ? `<tr class="pk"><td colspan="7"><span class="lbl">Work on all:</span>${buttons.join('')}</td></tr>` : '';
   }
 
   const FOLD_PATHS = {
@@ -500,18 +523,26 @@
   const FRAME_LIMIT = 8;
   const frames = new Map();
   function sergeFrame(row) {
-    const key = `${row.category}\n${row.nodeid}\n${row.job}`;
-    let entry = frames.get(key);
-    if (entry) { frames.delete(key); frames.set(key, entry); return entry; }
-    const frame = document.createElement('iframe');
-    frame.className = 'serge'; frame.title = 'Serge Actions'; frame.tabIndex = -1;
     const context = row.category === 'slow'
       ? {kind: 'slow', test_nodeid: row.nodeid, job: row.job, runner: row.runner,
         first_day: new Date(rowsFirstDay * 1000).toISOString().slice(0, 10),
         durations: JSON.stringify(row.durations.map(value => value == null ? null : Math.round(value)))}
       : {trace_id: row.trace_id, test_nodeid: row.nodeid, job: row.job, status: 'ERROR',
         module: row.nodeid.split('::')[0].split('/').pop(), pr: 'main', run_id: row.run_id};
-    frame.src = `/serge-actions?${new URLSearchParams({...context, work: "1"})}`;
+    return actionsFrame(`${row.category}\n${row.nodeid}\n${row.job}`,
+      `/serge-actions?${new URLSearchParams({...context, work: '1'})}`);
+  }
+  // A packet travels in the fragment: up to 60 tests do not fit a query string.
+  function packetFrame(packet) {
+    return actionsFrame(`packet\n${packet.signal}\n${packet.tests.map(test => test.test_nodeid).join('\n')}`,
+      `/serge-actions?work=1#${encodeURIComponent(JSON.stringify(packet))}`);
+  }
+  function actionsFrame(key, src) {
+    let entry = frames.get(key);
+    if (entry) { frames.delete(key); frames.set(key, entry); return entry; }
+    const frame = document.createElement('iframe');
+    frame.className = 'serge'; frame.title = 'Serge Actions'; frame.tabIndex = -1;
+    frame.src = src;
     entry = {frame, loaded: new Promise(resolve => frame.addEventListener('load', resolve, {once: true}))};
     $('serge-frames').append(frame);
     frames.set(key, entry);
@@ -522,15 +553,16 @@
     return entry;
   }
   async function runAction(button) {
-    const row = current[Number(button.dataset.i)];
-    if (!row || button.getAttribute('aria-busy') === 'true') return;
+    const packet = button.dataset.packet != null ? packets[Number(button.dataset.packet)] : null;
+    const row = packet ? null : current[Number(button.dataset.i)];
+    if ((!row && !packet) || button.getAttribute('aria-busy') === 'true') return;
     button.setAttribute('aria-busy', 'true');
     try {
-      const {frame, loaded} = sergeFrame(row);
+      const {frame, loaded} = packet ? packetFrame(packet) : sergeFrame(row);
       await loaded;
       // The frame enables its buttons once it knows whether the viewer is signed in.
       for (let tries = 0; tries < 100; tries++) {
-        const target = frame.contentDocument?.getElementById(button.dataset.act);
+        const target = frame.contentDocument?.getElementById(packet ? 'work-on-it' : button.dataset.act);
         if (target && !target.disabled) { target.click(); return; }
         await new Promise(resolve => setTimeout(resolve, 100));
       }
@@ -541,7 +573,7 @@
   $('rows').addEventListener('click', event => {
     const why = event.target.closest('button[data-why]');
     if (why) { const row = current[Number(why.dataset.why)]; if (row) openSignal(row); return; }
-    const button = event.target.closest('button[data-act]');
+    const button = event.target.closest('button[data-act],button[data-packet]');
     if (button) { runAction(button); return; }
     const header = event.target.closest('tr.grp');
     if (!header) return;
