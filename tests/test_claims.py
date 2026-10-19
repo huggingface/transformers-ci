@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections import OrderedDict
 import threading
 from http.server import ThreadingHTTPServer
@@ -153,8 +154,6 @@ def test_refresh_skips_failed_reads_and_leaves_newer_claims_alone() -> None:
 
 
 def test_an_existing_database_gains_the_issue_columns(tmp_path) -> None:
-    import sqlite3
-
     path = str(tmp_path / "claims.sqlite3")
     db = sqlite3.connect(path)
     db.execute(
@@ -263,7 +262,7 @@ def test_draft_publish_and_release_keep_one_issue_per_test(server) -> None:
 
     status, again = post(base, "/serge-actions/new-issue/draft", "bob", target)
     assert status == 409
-    assert (again["status"], again["login"], again["number"]) == ("claimed", "alice", 1)
+    assert (again["status"], again["login"], again["number"]) == ("working", "alice", 1)
 
 
 def test_closing_a_draft_frees_the_test(server) -> None:
@@ -466,32 +465,10 @@ def test_a_failed_reopen_leaves_the_issue_closed_and_its_claimant(
     assert (status, reply["status"]) == (400, "invalid")
 
 
-def test_start_work_assigns_the_publisher(server, monkeypatch) -> None:
+def test_publishing_records_who_is_on_it_without_github(server, monkeypatch) -> None:
     base, created = server
-    assigned: list[tuple[int, str]] = []
-    monkeypatch.setattr(
-        trace_exporter,
-        "_github_assign_issue",
-        lambda number, login: assigned.append((number, login)) or True,
-    )
-    target = {"trace_id": TRACE, "test_nodeid": NODEID}
-    _, draft = post(
-        base, "/serge-actions/new-issue/draft", "alice", {**target, "work": True}
-    )
-    status, issue = post(
-        base,
-        "/serge-actions/new-issue/publish",
-        "alice",
-        {"draft_id": draft["draft_id"], "title": "[CI] t", "body": "b", "work": True},
-    )
-    assert (status, issue["status"], issue["assigned"]) == (200, "ok", True)
-    assert assigned == [(1, "alice")]
-
-
-def test_publish_issue_assigns_no_one(server, monkeypatch) -> None:
-    base, created = server
-    monkeypatch.setattr(trace_exporter, "_github_assign_issue", None)  # never called
-    target = {"trace_id": TRACE, "test_nodeid": NODEID}
+    monkeypatch.setattr(trace_exporter, "_github_write", None)  # no assign call
+    target = {"trace_id": TRACE, "test_nodeid": NODEID, "work": True}
     _, draft = post(base, "/serge-actions/new-issue/draft", "alice", target)
     _, issue = post(
         base,
@@ -500,42 +477,128 @@ def test_publish_issue_assigns_no_one(server, monkeypatch) -> None:
         {"draft_id": draft["draft_id"], "title": "[CI] t", "body": "b"},
     )
     assert issue["status"] == "ok" and "assigned" not in issue
+    claim = claims.store().snapshot()[NODEID]
+    assert (claim["state"], claim["login"], claim["via"], claim["number"]) == (
+        "working",
+        "alice",
+        "issue",
+        1,
+    )
+    status, held = post(base, "/serge-actions/new-issue/draft", "bob", target)
+    assert (status, held["status"], held["login"], held["number"]) == (
+        409,
+        "working",
+        "alice",
+        1,
+    )
 
 
-def test_a_failed_assign_still_publishes(server, monkeypatch) -> None:
+def test_coding_agent_records_the_work_and_returns_a_prompt(server) -> None:
     base, created = server
-
-    def refuse(number, login):
-        raise OSError("GitHub 500")
-
-    monkeypatch.setattr(trace_exporter, "_github_assign_issue", refuse)
     target = {"trace_id": TRACE, "test_nodeid": NODEID, "work": True}
-    _, draft = post(base, "/serge-actions/new-issue/draft", "bob", target)
-    _, issue = post(
+    _, draft = post(base, "/serge-actions/new-issue/draft", "alice", target)
+    work = {"draft_id": draft["draft_id"], "title": "[CI] t", "body": "the report"}
+    status, refused = post(base, "/serge-actions/new-issue/agent", "bob", work)
+    assert (status, refused["status"]) == (400, "invalid")  # not bob's draft
+
+    status, reply = post(base, "/serge-actions/new-issue/agent", "alice", work)
+    assert (status, reply["status"]) == (200, "ok")
+    assert "<report>\n# [CI] t\n\nthe report\n</report>" in reply["prompt"]
+    assert created == []  # no issue
+    claim = claims.store().snapshot()[NODEID]
+    assert (claim["state"], claim["login"], claim["via"]) == (
+        "working",
+        "alice",
+        "agent",
+    )
+    assert "number" not in claim
+
+    # Closing the popup releases the draft, not the work.
+    post(
+        base,
+        "/serge-actions/new-issue/release",
+        "alice",
+        {"draft_id": draft["draft_id"]},
+    )
+    status, held = post(base, "/serge-actions/new-issue/draft", "bob", target)
+    assert (status, held["status"], held["via"]) == (409, "working", "agent")
+
+    # alice may draft again (to open an issue after all), and sees her work.
+    status, again = post(base, "/serge-actions/new-issue/draft", "alice", target)
+    assert (status, again["working"]["via"]) == (200, "agent")
+    post(
         base,
         "/serge-actions/new-issue/publish",
-        "bob",
-        {"draft_id": draft["draft_id"], "title": "[CI] t", "body": "b", "work": True},
+        "alice",
+        {"draft_id": again["draft_id"], "title": "[CI] t", "body": "b"},
     )
-    assert (issue["status"], issue["assigned"]) == ("ok", False)
-    assert len(created) == 1
+    claim = claims.store().snapshot()[NODEID]
+    assert (claim["via"], claim["number"]) == ("issue", 1)
+
+    status, stopped = post(
+        base, "/serge-actions/new-issue/stop", "alice", {"draft_id": again["draft_id"]}
+    )
+    assert (status, stopped["status"]) == (200, "ok")
+    assert claims.store().working(NODEID) is None
 
 
-def test_github_assign_issue_reports_whether_github_assigned(monkeypatch) -> None:
-    calls = []
-    monkeypatch.setattr(
-        trace_exporter,
-        "_github_write",
-        lambda method, path, payload: (
-            calls.append((method, path, payload)) or {"assignees": [{"login": "Alice"}]}
-        ),
+def test_stopping_frees_the_test_for_others(server) -> None:
+    base, _ = server
+    target = {"trace_id": TRACE, "test_nodeid": NODEID, "work": True}
+    _, draft = post(base, "/serge-actions/new-issue/draft", "alice", target)
+    work = {"draft_id": draft["draft_id"], "title": "[CI] t", "body": "b"}
+    post(base, "/serge-actions/new-issue/agent", "alice", work)
+    # Someone else's stop does nothing.
+    post(base, "/serge-actions/new-issue/stop", "bob", {"draft_id": draft["draft_id"]})
+    assert claims.store().working(NODEID)["login"] == "alice"
+    post(
+        base, "/serge-actions/new-issue/stop", "alice", {"draft_id": draft["draft_id"]}
     )
-    assert trace_exporter._github_assign_issue(7, "alice") is True
-    assert calls == [("POST", "issues/7/assignees", {"assignees": ["alice"]})]
-    monkeypatch.setattr(
-        trace_exporter, "_github_write", lambda *args: {"assignees": []}
+    status, mine = post(base, "/serge-actions/new-issue/draft", "bob", target)
+    assert (status, mine["status"]) == (200, "ok")
+
+
+def test_closing_the_issue_ends_the_work_but_not_an_agents() -> None:
+    store = claims.Store(":memory:")
+    store.confirm(NODEID, "alice", 7, "u7")
+    store.start(NODEID, "alice", "issue", 7, "u7")
+    store.start(NODEID + "x", "bob", "agent")
+    store.set_issue_state(NODEID, 7, "closed", 1.0)
+    snapshot = store.snapshot()
+    assert snapshot[NODEID]["state"] == "claimed"
+    assert snapshot[NODEID]["issue_state"] == "closed"
+    assert snapshot[NODEID + "x"]["state"] == "working"
+    # Reopening makes the reopener the one on it.
+    assert store.reopen(NODEID, "carol")["status"] == "ok"
+    assert store.working(NODEID)["login"] == "carol"
+
+
+def test_open_issue_claims_become_work_once(tmp_path) -> None:
+    path = str(tmp_path / "claims.sqlite3")
+    db = sqlite3.connect(path)
+    db.execute(
+        "CREATE TABLE claims (nodeid TEXT PRIMARY KEY, login TEXT NOT NULL,"
+        " state TEXT NOT NULL, created REAL NOT NULL, expires REAL,"
+        " number INTEGER, url TEXT, issue_state TEXT, closed_at REAL,"
+        " checked_at REAL)"
     )
-    assert trace_exporter._github_assign_issue(7, "alice") is False
+    db.executemany(
+        "INSERT INTO claims VALUES (?, ?, 'claimed', 5, NULL, ?, ?, ?, NULL, NULL)",
+        [("open", "alice", 1, "u1", "open"), ("closed", "bob", 2, "u2", "closed")],
+    )
+    db.commit()
+    db.close()
+    store = claims.Store(path)
+    assert store.working("open") == {
+        "login": "alice",
+        "since": 5,
+        "via": "issue",
+        "number": 1,
+        "url": "u1",
+    }
+    assert store.working("closed") is None
+    store.stop("open", "alice")
+    assert claims.Store(path).working("open") is None  # not migrated again
 
 
 def test_a_packet_reserves_publishes_and_releases_all_its_tests(

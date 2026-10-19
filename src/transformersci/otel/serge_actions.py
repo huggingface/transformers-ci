@@ -133,7 +133,7 @@ const WORK=new URLSearchParams(location.search).get('work')==='1';
 const PACKET=(()=>{try{return WORK&&location.hash.length>1?
   JSON.parse(decodeURIComponent(location.hash.slice(1))):null;}catch(error){return null;}})();
 const ACTIONS=WORK?[['work-on-it','Work on it',
-  "Draft an issue with Serge's take and the related issues and PRs.",true]]:__ACTIONS__,LOCK=__LOCK__;
+  "Draft the failure with Serge's take, then work on it with your coding agent or open a GitHub issue.",true]]:__ACTIONS__,LOCK=__LOCK__;
 const row=document.getElementById('actions'),note=document.getElementById('note');
 // Every button shows at once; signed out, each carries a lock and goes to the
 // Grafana sign-in, which brings the viewer back to the page they were on.
@@ -348,14 +348,21 @@ function actionSteps(doc,host,initial){
   return {step,finish,progress};
 }
 
+// Work on it (Project health) is "Working on the failure": once the draft is
+// ready its steps fold away and two choices follow, a coding agent (copy a
+// prompt, no issue) or a GitHub issue (the editable form). Either way the
+// dashboard records who is on the test; GitHub's assignees play no part.
+// New issue (Test page) goes straight to the form.
 function issuePopup(work){
-  const publishLabel=work?'Start work':'Publish issue';
+  const heading=work?'Working on the failure':'New issue';
   let doc=document,host=document.body;
   for(let w=window;w.parent!==w;){
     try{w=w.parent;if(w.document.body){doc=w.document;host=doc.body;}}catch(error){break;}
   }
   doc.getElementById('tci-new-issue')?.remove();
   const el=(tag,text)=>{const n=doc.createElement(tag);if(text!==undefined)n.textContent=text;return n;};
+  const post=(path,body)=>fetch(path,{method:'POST',credentials:'same-origin',
+    headers:{'Content-Type':'application/json','X-TCI-Action':'1'},body:JSON.stringify(body)});
   const overlay=el('div');overlay.id='tci-new-issue';
   overlay.style.cssText='position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,.55);'+
     'display:flex;align-items:center;justify-content:center;padding:16px';
@@ -363,19 +370,20 @@ function issuePopup(work){
     'border:1px solid #657083;border-radius:6px;max-width:760px;width:100%;'+
     'max-height:85vh;overflow:auto;padding:16px 20px;font:14px/1.5 system-ui,sans-serif';
   box.setAttribute('role','dialog');box.setAttribute('aria-modal','true');
-  box.setAttribute('aria-label','New issue');
-  const title=el('h2','New issue');title.style.margin='0 0 8px';
+  box.setAttribute('aria-label',heading);
+  const title=el('h2',heading);title.style.margin='0 0 8px';
   const progressHost=el('div'),steps=actionSteps(doc,progressHost,'Starting issue draft');
   const content=el('div');
   const actions=el('div');actions.style.cssText='display:flex;gap:8px;justify-content:flex-end;margin-top:14px';
+  const buttonCss='background:#242b35;color:#d8d9da;border:1px solid #657083;'+
+    'border-radius:4px;padding:6px 12px;font:inherit;cursor:pointer';
   const close=el('button','Close');close.type='button';
-  const publish=el('button',publishLabel);publish.type='submit';publish.hidden=true;
-  for(const button of [close,publish])button.style.cssText='background:#242b35;color:#d8d9da;'+
-    'border:1px solid #657083;border-radius:4px;padding:6px 12px;font:inherit;cursor:pointer';
+  const publish=el('button','Publish issue');publish.type='submit';publish.hidden=true;
+  for(const button of [close,publish])button.style.cssText=buttonCss;
   actions.append(close,publish);box.append(title,progressHost,content,actions);
   overlay.append(box);host.append(overlay);
   // An open draft reserves the test (one issue per test); closing it unpublished
-  // frees the test for the next person.
+  // frees the test for the next person. Working on it is not a draft: it stays.
   let heldDraft=null;
   const release=()=>{
     if(!heldDraft)return;
@@ -390,22 +398,11 @@ function issuePopup(work){
     close.focus();};
   doc.addEventListener('keydown',onKey);close.onclick=hide;
   overlay.onclick=event=>{if(event.target===overlay)hide();};close.focus();
-  return {show,progress:steps.progress,finish(data){
-    steps.finish(data.status==='ok'||data.status==='closed');
-    content.replaceChildren();
-    if(data.status==='closed'){title.textContent='Reopen issue';box.setAttribute('aria-label','Reopen issue');}
-    if(['claimed','drafting','closed'].includes(data.status)){
-      content.append(heldBy(doc,data));return;
-    }
-    if(data.status!=='ok'){
-      const messages={invalid:'The selected failure is unavailable.',
-        unauthorized:'Your Grafana session expired. Sign in again.',
-        rate_limited:'You asked a lot this hour. Try again later.',
-        busy:'Serge is busy. Try again shortly.',
-        unavailable:'Could not draft the issue right now. Try again shortly.'};
-      content.textContent=messages[data.status]||messages.unavailable;return;
-    }
-    heldDraft=data.draft_id;
+  const link=(text,url)=>{const a=el('a',text);a.href=url;a.target='_blank';
+    a.rel='noopener noreferrer';return a;};
+
+  // The editable title + body, published as a GitHub issue.
+  function issueForm(data,host,done){
     const form=el('form');form.id='tci-new-issue-form';form.style.margin='0';
     publish.setAttribute('form',form.id);
     const note=el('p','Draft based on the Transformers bug report template. Edit both fields before publishing. The connected GitHub account will create the issue.');
@@ -422,43 +419,154 @@ function issuePopup(work){
       'border:1px solid #657083;font:12px/1.5 ui-monospace,monospace;resize:vertical';
     bodyLabel.append(bodyInput);
     const status=el('p','');status.setAttribute('role','status');
-    form.append(note,titleLabel,bodyLabel,status);content.append(form);
-    publish.hidden=false;titleInput.focus();
+    form.append(note,titleLabel,bodyLabel,status);host.replaceChildren(form);
+    publish.hidden=false;publish.disabled=false;titleInput.focus();
     form.onsubmit=async event=>{
       event.preventDefault();
       if(!titleInput.value.trim()||!bodyInput.value.trim()){
         status.textContent='Title and body are required.';return;
       }
-      publish.disabled=true;publish.textContent=work?'Starting…':'Publishing…';status.textContent='';
-      steps.step('Publishing the issue on GitHub');
+      publish.disabled=true;publish.textContent='Publishing…';status.textContent='';
       try{
-        const response=await fetch('/serge-actions/new-issue/publish',{
-          method:'POST',credentials:'same-origin',
-          headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
-          body:JSON.stringify({draft_id:data.draft_id,title:titleInput.value,body:bodyInput.value,
-            ...(work?{work:true}:{})})});
+        const response=await post('/serge-actions/new-issue/publish',
+          {draft_id:data.draft_id,title:titleInput.value,body:bodyInput.value});
         const result=await response.json();
-        if(['claimed','drafting','closed'].includes(result.status)){
-          heldDraft=null;steps.finish(false);publish.hidden=true;
-          content.replaceChildren(heldBy(doc,result));return;
+        if(['claimed','drafting','closed','working'].includes(result.status)){
+          heldDraft=null;publish.hidden=true;done(heldBy(doc,result));return;
         }
         if(result.status==='ok'){
-          heldDraft=null;
-          const link=el('a','Issue #'+result.number);link.href=result.url;
-          link.target='_blank';link.rel='noopener noreferrer';
-          steps.finish(true);
-          const done=el('p',work?'Started work on ':'Published ');done.append(link);
-          if(work)done.append(result.assigned?', assigned to you.':
-            '. GitHub did not accept you as the assignee: assign yourself on the issue.');
-          content.replaceChildren(done);
-          publish.hidden=true;return;
+          heldDraft=null;publish.hidden=true;
+          const p=el('p','Published ');p.append(link('issue #'+result.number,result.url));
+          if(work)p.append('. You are on it now: Fix failures says so.');
+          done(p);return;
         }
         status.textContent=result.status==='invalid'?'Draft expired. Create a new draft.':
           'Could not publish the issue. Check GitHub permissions and try again.';
       }catch(error){status.textContent='Could not publish the issue. Try again.';}
-      steps.finish(false);
-      publish.disabled=false;publish.textContent=publishLabel;
+      publish.disabled=false;publish.textContent='Publish issue';
     };
+  }
+
+  // Coding agent: the dashboard records the work and hands back a prompt.
+  async function agent(data,choice,panel){
+    choice.disabled=true;panel.replaceChildren(el('p','Recording that you are on it…'));
+    publish.hidden=true;
+    let result={status:'unavailable'};
+    try{
+      result=await (await post('/serge-actions/new-issue/agent',
+        {draft_id:data.draft_id,title:data.title,body:data.body})).json();
+    }catch(error){}
+    choice.disabled=false;
+    if(['claimed','drafting','closed','working'].includes(result.status)){
+      panel.replaceChildren(heldBy(doc,result));return;
+    }
+    if(result.status!=='ok'){
+      panel.replaceChildren(el('p',result.status==='invalid'?'Draft expired. Create a new draft.':
+        'Could not record the work right now. Try again.'));return;
+    }
+    const text=el('textarea');text.readOnly=true;text.value=result.prompt;text.rows=14;
+    text.style.cssText='display:block;box-sizing:border-box;width:100%;margin:6px 0 0;padding:8px;'+
+      'background:#242b35;color:#d8d9da;border:1px solid #657083;'+
+      'font:12px/1.5 ui-monospace,monospace;resize:vertical';
+    const shown=el('details'),summary=el('summary','Show the prompt');
+    summary.style.cursor='pointer';shown.append(summary,text);
+    const said=el('p');
+    let copied=false;
+    try{await (doc.defaultView||window).navigator.clipboard.writeText(result.prompt);copied=true;}
+    catch(error){
+      try{text.select();copied=doc.execCommand('copy');}catch(other){}
+    }
+    said.textContent=copied?'✓ Prompt copied: paste it into your coding agent. You are on it now: Fix failures says so.':
+      'You are on it now. Copy the prompt below into your coding agent.';
+    if(!copied){shown.open=true;}
+    const again=el('button','Copy again');again.type='button';again.style.cssText=buttonCss;
+    again.onclick=async()=>{
+      try{await (doc.defaultView||window).navigator.clipboard.writeText(result.prompt);
+        again.textContent='Copied ✓';}catch(error){shown.open=true;text.select();}
+    };
+    panel.replaceChildren(said,again,shown);
+    if(!copied)text.select();
+  }
+
+  // Already on it: since when and how, and a way to stop.
+  function myWork(data){
+    const worker=data.working,p=el('p');
+    p.style.cssText='margin:0 0 12px;padding:8px 10px;border:1px solid #3d71d9;border-radius:4px;background:#1b2433';
+    const minutes=Math.round((Date.now()/1000-worker.since)/60);
+    const since=minutes<1?'just now':minutes<120?minutes+' min ago':Math.round(minutes/60)+' h ago';
+    p.append('You are working on this since '+since+', ');
+    if(worker.via==='issue'&&worker.url)p.append('in ',link('#'+worker.number,worker.url),'. ');
+    else p.append('with a coding agent. ');
+    const stop=el('button','Stop working on it');stop.type='button';stop.style.cssText=buttonCss;
+    stop.onclick=async()=>{
+      stop.disabled=true;
+      try{
+        const result=await (await post('/serge-actions/new-issue/stop',{draft_id:data.draft_id})).json();
+        if(result.status==='ok'){p.replaceChildren('You stopped working on this: it is free for others.');return;}
+      }catch(error){}
+      stop.disabled=false;stop.textContent='Could not stop: try again';
+    };
+    p.append(stop);
+    return p;
+  }
+
+  function choices(data){
+    const grid=el('div');
+    grid.style.cssText='display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:4px 0 12px';
+    const choice=(icon,name,help)=>{
+      const b=el('button');b.type='button';
+      b.style.cssText='display:flex;flex-direction:column;align-items:flex-start;gap:4px;text-align:left;'+
+        'min-height:96px;padding:14px 16px;background:#242b35;color:#d8d9da;border:1px solid #657083;'+
+        'border-radius:6px;font:inherit;cursor:pointer';
+      const head=el('span',icon+' '+name);head.style.cssText='font-size:17px;font-weight:600';
+      const sub=el('span',help);sub.style.cssText='color:#aeb7c2;font-size:13px';
+      b.append(head,sub);return b;
+    };
+    const panel=el('div');
+    const pressed=b=>{for(const other of grid.children){
+      other.style.borderColor=other===b?'#6ab0ff':'#657083';
+      other.setAttribute('aria-pressed',String(other===b));}};
+    const coding=choice('🤖','Coding agent','Work on it on my own: copy a prompt for my coding agent.');
+    coding.onclick=()=>{pressed(coding);agent(data,coding,panel);};
+    const existing=data.working?.via==='issue'&&data.working.url;
+    const issue=choice('🐙','GitHub issue',existing?'Already open as #'+data.working.number+': open it on GitHub.':
+      'Create an issue on GitHub: review the draft, then publish it.');
+    issue.onclick=()=>{
+      pressed(issue);
+      if(existing){(doc.defaultView||window).open(data.working.url,'_blank','noopener');return;}
+      issueForm(data,panel,node=>panel.replaceChildren(node));
+    };
+    grid.append(coding,issue);
+    return [grid,panel];
+  }
+
+  return {show,progress:steps.progress,finish(data){
+    const ok=data.status==='ok'||data.status==='closed';
+    steps.finish(ok);
+    content.replaceChildren();
+    if(data.status==='closed'){title.textContent='Reopen issue';box.setAttribute('aria-label','Reopen issue');}
+    if(['claimed','drafting','closed','working'].includes(data.status)){
+      content.append(heldBy(doc,data));return;
+    }
+    if(data.status!=='ok'){
+      const messages={invalid:'The selected failure is unavailable.',
+        unauthorized:'Your Grafana session expired. Sign in again.',
+        rate_limited:'You asked a lot this hour. Try again later.',
+        busy:'Serge is busy. Try again shortly.',
+        unavailable:'Could not draft the issue right now. Try again shortly.'};
+      content.textContent=messages[data.status]||messages.unavailable;return;
+    }
+    heldDraft=data.draft_id;
+    if(!work){issueForm(data,content,node=>content.replaceChildren(node));return;}
+    // The steps are done: fold them into one line that still opens.
+    const folded=el('details'),summary=el('summary');
+    const count=progressHost.querySelectorAll('li').length;
+    summary.textContent='✓ Draft ready: '+data.title+' ('+count+' steps)';
+    summary.style.cssText='cursor:pointer;color:#aeb7c2;font-size:13px;margin:0 0 12px';
+    progressHost.replaceWith(folded);folded.append(summary,progressHost);
+    if(data.working)content.append(myWork(data));
+    const lead=el('p','How do you want to work on it?');lead.style.cssText='margin:0 0 8px;font-weight:600';
+    content.append(lead,...choices(data));
   }};
 }
 
@@ -475,7 +583,12 @@ function heldBy(doc,data){
       ', and it was closed. Reopen it rather than opening a second one.');
     return reopenIssue(doc,data,p);
   }
-  if(data.status==='claimed'){
+  if(data.status==='working'){
+    const minutes=Math.round((Date.now()/1000-data.since)/60);
+    p.append(who,' is working on this test'+(data.via==='issue'?' in ':' with a coding agent'));
+    if(data.via==='issue'&&data.url)p.append(issue);
+    p.append(', since '+(minutes<1?'just now':minutes<120?minutes+' min ago':Math.round(minutes/60)+' h ago')+'.');
+  }else if(data.status==='claimed'){
     p.append('Already picked up by ',who,' in ',issue,'. Comment there instead of opening a second issue.');
   }else{
     const minutes=Math.round((Date.now()/1000-data.since)/60);

@@ -49,7 +49,7 @@ PERMISSIONS = {
     "metadata": "read",
     "pull_requests": "read",
 }
-# Fix failures' Work on it: the dashboard opens, assigns and reopens issues
+# Fix failures' Work on it: the dashboard opens and reopens issues
 # as the App, so they are not authored by one person's token. Asked for only
 # by issue_write_token; until the installation grants it, minting fails and
 # the caller falls back to the PAT.
@@ -295,7 +295,7 @@ def app_token() -> str:
 
 
 def issue_write_token() -> str:
-    """A token that may open, assign and reopen issues as the App, or "" while
+    """A token that may open and reopen issues as the App, or "" while
     the installation does not grant Issues: write (the caller uses its PAT)."""
     return _issue_writes.token()
 

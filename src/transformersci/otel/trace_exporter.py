@@ -1762,18 +1762,6 @@ def _github_create_issue(title: str, body: str) -> object:
     )
 
 
-def _github_assign_issue(number: int, login: str) -> bool:
-    """Assign ``login``; True if GitHub did. It skips, silently, anyone who
-    cannot be assigned to the repository, so publishing never fails on it."""
-    issue = _github_write("POST", f"issues/{number}/assignees", {"assignees": [login]})
-    assignees = issue.get("assignees") if isinstance(issue, dict) else None
-    return any(
-        isinstance(person, dict)
-        and str(person.get("login") or "").lower() == login.lower()
-        for person in assignees or []
-    )
-
-
 def _github_reopen_issue(number: int, login: str) -> None:
     """Reopen, then say who did: GitHub shows the shared token as the actor."""
     issue = _github_write("PATCH", f"issues/{number}", {"state": "open"})
@@ -6280,6 +6268,15 @@ def _draft_tests(draft_id: str) -> tuple[str, ...]:
         return _draft_nodeids.get(draft_id, ())
 
 
+def _with_my_work(result: dict, nodeid: str, login: str) -> dict:
+    """A draft for a test ``login`` already works on says how (Working on the
+    failure shows it, with Stop working)."""
+    worker = claims.store().working(nodeid)
+    if result.get("status") == "ok" and worker and worker["login"] == login:
+        result["working"] = worker
+    return result
+
+
 _claim_refresher_lock = threading.Lock()
 _claim_refresher_started = False
 CLAIM_REFRESH_SECONDS = 60.0
@@ -8241,6 +8238,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
             "/serge-actions/new-issue/publish",
             "/serge-actions/new-issue/release",
             "/serge-actions/new-issue/reopen",
+            "/serge-actions/new-issue/agent",
+            "/serge-actions/new-issue/stop",
             "/project-health/packets",
             "/rerun-failed",
         ):
@@ -8268,6 +8267,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._serve_new_issue_release()
         elif path == "/serge-actions/new-issue/reopen":
             self._serve_new_issue_reopen()
+        elif path == "/serge-actions/new-issue/agent":
+            self._serve_new_issue_agent()
+        elif path == "/serge-actions/new-issue/stop":
+            self._serve_new_issue_stop()
         elif parse_qs(urlparse(self.path).query).get("kind") == ["slow"]:
             self._serve_slow_wdyt()
         else:
@@ -8460,7 +8463,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 _remember_draft(result["draft_id"], nodeid)
             else:
                 claims.store().release(nodeid, login)
-            return result
+            return _with_my_work(result, nodeid, login)
 
         self._stream_action(draft, "Reading the selected failure")
 
@@ -8607,7 +8610,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 _remember_draft(result["draft_id"], [test for _trace, test in held])
             else:
                 release_all()
-            return result
+            return _with_my_work(result, nodeid, login)
 
         self._stream_action(
             draft, f"Reading {len(held)} failing tests ({signal} in {group})"
@@ -8711,7 +8714,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 take,
             )
             _remember_draft(result["draft_id"], nodeid)
-            return result
+            return _with_my_work(result, nodeid, login)
 
         self._stream_action(draft, "Reading the test's timings on main")
 
@@ -8791,18 +8794,71 @@ class MetricsHandler(BaseHTTPRequestHandler):
             login, body["draft_id"], body["title"], text, _github_create_issue
         )
         if result.get("status") == "ok" and isinstance(result.get("number"), int):
+            url = str(result.get("url") or "")
             for nodeid in nodeids:
-                claims.store().confirm(
-                    nodeid, login, result["number"], str(result.get("url") or "")
-                )
-        # Work on it (Project health): whoever starts work is the assignee.
-        if body.get("work") is True and result.get("status") == "ok":
-            try:
-                result["assigned"] = _github_assign_issue(result["number"], login)
-            except Exception as error:  # the issue exists all the same
-                llm.log_failure("assign", f"#{result['number']}", error)
-                result["assigned"] = False
+                claims.store().confirm(nodeid, login, result["number"], url)
+                # Who is on it is the dashboard's record, not GitHub's assignees.
+                claims.store().start(nodeid, login, "issue", result["number"], url)
         self._reply_json(200, result)
+
+    def _read_draft_body(self, limit: int) -> tuple[dict, str] | None:
+        """(body, login) of a request about one of the caller's drafts, or None
+        after replying."""
+        if not self._action_allowed():
+            return None
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length)) if 0 < length <= limit else None
+        except (ValueError, TypeError):
+            body = None
+        if not isinstance(body, dict) or not isinstance(body.get("draft_id"), str):
+            self._reply_json(400, {"status": "invalid"})
+            return None
+        login = self._action_user()
+        if not login:
+            return None
+        return body, login
+
+    def _serve_new_issue_agent(self) -> None:
+        """Coding agent: work on the draft's tests with one's own agent. No
+        issue; the dashboard records who is on them and hands back a prompt."""
+        read = self._read_draft_body(35000)
+        if read is None:
+            return
+        body, login = read
+        title, text = body.get("title"), body.get("body")
+        nodeids = _draft_tests(body["draft_id"])
+        if (
+            not isinstance(title, str)
+            or not isinstance(text, str)
+            or not text.strip()
+            or not nodeids
+            or not new_issue.owns(login, body["draft_id"])
+        ):
+            self._reply_json(400, {"status": "invalid"})
+            return
+        store = claims.store()
+        for nodeid in nodeids:
+            # The reservation may have lapsed and been taken while the draft sat open.
+            reservation = store.reserve(nodeid, login)
+            if reservation["status"] != "ok":
+                self._reply_json(409, reservation)
+                return
+        for nodeid in nodeids:
+            store.start(nodeid, login, "agent")
+        self._reply_json(
+            200, {"status": "ok", "prompt": new_issue.agent_prompt(title, text)}
+        )
+
+    def _serve_new_issue_stop(self) -> None:
+        """Stop working on the draft's tests: they are free for others again."""
+        read = self._read_draft_body(1024)
+        if read is None:
+            return
+        body, login = read
+        for nodeid in _draft_tests(body["draft_id"]):
+            claims.store().stop(nodeid, login)
+        self._reply_json(200, {"status": "ok"})
 
     def _serve_new_issue_release(self) -> None:
         """Closing a draft without publishing frees the test for others."""

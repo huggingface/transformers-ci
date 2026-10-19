@@ -2,9 +2,9 @@
   'use strict';
   const CATEGORIES = [['failure', 'Failure'], ['slow', 'Slow']];
   // The Test page's Serge Actions (button id in /serge-actions, label).
-  // One action: a New issue draft that carries Serge's WDYT? answer and lists
-  // related issues and PRs instead of people.
-  const ACTIONS = [['work-on-it', 'Work on it', "Draft a GitHub issue with Serge's take and the related issues and PRs"]];
+  // One action: Working on the failure, a draft that carries Serge's WDYT?
+  // answer and related issues and PRs, then a coding agent prompt or an issue.
+  const ACTIONS = [['work-on-it', 'Work on it', "Draft the failure with Serge's take, then work on it with your coding agent or open a GitHub issue"]];
   const DAY = 86400;
   const $ = id => document.getElementById(id);
   const {esc} = tci;
@@ -90,6 +90,8 @@
   function claimState(row) {
     const claim = claims[row.nodeid];
     if (!claim) return 'free';
+    // Who is on it is the dashboard's record (claims.py's working table).
+    if (claim.state === 'working') return 'on-it';
     if (claim.state !== 'claimed') return 'drafting';
     return claim.issue_state === 'closed' ? 'closed' : 'on-it';
   }
@@ -116,17 +118,17 @@
     const who = `<a href="https://github.com/${encodeURIComponent(claim.login)}" target="_blank" rel="noopener noreferrer">@${esc(claim.login)}</a>`;
     const issue = claim.url ? `<a href="${esc(claim.url)}" target="_blank" rel="noopener noreferrer">#${claim.number}</a>` : '';
     if (state === 'drafting') return `${who} <span class="drafting">is drafting…</span>`;
-    if (state === 'on-it') return `${who} is on it · ${issue}`;
+    if (state === 'on-it') return `${who} is on it · ${claim.via === 'agent' && !issue ? '<span class="sub" title="Working with their own coding agent, no issue">coding agent</span>' : issue}`;
     const since = claim.closed_at && row.last_seen > claim.closed_at
       ? ' · <span class="again" title="The test failed after the issue was closed">failed since</span>' : '';
     return `${issue} <span class="closed">closed</span>${since} <span class="sub">· was ${who}</span>`;
   }
 
-  // New issue is off while someone has the test: its issue is the place to talk.
-  // Your own unpublished draft stays reachable, to reopen it.
+  // Work on it is off while someone else has the test. Your own draft or work
+  // stays reachable: to reopen it, switch to an issue, or stop working on it.
   function newIssueBlocked(row) {
     const claim = claims[row.nodeid], state = claimState(row);
-    if (state === 'on-it') return `@${claim.login} is on it in #${claim.number}`;
+    if (state === 'on-it' && claim.login !== me) return claim.number ? `@${claim.login} is on it in #${claim.number}` : `@${claim.login} is on it with a coding agent`;
     if (state === 'drafting' && claim.login !== me) return `@${claim.login} is drafting an issue for this test`;
     return '';
   }
