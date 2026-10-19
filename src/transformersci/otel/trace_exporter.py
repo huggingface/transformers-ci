@@ -1752,6 +1752,18 @@ def _github_create_issue(title: str, body: str) -> object:
     )
 
 
+def _github_assign_issue(number: int, login: str) -> bool:
+    """Assign ``login``; True if GitHub did. It skips, silently, anyone who
+    cannot be assigned to the repository, so publishing never fails on it."""
+    issue = _github_write("POST", f"issues/{number}/assignees", {"assignees": [login]})
+    assignees = issue.get("assignees") if isinstance(issue, dict) else None
+    return any(
+        isinstance(person, dict)
+        and str(person.get("login") or "").lower() == login.lower()
+        for person in assignees or []
+    )
+
+
 def _github_reopen_issue(number: int, login: str) -> None:
     """Reopen, then say who did: GitHub shows the shared token as the actor."""
     issue = _github_write("PATCH", f"issues/{number}", {"state": "open"})
@@ -8611,6 +8623,13 @@ class MetricsHandler(BaseHTTPRequestHandler):
             claims.store().confirm(
                 nodeid, login, result["number"], str(result.get("url") or "")
             )
+        # Work on it (Project health): whoever starts work is the assignee.
+        if body.get("work") is True and result.get("status") == "ok":
+            try:
+                result["assigned"] = _github_assign_issue(result["number"], login)
+            except Exception as error:  # the issue exists all the same
+                llm.log_failure("assign", f"#{result['number']}", error)
+                result["assigned"] = False
         self._reply_json(200, result)
 
     def _serve_new_issue_release(self) -> None:

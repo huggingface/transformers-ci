@@ -463,3 +463,75 @@ def test_a_failed_reopen_leaves_the_issue_closed_and_its_claimant(
     assert (claim["login"], claim["issue_state"]) == ("alice", "closed")
     status, reply = post(base, "/serge-actions/new-issue/reopen", "bob", {})
     assert (status, reply["status"]) == (400, "invalid")
+
+
+def test_start_work_assigns_the_publisher(server, monkeypatch) -> None:
+    base, created = server
+    assigned: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        trace_exporter,
+        "_github_assign_issue",
+        lambda number, login: assigned.append((number, login)) or True,
+    )
+    target = {"trace_id": TRACE, "test_nodeid": NODEID}
+    _, draft = post(
+        base, "/serge-actions/new-issue/draft", "alice", {**target, "work": True}
+    )
+    status, issue = post(
+        base,
+        "/serge-actions/new-issue/publish",
+        "alice",
+        {"draft_id": draft["draft_id"], "title": "[CI] t", "body": "b", "work": True},
+    )
+    assert (status, issue["status"], issue["assigned"]) == (200, "ok", True)
+    assert assigned == [(1, "alice")]
+
+
+def test_publish_issue_assigns_no_one(server, monkeypatch) -> None:
+    base, created = server
+    monkeypatch.setattr(trace_exporter, "_github_assign_issue", None)  # never called
+    target = {"trace_id": TRACE, "test_nodeid": NODEID}
+    _, draft = post(base, "/serge-actions/new-issue/draft", "alice", target)
+    _, issue = post(
+        base,
+        "/serge-actions/new-issue/publish",
+        "alice",
+        {"draft_id": draft["draft_id"], "title": "[CI] t", "body": "b"},
+    )
+    assert issue["status"] == "ok" and "assigned" not in issue
+
+
+def test_a_failed_assign_still_publishes(server, monkeypatch) -> None:
+    base, created = server
+
+    def refuse(number, login):
+        raise OSError("GitHub 500")
+
+    monkeypatch.setattr(trace_exporter, "_github_assign_issue", refuse)
+    target = {"trace_id": TRACE, "test_nodeid": NODEID, "work": True}
+    _, draft = post(base, "/serge-actions/new-issue/draft", "bob", target)
+    _, issue = post(
+        base,
+        "/serge-actions/new-issue/publish",
+        "bob",
+        {"draft_id": draft["draft_id"], "title": "[CI] t", "body": "b", "work": True},
+    )
+    assert (issue["status"], issue["assigned"]) == ("ok", False)
+    assert len(created) == 1
+
+
+def test_github_assign_issue_reports_whether_github_assigned(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        trace_exporter,
+        "_github_write",
+        lambda method, path, payload: (
+            calls.append((method, path, payload)) or {"assignees": [{"login": "Alice"}]}
+        ),
+    )
+    assert trace_exporter._github_assign_issue(7, "alice") is True
+    assert calls == [("POST", "issues/7/assignees", {"assignees": ["alice"]})]
+    monkeypatch.setattr(
+        trace_exporter, "_github_write", lambda *args: {"assignees": []}
+    )
+    assert trace_exporter._github_assign_issue(7, "alice") is False

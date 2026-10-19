@@ -431,7 +431,8 @@ function issuePopup(work){
         const response=await fetch('/serge-actions/new-issue/publish',{
           method:'POST',credentials:'same-origin',
           headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
-          body:JSON.stringify({draft_id:data.draft_id,title:titleInput.value,body:bodyInput.value})});
+          body:JSON.stringify({draft_id:data.draft_id,title:titleInput.value,body:bodyInput.value,
+            ...(work?{work:true}:{})})});
         const result=await response.json();
         if(['claimed','drafting','closed'].includes(result.status)){
           heldDraft=null;steps.finish(false);publish.hidden=true;
@@ -441,7 +442,11 @@ function issuePopup(work){
           heldDraft=null;
           const link=el('a','Issue #'+result.number);link.href=result.url;
           link.target='_blank';link.rel='noopener noreferrer';
-          steps.finish(true);content.replaceChildren(el('p','Published '),link);
+          steps.finish(true);
+          const done=el('p',work?'Started work on ':'Published ');done.append(link);
+          if(work)done.append(result.assigned?', assigned to you.':
+            '. GitHub did not accept you as the assignee: assign yourself on the issue.');
+          content.replaceChildren(done);
           publish.hidden=true;return;
         }
         status.textContent=result.status==='invalid'?'Draft expired. Create a new draft.':
