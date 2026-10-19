@@ -1841,7 +1841,7 @@
       "properties": [
        {
         "id": "displayName",
-        "value": "Overview"
+        "value": "Activity"
        }
       ]
      },
@@ -1853,7 +1853,7 @@
       "properties": [
        {
         "id": "displayName",
-        "value": "Project health"
+        "value": "Fix failures"
        }
       ]
      },
@@ -1865,7 +1865,7 @@
       "properties": [
        {
         "id": "displayName",
-        "value": "Daily runs"
+        "value": "Monitoring"
        }
       ]
      },
@@ -2041,7 +2041,7 @@
       "properties": [
        {
         "id": "displayName",
-        "value": "Overview"
+        "value": "Activity"
        }
       ]
      },
@@ -2053,7 +2053,7 @@
       "properties": [
        {
         "id": "displayName",
-        "value": "Project health"
+        "value": "Fix failures"
        }
       ]
      },
@@ -2065,7 +2065,7 @@
       "properties": [
        {
         "id": "displayName",
-        "value": "Daily runs"
+        "value": "Monitoring"
        }
       ]
      },

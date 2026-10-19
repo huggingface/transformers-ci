@@ -150,9 +150,10 @@ a.row.sel,a.row:hover{background:var(--hover)}
   // The site menu: the same four entries on every page. A dashboard's own
   // links are its sub menu, which Grafana shows in the variables row.
   var MENU = [
-    {title: 'Overview', url: '/', uids: ['pytest-observability', 'default-home-dashboard']},
-    {title: 'Project health', url: '/d/pytest-test-health/project-health', uids: ['pytest-test-health']},
-    {title: 'Daily runs', url: '/d/pytest-observability-daily/daily', uids: ['pytest-observability-daily']},
+    {title: 'Activity', url: '/', uids: ['pytest-observability', 'default-home-dashboard']},
+    {title: 'Fix failures', url: '/d/pytest-test-health/fix-failures', uids: ['pytest-test-health']},
+    // Monitoring took the daily runs page over (and its uid, so old links still work).
+    {title: 'Monitoring', url: '/d/pytest-observability-daily/monitoring', uids: ['pytest-observability-daily']},
     {title: 'CI Health', lock: true, tooltip: 'CI Health: Hugging Face members only (sign in with GitHub)',
      url: '/login/github?redirectTo=%2Fd%2Fpytest-observability-stack-health%2Fci-health%3ForgId%3D1%26from%3Dnow-24h%26to%3Dnow%26timezone%3Dbrowser%26refresh%3D30s',
      uids: ['pytest-observability-stack-health']},

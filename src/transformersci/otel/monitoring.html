@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monitoring</title>
+<style>
+:root{color-scheme:dark;--bg:#111217;--panel:#181b1f;--fg:#d8d9da;--strong:#fff;--muted:#9fa3a9;--line:#2c3036;--soft:#22252b;--hover:#1f2430;
+--accent:#6e9fff;--sel:#3d71d9;--red:#f2495c;--green:#73bf69;--amber:#f2cc60;--cell:#2c3036;--cpu:#5794f2;--gpu:#d9731c;
+--ev-opened:#5794f280;--ev-merged:#a371f7;--ev-model:#73bf69;--ev-dep:#ff9830;--ev-closed:#8ab8ff}
+body.light{color-scheme:light;--bg:#f4f5f5;--panel:#fff;--fg:#24292e;--strong:#000;--muted:#656d76;--line:#d0d7de;--soft:#eaeef2;--hover:#f3f4f6;
+--accent:#1f6feb;--red:#d1242f;--green:#1a7f37;--amber:#9a6700;--cell:#e1e4e8;--cpu:#3d71d9;--gpu:#c4600e;
+--ev-opened:#3d71d966;--ev-merged:#8250df;--ev-model:#1a7f37;--ev-dep:#bc4c00;--ev-closed:#0969da}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.4 Inter,system-ui,sans-serif}
+body{padding:0}
+.panel:last-child{margin-bottom:0}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:4px;margin-bottom:10px;min-width:0}
+.ph{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.ph h2{margin:0 6px 0 0;font-size:14px;font-weight:600;color:var(--strong)}
+summary.ph{cursor:pointer;list-style:none;border-bottom:0}summary.ph::-webkit-details-marker{display:none}
+summary.ph:before{content:"";width:0;height:0;border-left:5px solid var(--muted);border-top:4px solid transparent;border-bottom:4px solid transparent;transition:transform .15s}
+details[open]>summary.ph{border-bottom:1px solid var(--line)}details[open]>summary.ph:before{transform:rotate(90deg)}
+.sub{color:var(--muted);font-size:12px}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:10px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:10px 14px;min-width:0}
+.stat .t{color:var(--muted);font-size:12px}.stat .v{font-size:26px;font-weight:600;margin-top:2px;font-variant-numeric:tabular-nums}
+.stat .n{color:var(--muted);font-size:12px}
+@media (max-width:800px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.chart{position:relative;padding:6px 12px 4px}
+.charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}
+@media (max-width:900px){.charts{grid-template-columns:minmax(0,1fr)}}
+.ct{font-size:12px;font-weight:600;color:var(--strong);padding:4px 0 0}.ct i{display:inline-block;width:14px;height:2px;vertical-align:middle;margin-right:6px}
+.chart svg{display:block;width:100%;height:180px;overflow:visible}
+.chart .grid line{stroke:var(--soft)}.chart .axis text{fill:var(--muted);font-size:11px}
+.chart .line{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.chart .dot{stroke:var(--panel);stroke-width:2}
+.chart .label{font-size:11px;font-weight:600;fill:var(--fg)}
+.chart .cross{stroke:var(--muted);stroke-dasharray:3 3}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;padding:0 12px 10px;color:var(--fg)}
+.legend span:before{content:"";display:inline-block;width:14px;height:2px;margin-right:6px;vertical-align:middle;background:var(--c)}
+.legend{color:var(--muted)}
+.hover{position:absolute;pointer-events:none;background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:7px 9px;font-size:12px;
+box-shadow:0 6px 18px rgba(0,0,0,.35);white-space:nowrap;display:none;z-index:5}
+.hover b{display:block;margin-bottom:3px;color:var(--strong)}.hover i{display:inline-block;width:10px;height:2px;vertical-align:middle;margin-right:6px}
+#chart-events svg{height:244px}
+.ev-legend span:before{display:none}.ev-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px;background:var(--c)}
+.ev-legend i.ln{height:2px;border-radius:0;vertical-align:middle}.ev-legend i.mk{border-radius:50%}.ev-legend i.dm{transform:rotate(45deg) scale(.8);border-radius:1px}
+.ev-legend b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
+.chart .ev{cursor:pointer}.chart .ev .guide{stroke-dasharray:2 3;opacity:.55}.chart .ev:hover .mark{stroke:var(--strong)}
+.hover .evline{display:flex;align-items:center;gap:6px}.hover .evline i{width:8px;height:8px;border-radius:50%;margin:0}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.seg button{border:0;border-right:1px solid var(--line);background:transparent;color:var(--muted);padding:4px 9px;font:500 12px Inter,system-ui,sans-serif;cursor:pointer}
+.seg button:last-child{border-right:0}.seg button[aria-pressed=true]{background:var(--sel);color:#fff}
+.seg button small{opacity:.75;margin-left:4px;font-size:11px}
+.lbl{color:var(--muted);font-size:12px}
+.ctl{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.tog{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--fg);cursor:pointer;white-space:nowrap}
+.tog input{accent-color:var(--sel);margin:0}
+input.search{margin-left:auto;border:1px solid var(--line);border-radius:4px;padding:5px 9px;width:240px;max-width:100%;color:var(--fg);background:var(--bg);font:12px Inter,system-ui,sans-serif;outline:none}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{font-weight:600;text-align:left;color:var(--muted);padding:7px 6px;border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+td{padding:6px 6px;border-bottom:1px solid var(--soft);vertical-align:middle;white-space:nowrap}
+tbody tr:hover{background:var(--hover)}
+.badge{display:inline-block;font-size:9.5px;font-weight:700;letter-spacing:.3px;padding:1px 5px;border-radius:3px;color:#fff}
+.k-failure{background:#c4162a}.k-slow{background:#b35c00}
+.rn{font-weight:600;font-size:9.5px;padding:0 4px;border-radius:3px;border:1px solid var(--line);color:var(--muted)}
+td.test{white-space:normal;word-break:break-all;width:46%}.test b{color:var(--strong);font-weight:500}
+.tags{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.test .nodeid{color:var(--muted);font:11.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:2px}
+.job{color:var(--muted);font-size:11px}
+td.sig .sigtext{display:inline-block;max-width:150px;overflow:hidden;text-overflow:ellipsis;vertical-align:middle}
+td.sig{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--red)}td.sig.slow{color:var(--gpu)}
+.sticky{display:inline-block;padding:0 4px;border:1px solid var(--line);border-radius:3px;color:var(--muted);font:600 9.5px Inter,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.04em}
+.strip{display:flex;gap:1px;margin-top:3px}
+.strip i{width:3px;height:11px;background:var(--cell);border-radius:1px}.strip i.f{background:var(--red)}.strip i.s{background:var(--gpu)}
+.num{font-variant-numeric:tabular-nums}
+.foot{padding:8px 12px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.state{padding:24px 12px;color:var(--muted)}
+.progress{height:2px;overflow:hidden}.progress span{display:block;width:28%;height:100%;background:var(--accent);animation:progress 1.35s ease-in-out infinite}
+.progress[hidden]{display:none}
+@keyframes progress{from{transform:translateX(-100%)}to{transform:translateX(360%)}}
+.acts{display:flex;gap:4px}
+.act{border:1px solid var(--line);background:transparent;color:var(--fg);border-radius:4px;padding:2px 6px;font:600 11px Inter,system-ui,sans-serif;cursor:pointer;white-space:nowrap}
+.act:hover{border-color:var(--sel)}.act.pri{border-color:var(--sel);color:var(--accent)}.act[aria-busy=true]{cursor:progress;opacity:.6}.act:disabled{opacity:.4;cursor:not-allowed;border-color:var(--line);color:var(--muted)}
+iframe.serge{position:absolute;width:0;height:0;border:0;visibility:hidden}
+tr.grp td{background:var(--soft);cursor:pointer;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--strong);padding:6px 8px}
+tr.grp:hover td{background:var(--hover)}tr.grp .meta{font:12px Inter,system-ui,sans-serif;color:var(--muted)}
+tr.grp .caret{display:inline-block;width:12px;color:var(--muted)}
+tr.pk td{padding:6px 8px 6px 20px;white-space:normal}tr.pk .lbl{margin-right:8px}tr.pk .act{margin:2px 6px 2px 0}
+.fold{display:inline-flex;align-items:center;justify-content:center;width:26px;height:24px;padding:0;border:1px solid var(--line);border-radius:4px;background:transparent;color:var(--muted);cursor:pointer}
+.fold:hover{color:var(--fg);border-color:var(--sel)}.fold svg{width:15px;height:15px}.fold[hidden]{display:none}
+.claim .closed{font-weight:600}.claim .again{color:var(--amber);font-weight:600}
+.claim{font-size:12px;white-space:normal;min-width:90px;max-width:150px}
+.fix{font-size:12px;white-space:normal;min-width:80px;max-width:140px}.fix .ok{color:var(--green)}.fix .open{color:var(--blue,#6ab0ff)}
+td.days .num{display:block;font-size:12px}.claim .drafting{color:var(--muted);font-style:italic}
+.tog[hidden]{display:none}
+.why{margin-left:5px;width:16px;height:16px;padding:0;border:1px solid var(--line);border-radius:50%;background:transparent;color:var(--muted);font:600 10px/14px Inter,system-ui,sans-serif;cursor:pointer;vertical-align:1px}
+.why:hover,.why:focus-visible{color:var(--fg);border-color:var(--sel)}
+.modal{position:fixed;inset:0;z-index:30;display:none;background:rgba(0,0,0,.55)}
+.modal.show{display:block}
+.modal .box{position:absolute;left:50%;transform:translateX(-50%);width:min(860px,calc(100vw - 24px));display:flex;flex-direction:column;
+background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shadow:0 12px 36px rgba(0,0,0,.55)}
+.modal .mh{padding:10px 14px;border-bottom:1px solid var(--line);min-width:0}
+.modal .mh b{display:block;color:var(--strong);font-size:14px;overflow-wrap:anywhere}
+.modal .mh .sub{display:block;margin-top:2px;overflow-wrap:anywhere}
+.modal iframe{flex:1;border:0;width:100%;min-height:0;background:var(--panel)}
+.modal pre{flex:1;margin:0;padding:12px 14px;overflow:auto;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--fg);white-space:pre}
+.modal iframe[hidden],.modal pre[hidden],.modal a[hidden]{display:none}
+.modal .mf{display:flex;justify-content:flex-end;gap:8px;padding:10px 14px;border-top:1px solid var(--line)}
+.modal .mf a,.modal .mf button{border:1px solid var(--line);border-radius:4px;padding:5px 14px;font:600 12px Inter,system-ui,sans-serif;cursor:pointer;background:transparent;color:var(--fg)}
+.modal .mf a{background:var(--sel);border-color:var(--sel);color:#fff;text-decoration:none}
+</style>
+</head>
+<body>
+<div class="stats">
+  <div class="stat"><div class="t">GPU: failing tests per merge run</div><div class="v" id="s-gpu">–</div><div class="n" id="s-gpu-n"></div></div>
+  <div class="stat"><div class="t">CPU: failing tests per merge run</div><div class="v" id="s-cpu">–</div><div class="n" id="s-cpu-n"></div></div>
+  <div class="stat"><div class="t">Failing tests</div><div class="v" id="s-fail">–</div><div class="n" id="s-fail-n"></div></div>
+  <div class="stat"><div class="t">Sticky failures</div><div class="v" id="s-sticky">–</div><div class="n">failed on 2+ days, not cleared since</div></div>
+</div>
+
+<div class="panel">
+  <div class="ph"><h2>What changed on main</h2>
+    <span class="sub">models added and dependency changes merged to main · PRs and issues per day on huggingface/transformers</span></div>
+  <div class="chart" id="chart-events"><svg role="img" aria-label="Models added, dependency changes, and PRs and issues per day"></svg><div class="hover"></div></div>
+  <div class="legend ev-legend" id="ev-legend"></div>
+  <div class="progress" id="events-progress"><span></span></div>
+</div>
+
+<div class="panel">
+  <div class="ph"><h2>Failing tests per merge run</h2>
+    <span class="sub">share of a merge run's tests that failed, averaged over the day's runs · each runner on its own scale</span></div>
+  <div class="charts">
+    <div class="chart" id="chart-gpu"><div class="ct"><i style="background:var(--gpu)"></i>GPU <span class="sub">run_models_gpu on push · ~11k tests per GPU type</span></div><svg role="img" aria-label="GPU: average share of failing tests per merge run, per day"></svg><div class="hover"></div></div>
+    <div class="chart" id="chart-cpu"><div class="ct"><i style="background:var(--cpu)"></i>CPU <span class="sub">every CPU job on main · ~199k tests</span></div><svg role="img" aria-label="CPU: average share of failing tests per merge run, per day"></svg><div class="hover"></div></div>
+  </div>
+  <div class="legend" id="legend"></div>
+  <div class="progress" id="chart-progress"><span></span></div>
+</div>
+
+<script src="/project-health/common.js"></script>
+<script src="/project-health/monitoring.js"></script>
+</body>
+</html>

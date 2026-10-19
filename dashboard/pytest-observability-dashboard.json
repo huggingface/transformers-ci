@@ -104,7 +104,7 @@
     "to": "now"
   },
   "timezone": "browser",
-  "title": "Overview",
+  "title": "Activity",
   "uid": "pytest-observability",
   "version": 1,
   "timepicker": {

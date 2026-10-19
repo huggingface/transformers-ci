@@ -9119,6 +9119,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if parsed.path in {
             "/project-health",
             "/project-health/app.js",
+            "/project-health/monitoring",
+            "/project-health/monitoring.js",
             "/project-health/rows",
             "/project-health/trend",
             "/project-health/events",
@@ -9131,11 +9133,25 @@ class MetricsHandler(BaseHTTPRequestHandler):
             }:
                 self._serve_project_health_data(parsed.path, parse_qs(parsed.query))
             else:
-                name, content_type = (
-                    ("project_health.html", "text/html; charset=utf-8")
-                    if parsed.path == "/project-health"
-                    else ("project_health.js", "text/javascript; charset=utf-8")
-                )
+                # Fix failures (/project-health) and Monitoring share the data.
+                name, content_type = {
+                    "/project-health": (
+                        "project_health.html",
+                        "text/html; charset=utf-8",
+                    ),
+                    "/project-health/app.js": (
+                        "project_health.js",
+                        "text/javascript; charset=utf-8",
+                    ),
+                    "/project-health/monitoring": (
+                        "monitoring.html",
+                        "text/html; charset=utf-8",
+                    ),
+                    "/project-health/monitoring.js": (
+                        "monitoring.js",
+                        "text/javascript; charset=utf-8",
+                    ),
+                }[parsed.path]
                 self._send(
                     200,
                     content_type,

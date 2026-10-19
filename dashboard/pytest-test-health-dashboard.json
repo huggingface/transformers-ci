@@ -66,7 +66,7 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "<iframe title=\"Project health\" style=\"width:100%;height:100%;border:0;display:block\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e;color:#9fa3a9;font:13px/1.5 Inter,system-ui,sans-serif}.test-loading{max-width:480px;margin:clamp(28px,12vh,100px) auto;padding:0 20px}.loading-track{position:relative;height:8px;margin:12px 0;border-radius:999px;overflow:hidden;background:#34363c}.loading-sweep{position:absolute;inset:0 auto 0 0;width:40%;background:linear-gradient(90deg,transparent,#8ab8ff,transparent);animation:patch-loading-sweep 1.4s ease-in-out infinite}@keyframes patch-loading-sweep{from{transform:translateX(-100%)}to{transform:translateX(350%)}}@media(prefers-reduced-motion:reduce){.loading-sweep{animation:none;transform:translateX(75%)}}</style><div class=&quot;test-loading&quot; role=&quot;status&quot;>Loading project health…<div class=&quot;loading-track&quot;><span class=&quot;loading-sweep&quot; aria-hidden=&quot;true&quot;></span></div></div><script>location.replace(&quot;/project-health&quot;);</script>\"></iframe>"
+        "content": "<iframe title=\"Fix failures\" style=\"width:100%;height:100%;border:0;display:block\" srcdoc=\"<style>html,body{margin:0;height:100%;background:#0b0c0e;color:#9fa3a9;font:13px/1.5 Inter,system-ui,sans-serif}.test-loading{max-width:480px;margin:clamp(28px,12vh,100px) auto;padding:0 20px}.loading-track{position:relative;height:8px;margin:12px 0;border-radius:999px;overflow:hidden;background:#34363c}.loading-sweep{position:absolute;inset:0 auto 0 0;width:40%;background:linear-gradient(90deg,transparent,#8ab8ff,transparent);animation:patch-loading-sweep 1.4s ease-in-out infinite}@keyframes patch-loading-sweep{from{transform:translateX(-100%)}to{transform:translateX(350%)}}@media(prefers-reduced-motion:reduce){.loading-sweep{animation:none;transform:translateX(75%)}}</style><div class=&quot;test-loading&quot; role=&quot;status&quot;>Loading failures to fix…<div class=&quot;loading-track&quot;><span class=&quot;loading-sweep&quot; aria-hidden=&quot;true&quot;></span></div></div><script>location.replace(&quot;/project-health&quot;);</script>\"></iframe>"
       },
       "pluginVersion": "12.0.0"
     }
@@ -90,7 +90,7 @@
     "hidden": true
   },
   "timezone": "browser",
-  "title": "Project health",
+  "title": "Fix failures",
   "uid": "pytest-test-health",
   "version": 1
 }

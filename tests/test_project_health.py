@@ -298,11 +298,19 @@ def test_rows_endpoint_serves_and_caches_one_answer_per_window(monkeypatch) -> N
         assert len(calls) > first
         page = urlopen(f"{base}/project-health").read().decode()
         assert "/project-health/app.js" in page
+        assert "<title>Fix failures</title>" in page and 'id="chart-events"' not in page
         assert (
             urlopen(f"{base}/project-health/app.js")
             .headers["Content-Type"]
             .startswith("text/javascript")
         )
+        # Monitoring: the stat tiles and the two charts, on the same data.
+        monitoring = urlopen(f"{base}/project-health/monitoring").read().decode()
+        assert "/project-health/monitoring.js" in monitoring
+        assert 'id="chart-events"' in monitoring and 'id="rows"' not in monitoring
+        script = urlopen(f"{base}/project-health/monitoring.js")
+        assert script.headers["Content-Type"].startswith("text/javascript")
+        assert b"loadTrend();" in script.read()
     finally:
         server.shutdown()
 

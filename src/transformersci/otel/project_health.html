@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Project health</title>
+<title>Fix failures</title>
 <style>
 :root{color-scheme:dark;--bg:#111217;--panel:#181b1f;--fg:#d8d9da;--strong:#fff;--muted:#9fa3a9;--line:#2c3036;--soft:#22252b;--hover:#1f2430;
 --accent:#6e9fff;--sel:#3d71d9;--red:#f2495c;--green:#73bf69;--amber:#f2cc60;--cell:#2c3036;--cpu:#5794f2;--gpu:#d9731c;
@@ -114,32 +114,6 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
 </style>
 </head>
 <body>
-<div class="stats">
-  <div class="stat"><div class="t">GPU: failing tests per merge run</div><div class="v" id="s-gpu">–</div><div class="n" id="s-gpu-n"></div></div>
-  <div class="stat"><div class="t">CPU: failing tests per merge run</div><div class="v" id="s-cpu">–</div><div class="n" id="s-cpu-n"></div></div>
-  <div class="stat"><div class="t">Failing tests</div><div class="v" id="s-fail">–</div><div class="n" id="s-fail-n"></div></div>
-  <div class="stat"><div class="t">Sticky failures</div><div class="v" id="s-sticky">–</div><div class="n">failed on 2+ days, not cleared since</div></div>
-</div>
-
-<details class="panel" id="events-panel">
-  <summary class="ph"><h2>What changed on main</h2>
-    <span class="sub">models added and dependency changes merged to main · PRs and issues per day on huggingface/transformers</span></summary>
-  <div class="chart" id="chart-events"><svg role="img" aria-label="Models added, dependency changes, and PRs and issues per day"></svg><div class="hover"></div></div>
-  <div class="legend ev-legend" id="ev-legend"></div>
-  <div class="progress" id="events-progress"><span></span></div>
-</details>
-
-<details class="panel" id="trend-panel">
-  <summary class="ph"><h2>Failing tests per merge run</h2>
-    <span class="sub">share of a merge run's tests that failed, averaged over the day's runs · each runner on its own scale</span></summary>
-  <div class="charts">
-    <div class="chart" id="chart-gpu"><div class="ct"><i style="background:var(--gpu)"></i>GPU <span class="sub">run_models_gpu on push · ~11k tests per GPU type</span></div><svg role="img" aria-label="GPU: average share of failing tests per merge run, per day"></svg><div class="hover"></div></div>
-    <div class="chart" id="chart-cpu"><div class="ct"><i style="background:var(--cpu)"></i>CPU <span class="sub">every CPU job on main · ~199k tests</span></div><svg role="img" aria-label="CPU: average share of failing tests per merge run, per day"></svg><div class="hover"></div></div>
-  </div>
-  <div class="legend" id="legend"></div>
-  <div class="progress" id="chart-progress"><span></span></div>
-</details>
-
 <div class="panel">
   <div class="ph"><h2>Failures to tackle</h2>
     <span class="seg" id="cat"></span>

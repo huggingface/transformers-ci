@@ -9,9 +9,10 @@ It includes:
 - `prometheus.yml`: scrape config for the trace exporter
 - `grafana-datasources.yaml`: provisioned Tempo and Prometheus data sources
 - `grafana-dashboard.yaml`: dashboard provisioning
-- `pytest-observability-dashboard.json`: overview dashboard
+- `pytest-observability-dashboard.json`: Activity (the home page: Last 20 PRs and Branch Runs)
 - `pytest-observability-job-dashboard.json`: per-job drill-down
-- `pytest-test-health-dashboard.json`: test health dashboard
+- `pytest-test-health-dashboard.json`: Fix failures (failing tests on main to pick up; the exporter's `/project-health`)
+- `pytest-observability-daily-dashboard.json`: Monitoring (the exporter's `/project-health/monitoring` tiles and charts, then the daily runs; it took the daily page's uid over)
 - `pytest-test-dashboard.json`: per-test view (metadata + embedded Tempo trace view when failed)
 - `data/`: shared local data directory for resource metrics
 
