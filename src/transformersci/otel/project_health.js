@@ -160,8 +160,9 @@
       <td title="${slow ? 'Day of its latest timing (UTC)' : new Date(row.last_seen * 1000).toISOString()}">${slow ? daysAgo(row.last_seen) : ago(row.last_seen)}</td>
       <td class="claim">${claimHtml(row)}</td>
       <td class="fix">${fixHtml(row)}</td>
-      <td><span class="acts">${ACTIONS.map(([id, label, help], k) =>
-        actionButton(id, label, help, k, index, row)).join('')}</span></td></tr>`;
+      <td><span class="acts">${batched.has(row.nodeid)
+        ? '<span class="sub" title="This test is in a batch: use Work on a batch above">in a batch ↑</span>'
+        : ACTIONS.map(([id, label, help], k) => actionButton(id, label, help, k, index, row)).join('')}</span></td></tr>`;
   }
 
   function groupedHtml(shown) {
@@ -202,6 +203,7 @@
   // run-specific parts taken out, read from the traces when the group opens).
   // A bucket of one is that row's own Work on it.
   let packets = [];
+  const batched = new Set();  // nodeids in a packet: their row offers no Work on it of its own
   const PACKET_LIMIT = 60;  // new_issue.PACKET_LIMIT
   const messageKeys = {};  // nodeid -> message key, '' when it could not be read
   const keysPending = new Set();  // nodeids being read
@@ -239,6 +241,7 @@
         const tests = rows.slice(0, PACKET_LIMIT);
         const error = key ? `${signal}: ${key}` : signal;
         packets.push({group: name, signal: error, tests: tests.map(row => ({trace_id: row.trace_id, test_nodeid: row.nodeid}))});
+        for (const row of tests) batched.add(row.nodeid);
         const more = rows.length > tests.length ? ` (the first ${tests.length} of ${rows.length})` : '';
         const short = key.length > 48 ? `${key.slice(0, 47)}…` : key;
         return `<button type="button" class="act pri" data-packet="${packets.length - 1}" title="One issue for these ${tests.length} unclaimed tests${more}, all failing with ${esc(error)}">${rows.length} × ${esc(signal)}${short ? `: ${esc(short)}` : ''}</button>`;
@@ -260,6 +263,7 @@
   }
 
   function drawRows() {
+    batched.clear();
     const visibleRows = visible();
     const base = visibleRows.base, shown = sortRows(visibleRows.shown);
     drawCategories(base);
