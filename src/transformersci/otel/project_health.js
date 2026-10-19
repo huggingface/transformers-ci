@@ -12,7 +12,7 @@
   const params = new URLSearchParams(location.search);
   const state = {
     days: [7, 14, 30].includes(Number(params.get('days'))) ? Number(params.get('days')) : 14,
-    cat: 'all', runner: 'all', sticky: false, q: '', group: 'test_model', sort: 'fails', unclaimed: false, mine: false, fix: false,
+    cat: 'all', runner: 'all', sticky: false, q: '', group: 'model', sort: 'fails', unclaimed: true, mine: false, fix: false,
   };
   let rows = [], generatedAt = 0, claims = {}, me = '', fixIndexAt = 0;
 
@@ -380,13 +380,10 @@
     const ordered = [...groups].sort(state.sort === 'alpha'
       ? (a, b) => a[0].localeCompare(b[0])
       : (a, b) => longest(a[1], b[1]) || fails(b[1]) - fails(a[1]) || b[1].length - a[1].length || a[0].localeCompare(b[0]));
-    // A new grouping opens its small groups, as the PR CI view does; after that
-    // the viewer's own choices stick.
+    // A new grouping starts with every group collapsed; after that the
+    // viewer's own choices stick.
     const seen = `${state.group}|${state.days}`;
-    if (seen !== groupsSeen) {
-      groupsSeen = seen; openGroups.clear();
-      for (const [name, members] of ordered) if (members.length <= 5) openGroups.add(name);
-    }
+    if (seen !== groupsSeen) { groupsSeen = seen; openGroups.clear(); }
     groupNames = ordered.map(([name]) => name);
     return ordered.map(([name, members]) => {
       const open = openGroups.has(name);
