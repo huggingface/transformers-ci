@@ -288,7 +288,7 @@ async function whoCanHelp(){
 let issueRun=null;
 async function newIssue(work){
   if(issueRun){issueRun.view.show();return;}
-  const id=work?'work-on-it':'new-issue',button=buttons[id],view=issuePopup();
+  const id=work?'work-on-it':'new-issue',button=buttons[id],view=issuePopup(work);
   issueRun={view};
   button.classList.add('thinking');button.textContent='Drafting…';
   let result={status:'unavailable'};
@@ -344,7 +344,8 @@ function actionSteps(doc,host,initial){
   return {step,finish,progress};
 }
 
-function issuePopup(){
+function issuePopup(work){
+  const publishLabel=work?'Start work':'Publish issue';
   let doc=document,host=document.body;
   for(let w=window;w.parent!==w;){
     try{w=w.parent;if(w.document.body){doc=w.document;host=doc.body;}}catch(error){break;}
@@ -364,7 +365,7 @@ function issuePopup(){
   const content=el('div');
   const actions=el('div');actions.style.cssText='display:flex;gap:8px;justify-content:flex-end;margin-top:14px';
   const close=el('button','Close');close.type='button';
-  const publish=el('button','Publish issue');publish.type='submit';publish.hidden=true;
+  const publish=el('button',publishLabel);publish.type='submit';publish.hidden=true;
   for(const button of [close,publish])button.style.cssText='background:#242b35;color:#d8d9da;'+
     'border:1px solid #657083;border-radius:4px;padding:6px 12px;font:inherit;cursor:pointer';
   actions.append(close,publish);box.append(title,progressHost,content,actions);
@@ -424,7 +425,7 @@ function issuePopup(){
       if(!titleInput.value.trim()||!bodyInput.value.trim()){
         status.textContent='Title and body are required.';return;
       }
-      publish.disabled=true;publish.textContent='Publishing…';status.textContent='';
+      publish.disabled=true;publish.textContent=work?'Starting…':'Publishing…';status.textContent='';
       steps.step('Publishing the issue on GitHub');
       try{
         const response=await fetch('/serge-actions/new-issue/publish',{
@@ -447,7 +448,7 @@ function issuePopup(){
           'Could not publish the issue. Check GitHub permissions and try again.';
       }catch(error){status.textContent='Could not publish the issue. Try again.';}
       steps.finish(false);
-      publish.disabled=false;publish.textContent='Publish issue';
+      publish.disabled=false;publish.textContent=publishLabel;
     };
   }};
 }
