@@ -18,6 +18,9 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:4px;margin-bottom:10px;min-width:0}
 .ph{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .ph h2{margin:0 6px 0 0;font-size:14px;font-weight:600;color:var(--strong)}
+summary.ph{cursor:pointer;list-style:none;border-bottom:0}summary.ph::-webkit-details-marker{display:none}
+summary.ph:before{content:"";width:0;height:0;border-left:5px solid var(--muted);border-top:4px solid transparent;border-bottom:4px solid transparent;transition:transform .15s}
+details[open]>summary.ph{border-bottom:1px solid var(--line)}details[open]>summary.ph:before{transform:rotate(90deg)}
 .sub{color:var(--muted);font-size:12px}
 .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:10px}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:10px 14px;min-width:0}
@@ -117,24 +120,24 @@ background:var(--panel);border:1px solid var(--line);border-radius:6px;box-shado
   <div class="stat"><div class="t">Sticky failures</div><div class="v" id="s-sticky">–</div><div class="n">failed on 2+ days, not cleared since</div></div>
 </div>
 
-<div class="panel">
-  <div class="ph"><h2>What changed on main</h2>
-    <span class="sub">models added and dependency changes merged to main · PRs and issues per day on huggingface/transformers</span></div>
+<details class="panel" id="events-panel">
+  <summary class="ph"><h2>What changed on main</h2>
+    <span class="sub">models added and dependency changes merged to main · PRs and issues per day on huggingface/transformers</span></summary>
   <div class="chart" id="chart-events"><svg role="img" aria-label="Models added, dependency changes, and PRs and issues per day"></svg><div class="hover"></div></div>
   <div class="legend ev-legend" id="ev-legend"></div>
   <div class="progress" id="events-progress"><span></span></div>
-</div>
+</details>
 
-<div class="panel">
-  <div class="ph"><h2>Failing tests per merge run</h2>
-    <span class="sub">share of a merge run's tests that failed, averaged over the day's runs · each runner on its own scale</span></div>
+<details class="panel" id="trend-panel">
+  <summary class="ph"><h2>Failing tests per merge run</h2>
+    <span class="sub">share of a merge run's tests that failed, averaged over the day's runs · each runner on its own scale</span></summary>
   <div class="charts">
     <div class="chart" id="chart-gpu"><div class="ct"><i style="background:var(--gpu)"></i>GPU <span class="sub">run_models_gpu on push · ~11k tests per GPU type</span></div><svg role="img" aria-label="GPU: average share of failing tests per merge run, per day"></svg><div class="hover"></div></div>
     <div class="chart" id="chart-cpu"><div class="ct"><i style="background:var(--cpu)"></i>CPU <span class="sub">every CPU job on main · ~199k tests</span></div><svg role="img" aria-label="CPU: average share of failing tests per merge run, per day"></svg><div class="hover"></div></div>
   </div>
   <div class="legend" id="legend"></div>
   <div class="progress" id="chart-progress"><span></span></div>
-</div>
+</details>
 
 <div class="panel">
   <div class="ph"><h2>Failures to tackle</h2>

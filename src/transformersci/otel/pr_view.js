@@ -7,6 +7,10 @@ function installPrView() {
     .tci-pr-layout[data-tci-view="tests"] > .tci-pr-patch-panel,
     .tci-pr-layout[data-tci-view="patch"] > .tci-pr-tests-panel {display:none!important}
     .tci-pr-patch-panel iframe {display:block;width:100%;height:100%;min-height:640px;border:0}
+    .tci-fold-caret{display:inline-block;width:0;height:0;margin:0 8px 0 4px;border-left:5px solid currentColor;border-top:4px solid transparent;border-bottom:4px solid transparent;opacity:.7;transition:transform .15s}
+    .tci-foldable [data-testid="data-testid header-container"]{cursor:pointer}
+    .tci-foldable:not(.tci-folded) .tci-fold-caret{transform:rotate(90deg)}
+    .react-grid-item.tci-folded{overflow:hidden}.tci-folded .scene-resize-handle,.tci-folded [data-testid="data-testid panel content"]{visibility:hidden}
     .tci-gh-labels{display:inline-flex;align-items:center;flex-wrap:wrap;gap:5px}
     .tci-gh-label{display:inline-block;padding:2px 8px;border-radius:999px;font:600 11px/1.5 system-ui,sans-serif;white-space:nowrap}
     [data-pr-mode="tests"][data-running="true"]::after {content:"";display:inline-block;width:8px;height:8px;margin-left:7px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-1px;animation:tci-tests-spin 1s linear infinite}
@@ -14,7 +18,7 @@ function installPrView() {
     @media(prefers-reduced-motion:reduce){[data-pr-mode="tests"][data-running="true"]::after{animation:none}}
   `;
   doc.head.append(style);
-  let pending = false, previous = null;
+  let pending = false, previous = null, pastRunsOpen = false;
   const originals = new WeakMap();
   let activityKey = '', activityTime = 0, activityRequest = null, activityRunning = false;
   let labelKey = '', labelTime = 0, labelRequest = null, labelVersion = 0, labelData = [], isNewModel = false;
@@ -104,6 +108,38 @@ function installPrView() {
     pending = true;
     host.requestAnimationFrame(() => { pending = false; sync(); });
   }
+  // Past Runs is folded by default. It is the last panel in the tests view
+  // (Patch is hidden there), so shrinking it to its header moves nothing else.
+  function foldPastRuns(layout) {
+    const panel = layout.querySelector('[data-viz-panel-id="panel-5"]');
+    const item = panel && panel.closest('.react-grid-item');
+    const header = item && item.querySelector('[data-testid="data-testid header-container"]');
+    if (!header) return;
+    item.classList.add('tci-foldable');
+    if (!header.querySelector('.tci-fold-caret')) {
+      const caret = doc.createElement('span');
+      caret.className = 'tci-fold-caret';
+      header.prepend(caret);
+    }
+    if (!header.tciFold) {
+      header.tciFold = true;
+      header.addEventListener('click', event => {
+        if (event.target.closest('button,a,[role="menu"]')) return;
+        pastRunsOpen = !pastRunsOpen;
+        sync();
+      });
+    }
+    item.classList.toggle('tci-folded', !pastRunsOpen);
+    if (pastRunsOpen) {
+      if (item.tciFoldedHeight) { item.style.height = item.tciFoldedHeight; item.tciFoldedHeight = null; }
+    } else {
+      const height = Math.ceil(header.getBoundingClientRect().bottom - item.getBoundingClientRect().top) + 'px';
+      if (item.style.height !== height) {
+        if (!item.tciFoldedHeight) item.tciFoldedHeight = item.style.height;
+        item.style.setProperty('height', height, 'important');
+      }
+    }
+  }
   function restore(layout) {
     if (!layout) return;
     layout.classList.remove('tci-pr-layout');
@@ -134,6 +170,7 @@ function installPrView() {
       item.classList.toggle('tci-pr-patch-panel', item === patchItem);
       item.classList.toggle('tci-pr-tests-panel', item !== branchItem && item !== patchItem);
     }
+    foldPastRuns(layout);
     branch.querySelectorAll('[data-pr-mode]').forEach(button => {
       const pressed = String(button.dataset.prMode === mode);
       if (button.getAttribute('aria-pressed') !== pressed) button.setAttribute('aria-pressed', pressed);

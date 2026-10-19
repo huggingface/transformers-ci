@@ -356,7 +356,7 @@
       failures.append(banner);
     }
     if (!listed.length && !hidden.length) {
-      let message = search.value ? 'No matching failures.' : 'No failing tests.';
+      let message = search.value ? 'No matching failures.' : 'No failing tests. ✨🤗';
       if (!search.value) {
         const failedRunSlow = snapshot.lanes.find(lane => lane.id !== 'cpu' && lane.jobs.some(job => statusClass(job.status) === 'failure') && !lane.failures.length);
         if (failedRunSlow) {

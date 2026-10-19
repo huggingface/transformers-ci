@@ -39,13 +39,13 @@
   }
 
   // ---- chart ---------------------------------------------------------------
-  // Percentages of very different sizes (GPU ~0.1%, CPU ~0.0002%): two
+  // Per-thousand rates of very different sizes (GPU ~1‰, CPU ~0.002‰): two
   // significant digits, never rounded to zero.
   function rate(value) {
     if (value == null) return '–';
-    const percent = 100 * value;
-    if (percent === 0) return '0%';
-    return `${percent >= 1 ? percent.toFixed(1) : Number(percent.toPrecision(2))}%`;
+    const permille = 1000 * value;
+    if (permille === 0) return '0‰';
+    return `${permille >= 1 ? permille.toFixed(1) : Number(permille.toPrecision(2))}‰`;
   }
   function niceMax(value) {
     if (!(value > 0)) return 1e-4;
@@ -120,6 +120,8 @@
       const trend = await getJson('/project-health/trend');
       drawChart(trend);
       window.addEventListener('resize', () => drawChart(trend), {once: true});
+      // Folded by default: a closed panel has no width, so draw again on open.
+      $('trend-panel').addEventListener('toggle', event => { if (event.target.open) drawChart(trend); });
     } catch (error) {
       document.querySelectorAll('.chart svg').forEach(svg => { svg.innerHTML = ''; });
       $('legend').textContent = `Could not load merge runs (${error.message}).`;
@@ -228,6 +230,7 @@
       const data = await getJson('/project-health/events');
       drawEvents(data);
       window.addEventListener('resize', () => drawEvents(data), {once: true});
+      $('events-panel').addEventListener('toggle', event => { if (event.target.open) drawEvents(data); });
     } catch (error) {
       $('chart-events').querySelector('svg').innerHTML = '';
       $('ev-legend').textContent = `Could not load events (${error.message}).`;
