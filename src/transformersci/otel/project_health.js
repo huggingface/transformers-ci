@@ -12,7 +12,7 @@
   const params = new URLSearchParams(location.search);
   const state = {
     days: [7, 14, 30].includes(Number(params.get('days'))) ? Number(params.get('days')) : 14,
-    cat: 'all', runner: 'all', sticky: false, q: '', group: 'model', sort: 'fails', unclaimed: true, mine: false, fix: false,
+    cat: 'all', runner: 'all', sticky: true, q: '', group: 'model', sort: 'fails', unclaimed: true, mine: false, fix: false,
   };
   let rows = [], generatedAt = 0, claims = {}, me = '', fixIndexAt = 0;
 
