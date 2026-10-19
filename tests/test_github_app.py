@@ -158,7 +158,9 @@ def test_read_token_prefers_the_app(monkeypatch, pem: str) -> None:
     assert github_app.configured()
     tokens = github_app.AppTokens("123", pem, opener=FakeGitHub())
     monkeypatch.setattr(
-        github_app.AppTokens, "from_env", classmethod(lambda cls: tokens)
+        github_app.AppTokens,
+        "from_env",
+        classmethod(lambda cls, permissions=None: tokens),
     )
     assert github_app.read_token(("PAT",)) == "ghs_1"
 
@@ -168,7 +170,9 @@ def test_a_failing_app_falls_back_and_retries_later(monkeypatch, pem: str) -> No
     github = FakeGitHub(fail=True)
     tokens = github_app.AppTokens("123", pem, opener=github)
     monkeypatch.setattr(
-        github_app.AppTokens, "from_env", classmethod(lambda cls: tokens)
+        github_app.AppTokens,
+        "from_env",
+        classmethod(lambda cls, permissions=None: tokens),
     )
     now = [1000.0]
     monkeypatch.setattr(github_app.time, "time", lambda: now[0])
@@ -203,3 +207,14 @@ def test_status_client_asks_a_token_provider_per_request() -> None:
     client.get("/repos/huggingface/transformers/actions/runs/1")
     client.get("/repos/huggingface/transformers/actions/runs/2")
     assert seen == ["Bearer ghs_a", "Bearer ghs_b"]
+
+
+def test_the_issue_write_token_asks_for_issues_write_only(pem: str) -> None:
+    github = FakeGitHub()
+    tokens = github_app.AppTokens(
+        "123", pem, opener=github, permissions=github_app.ISSUE_WRITE_PERMISSIONS
+    )
+    assert tokens.token() == "ghs_1"
+    assert github.calls[-1][2] == {
+        "permissions": {"issues": "write", "metadata": "read"}
+    }

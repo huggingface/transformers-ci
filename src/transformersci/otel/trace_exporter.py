@@ -1725,25 +1725,35 @@ def _github_graphql(query: str, timeout: float = 20.0) -> dict:
 
 
 def _github_write(method: str, path: str, payload: dict) -> object:
-    # The dashboard App is read-only. Use the separately configured PAT for writes.
-    token = os.getenv("PYTEST_GITHUB_TOKEN", "").strip()
-    if not token:
+    """An issue write (every caller is one) as the dashboard App when its
+    installation grants Issues: write, so issues are the bot's and it can
+    assign; otherwise, or when GitHub refuses the App, with the PAT."""
+    pat = os.getenv("PYTEST_GITHUB_TOKEN", "").strip()
+    tokens = [token for token in (github_app.issue_write_token(), pat) if token]
+    if not tokens:
         raise ValueError("GitHub write token unavailable")
     api_base = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
-    request = Request(
-        f"{api_base}/repos/{related_issues.REPOSITORY}/{path}",
-        data=json.dumps(payload).encode(),
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "User-Agent": "transformersci-trace-exporter",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-        method=method,
-    )
-    with urlopen(request, timeout=30) as response:
-        return json.loads(response.read(64 * 1024))
+    for index, token in enumerate(tokens):
+        request = Request(
+            f"{api_base}/repos/{related_issues.REPOSITORY}/{path}",
+            data=json.dumps(payload).encode(),
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "User-Agent": "transformersci-trace-exporter",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            method=method,
+        )
+        try:
+            with urlopen(request, timeout=30) as response:
+                return json.loads(response.read(64 * 1024))
+        except HTTPError as error:
+            if error.code not in (403, 404) or index == len(tokens) - 1:
+                raise
+            llm.log_failure("issue-write-as-app", path, error)
+    raise ValueError("GitHub write token unavailable")
 
 
 def _github_create_issue(title: str, body: str) -> object:

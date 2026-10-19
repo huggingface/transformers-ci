@@ -1,4 +1,7 @@
-"""GitHub reads as the dashboard's read-only GitHub App, with no third-party dependency.
+"""GitHub reads as the dashboard's GitHub App, with no third-party dependency.
+
+Reads use read-only tokens. Its one write, Fix failures' issues, has a token of
+its own (``issue_write_token``, ISSUE_WRITE_PERMISSIONS).
 
 The dashboard's GitHub reads (trace-exporter, ci-data-publisher, ci-github-status)
 used a personal access token, whose 5,000/h budget is per *user* and so shared
@@ -37,8 +40,8 @@ PRIVATE_KEY_ENV = "TRANSFORMERSCI_GITHUB_APP_PRIVATE_KEY"
 # Optional: the installation is otherwise looked up from this repository.
 INSTALLATION_ID_ENV = "TRANSFORMERSCI_GITHUB_APP_INSTALLATION_ID"
 REPOSITORY = "huggingface/transformers"
-# Read-only on purpose: these reads serve a public dashboard. Writes go
-# through serge's /dashboard API, never through this App.
+# Read-only on purpose: these reads serve a public dashboard. The one write
+# the App makes is ISSUE_WRITE_PERMISSIONS, in a token of its own.
 PERMISSIONS = {
     "actions": "read",
     "contents": "read",
@@ -46,6 +49,11 @@ PERMISSIONS = {
     "metadata": "read",
     "pull_requests": "read",
 }
+# Fix failures' Work on it: the dashboard opens, assigns and reopens issues
+# as the App, so they are not authored by one person's token. Asked for only
+# by issue_write_token; until the installation grants it, minting fails and
+# the caller falls back to the PAT.
+ISSUE_WRITE_PERMISSIONS = {"issues": "write", "metadata": "read"}
 # Mint a new token this long before the current one expires (they live 1h).
 REFRESH_MARGIN_SECONDS = 300
 # After a failed mint, use the fallback token for this long before retrying.
@@ -162,7 +170,8 @@ def _request_json(
 
 
 class AppTokens:
-    """Read-only installation tokens, cached until shortly before they expire."""
+    """Installation tokens (read-only unless ``permissions`` says otherwise),
+    cached until shortly before they expire."""
 
     def __init__(
         self,
@@ -173,8 +182,10 @@ class AppTokens:
         repository: str = REPOSITORY,
         opener: Callable[..., object] = urlopen,
         clock: Callable[[], float] = time.time,
+        permissions: dict[str, str] | None = None,
     ) -> None:
         self.app_id = app_id
+        self.permissions = dict(permissions or PERMISSIONS)
         self.key = parse_private_key(private_key)
         self.installation_id = installation_id
         self.repository = repository
@@ -184,7 +195,7 @@ class AppTokens:
         self._expires = 0.0
 
     @classmethod
-    def from_env(cls) -> AppTokens | None:
+    def from_env(cls, permissions: dict[str, str] | None = None) -> AppTokens | None:
         app_id = os.getenv(APP_ID_ENV, "").strip()
         key = os.getenv(PRIVATE_KEY_ENV, "")
         if not (app_id.isdigit() and key.strip()):
@@ -194,6 +205,7 @@ class AppTokens:
             app_id,
             key,
             installation_id=installation if installation.isdigit() else "",
+            permissions=permissions,
         )
 
     def token(self) -> str:
@@ -214,7 +226,7 @@ class AppTokens:
                 f"{API_URL}/app/installations/{self.installation_id}/access_tokens",
                 jwt,
                 self._open,
-                body={"permissions": PERMISSIONS},
+                body={"permissions": self.permissions},
             )
             token = payload.get("token") if isinstance(payload, dict) else None
             if not isinstance(token, str) or not token:
@@ -229,42 +241,63 @@ class AppTokens:
             return token
 
 
-_app: AppTokens | None = None
-_app_loaded = False
-_app_failed_until = 0.0
-_app_state_lock = threading.Lock()
-
-
 def _log(message: str) -> None:
     print(f"[github-app] {message}", file=sys.stderr, flush=True)
+
+
+class _Minter:
+    """One kind of App token for the process: loaded from the environment on
+    first use, and after a failed mint left alone for a pause (logged)."""
+
+    def __init__(self, permissions: dict[str, str], purpose: str) -> None:
+        self.permissions, self.purpose = permissions, purpose
+        self.lock = threading.Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        self.app: AppTokens | None = None
+        self.loaded = False
+        self.failed_until = 0.0
+
+    def token(self) -> str:
+        with self.lock:
+            if not self.loaded:
+                self.loaded = True
+                try:
+                    self.app = AppTokens.from_env(self.permissions)
+                except PrivateKeyError as error:
+                    _log(f"{PRIVATE_KEY_ENV} is unusable ({error}); using the fallback")
+                if self.app is not None:
+                    _log(f"{self.purpose} GitHub as App {self.app.app_id}")
+            app = self.app
+            if app is None or time.time() < self.failed_until:
+                return ""
+        try:
+            return app.token()
+        except Exception as error:
+            with self.lock:
+                self.failed_until = time.time() + RETRY_AFTER_FAILURE_SECONDS
+            _log(
+                f"could not mint a token for {self.purpose} ({type(error).__name__}: "
+                f"{error}); using the fallback for {RETRY_AFTER_FAILURE_SECONDS}s"
+            )
+            return ""
+
+
+_reads = _Minter(PERMISSIONS, "reading")
+_issue_writes = _Minter(ISSUE_WRITE_PERMISSIONS, "writing issues on")
 
 
 def app_token() -> str:
     """An installation token, or "" when the App is not configured or cannot
     mint one right now (logged, and retried after a pause)."""
-    global _app, _app_loaded, _app_failed_until
-    with _app_state_lock:
-        if not _app_loaded:
-            _app_loaded = True
-            try:
-                _app = AppTokens.from_env()
-            except PrivateKeyError as error:
-                _log(f"{PRIVATE_KEY_ENV} is unusable ({error}); using the fallback")
-            if _app is not None:
-                _log(f"reading GitHub as App {_app.app_id}")
-        app = _app
-        if app is None or time.time() < _app_failed_until:
-            return ""
-    try:
-        return app.token()
-    except Exception as error:
-        with _app_state_lock:
-            _app_failed_until = time.time() + RETRY_AFTER_FAILURE_SECONDS
-        _log(
-            f"could not mint a token ({type(error).__name__}: {error}); using the "
-            f"fallback for {RETRY_AFTER_FAILURE_SECONDS}s"
-        )
-        return ""
+    return _reads.token()
+
+
+def issue_write_token() -> str:
+    """A token that may open, assign and reopen issues as the App, or "" while
+    the installation does not grant Issues: write (the caller uses its PAT)."""
+    return _issue_writes.token()
 
 
 def configured() -> bool:
@@ -287,6 +320,6 @@ def read_token(fallback_envs: Sequence[str]) -> str:
 
 
 def reset_for_tests() -> None:
-    global _app, _app_loaded, _app_failed_until
-    with _app_state_lock:
-        _app, _app_loaded, _app_failed_until = None, False, 0.0
+    for minter in (_reads, _issue_writes):
+        with minter.lock:
+            minter.reset()
