@@ -14,6 +14,11 @@
     cat: 'all', runner: 'all', sticky: true, q: '', group: 'model', sort: 'fails', unclaimed: true, mine: false, fix: false,
   };
   let rows = [], generatedAt = 0, claims = {}, me = '', fixIndexAt = 0;
+  // Every action drafts with the LLM, which costs money: signed out (or not
+  // known yet), the buttons are locked and disabled, as on the Test page.
+  let signedIn = false;
+  const LOCK = "<svg viewBox='0 0 16 16' width='10' height='10' fill='currentColor' aria-hidden='true' style='vertical-align:-1px;margin-right:4px'><path d='M4 7V5a4 4 0 0 1 8 0v2h.5A1.5 1.5 0 0 1 14 8.5v5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5v-5A1.5 1.5 0 0 1 3.5 7H4zm2 0h4V5a2 2 0 1 0-4 0v2z'/></svg>";
+  const SIGN_IN = 'Sign in (top right) to work on failures';
 
   tci.applyTheme();
 
@@ -143,6 +148,7 @@
     }
     if (row.category === 'slow' && !row.nodeid.startsWith('tests/')) blocked = 'Not a pytest test';
     if (blocked) return `<button type="button" class="act" disabled title="${esc(blocked)}">${label}</button>`;
+    if (!signedIn) return `<button type="button" class="act" disabled title="${SIGN_IN}">${LOCK}${label}</button>`;
     return `<button type="button" class="act${k ? '' : ' pri'}" data-act="${id}" data-i="${index}" title="${help}">${label}</button>`;
   }
 
@@ -246,6 +252,7 @@
         for (const row of tests) batched.add(row.nodeid);
         const more = rows.length > tests.length ? ` (the first ${tests.length} of ${rows.length})` : '';
         const short = key.length > 48 ? `${key.slice(0, 47)}…` : key;
+        if (!signedIn) return `<button type="button" class="act" disabled title="${SIGN_IN}">${LOCK}${rows.length} × ${esc(signal)}${short ? `: ${esc(short)}` : ''}</button>`;
         return `<button type="button" class="act pri" data-packet="${packets.length - 1}" title="One issue for these ${tests.length} unclaimed tests${more}, all failing with ${esc(error)}">${rows.length} × ${esc(signal)}${short ? `: ${esc(short)}` : ''}</button>`;
       });
     return buttons.length ? `<tr class="pk"><td colspan="7"><span class="lbl">Work on a batch:</span>${buttons.join('')}</td></tr>` : '';
@@ -461,6 +468,6 @@
   }).observe(dialogHost.body, {childList: true});
   fetch('/api/user', {credentials: 'same-origin', cache: 'no-store'})
     .then(response => response.ok ? response.json() : null)
-    .then(user => { if (user?.login) { me = user.login; $('mine-toggle').hidden = false; if (rows.length) drawRows(); } })
+    .then(user => { if (user?.login) { me = user.login; signedIn = true; $('mine-toggle').hidden = false; if (rows.length) drawRows(); } })
     .catch(() => {});
 })();
