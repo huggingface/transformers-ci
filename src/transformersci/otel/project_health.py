@@ -293,6 +293,10 @@ def slow_rows(
                 1 if index in ranked_days[(nodeid, job)] else 0 for index in range(days)
             ]
             last_index = max(values)
+            # Sticky, for a slow test: among the slowest on 2+ days and still
+            # there on one of the last two (today is partial).
+            ranked = ranked_days[(nodeid, job)]
+            sticky = len(ranked) >= 2 and bool(ranked & {days - 1, days - 2})
             rows.append(
                 {
                     "category": "slow",
@@ -310,7 +314,7 @@ def slow_rows(
                     "bad_days": sum(strip),
                     "days": strip,
                     "last_seen": min(now, (first_day + last_index + 1) * DAY - 1),
-                    "sticky": False,
+                    "sticky": sticky,
                     "cleared": False,
                 }
             )

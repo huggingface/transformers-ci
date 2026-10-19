@@ -377,6 +377,8 @@ def test_slow_rows_rank_by_average_and_mark_the_days_a_test_ranked(monkeypatch) 
     # quick ranked in the top 2 on days 96 and 97 only (day 100: slow and steady win).
     assert rows[1]["days"] == [0, 0, 1, 1, 0, 0, 0]
     assert rows[1]["fails"] == 2
+    # Sticky: slowest on 2+ days, one of them among the last two.
+    assert (first["sticky"], rows[1]["sticky"]) == (True, False)
 
 
 def test_build_rows_adds_slow_rows_from_two_range_queries() -> None:
