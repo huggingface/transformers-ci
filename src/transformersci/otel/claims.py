@@ -13,7 +13,8 @@ Who is working on a test is the dashboard's own record, never GitHub's
 assignees: the ``working`` table, one row per test, written when someone picks
 "Coding agent" (``via='agent'``, no issue) or publishes an issue
 (``via='issue'``). It holds the test against everyone else's drafts until they
-stop, or until their issue is closed.
+give up, or until their issue is closed. Giving up an issue leaves it open with
+nobody on it, for anyone to pick up.
 
 One row per test node id, in ``$RUN_STORE/claims.sqlite3``. The exporter runs
 as a single replica, so a process lock around each SQLite transaction makes a
@@ -132,6 +133,45 @@ class Store:
                 "DELETE FROM claims WHERE nodeid = ? AND login = ? AND state = 'drafting'",
                 (nodeid, login),
             )
+
+    def pick_up(self, nodeid: str, login: str, now: float | None = None) -> dict:
+        """Take a test whose issue is open but that nobody works on (its
+        worker gave up). ``{"status": "ok", number, url}``, ``{"status":
+        "working", ...}`` when someone is on it, else ``{"status": "invalid"}``."""
+        now = time.time() if now is None else now
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                worker = self._worker(nodeid)
+                if worker:
+                    return (
+                        {
+                            "status": "ok",
+                            "number": worker["number"],
+                            "url": worker["url"],
+                        }
+                        if worker["login"] == login
+                        else {"status": "working", **worker}
+                    )
+                current = self._row(nodeid)
+                if (
+                    not current
+                    or current["state"] != "claimed"
+                    or current["issue_state"] == "closed"
+                ):
+                    return {"status": "invalid"}
+                self._db.execute(
+                    "INSERT INTO working (nodeid, login, since, via, number, url)"
+                    " VALUES (?, ?, ?, 'issue', ?, ?)",
+                    (nodeid, login, now, current["number"], current["url"]),
+                )
+                return {
+                    "status": "ok",
+                    "number": current["number"],
+                    "url": current["url"],
+                }
+            finally:
+                self._db.execute("COMMIT")
 
     def stop(self, nodeid: str, login: str) -> bool:
         """``login`` stops working on ``nodeid``; True if they were on it."""

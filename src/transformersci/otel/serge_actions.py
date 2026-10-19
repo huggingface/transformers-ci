@@ -589,7 +589,7 @@ function heldBy(doc,data){
     if(data.via==='issue'&&data.url)p.append(issue);
     p.append(', since '+(minutes<1?'just now':minutes<120?minutes+' min ago':Math.round(minutes/60)+' h ago')+'.');
   }else if(data.status==='claimed'){
-    p.append('Already picked up by ',who,' in ',issue,'. Comment there instead of opening a second issue.');
+    p.append('This test already has an open issue, ',issue,'. Comment there, or use Pick up on Fix failures, instead of opening a second one.');
   }else{
     const minutes=Math.round((Date.now()/1000-data.since)/60);
     p.append(who,' started an issue for this test '+(minutes<1?'just now':minutes+' min ago')+'. '+

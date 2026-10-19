@@ -724,3 +724,43 @@ def test_packet_keys_read_each_trace_once_and_cache(server, monkeypatch) -> None
     }
     assert request({"tests": tests})["keys"]["t1"].startswith("CUDA error")
     assert reads == [TRACE]  # once, then cached
+
+
+def test_give_up_frees_a_row_or_a_batch_and_only_the_callers(server) -> None:
+    base, _ = server
+    store = claims.store()
+    tests = [NODEID, NODEID + "x", NODEID + "y"]
+    store.start(tests[0], "alice", "agent")
+    store.start(tests[1], "alice", "agent")
+    store.start(tests[2], "bob", "agent")
+    status, reply = post(
+        base, "/serge-actions/work/give-up", "alice", {"test_nodeids": tests}
+    )
+    assert (status, reply) == (200, {"status": "ok", "released": 2})
+    assert [store.working(n) is None for n in tests] == [True, True, False]
+    status, _ = post(base, "/serge-actions/work/give-up", "alice", {"test_nodeids": []})
+    assert status == 400
+
+
+def test_an_issue_given_up_stays_open_for_anyone_to_pick_up(server) -> None:
+    base, _ = server
+    store = claims.store()
+    store.confirm(NODEID, "alice", 7, "u7")
+    store.start(NODEID, "alice", "issue", 7, "u7")
+    post(base, "/serge-actions/work/give-up", "alice", {"test_nodeids": [NODEID]})
+    claim = store.snapshot()[NODEID]
+    assert (claim["state"], claim["issue_state"]) == ("claimed", "open")
+
+    status, taken = post(
+        base, "/serge-actions/work/pick-up", "bob", {"test_nodeids": [NODEID]}
+    )
+    assert (status, taken) == (200, {"status": "ok", "number": 7, "url": "u7"})
+    assert store.working(NODEID)["login"] == "bob"
+    status, refused = post(
+        base, "/serge-actions/work/pick-up", "carol", {"test_nodeids": [NODEID]}
+    )
+    assert (status, refused["status"], refused["login"]) == (409, "working", "bob")
+    status, nothing = post(
+        base, "/serge-actions/work/pick-up", "carol", {"test_nodeids": [NODEID + "z"]}
+    )
+    assert (status, nothing["status"]) == (400, "invalid")

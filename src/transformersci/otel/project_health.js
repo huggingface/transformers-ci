@@ -52,12 +52,13 @@
     return `/d/pytest-test/test?${query}`;
   }
 
-  function visible() {
+  // ``anyClaim``: ignore Unclaimed only / Mine only (a batch keeps its taken tests).
+  function visible(anyClaim = false) {
     const q = state.q;
     const base = rows.filter(row => (state.runner === 'all' || row.runner === state.runner)
       && (!state.sticky || row.sticky)
-      && (!state.unclaimed || ['free', 'closed'].includes(claimState(row)))
-      && (!state.mine || claims[row.nodeid]?.login === me)
+      && (anyClaim || !state.unclaimed || ['free', 'open', 'closed'].includes(claimState(row)))
+      && (anyClaim || !state.mine || claims[row.nodeid]?.login === me)
       && (!state.fix || hasProbableFix(row))
       && (!q || `${row.model} ${row.nodeid} ${row.job} ${row.signal}`.toLowerCase().includes(q)));
     return {base, shown: base.filter(row => state.cat === 'all' || row.category === state.cat)};
@@ -98,7 +99,8 @@
     // Who is on it is the dashboard's record (claims.py's working table).
     if (claim.state === 'working') return 'on-it';
     if (claim.state !== 'claimed') return 'drafting';
-    return claim.issue_state === 'closed' ? 'closed' : 'on-it';
+    // An open issue nobody works on (its worker gave up): anyone may pick it up.
+    return claim.issue_state === 'closed' ? 'closed' : 'open';
   }
 
   // A PR merged before the last failure did not fix it: not a probable fix.
@@ -117,23 +119,29 @@
     return `${link} <span class="sub" title="Merged ${ago(fix.merged_at)}, but the test failed after that">merged, still failing</span>${more}`;
   }
 
-  function claimHtml(row) {
+  const mineOnIt = row => claimState(row) === 'on-it' && claims[row.nodeid].login === me;
+
+  function claimHtml(row, index) {
     const claim = claims[row.nodeid], state = claimState(row);
     if (state === 'free') return '<span class="sub">—</span>';
     const who = `<a href="https://github.com/${encodeURIComponent(claim.login)}" target="_blank" rel="noopener noreferrer">@${esc(claim.login)}</a>`;
     const issue = claim.url ? `<a href="${esc(claim.url)}" target="_blank" rel="noopener noreferrer">#${claim.number}</a>` : '';
     if (state === 'drafting') return `${who} <span class="drafting">is drafting…</span>`;
-    if (state === 'on-it') return `${who} is on it · ${claim.via === 'agent' && !issue ? '<span class="sub" title="Working with their own coding agent, no issue">coding agent</span>' : issue}`;
+    if (state === 'open') return `${issue} <span class="open">open</span> · <span class="sub">nobody on it</span>`;
+    const giveUp = mineOnIt(row) && signedIn
+      ? ` <button type="button" class="act" data-giveup="${index}" title="Stop working on this test: it is free for others again${issue ? ' (the issue stays open)' : ''}">Give up</button>` : '';
+    if (state === 'on-it') return `${who} is on it · ${claim.via === 'agent' && !issue ? '<span class="sub" title="Working with their own coding agent, no issue">coding agent</span>' : issue}${giveUp}`;
     const since = claim.closed_at && row.last_seen > claim.closed_at
       ? ' · <span class="again" title="The test failed after the issue was closed">failed since</span>' : '';
     return `${issue} <span class="closed">closed</span>${since} <span class="sub">· was ${who}</span>`;
   }
 
-  // Work on it is off while someone else has the test. Your own draft or work
-  // stays reachable: to reopen it, switch to an issue, or stop working on it.
+  // Work on it is off while anyone is on the test, you included (Give up frees
+  // it). Your own unpublished draft stays reachable, to reopen it.
   function newIssueBlocked(row) {
     const claim = claims[row.nodeid], state = claimState(row);
-    if (state === 'on-it' && claim.login !== me) return claim.number ? `@${claim.login} is on it in #${claim.number}` : `@${claim.login} is on it with a coding agent`;
+    if (state === 'on-it' && claim.login === me) return 'You are on it: Give up (Picked up by) frees it';
+    if (state === 'on-it') return claim.number ? `@${claim.login} is on it in #${claim.number}` : `@${claim.login} is on it with a coding agent`;
     if (state === 'drafting' && claim.login !== me) return `@${claim.login} is drafting an issue for this test`;
     return '';
   }
@@ -147,6 +155,11 @@
       help = `Reopen #${claim.number}, closed, instead of opening a second issue`;
     }
     if (row.category === 'slow' && !row.nodeid.startsWith('tests/')) blocked = 'Not a pytest test';
+    if (!blocked && claimState(row) === 'open') {
+      const claim = claims[row.nodeid];
+      if (!signedIn) return `<button type="button" class="act" disabled title="${SIGN_IN}">${LOCK}Pick up</button>`;
+      return `<button type="button" class="act pri" data-pickup="${index}" title="#${claim.number} is open and nobody is on it: take it">Pick up</button>`;
+    }
     if (blocked) return `<button type="button" class="act" disabled title="${esc(blocked)}">${label}</button>`;
     if (!signedIn) return `<button type="button" class="act" disabled title="${SIGN_IN}">${LOCK}${label}</button>`;
     return `<button type="button" class="act${k ? '' : ' pri'}" data-act="${id}" data-i="${index}" title="${help}">${label}</button>`;
@@ -166,7 +179,7 @@
       <td class="days"><span class="num">${fails}</span><span class="strip">${row.days.map((count, i) =>
         `<i class="${count ? cell : ''}" title="${cellTitle(count, i)}"></i>`).join('')}</span></td>
       <td title="${slow ? 'Day of its latest timing (UTC)' : new Date(row.last_seen * 1000).toISOString()}">${slow ? daysAgo(row.last_seen) : ago(row.last_seen)}</td>
-      <td class="claim">${claimHtml(row)}</td>
+      <td class="claim">${claimHtml(row, index)}</td>
       <td class="fix">${fixHtml(row)}</td>
       <td><span class="acts">${batched.has(row.nodeid)
         ? '<span class="sub" title="This test is in a batch: use Work on a batch above">in a batch ↑</span>'
@@ -192,7 +205,13 @@
     const seen = `${state.group}|${state.days}`;
     if (seen !== groupsSeen) { groupsSeen = seen; openGroups.clear(); }
     groupNames = ordered.map(([name]) => name);
-    packets = [];
+    packets = []; giveUps = [];
+    const wide = new Map();
+    for (const row of visible(true).shown) {
+      const name = key(row) || '(unknown)';
+      if (!wide.has(name)) wide.set(name, []);
+      wide.get(name).push(row);
+    }
     return ordered.map(([name, members]) => {
       const open = openGroups.has(name);
       const errors = new Map();
@@ -202,15 +221,16 @@
       const sticky = members.filter(([row]) => row.sticky).length;
       return `<tr class="grp" data-group="${esc(name)}" aria-expanded="${open}"><td colspan="7"><span class="caret">${open ? '▾' : '▸'}</span>${esc(name)}
         <span class="meta"> — ${members.length} test${members.length === 1 ? '' : 's'}, ${fails(members)} failing run${fails(members) === 1 ? '' : 's'}${sticky ? `, ${sticky} sticky` : ''}${summary}</span></td></tr>`
-        + (open ? packetHtml(name, members) + members.map(([row, index]) => rowHtml(row, index)).join('') : '');
+        + (open ? packetHtml(name, wide.get(name) || []) + members.map(([row, index]) => rowHtml(row, index)).join('') : '');
     }).join('');
   }
 
   // Work on a batch: one issue for a group's unclaimed failures that fail the
   // same way, a bucket per error type and message key (the message with its
   // run-specific parts taken out, read from the traces when the group opens).
-  // A bucket of one is that row's own Work on it.
-  let packets = [];
+  // A bucket of one is that row's own Work on it. A bucket stays once taken:
+  // what is yours in it can be given up at once, what is someone else's says who.
+  let packets = [], giveUps = [];
   const batched = new Set();  // nodeids in a packet: their row offers no Work on it of its own
   const PACKET_LIMIT = 60;  // new_issue.PACKET_LIMIT
   const messageKeys = {};  // nodeid -> message key, '' when it could not be read
@@ -229,8 +249,8 @@
     drawRows();
   }
   function packetHtml(name, members) {
-    const eligible = members.map(([row]) => row)
-      .filter(row => row.category !== 'slow' && row.trace_id && claimState(row) === 'free');
+    const eligible = members
+      .filter(row => row.category !== 'slow' && row.trace_id && ['free', 'on-it'].includes(claimState(row)));
     const unknown = eligible.filter(row => !(row.nodeid in messageKeys));
     const ask = unknown.filter(row => !keysPending.has(row.nodeid));
     if (ask.length) loadKeys(ask);
@@ -246,14 +266,29 @@
     const buttons = [...buckets.values()].filter(bucket => bucket.rows.length > 1)
       .sort((a, b) => b.rows.length - a.rows.length || a.signal.localeCompare(b.signal))
       .map(({signal, key, rows}) => {
-        const tests = rows.slice(0, PACKET_LIMIT);
         const error = key ? `${signal}: ${key}` : signal;
-        packets.push({group: name, signal: error, tests: tests.map(row => ({trace_id: row.trace_id, test_nodeid: row.nodeid}))});
-        for (const row of tests) batched.add(row.nodeid);
-        const more = rows.length > tests.length ? ` (the first ${tests.length} of ${rows.length})` : '';
         const short = key.length > 48 ? `${key.slice(0, 47)}…` : key;
-        if (!signedIn) return `<button type="button" class="act" disabled title="${SIGN_IN}">${LOCK}${rows.length} × ${esc(signal)}${short ? `: ${esc(short)}` : ''}</button>`;
-        return `<button type="button" class="act pri" data-packet="${packets.length - 1}" title="One issue for these ${tests.length} unclaimed tests${more}, all failing with ${esc(error)}">${rows.length} × ${esc(signal)}${short ? `: ${esc(short)}` : ''}</button>`;
+        const what = count => `${count} × ${esc(signal)}${short ? `: ${esc(short)}` : ''}`;
+        const free = rows.filter(row => claimState(row) === 'free'), mine = rows.filter(mineOnIt);
+        const parts = [];
+        if (free.length > 1) {
+          const tests = free.slice(0, PACKET_LIMIT);
+          packets.push({group: name, signal: error, tests: tests.map(row => ({trace_id: row.trace_id, test_nodeid: row.nodeid}))});
+          for (const row of tests) batched.add(row.nodeid);
+          const more = free.length > tests.length ? ` (the first ${tests.length} of ${free.length})` : '';
+          parts.push(signedIn
+            ? `<button type="button" class="act pri" data-packet="${packets.length - 1}" title="One issue for these ${tests.length} unclaimed tests${more}, all failing with ${esc(error)}">${what(free.length)}</button>`
+            : `<button type="button" class="act" disabled title="${SIGN_IN}">${LOCK}${what(free.length)}</button>`);
+        }
+        if (mine.length && signedIn) {
+          giveUps.push(mine.map(row => row.nodeid));
+          parts.push(`<button type="button" class="act" data-giveup-batch="${giveUps.length - 1}" title="Stop working on these ${mine.length} tests: they are free for others again">Give up ${what(mine.length)}</button>`);
+        }
+        if (!parts.length) {
+          const who = [...new Set(rows.filter(row => claimState(row) === 'on-it').map(row => `@${claims[row.nodeid].login}`))];
+          parts.push(`<button type="button" class="act" disabled title="Taken by ${esc(who.join(', '))}">${what(rows.length)} · taken</button>`);
+        }
+        return parts.join('');
       });
     return buttons.length ? `<tr class="pk"><td colspan="7"><span class="lbl">Work on a batch:</span>${buttons.join('')}</td></tr>` : '';
   }
@@ -386,6 +421,26 @@
     }
     return entry;
   }
+  // Give up (a row or a batch) and Pick up: no draft, no LLM, straight to the server.
+  async function changeWork(button) {
+    if (button.getAttribute('aria-busy') === 'true') return;
+    const one = index => current[Number(index)]?.nodeid;
+    const [path, nodeids] = button.dataset.pickup != null ? ['pick-up', [one(button.dataset.pickup)]]
+      : button.dataset.giveupBatch != null ? ['give-up', giveUps[Number(button.dataset.giveupBatch)] || []]
+      : ['give-up', [one(button.dataset.giveup)]];
+    if (!nodeids.length || nodeids.some(nodeid => !nodeid)) return;
+    button.setAttribute('aria-busy', 'true');
+    try {
+      const response = await fetch(`/serge-actions/work/${path}`, {method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json', 'X-TCI-Action': '1'}, body: JSON.stringify({test_nodeids: nodeids})});
+      if (!response.ok && response.status !== 409) throw new Error(String(response.status));
+      await loadRows(true);
+    } catch (_) {
+      button.textContent = 'Try again';
+    } finally {
+      button.removeAttribute('aria-busy');
+    }
+  }
   async function runAction(button) {
     const packet = button.dataset.packet != null ? packets[Number(button.dataset.packet)] : null;
     const row = packet ? null : current[Number(button.dataset.i)];
@@ -409,6 +464,8 @@
     if (why) { const row = current[Number(why.dataset.why)]; if (row) openSignal(row); return; }
     const button = event.target.closest('button[data-act],button[data-packet]');
     if (button) { runAction(button); return; }
+    const change = event.target.closest('button[data-giveup],button[data-giveup-batch],button[data-pickup]');
+    if (change) { changeWork(change); return; }
     const header = event.target.closest('tr.grp');
     if (!header) return;
     const name = header.dataset.group;

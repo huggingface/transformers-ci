@@ -8240,6 +8240,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
             "/serge-actions/new-issue/reopen",
             "/serge-actions/new-issue/agent",
             "/serge-actions/new-issue/stop",
+            "/serge-actions/work/give-up",
+            "/serge-actions/work/pick-up",
             "/project-health/packets",
             "/rerun-failed",
         ):
@@ -8271,6 +8273,10 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._serve_new_issue_agent()
         elif path == "/serge-actions/new-issue/stop":
             self._serve_new_issue_stop()
+        elif path == "/serge-actions/work/give-up":
+            self._serve_work_give_up()
+        elif path == "/serge-actions/work/pick-up":
+            self._serve_work_pick_up()
         elif parse_qs(urlparse(self.path).query).get("kind") == ["slow"]:
             self._serve_slow_wdyt()
         else:
@@ -8878,6 +8884,55 @@ class MetricsHandler(BaseHTTPRequestHandler):
         for nodeid in _draft_tests(body["draft_id"]):
             claims.store().release(nodeid, login)
         self._reply_json(200, {"status": "ok"})
+
+    def _read_work_tests(self) -> tuple[list[str], str] | None:
+        """(node ids, login) of a Fix failures Give up / Pick up, or None after
+        replying: one test, or a batch's (up to new_issue.PACKET_LIMIT)."""
+        if not self._action_allowed():
+            return None
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length)) if 0 < length <= 131072 else None
+        except (ValueError, TypeError):
+            body = None
+        nodeids = body.get("test_nodeids") if isinstance(body, dict) else None
+        if (
+            not isinstance(nodeids, list)
+            or not 1 <= len(nodeids) <= new_issue.PACKET_LIMIT
+            or not all(
+                isinstance(nodeid, str) and 0 < len(nodeid) <= 2000
+                for nodeid in nodeids
+            )
+        ):
+            self._reply_json(400, {"status": "invalid"})
+            return None
+        login = self._action_user()
+        if not login:
+            return None
+        return nodeids, login
+
+    def _serve_work_give_up(self) -> None:
+        """Give up: the caller stops working on these tests (a row, or a batch).
+        An issue stays open, with nobody on it."""
+        read = self._read_work_tests()
+        if read is None:
+            return
+        nodeids, login = read
+        released = sum(claims.store().stop(nodeid, login) for nodeid in nodeids)
+        self._reply_json(200, {"status": "ok", "released": released})
+
+    def _serve_work_pick_up(self) -> None:
+        """Pick up a test whose issue is open and that nobody works on."""
+        read = self._read_work_tests()
+        if read is None:
+            return
+        nodeids, login = read
+        if len(nodeids) != 1:
+            self._reply_json(400, {"status": "invalid"})
+            return
+        taken = claims.store().pick_up(nodeids[0], login)
+        status = {"ok": 200, "invalid": 400}.get(taken["status"], 409)
+        self._reply_json(status, taken)
 
     def _serve_new_issue_reopen(self) -> None:
         """Reopen a test's closed issue instead of opening a second one; the
