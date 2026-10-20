@@ -12,8 +12,9 @@ use expectations/ beside the lock;
 --expectations overrides the directory. --record only writes candidate files
 and requires reproducibility in a fresh process. It never approves a baseline.
 
-Selection follows model and processor dependencies. Shared library and dependency
-changes select all contracts; unrelated changes select none. --run-all bypasses
+Selection follows model and processor dependencies. With --diff-base, additive model
+registrations select only those models. Shared runtime and dependency changes select
+all contracts; unrelated changes select none. --run-all bypasses
 selection while retaining its reasons. A selected case with no reviewed baseline,
 wrong discrete output, numeric drift, missing output, non-finite value, or failed
 property is a failure. Results go to stdout and optionally an append-only JSONL
@@ -700,6 +701,10 @@ def _main(argv, telemetry):
         help="run only the contracts these changed Transformers files can affect (one path per line; - for stdin)",
     )
     parser.add_argument(
+        "--diff-base",
+        help="base Git revision for recognizing registry-only model additions; used with --changed-files",
+    )
+    parser.add_argument(
         "--run-all",
         action="store_true",
         help="with --changed-files: run every contract anyway, recording selected_by (null if not selected)",
@@ -747,7 +752,9 @@ def _main(argv, telemetry):
         }
         # Docs-only and shared-code changes need no Hub downloads to select.
         needs_dirs = any(
-            p.startswith("src/transformers/models/") for p in changed_files
+            p.startswith("src/transformers/models/")
+            or (args.diff_base and p == "src/transformers/__init__.py")
+            for p in changed_files
         )
         dirs = {
             name: sorted(
@@ -763,7 +770,24 @@ def _main(argv, telemetry):
             else []
             for name, contract in candidates.items()
         }
-        selected_by = select_contracts.select(changed_files, dirs)
+        sources = (
+            select_contracts.changed_sources(changed_files, args.diff_base)
+            if args.diff_base
+            else None
+        )
+        resolve_model_type = None
+        if sources:
+            from transformers.models.auto.configuration_auto import (
+                model_type_to_module_name,
+            )
+
+            resolve_model_type = model_type_to_module_name
+        selected_by = select_contracts.select(
+            changed_files,
+            dirs,
+            sources=sources,
+            model_type_to_module=resolve_model_type,
+        )
         print(
             json.dumps({"selection": selected_by, "code_dirs": dirs}),
             file=sys.stderr,

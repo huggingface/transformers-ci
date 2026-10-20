@@ -17,7 +17,7 @@ run-model-contracts --fixtures-only --fleet prototypes --variant bfloat16
 # Selection by changed model, configuration and processor dependencies.
 git diff --name-only origin/main...HEAD > /tmp/mic-changed-files.txt
 run-model-contracts --fixtures-only --fleet prototypes --variant bfloat16 \
-  --changed-files /tmp/mic-changed-files.txt --output /tmp/results.jsonl 2>/tmp/run.log
+  --changed-files /tmp/mic-changed-files.txt --diff-base origin/main --output /tmp/results.jsonl 2>/tmp/run.log
 report-model-contracts /tmp/results.jsonl --log /tmp/run.log
 ```
 
@@ -109,3 +109,12 @@ The 24 old split fixture repositories were deleted after their replacements were
 verified. Land the consolidated runner before switching Transformers to these
 locks. The integration repo renames retain their original Git history and Hub
 redirects. Full usage and slim-model descriptions remain on the umbrella cards.
+
+When a PR only adds model entries to Auto mappings or model imports under
+`TYPE_CHECKING`, selection uses the base diff to run MICs for those models and
+their dependent fixtures. A new model without a MIC selects none of the existing
+MICs. Changes to existing registrations, shared runtime logic, dependencies, or
+unreadable diffs retain full-fleet selection. `--diff-base` uses the merge base
+with `HEAD`, matching the changed-file list above. Without it, shared files keep
+the conservative full-fleet behavior.
+
