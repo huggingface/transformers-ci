@@ -222,7 +222,7 @@ def targets(
         for repo, pin in contract.get("fixtures", {}).items():
             folder = fixture_folder(lock_dir, repo, pin, local_fixtures)
             yield (
-                short(repo),
+                pin.get("target", short(repo)),
                 "fixture",
                 str(folder),
                 pin["revision"],
@@ -231,7 +231,7 @@ def targets(
     elif "fixtures" in unsupported:
         for repo in manifest["fixtures"]:
             yield (
-                pin.get("target", short(repo)),
+                contract.get("fixtures", {}).get(repo, {}).get("target", short(repo)),
                 "fixture",
                 None,
                 None,

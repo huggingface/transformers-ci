@@ -77,11 +77,8 @@ def fleet(tmp_path, monkeypatch):
     }
     baseline.write_text(json.dumps({"recorded_with": identity, "outputs": actual}))
     monkeypatch.setattr(run, "contract_folder", lambda *a: (tmp_path, "a" * 40))
-    monkeypatch.setattr(
-        run,
-        "targets",
-        lambda *a: iter([("demo-slim", "fixture", str(tmp_path), "b" * 40, None)]),
-    )
+    monkeypatch.setattr(run, "fixture_folder", lambda *a: tmp_path)
+    monkeypatch.setattr(run, "fixture_problem", lambda *a: None)
     monkeypatch.setattr(run, "contract_code", lambda p: p.read_text())
     monkeypatch.setattr(run, "platform_class", lambda *a: "cpu-test")
     monkeypatch.setattr(run.Executor, "environment", lambda *a: {})
@@ -224,6 +221,11 @@ def test_legacy_fixture_download_uses_new_org(monkeypatch):
 
 def test_umbrella_loads_expectations_alongside_usage(fleet, capsys):
     root = fleet[0].parent
+    lock = json.loads(fleet[0].read_text())
+    pin = lock["contracts"]["demo"]["fixtures"].pop("test/demo-slim")
+    pin["target"] = "demo-slim"
+    lock["contracts"]["demo"]["fixtures"]["test/demo-mic"] = pin
+    fleet[0].write_text(json.dumps(lock))
     destination = (
         root / "integrations/transformers/expectations/cpu-test/demo-slim.json"
     )
@@ -237,8 +239,9 @@ def test_umbrella_loads_expectations_alongside_usage(fleet, capsys):
             }
         )
     )
-    code, rows = invoke(fleet, capsys)
+    code, rows = invoke(fleet, capsys, "--target", "demo-slim")
     assert code == 0 and rows[0]["status"] == "pass"
+    assert rows[0]["target"] == "demo-slim"
     assert "integrations/transformers/expectations" in rows[0]["baseline"]
 
 
@@ -311,3 +314,25 @@ def test_fleet_pin_changes_select_every_contract():
     assert set(
         select_contracts.select(["tests/contracts/prototype-fleet.lock"], cases)
     ) == set(cases)
+
+
+@pytest.mark.parametrize("explicit_target", [None, "mic-demo-slim"])
+@pytest.mark.parametrize("unsupported", [False, True])
+def test_fixture_target_identity(tmp_path, monkeypatch, explicit_target, unsupported):
+    pin = {"revision": "b" * 40}
+    if explicit_target:
+        pin["target"] = explicit_target
+    contract = {"fixtures": {"test/demo-mic": pin}}
+    integration = {"targets": ["fixtures"]}
+    if unsupported:
+        integration = {"targets": [], "unsupported": {"fixtures": "unavailable"}}
+    manifest = {
+        "fixtures": {"test/demo-mic": {}},
+        "integrations": {"transformers": integration},
+    }
+    monkeypatch.setattr(run, "fixture_folder", lambda *args: tmp_path)
+    monkeypatch.setattr(run, "fixture_problem", lambda *args: None)
+    rows = list(run.targets(tmp_path, contract, manifest, "transformers", fixtures_only=True))
+    assert len(rows) == 1
+    assert rows[0][0] == (explicit_target or "demo-mic")
+    assert rows[0][4] == ("unavailable" if unsupported else None)
