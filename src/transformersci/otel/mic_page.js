@@ -57,7 +57,7 @@
       let td = element('td', '', tr); td.className = 'model';
       if (r.target === 'runner') element('span', 'MIC runner', td);
       else {
-        link(td, r.source_model?.split('/').pop() || 'Source model unavailable', r.source_model_url);
+        link(td, r.source_model || 'Source model unavailable', r.source_model_url);
         const slim = element('small', '', td);
         link(slim, `${r.fixture_repo?.split('/').pop() || 'Slim model'} (slim)`, r.fixture_repo_url);
       }
