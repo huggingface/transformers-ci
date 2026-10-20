@@ -1,0 +1,260 @@
+{
+  "audited_at": "2026-10-20",
+  "artifacts_downloaded": 531,
+  "download_errors": 0,
+  "rollout": "2026-10-15T15:39:54Z",
+  "post_rollout_artifacts": 465,
+  "last_artifact": "2026-10-20T08:40:43Z",
+  "recorded_cases": 8675,
+  "empty_artifacts": 93,
+  "run_outcomes": {
+    "failure": 375,
+    "success": 89,
+    "skipped": 1
+  },
+  "failures": [
+    {
+      "target": "mic-whisper-slim",
+      "status": "fail",
+      "message": "listed in known_failures but passes; remove it: https://github.com/huggingface/transformers/issues/49456",
+      "occurrences": 360,
+      "first": "2026-10-15T15:44:21Z",
+      "last": "2026-10-20T08:40:43Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39394438530"
+    },
+    {
+      "target": "mic-smolvlm-slim",
+      "status": "error",
+      "message": "RuntimeError: shape '[-1, 14, 64]' is invalid for input of size 176256",
+      "occurrences": 182,
+      "first": "2026-10-15T21:01:05Z",
+      "last": "2026-10-19T17:39:34Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39295399702"
+    },
+    {
+      "target": "mic-SmolLM-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-bert-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-gpt2-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-t5-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-modernbert-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-vit-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-clip-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-detr-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-table_transformer-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-got_ocr2-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-whisper-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-wav2vec2-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-qwen2_audio-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-speech_t5-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-llama-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-gemma3-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-qwen2-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-mistral3-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-qwen2_5_vl-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-llava-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-smolvlm-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-internvl-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-gpt_oss-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-qwen2_5_omni-slim",
+      "status": "error",
+      "message": "ValueError: Kernels are not available. Please install a compatible version (0.17.2 <= version < 0.18.0), e.g. `pip install kernels==0.17.2`",
+      "occurrences": 1,
+      "first": "2026-10-19T13:56:27Z",
+      "last": "2026-10-19T13:56:27Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/39263753278"
+    },
+    {
+      "target": "mic-smolvlm-slim",
+      "status": "error",
+      "message": "ValueError: not enough values to unpack (expected 3, got 2)",
+      "occurrences": 1,
+      "first": "2026-10-15T20:09:57Z",
+      "last": "2026-10-15T20:09:57Z",
+      "example_run": "https://github.com/huggingface/transformers/actions/runs/38799169278"
+    }
+  ]
+}

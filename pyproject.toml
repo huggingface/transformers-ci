@@ -11,6 +11,11 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
+contracts = [
+  "huggingface_hub>=0.25",
+  "jsonschema>=4",
+]
+
 agentic = [
   "huggingface_hub>=0.25",
 ]
@@ -43,6 +48,7 @@ reviewers = [
   "PyYAML",
 ]
 test = [
+  "jsonschema>=4",
   "huggingface_hub>=0.25",
   "psutil",
   "PyGithub",
@@ -50,6 +56,7 @@ test = [
   "PyYAML",
 ]
 dev = [
+  "jsonschema>=4",
   "opentelemetry-api",
   "opentelemetry-exporter-otlp",
   "opentelemetry-sdk",
@@ -61,6 +68,8 @@ dev = [
 ]
 
 [project.scripts]
+run-model-contracts = "transformersci.contracts.run:main"
+report-model-contracts = "transformersci.contracts.report:main"
 configure-ci-otel = "transformersci.otel.cli:main"
 report-ci-failure = "transformersci.otel.report_failure:main"
 report-ci-start = "transformersci.otel.report_start:main"
@@ -86,3 +95,5 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "transformersci.otel" = ["patch_view.html", "patch_view.js", "pr_view.js", "pr_table.html", "pr_table.js", "pr_table_queries.json", "pr_ci_view.html", "pr_ci_view.js", "project_health.html", "project_health.js", "monitoring.html", "monitoring.js", "serge-logo.png", "favicon-32.png", "favicon-180.png"]
+
+"transformersci.contracts" = ["schemas/*.json", "data/*.json", "data/*.lock"]
