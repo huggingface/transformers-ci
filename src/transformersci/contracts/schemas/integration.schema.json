@@ -89,6 +89,19 @@
        "model_class": {
         "type": "string"
        },
+       "copy_assets": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {"type": "string", "minLength": 1},
+        "description": "additional non-weight files to copy unchanged, even when their extension resembles model weights"
+       },
+       "preserve_frozen_prefixes": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {"type": "string", "minLength": 1},
+        "description": "copy matching requires_grad=False parameters and persistent buffers from the pinned checkpoint after random initialization"
+       },
        "gate_tolerance": {
         "type": "number",
         "exclusiveMinimum": 0,
@@ -114,6 +127,16 @@
         "additionalProperties": {
          "type": "string",
          "minLength": 1
+        }
+       },
+       "config_overrides": {
+        "type": "object",
+        "description": "fields set after the generic shrink rule (dotted for sub-configs), with the reviewed reason; part of the fixture key",
+        "required": ["fields", "reason"],
+        "additionalProperties": false,
+        "properties": {
+         "fields": {"type": "object", "minProperties": 1},
+         "reason": {"type": "string", "minLength": 1}
         }
        }
       }

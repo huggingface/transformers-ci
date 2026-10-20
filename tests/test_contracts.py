@@ -332,7 +332,27 @@ def test_fixture_target_identity(tmp_path, monkeypatch, explicit_target, unsuppo
     }
     monkeypatch.setattr(run, "fixture_folder", lambda *args: tmp_path)
     monkeypatch.setattr(run, "fixture_problem", lambda *args: None)
-    rows = list(run.targets(tmp_path, contract, manifest, "transformers", fixtures_only=True))
+    rows = list(
+        run.targets(tmp_path, contract, manifest, "transformers", fixtures_only=True)
+    )
     assert len(rows) == 1
     assert rows[0][0] == (explicit_target or "demo-mic")
     assert rows[0][4] == ("unavailable" if unsupported else None)
+
+
+def test_published_fixture_build_options_are_validated(fleet):
+    manifest_path = fleet[0].parent / "integration.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["fixtures"]["test/demo-slim"]["build"] = {
+        "seed": 0,
+        "config_overrides": {
+            "fields": {"num_local_experts": 0},
+            "reason": "Dense fixture",
+        },
+        "copy_assets": ["attention_mask.safetensors"],
+        "preserve_frozen_prefixes": ["model.geometry."],
+    }
+    run.validate(manifest, "integration", manifest_path)
+    del manifest["fixtures"]["test/demo-slim"]["build"]["config_overrides"]["reason"]
+    with pytest.raises(SystemExit, match="reason"):
+        run.validate(manifest, "integration", manifest_path)
