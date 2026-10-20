@@ -10,8 +10,8 @@ Runnable Markdown execution also requires the doc-builder revision installed in
 `.github/workflows/pr-ci_contracts.yml`.
 
 ```bash
-# SmolLM control; default variant uses the fixture's BF16 weights.
-run-model-contracts --fixtures-only --contract SmolLM --target mic-SmolLM-slim
+# Control fleet; select fixtures from the lock, using each default variant.
+run-model-contracts --fixtures-only --fleet control
 # The 23 prototype models, BF16.
 run-model-contracts --fixtures-only --fleet prototypes --variant bfloat16
 # Selection by changed model, configuration and processor dependencies.

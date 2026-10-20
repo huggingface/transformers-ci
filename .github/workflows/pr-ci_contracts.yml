@@ -105,7 +105,7 @@ jobs:
               --staging-protocol grpc -- run-model-contracts "$@"
           }
           start=$SECONDS
-          mic --fixtures-only --fleet control --contract SmolLM --target mic-SmolLM-slim --variant default \
+          mic --fixtures-only --fleet control --variant default \
             "${selection[@]}" --output /tmp/results.jsonl 2> /tmp/run.log | python -c '
           import json, sys
           for line in sys.stdin:

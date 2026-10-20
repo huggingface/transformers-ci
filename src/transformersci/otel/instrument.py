@@ -104,6 +104,11 @@ def run(name: str, attributes: Mapping[str, object] | None = None, env=None):
     # Resource.create() merges OTEL_SERVICE_NAME + OTEL_RESOURCE_ATTRIBUTES from
     # env — i.e. transformers.test.job / vcs.* / run id that configure-ci-otel
     # already exported. The job grouping is therefore inherited, not set here.
+    # MIC usage seeds the global RNG for reproducible model outputs. Keep span
+    # IDs independent of that state, as the pytest resource plugin does.
+    from transformersci.otel import id_generator
+
+    id_generator.install()
     provider = TracerProvider(resource=Resource.create())
     attached = 0
     for exporter in (build_primary_exporter(env), build_staging_exporter(env)):

@@ -120,3 +120,22 @@ def test_steps_join_traceparent(captured_spans) -> None:
         format(s.context.trace_id, "032x") for s in captured_spans.get_finished_spans()
     }
     assert trace_ids == {"1234567890abcdef1234567890abcdef"}
+
+
+def test_model_rng_seeding_does_not_repeat_span_ids(captured_spans) -> None:
+    import random
+
+    state = random.getstate()
+    try:
+        with instrument.run(
+            "fast-integration", env={"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318"}
+        ) as run:
+            for index in range(8):
+                random.seed(0)
+                with run.step(f"tests/contracts::case-{index}") as step:
+                    step.set_exit_code(index % 2)
+    finally:
+        random.setstate(state)
+    spans = captured_spans.get_finished_spans()
+    assert len(spans) == 9
+    assert len({span.context.span_id for span in spans}) == 9
