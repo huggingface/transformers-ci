@@ -223,7 +223,9 @@ def registry_models(path, before, after):
                 dict(zip((key.value for key in node.value.keys), node.value.values))
                 if isinstance(node.value, ast.Dict)
                 else {
-                    item.elts[0].value: item.elts[1] for item in node.value.args[0].elts
+                    item.elts[0].value: item.elts[1]
+                    for item in node.value.args[0].elts
+                    if not isinstance(item, ast.Starred)
                 }
             )
             if any(not _registration_value(values[key]) for key in added):
