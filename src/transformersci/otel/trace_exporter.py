@@ -10081,7 +10081,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         scope = mic_page.parse_scope((params.get("scope") or ["all"])[0])
         variant = (params.get("variant") or [""])[0][:100]
         platform = (params.get("platform") or [""])[0][:100]
-        key = f"mic:{days}:{scope}:{variant}:{platform}"
+        failure_type = (params.get("failure_type") or [""])[0][:100]
+        key = json.dumps(["mic", days, scope, variant, platform, failure_type])
         payload = _public_response_cache_get(key)
         if payload is not None:
             self._request_cache = "hit"
@@ -10094,6 +10095,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                     scope=scope,
                     variant=variant,
                     platform=platform,
+                    failure_type=failure_type,
                     trace_rows=_mic_trace_rows,
                     build_metadata=_mic_build_metadata,
                 )

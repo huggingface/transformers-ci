@@ -99,6 +99,7 @@ def build_rows(
     scope="all",
     variant="",
     platform="",
+    failure_type="",
     trace_rows=None,
     build_metadata=None,
     now=None,
@@ -349,6 +350,7 @@ def build_rows(
         }:
             row["failure"] = "Failure details unavailable; open the trace."
     options = {
+        "failure_type": sorted({r["failure_kind"] for r in rows}),
         "variant": sorted({r["variant"] for r in rows if r["variant"]}),
         "platform": sorted({r["platform"] for r in rows if r["platform"]}),
     }
@@ -357,6 +359,7 @@ def build_rows(
         for r in rows
         if (not variant or r["variant"] == variant)
         and (not platform or r["platform"] == platform)
+        and (not failure_type or r["failure_kind"] == failure_type)
     ]
     now = time.time() if now is None else now
     first_day = int(now // 86400) - days + 1

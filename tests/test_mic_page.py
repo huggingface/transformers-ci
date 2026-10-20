@@ -200,6 +200,10 @@ def test_http_page_data_caching_and_unavailable_state(monkeypatch):
         assert json.load(urlopen(base + "/mic/data?days=1"))["rows"] == []
         urlopen(base + "/mic/data?days=1").read()
         assert len(calls) == 3
+        urlopen(base + "/mic/data?days=1&failure_type=Runtime%20traceback").read()
+        assert len(calls) == 6
+        urlopen(base + "/mic/data?days=1&failure_type=Runtime%20traceback").read()
+        assert len(calls) == 6
 
         def broken(expression):
             raise RuntimeError("private internal URL")
@@ -276,6 +280,7 @@ def test_variant_and_platform_filters_apply_before_row_limit(monkeypatch):
     )
     assert [row["run_id"] for row in data["rows"]] == ["123:1"]
     assert data["options"] == {
+        "failure_type": ["Baseline assertion"],
         "variant": ["bfloat16", "default"],
         "platform": ["cpu", "cuda"],
     }
@@ -395,3 +400,37 @@ def test_fixture_provenance_is_available_without_public_network(monkeypatch):
         assert metadata["source_model"]
         assert metadata["weights"] in {"random", "overfit", "unknown"}
     assert trace_exporter._mic_build_metadata(("unknown/model", "f" * 40)) == {}
+
+
+def test_failure_type_filter_precedes_grouping_and_row_limit(monkeypatch):
+    monkeypatch.setattr(mic_page, "LIMIT", 1)
+    older = failure()
+    newer = failure("124:1")
+    newer["metric"]["exception_type"] = "MICExecutionError"
+    records = {
+        "123:1": [detail(**{"mic.status": "fail", "mic.failure": "logits: mismatch"})],
+        "124:1": [
+            detail(
+                **{
+                    "mic.status": "error",
+                    "mic.failure": "RuntimeError: generation failed",
+                }
+            )
+        ],
+    }
+    for kind, run in [("Baseline assertion", "123:1"), ("Runtime traceback", "124:1")]:
+        data = mic_page.build_rows(
+            queries([older, newer]), records.get, failure_type=kind
+        )
+        assert [row["run_id"] for row in data["rows"]] == [run]
+        assert data["total"] == data["cases"] == data["rows"][0]["fails"] == 1
+        assert data["options"]["failure_type"] == [
+            "Baseline assertion",
+            "Runtime traceback",
+        ]
+    assert (
+        mic_page.build_rows(
+            queries([older, newer]), records.get, failure_type="Missing baseline"
+        )["rows"]
+        == []
+    )

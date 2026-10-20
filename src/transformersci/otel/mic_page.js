@@ -7,6 +7,7 @@
     days: ['7', '14', '30'].includes(params.get('days')) ? params.get('days') : '7',
     scope: ['all', 'main', 'prs'].includes(params.get('scope')) ? params.get('scope') : 'all',
     variant: params.get('variant') || '', platform: params.get('platform') || '',
+    failure_type: params.get('failure_type') || '',
   };
   byId('search').value = params.get('q') || '';
   let data = {rows: [], options: {}}, request = 0, loading = false, errorText = '';
@@ -111,7 +112,7 @@
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'MIC data is unavailable.');
       if (id !== request) return;
-      data = result; errorText = ''; options('variant'); options('platform'); render();
+      data = result; errorText = ''; options('variant'); options('platform'); options('failure_type'); render();
     } catch (error) {
       if (id !== request) return;
       errorText = `Could not refresh MIC failures: ${error.message}`;
@@ -120,7 +121,7 @@
       if (id === request) { loading = false; byId('progress').hidden = true; }
     }
   }
-  ['scope', 'variant', 'platform', 'days'].forEach(id => {
+  ['scope', 'variant', 'platform', 'failure_type', 'days'].forEach(id => {
     byId(id).addEventListener('click', event => {
       const button = event.target.closest('button'); if (!button) return;
       state[id] = button.dataset.v; press(id); load();
@@ -128,6 +129,6 @@
   });
   byId('search').addEventListener('input', render);
   document.addEventListener('visibilitychange', () => { if (!document.hidden && !loading) load(true); });
-  press('scope'); press('days'); options('variant'); options('platform'); load();
+  press('scope'); press('days'); options('variant'); options('platform'); options('failure_type'); load();
   setInterval(() => { if (!document.hidden && !loading) load(true); }, 30000);
 })();
