@@ -96,7 +96,7 @@ jobs:
             selection=(--run-all)
             echo "Changed files: all"
           fi
-          # The two fleets and their reviewed baselines travel with the runner.
+          # Read fleet pins from the checkout so PRs exercise their own lock changes.
           # Use the normal OTEL resource setup so cases appear in the PR dashboard.
           mic() {
             configure-ci-otel --suite fast-integration --service-name pytest-observability \
@@ -105,7 +105,7 @@ jobs:
               --staging-protocol grpc -- run-model-contracts "$@"
           }
           start=$SECONDS
-          mic --fixtures-only --fleet control --variant default \
+          mic --fixtures-only --lock tests/contracts/fleet-lock.json --variant default \
             "${selection[@]}" --output /tmp/results.jsonl 2> /tmp/run.log | python -c '
           import json, sys
           for line in sys.stdin:
@@ -115,7 +115,7 @@ jobs:
               r = json.loads(line)
               print(r["status"].ljust(6), r["target"], r.get("platform", ""), "\n".join(r.get("failures", [])), flush=True)' || status=$?
           echo "$(tail -1 /tmp/run.log); $((SECONDS - start)) s"
-          mic --fixtures-only --fleet prototypes --variant bfloat16 \
+          mic --fixtures-only --lock tests/contracts/prototype-fleet.lock --variant bfloat16 \
             "${selection[@]}" --output /tmp/results.jsonl 2>> /tmp/run.log | python -c '
           import json, sys
           for line in sys.stdin:
