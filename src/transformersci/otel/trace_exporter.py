@@ -59,6 +59,7 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from functools import lru_cache
 from itertools import islice
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from math import fsum
@@ -7137,6 +7138,9 @@ def _load_run_store(run_id: str, directory: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+_mic_store_lock = threading.Lock()
+
+
 def _persist_mic_rows(run_id: str, rows, directory: str) -> None:
     mic_rows = [
         r
@@ -7147,12 +7151,24 @@ def _persist_mic_rows(run_id: str, rows, directory: str) -> None:
     if not mic_rows:
         return
     try:
-        os.makedirs(directory, exist_ok=True)
-        path = _run_store_path(directory, run_id)
-        tmp = f"{path}.{os.getpid()}.tmp"
-        with gzip.open(tmp, "wb") as fh:
-            fh.write(json.dumps({"run_id": run_id, "rows": mic_rows}).encode())
-        os.replace(tmp, path)
+        with _mic_store_lock:
+            # Retain recovered metadata when the main run store still carries
+            # older rows without MIC fields. Both ingestion and backfill use this.
+            previous = _load_run_store(run_id, directory).get("rows", [])
+            merged = {(r.get("trace_id"), r.get("test_nodeid")): r for r in previous}
+            for row in mic_rows:
+                key = (row.get("trace_id"), row.get("test_nodeid"))
+                merged[key] = {**merged.get(key, {}), **row}
+            os.makedirs(directory, exist_ok=True)
+            path = _run_store_path(directory, run_id)
+            tmp = f"{path}.{os.getpid()}.tmp"
+            with gzip.open(tmp, "wb") as fh:
+                fh.write(
+                    json.dumps(
+                        {"run_id": run_id, "rows": list(merged.values())}
+                    ).encode()
+                )
+            os.replace(tmp, path)
     except OSError:
         pass  # A MIC page cache failure must not interrupt the main run store.
 
@@ -7255,6 +7271,40 @@ def load_run_rows(
     data = _load_run_store(run_id, directory)
     rows = data.get("rows")
     return rows if isinstance(rows, list) else None
+
+
+def _mic_trace_rows(trace_id: str) -> list[dict]:
+    trace = fetch_failure_trace(trace_id)
+    if not trace:
+        return []
+    info, rows = extract_trace_rows(trace)
+    directory = _run_store_dir()
+    if directory:
+        _persist_mic_rows(
+            str(info.get("run_id", "")), rows, os.path.join(directory, "mic")
+        )
+    return rows
+
+
+@lru_cache(maxsize=256)
+def _mic_build_metadata(pin: tuple[str, str]) -> dict:
+    repo, revision = pin
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo) or not re.fullmatch(
+        r"[a-fA-F0-9]{40}", revision
+    ):
+        return {}
+    build = _http_get_json(
+        f"https://huggingface.co/{repo}/resolve/{revision}/build.json",
+        timeout=10,
+        upstream="hub",
+    )
+    if not isinstance(build, dict):
+        return {}
+    source = build.get("built_from", {})
+    return {
+        "source_model": source.get("repo", "") if isinstance(source, dict) else "",
+        "weights": build.get("weights", "unknown"),
+    }
 
 
 def load_mic_rows(run_id: str) -> list[dict[str, str | float]] | None:
@@ -10035,13 +10085,25 @@ class MetricsHandler(BaseHTTPRequestHandler):
 
     def _serve_mic_data(self, params: dict[str, list[str]]) -> None:
         days = mic_page.parse_days((params.get("days") or [""])[0])
-        key = f"mic:{days}"
+        scope = mic_page.parse_scope((params.get("scope") or ["all"])[0])
+        variant = (params.get("variant") or [""])[0][:100]
+        platform = (params.get("platform") or [""])[0][:100]
+        key = f"mic:{days}:{scope}:{variant}:{platform}"
         payload = _public_response_cache_get(key)
         if payload is not None:
             self._request_cache = "hit"
         else:
             try:
-                body = mic_page.build_rows(_prometheus_vector, load_mic_rows, days=days)
+                body = mic_page.build_rows(
+                    _prometheus_vector,
+                    load_mic_rows,
+                    days=days,
+                    scope=scope,
+                    variant=variant,
+                    platform=platform,
+                    trace_rows=_mic_trace_rows,
+                    build_metadata=_mic_build_metadata,
+                )
             except Exception:
                 self._reply_json(
                     502,

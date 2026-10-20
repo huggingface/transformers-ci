@@ -4,26 +4,44 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MIC failures</title>
 <style>
-:root{color-scheme:dark;--bg:#111217;--fg:#d8d9da;--muted:#9fa3a9;--line:#30343b;--accent:#8ab8ff}
-body.light{color-scheme:light;--bg:#fff;--fg:#24292e;--muted:#656d76;--line:#d0d7de;--accent:#1f6feb}
-*{box-sizing:border-box}body{margin:0;padding:18px;background:var(--bg);color:var(--fg);font:13px/1.5 system-ui,sans-serif}
-h1{font-size:20px;margin:0}p{color:var(--muted)}a{color:var(--accent)}header,.filters{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
-.filters{margin:18px 0}input,select,button{font:inherit;padding:6px 9px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px}
-input{min-width:260px}button,summary{cursor:pointer}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse}
-th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:9px 10px}th{color:var(--muted);white-space:nowrap}
-td small{display:block;color:var(--muted)}pre{font-size:12px;max-width:700px;white-space:pre-wrap;overflow-wrap:anywhere}
-.links{display:flex;gap:10px;flex-wrap:wrap}.error{color:#f2495c}#state{color:var(--muted)}
+:root{color-scheme:dark;--bg:#111217;--panel:#181b1f;--fg:#d8d9da;--strong:#fff;--muted:#9fa3a9;--line:#2c3036;--soft:#22252b;--hover:#1f2430;--accent:#6e9fff;--sel:#3d71d9;--red:#f2495c;--cell:#2c3036}
+body.light{color-scheme:light;--bg:#f4f5f5;--panel:#fff;--fg:#24292e;--strong:#000;--muted:#656d76;--line:#d0d7de;--soft:#eaeef2;--hover:#f3f4f6;--accent:#1f6feb;--red:#d1242f;--cell:#e1e4e8}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.4 Inter,system-ui,sans-serif}body{padding:12px 16px 24px}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:4px;margin-bottom:10px;min-width:0}
+.ph{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.ph h1{margin:0 6px 0 0;font-size:14px;font-weight:600;color:var(--strong)}
+.sub{color:var(--muted);font-size:12px}.ctl{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}.lbl{color:var(--muted);font-size:12px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.seg button{border:0;border-right:1px solid var(--line);background:transparent;color:var(--muted);padding:4px 9px;font:500 12px Inter,system-ui,sans-serif;cursor:pointer}
+.seg button:last-child{border-right:0}.seg button[aria-pressed=true]{background:var(--sel);color:#fff}
+input.search{margin-left:auto;border:1px solid var(--line);border-radius:4px;padding:5px 9px;width:240px;max-width:100%;color:var(--fg);background:var(--bg);font:12px Inter,system-ui,sans-serif;outline:none}
+select{border:1px solid var(--line);border-radius:4px;padding:4px 6px;color:var(--fg);background:var(--bg);font:12px Inter,system-ui,sans-serif}
+.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse}th{font-weight:600;text-align:left;color:var(--muted);padding:7px 6px;border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+td{padding:6px 6px;border-bottom:1px solid var(--soft);vertical-align:middle;white-space:nowrap}tbody tr:hover{background:var(--hover)}
+td.model,td.pr,td.failure{white-space:normal;overflow-wrap:anywhere}td.model{width:22%}td.pr{width:22%}td.failure{width:30%;color:var(--red);font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+td small{display:block;color:var(--muted);font:11.5px/1.4 Inter,system-ui,sans-serif;margin-top:2px}.date{font-variant-numeric:tabular-nums;font-size:12px}.links a{display:inline-block;margin-right:8px}
+.strip{display:flex;gap:1px;margin-top:3px}.strip i{width:3px;height:11px;background:var(--cell);border-radius:1px}.strip i.f{background:var(--red)}.num{font-variant-numeric:tabular-nums}
+.badge{display:inline-block;font:700 9.5px Inter,system-ui,sans-serif;letter-spacing:.3px;padding:2px 5px;border-radius:3px;color:#fff;background:#c4162a;margin-bottom:4px}.badge.runtime{background:#b35c00}.badge.setup{background:#6b5aa6}
+summary{cursor:pointer}pre{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;max-width:700px;white-space:pre-wrap;overflow-wrap:anywhere}
+.foot{padding:8px 12px;color:var(--muted);font-size:12px}.foot p{margin:3px 0}.error{color:var(--red)}
+.progress{height:2px;overflow:hidden}.progress span{display:block;width:28%;height:100%;background:var(--accent);animation:progress 1.35s ease-in-out infinite}.progress[hidden]{display:none}@keyframes progress{from{transform:translateX(-100%)}to{transform:translateX(360%)}}
 </style>
 </head>
 <body>
-<header><h1>MIC failures</h1><a href="/" target="_top">Activity</a></header>
-<p>Model behavior compared with reviewed expectations. Failures are observational and do not block CI. Expected failures and unsupported cases are excluded.</p>
-<div class="filters">
-<label>Window <select id="days"><option value="1">24 hours</option><option value="7" selected>7 days</option><option value="14">14 days</option><option value="30">30 days</option></select></label>
-<label>Filter <input id="search" type="search" placeholder="Model, target, variant, PR or failure"></label>
-<button id="refresh" type="button">Refresh</button>
+<section class="panel">
+<div class="ph">
+<h1>MIC failures</h1>
+<span class="ctl"><span class="lbl">Show</span><span class="seg" id="scope"><button type="button" data-v="all">All</button><button type="button" data-v="main">Main</button><button type="button" data-v="prs">PRs</button></span></span>
+<span class="ctl"><span class="lbl">Days</span><span class="seg" id="days"><button type="button" data-v="7">7</button><button type="button" data-v="14">14</button><button type="button" data-v="30">30</button></span></span>
+<span class="ctl"><span class="lbl">Variant</span><span class="seg" id="variant"></span></span>
+<span class="ctl"><span class="lbl">Platform</span><span class="seg" id="platform"></span></span>
+<input class="search" id="search" type="search" placeholder="Search model, PR or assertion" aria-label="Search MIC failures">
 </div>
-<p id="state" role="status" aria-live="polite">Loading MIC failures…</p>
-<div class="scroll"><table><thead><tr><th>Model / target</th><th>Variant / platform</th><th>PR or branch / run</th><th>Failure</th><th>Evidence</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="progress" id="progress"><span></span></div>
+<div class="scroll"><table><thead><tr><th>Model</th><th>Weights</th><th>Variant / platform</th><th>PR / branch</th><th id="days-head">Last 7 days</th><th>Date</th><th>Failure</th><th>Links</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="foot"><p id="state" role="status" aria-live="polite">Loading MIC failures…</p><p>Observational checks · failures do not block CI · expected failures and unsupported cases are excluded</p></div>
+</section>
+<script src="/project-health/common.js"></script>
 <script src="/mic/app.js"></script>
 </body></html>

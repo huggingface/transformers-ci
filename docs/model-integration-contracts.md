@@ -68,16 +68,24 @@ combines selection reports from both fleets and produces fleet-specific repro co
 ## MIC failures page
 
 The dashboard's **MIC failures** navigation entry opens `/mic`, a dedicated page
-for failing `fast-integration` cases. Filter by model, target, variant, platform,
-PR, run or assertion text, and select a 1-, 7-, 14- or 30-day window. Each row links
-to its trace, GitHub run and pinned Hub baseline when the metadata is available.
+for failing `fast-integration` cases. Use the All / Main / PRs, variant and platform
+filters and a 7-, 14- or 30-day window. Each row groups one model/variant/platform
+and weight strategy, with a daily failure strip and links to the latest failure's
+PR, internal Test and Run pages, and pinned Hub baseline. Original and slim model
+names link to the Hub. The Weights column comes from the pinned fixture's build
+metadata (`random`, `overfit`, or `unknown`). Dates show the timestamp and age.
+Failure badges distinguish baseline assertions, runtime tracebacks, setup errors,
+missing references and unexpected passes; the actual assertion or exception is
+shown in the same cell.
 Expected failures and unsupported cases are excluded; an unexpected pass of a
 known failure remains actionable.
 
 The page reads the existing Prometheus failure index and a compact MIC-only run
 store, retaining case metadata and bounded failure text without adding Prometheus
 labels. Older observations still show their case identity and trace links even
-when their stored metadata predates this page. Upstream errors produce an explicit
+when their stored metadata predates this page. Missing assertion details are
+recovered from available traces, and pinned Hub build records supply model
+provenance. The table refreshes every 30 seconds while visible. Upstream errors produce an explicit
 unavailable state, rather than an empty failure table.
 
 ## Hub ownership and consolidated snapshots

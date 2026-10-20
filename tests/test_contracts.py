@@ -98,6 +98,16 @@ def test_baseline_execution_passes(fleet, capsys):
     assert code == 0 and rows[0]["status"] == "pass"
 
 
+def test_fixture_provenance_is_in_results(fleet, capsys):
+    build = {"built_from": {"repo": "creator/Large-Demo"}, "weights": "random"}
+    (fleet[0].parent / "build.json").write_text(json.dumps(build))
+    code, rows = invoke(fleet, capsys)
+    assert code == 0
+    assert rows[0]["source_model"] == "creator/Large-Demo"
+    assert rows[0]["fixture_repo"] == "test/demo-slim"
+    assert rows[0]["weights"] == "random"
+
+
 @pytest.mark.parametrize(
     "change,expected",
     [

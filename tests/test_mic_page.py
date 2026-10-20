@@ -35,6 +35,8 @@ def queries(failures):
                 vector({"run_id": "123:1"}, 1000),
                 vector({"run_id": "124:1"}, 2000),
             ]
+        if "pytest_pr_info" in expression:
+            return [vector({"pr": "42", "title": "Fix demo attention"})]
         assert 'test_job="fast-integration"' in expression
         return failures
 
@@ -79,13 +81,18 @@ def test_rows_join_case_metadata_and_link_pinned_baseline():
     assert case["platform"] == "cpu-x86_64-bf16"
     assert case["selected_by"] == "models/demo"
     assert f"/blob/{'b' * 40}/integrations/" in case["baseline_url"]
-    assert case["run_url"].endswith("/actions/runs/123")
-    assert "trace_id=" in case["trace_url"]
+    assert case["run_url"].startswith("/d/pytest-observability-by-run/")
+    assert "var-run_id=123%3A1" in case["run_url"]
+    assert case["trace_url"].startswith("/d/pytest-test/")
+    assert "var-trace_id=" in case["trace_url"]
+    assert case["pr_title"] == "Fix demo attention"
+    assert "var-pr=42" in case["pr_url"]
 
 
 def test_older_rows_work_without_mic_metadata_and_newest_runs_sort_first():
     data = mic_page.build_rows(queries([failure(), failure("124:1")]), lambda run: None)
-    assert [r["run_id"] for r in data["rows"]] == ["124:1", "123:1"]
+    assert [r["run_id"] for r in data["rows"]] == ["124:1"]
+    assert data["rows"][0]["fails"] == 2
     assert data["rows"][0]["target"] == "mic-demo-slim"
     assert data["rows"][0]["variant"] == "bfloat16"
     assert data["rows"][0]["baseline_url"] == ""
@@ -192,7 +199,7 @@ def test_http_page_data_caching_and_unavailable_state(monkeypatch):
         )
         assert json.load(urlopen(base + "/mic/data?days=1"))["rows"] == []
         urlopen(base + "/mic/data?days=1").read()
-        assert len(calls) == 2
+        assert len(calls) == 3
 
         def broken(expression):
             raise RuntimeError("private internal URL")
@@ -218,3 +225,160 @@ def test_mic_cache_write_failure_does_not_drop_main_run_rows(tmp_path, monkeypat
     monkeypatch.setattr(trace_exporter.os, "makedirs", makedirs)
     trace_exporter.persist_run_rows("123:1", [detail()], directory=str(tmp_path))
     assert len(trace_exporter.load_run_rows("123:1", directory=str(tmp_path))) == 1
+
+
+def test_recovers_assertion_and_model_provenance_for_older_rows():
+    def trace_rows(trace):
+        assert trace == "a" * 32
+        return [
+            detail(
+                **{
+                    "run_id": "123:1",
+                    "mic.failure": "logits: max delta 0.01 over tolerance",
+                    "mic.fixture_repo": "huggingface-mic/demo-mic",
+                    "mic.revision": "b" * 40,
+                }
+            )
+        ]
+
+    def build(pin):
+        assert pin == ("huggingface-mic/demo-mic", "b" * 40)
+        return {"source_model": "creator/Large-Demo-24B", "weights": "overfit"}
+
+    row = mic_page.build_rows(
+        queries([failure()]),
+        lambda run: None,
+        trace_rows=trace_rows,
+        build_metadata=build,
+    )["rows"][0]
+    assert row["failure"].startswith("logits:")
+    assert row["weights"] == "overfit"
+    assert row["source_model_url"] == "https://huggingface.co/creator/Large-Demo-24B"
+    assert row["fixture_repo_url"] == "https://huggingface.co/huggingface-mic/demo-mic"
+
+
+def test_variant_and_platform_filters_apply_before_row_limit(monkeypatch):
+    monkeypatch.setattr(mic_page, "LIMIT", 1)
+    newer = failure("124:1", node="tests/contracts::demo::demo[default]")
+    records = {
+        "123:1": [detail(**{"mic.platform": "cpu", "mic.variant": "bfloat16"})],
+        "124:1": [
+            {
+                **detail(),
+                "test_nodeid": newer["metric"]["test_nodeid"],
+                "mic.platform": "cuda",
+                "mic.variant": "default",
+            }
+        ],
+    }
+    data = mic_page.build_rows(
+        queries([failure(), newer]), records.get, variant="bfloat16", platform="cpu"
+    )
+    assert [row["run_id"] for row in data["rows"]] == ["123:1"]
+    assert data["options"] == {
+        "variant": ["bfloat16", "default"],
+        "platform": ["cpu", "cuda"],
+    }
+
+
+@pytest.mark.parametrize(
+    "scope,matcher",
+    [("main", ',pr="main"'), ("prs", ',pr=~"[0-9]+|gh-readonly-queue/.*"')],
+)
+def test_scope_is_applied_to_failure_query(scope, matcher):
+    expressions = []
+    mic_page.build_rows(
+        lambda expression: expressions.append(expression) or [],
+        lambda run: None,
+        scope=scope,
+    )
+    assert matcher in expressions[0]
+
+
+def test_merge_queue_rows_link_to_the_original_pr():
+    row = failure()
+    row["metric"]["pr"] = "gh-readonly-queue/main/pr-42-abcdef"
+    result = mic_page.build_rows(queries([row]), lambda run: None)["rows"][0]
+    assert result["pr_number"] == "42"
+    assert result["pr_title"] == "Fix demo attention"
+    assert result["pr_url"].endswith("var-pr=42")
+
+
+def test_daily_strip_counts_distinct_runs_and_keeps_latest_failure():
+    day = 86400
+    today = 100 * day
+
+    def query(expression):
+        if "pytest_run_start_time_seconds" in expression:
+            return [
+                vector({"run_id": "123:1"}, today - day),
+                vector({"run_id": "124:1"}, today + 60),
+            ]
+        if "pytest_pr_info" in expression:
+            return []
+        return [failure(), failure(), failure("124:1")]
+
+    data = mic_page.build_rows(query, lambda run: None, now=today + 3600, days=7)
+    assert len(data["rows"]) == 1
+    row = data["rows"][0]
+    assert row["days"] == [0, 0, 0, 0, 0, 1, 1]
+    assert row["fails"] == 2
+    assert row["run_id"] == "124:1"
+    assert data["first_day"] == 94 * day
+
+
+@pytest.mark.parametrize(
+    "status,exception,target,message,expected",
+    [
+        (
+            "fail",
+            "MICAssertionError",
+            "demo",
+            "logits: max delta 0.01",
+            "Baseline assertion",
+        ),
+        (
+            "error",
+            "MICExecutionError",
+            "demo",
+            "Traceback: generate failed",
+            "Runtime traceback",
+        ),
+        (
+            "fail",
+            "MICExecutionError",
+            "demo",
+            "Older execution failure",
+            "Runtime traceback",
+        ),
+        ("error", "MICRunnerError", "runner", "Manifest invalid", "Setup error"),
+        (
+            "fail",
+            "MICAssertionError",
+            "demo",
+            "no reviewed baseline at path",
+            "Missing baseline",
+        ),
+        (
+            "fail",
+            "MICAssertionError",
+            "demo",
+            "listed in known_failures but passes; remove it",
+            "Unexpected pass",
+        ),
+    ],
+)
+def test_failure_kind_distinguishes_traceback_from_baseline(
+    status, exception, target, message, expected
+):
+    assert mic_page.failure_kind(status, exception, target, message) == expected
+
+
+def test_recovered_details_survive_writes_from_older_main_rows(tmp_path):
+    row = detail(**{"mic.failure": "logits: over tolerance", "mic.weights": "random"})
+    directory = str(tmp_path / "mic")
+    trace_exporter._persist_mic_rows("123:1", [row], directory)
+    trace_exporter._persist_mic_rows("123:1", [detail()], directory)
+    stored = trace_exporter.load_run_rows("123:1", directory=directory)[0]
+    assert stored["mic.failure"] == "logits: over tolerance"
+    assert stored["mic.weights"] == "random"

@@ -56,6 +56,9 @@ class Telemetry:
         for key in (
             "status",
             "platform",
+            "weights",
+            "source_model",
+            "fixture_repo",
             "baseline",
             "baseline_repo",
             "baseline_revision",

@@ -920,6 +920,25 @@ def _main(argv, telemetry):
                         continue
                     if callable(model):
                         model = model()
+                    if kind == "fixture":
+                        build_file = Path(model) / "build.json"
+                        if build_file.exists():
+                            build = json.loads(build_file.read_text())
+                            source = build.get("built_from", {})
+                            record["source_model"] = (
+                                source.get("repo", "")
+                                if isinstance(source, dict)
+                                else ""
+                            )
+                            record["weights"] = build.get("weights", "unknown")
+                        record["fixture_repo"] = next(
+                            (
+                                repo
+                                for repo, pin in contract.get("fixtures", {}).items()
+                                if pin.get("target", short(repo)) == target
+                            ),
+                            "",
+                        )
                     env_info = env_info or executor.environment()
                     start = time.perf_counter()
                     env = {
