@@ -61,6 +61,10 @@
       "source_model": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
       "weights": "random"
     },
+    "huggingface-mic/mistral3-mic@958fe85acde48676cffc8c8b13ba1ff905922c8e": {
+      "source_model": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+      "weights": "random"
+    },
     "huggingface-mic/modernbert-mic@82c6dab7d0832dad0556878a513392a6af7b9b36": {
       "source_model": "answerdotai/ModernBERT-base",
       "weights": "random"
@@ -74,6 +78,10 @@
       "weights": "random"
     },
     "huggingface-mic/qwen2_5_omni-mic@0eb041a27dc034095a74991d04f8ed03ad2e39d6": {
+      "source_model": "Qwen/Qwen2.5-Omni-7B",
+      "weights": "random"
+    },
+    "huggingface-mic/qwen2_5_omni-mic@ac475da445d932851d232de6d9282e438ee34df8": {
       "source_model": "Qwen/Qwen2.5-Omni-7B",
       "weights": "random"
     },
@@ -102,6 +110,10 @@
       "weights": "overfit"
     },
     "huggingface-mic/smolvlm-mic@01b7aa3d3bf28b227747925bfbf04c31bcdc885b": {
+      "source_model": "HuggingFaceTB/SmolVLM2-2.2B-Instruct",
+      "weights": "random"
+    },
+    "huggingface-mic/smolvlm-mic@7f07733e736d1144211538f8dabfca8fb5f732d7": {
       "source_model": "HuggingFaceTB/SmolVLM2-2.2B-Instruct",
       "weights": "random"
     },
@@ -149,6 +161,10 @@
       "source_model": "facebook/wav2vec2-base-960h",
       "weights": "random"
     },
+    "huggingface-mic/wav2vec2-mic@dd484e8f962efb4f6bf9a89bebdc539c93e63f12": {
+      "source_model": "facebook/wav2vec2-base-960h",
+      "weights": "random"
+    },
     "huggingface-mic/weathernext2-mic@3ce5455e880cc19bd24c11b5ade32b98e1922ec1": {
       "source_model": "kashif/weathernext2-mini",
       "weights": "random"
@@ -158,6 +174,10 @@
       "weights": "overfit"
     },
     "huggingface-mic/whisper-tiny-mic@7acfb01aa91f05eb0a1507e00878c3e42901e2cc": {
+      "source_model": "openai/whisper-tiny",
+      "weights": "overfit"
+    },
+    "huggingface-mic/whisper-tiny-mic@7eee73ba0b2d57adb35894f522084bb7f2f2df80": {
       "source_model": "openai/whisper-tiny",
       "weights": "overfit"
     },
