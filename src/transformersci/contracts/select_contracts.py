@@ -297,6 +297,8 @@ def select(changed_files, contract_dirs, sources=None, model_type_to_module=None
     """{contract: reason} for the contracts the changed files can affect."""
     selected = {}
     for path in changed_files:
+        if path == "tests/contracts.lock":
+            return {name: f"fleet revision ({path})" for name in contract_dirs}
         if path.startswith(
             (
                 "utils/contracts/",

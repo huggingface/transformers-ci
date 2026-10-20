@@ -3,11 +3,11 @@
     run-model-contracts --fixtures-only --contract SmolLM --target mic-SmolLM-slim
     run-model-contracts --fixtures-only --fleet prototypes --variant bfloat16
     run-model-contracts --fixtures-only --fleet prototypes --variant bfloat16 --changed-files changed.txt
-    run-model-contracts --lock tests/contracts/fleet.lock --fixtures-only
+    run-model-contracts --lock /path/to/custom-fleet.json --fixtures-only
 
 Recovered from huggingface/transformers PR #49532 at
- aec34847b4456e24e89b3c2c7f145189611b8a04. Schemas and fleet locks
-travel with the package. Framework baselines live in the pinned Hub MIC snapshot. Legacy --lock inputs
+ aec34847b4456e24e89b3c2c7f145189611b8a04. Schemas travel with the package. Fleets come from the
+huggingface-mic/transformers-fleet Hub dataset. Framework baselines live in the pinned Hub MIC snapshot. Legacy --lock inputs
 use expectations/ beside the lock;
 --expectations overrides the directory. --record only writes candidate files
 and requires reproducibility in a fresh process. It never approves a baseline.
@@ -677,7 +677,11 @@ def _main(argv, telemetry):
     parser.add_argument(
         "--fleet",
         choices=("control", "prototypes"),
-        help="bundled fleet (default: control); mutually exclusive with --lock",
+        help="Hub fleet (default: control); mutually exclusive with --lock",
+    )
+    parser.add_argument(
+        "--fleet-revision",
+        help="dataset revision for --fleet (default: tests/contracts.lock, otherwise resolve main)",
     )
     parser.add_argument("--variant", default="default")
     parser.add_argument(
@@ -718,11 +722,29 @@ def _main(argv, telemetry):
     if args.golden:
         args.golden = platform_class(args.golden)
 
-    if args.lock and args.fleet:
-        parser.error("--fleet and --lock are mutually exclusive")
-    lock_path = args.lock or HERE / "data" / (
-        "prototype-fleet.lock" if args.fleet == "prototypes" else "fleet-lock.json"
-    )
+    if args.lock and (args.fleet or args.fleet_revision):
+        parser.error("--lock cannot be combined with --fleet or --fleet-revision")
+    fleet_metadata = {}
+    if args.lock:
+        lock_path = args.lock
+    else:
+        from . import fleet
+
+        lock_path, fleet_revision = fleet.lock_path(
+            args.fleet or "control",
+            args.fleet_revision
+            or (
+                fleet.read_revision()
+                if Path("tests/contracts.lock").exists()
+                else "main"
+            ),
+        )
+        fleet_metadata = {
+            "fleet": args.fleet or "control",
+            "fleet_repository": fleet.REPOSITORY,
+            "fleet_revision": fleet_revision,
+        }
+        print(json.dumps({"fleet": fleet_metadata}), file=sys.stderr, flush=True)
     lock_dir = lock_path.resolve().parent
     expectations = args.expectations or lock_dir / "expectations"
     lock = load(lock_path, "fleet-lock")
@@ -870,7 +892,7 @@ def _main(argv, telemetry):
                 "contract_revision": contract_revision,
                 "framework": args.framework,
                 "lock": str(lock_path.resolve()),
-                **({"fleet": args.fleet or "control"} if not args.lock else {}),
+                **fleet_metadata,
                 "variant": args.variant,
                 **(
                     {"selected_by": selected_by.get(name)}

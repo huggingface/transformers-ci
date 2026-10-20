@@ -96,4 +96,4 @@ where = ["src"]
 [tool.setuptools.package-data]
 "transformersci.otel" = ["patch_view.html", "patch_view.js", "pr_view.js", "pr_table.html", "pr_table.js", "pr_table_queries.json", "pr_ci_view.html", "pr_ci_view.js", "project_health.html", "project_health.js", "mic_page.html", "mic_page.js", "monitoring.html", "monitoring.js", "serge-logo.png", "favicon-32.png", "favicon-180.png"]
 
-"transformersci.contracts" = ["schemas/*.json", "data/*.json", "data/*.lock"]
+"transformersci.contracts" = ["schemas/*.json", "data/*.json"]

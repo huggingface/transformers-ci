@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from transformersci.contracts import run, select_contracts
+from transformersci.contracts import fleet as fleet_api
+from transformersci.contracts import report, run, select_contracts
 from transformersci.otel import instrument
 
 
@@ -542,3 +543,114 @@ def test_registry_additions_preserve_composed_mapping_splices():
     assert set(select_contracts.select([path], dirs, {path: (before, changed)})) == set(
         dirs
     )
+
+
+def test_hub_fleet_resolves_and_downloads_an_immutable_dataset(monkeypatch, tmp_path):
+    import huggingface_hub
+    from types import SimpleNamespace
+
+    revision = "c" * 40
+    calls = []
+
+    class API:
+        def dataset_info(self, repo, revision):
+            assert repo == "huggingface-mic/transformers-fleet"
+            assert revision == "main"
+            return SimpleNamespace(sha="c" * 40)
+
+    def download(repo, filename, **kwargs):
+        calls.append((repo, filename, kwargs))
+        return str(tmp_path / filename)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", API)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    assert fleet_api.lock_path("prototypes") == (
+        tmp_path / "prototype-fleet.lock",
+        revision,
+    )
+    assert calls == [
+        (
+            fleet_api.REPOSITORY,
+            "prototype-fleet.lock",
+            {"repo_type": "dataset", "revision": revision},
+        )
+    ]
+    monkeypatch.setattr(
+        huggingface_hub,
+        "HfApi",
+        lambda: pytest.fail("immutable revision must not resolve main again"),
+    )
+    assert fleet_api.lock_path("control", revision)[1] == revision
+
+
+def test_hub_fleet_metadata_is_in_results_traces_and_reproduction(
+    fleet, capsys, monkeypatch, tmp_path
+):
+    revision = "d" * 40
+
+    def lock_path(name, ref):
+        assert (name, ref) == ("prototypes", revision)
+        return fleet[0], revision
+
+    monkeypatch.setattr(fleet_api, "lock_path", lock_path)
+    memory = InMemorySpanExporter()
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    monkeypatch.setattr(instrument, "build_primary_exporter", lambda env: memory)
+    monkeypatch.setattr(instrument, "build_staging_exporter", lambda env: None)
+    assert (
+        run.main(
+            ["--fleet", "prototypes", "--fleet-revision", revision, "--fixtures-only"]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert result["fleet_repository"] == fleet_api.REPOSITORY
+    assert result["fleet_revision"] == revision
+    spans = [
+        span
+        for span in memory.get_finished_spans()
+        if span.attributes.get("pytest.span_type") == "test"
+    ]
+    assert spans[0].attributes["mic.fleet_repository"] == fleet_api.REPOSITORY
+    assert spans[0].attributes["mic.fleet_revision"] == revision
+    result.update(status="fail", failures=["tokens differ"])
+    path = tmp_path / "results.jsonl"
+    path.write_text(json.dumps(result) + "\n")
+    report.main([str(path)])
+    summary = capsys.readouterr().out
+    assert f"--fleet prototypes --fleet-revision {revision}" in summary
+    assert "--lock " not in summary
+
+
+def test_custom_lock_cannot_silently_ignore_a_dataset_revision(fleet):
+    with pytest.raises(SystemExit) as error:
+        run.main(["--lock", str(fleet[0]), "--fleet-revision", "main"])
+    assert error.value.code == 2
+
+
+def test_framework_dataset_pin_is_strict_and_selects_the_entire_fleet(tmp_path):
+    path = tmp_path / "contracts.lock"
+    path.write_text("e" * 40 + "\n")
+    assert fleet_api.read_revision(path) == "e" * 40
+    for value in ("main", "", "e" * 40 + "\nother"):
+        path.write_text(value)
+        with pytest.raises(ValueError, match="immutable dataset"):
+            fleet_api.read_revision(path)
+    dirs = {"BERT": ["bert"], "Whisper": ["whisper"]}
+    assert set(select_contracts.select(["tests/contracts.lock"], dirs)) == set(dirs)
+
+
+def test_runner_reads_framework_pin_by_default(fleet, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "tests/contracts.lock"
+    path.parent.mkdir()
+    path.write_text("f" * 40 + "\n")
+    calls = []
+
+    def lock_path(name, revision):
+        calls.append((name, revision))
+        return fleet[0], revision
+
+    monkeypatch.setattr(fleet_api, "lock_path", lock_path)
+    assert run.main(["--fixtures-only"]) == 0
+    assert calls == [("control", "f" * 40)]

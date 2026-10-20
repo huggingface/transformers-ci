@@ -1,119 +1,85 @@
 # Model integration contracts in PR CI
 
-The runner, dependency selector, schemas, summary renderer and fleet locks were recovered from Transformers [PR #49532](https://github.com/huggingface/transformers/pull/49532),
-commit `aec34847b4456e24e89b3c2c7f145189611b8a04`. They now live in
-`transformersci.contracts`. The reviewed baseline files were copied byte for byte into the consolidated Hub
-models, alongside framework usage. Active locks pin the combined snapshots.
+MICs run small model fixtures through executable usage examples and compare their
+outputs with reviewed expectations. The runner, dependency selector, schemas and
+summary renderer live in `transformersci.contracts`.
 
-Install `transformers-ci[contracts,otel]` plus the framework and its runtime dependencies.
-Runnable Markdown execution also requires the doc-builder revision installed in
-`.github/workflows/pr-ci_contracts.yml`.
+## Shared fleet
+
+The two fleets live in the
+[`huggingface-mic/transformers-fleet`](https://huggingface.co/datasets/huggingface-mic/transformers-fleet)
+Hub dataset. `fleet-lock.json` defines the control fleet; `prototype-fleet.lock`
+defines the BF16 prototype fleet. There are no runner fleet copies in the
+Transformers or transformers-ci source trees.
+
+Transformers keeps one file, `tests/contracts.lock`, containing the immutable
+dataset commit SHA. CI reads this pin and uses it for both invocations. The CLI
+also reads the local pin by default; outside a checkout, it resolves dataset
+`main`. Use `--fleet-revision` to override the pin for reproduction.
+Results, OTEL spans and reproduction commands carry the dataset revision. A later
+fleet update therefore does not change how an earlier run is reproduced.
 
 ```bash
-# Control fleet; select fixtures from the lock, using each default variant.
+pip install 'transformers-ci[contracts,otel]'
 run-model-contracts --fixtures-only --fleet control
-# The 23 prototype models, BF16.
 run-model-contracts --fixtures-only --fleet prototypes --variant bfloat16
-# Selection by changed model, configuration and processor dependencies.
+# Reproduce a recorded job:
+run-model-contracts --fixtures-only --fleet prototypes --variant bfloat16 \
+  --fleet-revision <dataset-commit>
+# Select MICs affected by a framework change:
 git diff --name-only origin/main...HEAD > /tmp/mic-changed-files.txt
 run-model-contracts --fixtures-only --fleet prototypes --variant bfloat16 \
-  --changed-files /tmp/mic-changed-files.txt --diff-base origin/main --output /tmp/results.jsonl 2>/tmp/run.log
+  --changed-files /tmp/mic-changed-files.txt --diff-base origin/main \
+  --output /tmp/results.jsonl 2>/tmp/run.log
 report-model-contracts /tmp/results.jsonl --log /tmp/run.log
 ```
 
-The dependency selector was already present in the deployed `tmic` invocation.
-The migration restores it locally and fixes an empty selection incorrectly failing
-when the control's `--target` was supplied. Documentation-only changes do not need
-Hub downloads. Model changes include processor dependencies: a GPT-2 tokenizer
-change can select Llama and SmolVLM; shared library or dependency changes select all.
-Push and merge-group events run the entire fast fleet.
+Install the framework and its runtime dependencies as well. Runnable Markdown
+execution requires the doc-builder revision installed by
+`.github/workflows/pr-ci_contracts.yml`. `--lock PATH` remains available for an
+explicit custom fleet; it cannot be combined with `--fleet` or `--fleet-revision`.
 
-When a PR only adds model entries to Auto mappings or model imports under
-`TYPE_CHECKING`, selection uses the base diff to run MICs for those models and
-their dependent fixtures. A new model without a MIC selects none of the existing
-MICs. Changes to existing registrations, shared runtime logic, dependencies, or
-unreadable diffs retain full-fleet selection. `--diff-base` uses the merge base
-with `HEAD`, matching the changed-file list above. Without it, shared files keep
-the conservative full-fleet behavior.
+## Selection and baselines
 
-Baselines check exact outputs, numeric shapes and tolerances, required outputs,
-finite values, named gradient checks and boolean assertions. A missing baseline or baseline identity mismatch fails. Locked file hashes verify contract code and fixture bytes independently in the
-combined snapshot. Baseline identity checks use stable target, framework, variant
-and platform identities. Original source revisions remain provenance after the
-content-preserving relocation; baseline values and tolerances were preserved.
-Runtime version differences are recorded in each result.
+Model changes select MICs that use that model or its processors. Additive Auto
+registrations and model imports under `TYPE_CHECKING` select only the registered
+models when `--diff-base` is supplied. A new model without a MIC selects none of
+the existing MICs. Changes to existing registrations, shared runtime code,
+dependencies, or unavailable diffs retain full-fleet selection. Push and
+merge-group events run both entire fleets.
 
-Use `--lock PATH` for a framework-owned fleet; the baseline directory is read from
-`integrations/<framework>/expectations/` in the pinned MIC snapshot. Legacy
-split-repo locks retain their `expectations/` directory beside the lock. `--expectations PATH` overrides it. `--record`
-writes `.candidate.json` files only after fresh-process reproduction. Review values
-and provenance before replacing an approved baseline; CI never records or approves.
+Fleet entries pin immutable `huggingface-mic/<name>-mic` model snapshots containing
+weights, `integration.json`, usage, and reviewed expectations under
+`integrations/<framework>/expectations/<platform>/<target>[.<variant>].json`.
+Contract and fixture hashes verify executable code and weights independently.
+
+Checks cover exact outputs, numeric shapes and tolerances, required outputs,
+finite values, named gradient checks and boolean assertions. Missing references
+and identity mismatches fail. Known failures and excluded outputs remain scoped
+in the fleet files. Runtime version differences are recorded in the results.
+`--record` writes candidate files after fresh-process reproduction; it never
+approves them. Review measured changes before updating model expectations and
+fleet pins in the dataset using `tmic export --execute`, then adopt the resulting
+dataset SHA with `tmic pin --transformers-checkout PATH --revision SHA`. `--expectations PATH` can override baseline lookup for
+local review.
 
 ## Observational behavior and telemetry
 
-The command exits nonzero on an assertion or execution failure. Its CI step has
-`continue-on-error: true`, so the GitHub job remains green while full failure text
-appears in the job log, summary and artifacts. Installation and summary errors
-also remain observational. The job remains outside the final CI gate.
+Assertion and execution failures return a nonzero exit code. The reusable CI
+workflow keeps the job observational: errors appear in logs, summaries, artifacts
+and OTEL without blocking the PR. Setup errors are reported too.
 
-`configure-ci-otel` sets the usual PR, run, repository and job resource attributes.
-Each selected target/variant gets a timed span named
-`tests/contracts::<contract>::<target>[<variant>]`, tagged with `pytest.nodeid`
-and `pytest.span_type=test`. Existing dashboard ingestion can consume these spans.
-Case attributes include `mic.contract`, `mic.contract_revision`, `mic.target`,
-`mic.revision`, `mic.kind`, `mic.variant`, `mic.framework`, `mic.selected_by`,
-`mic.platform`, `mic.baseline`, `mic.baseline_repo`, `mic.baseline_revision`,
-`mic.baseline_path`, and `mic.status` when available. Assertion and
-execution failures carry ERROR status and exception details. Expected failures
-and unsupported cases retain their MIC status attributes; they are not promoted
-to ERROR unless execution itself fails. Setup errors emit a `tests/contracts::runner`
-failure. Providers flush on exit; without an endpoint tracing is a no-op.
+Each case has a timed span named
+`tests/contracts::<contract>::<target>[<variant>]`. Attributes identify the model,
+variant, platform, random/overfit weights, selection reason, model and baseline
+pins, plus `mic.fleet_repository` and `mic.fleet_revision`. Assertion and execution
+failures carry ERROR status with their full details. Expected failures and
+unsupported cases retain their MIC status. Without an endpoint, tracing is a no-op.
 
-The two command invocations share the `fast-integration` job identity. The log
-formatter accepts OTEL wrapper diagnostics as well as JSON records. Summary rendering
-combines selection reports from both fleets and produces fleet-specific repro commands.
-
-## MIC failures page
-
-The dashboard's **MIC failures** navigation entry opens `/mic`, a dedicated page
-for failing `fast-integration` cases. Use the All / Main / PRs, variant and platform
-filters and a 7-, 14- or 30-day window. Each row groups one model/variant/platform
-and weight strategy, with a daily failure strip and links to the latest failure's
-PR, internal Test and Run pages, and pinned Hub baseline. Original and slim model
-names link to the Hub. The Weights column comes from the pinned fixture's build
-metadata (`random`, `overfit`, or `unknown`). Dates show the timestamp and age.
-Failure badges distinguish baseline assertions, runtime tracebacks, setup errors,
-missing references and unexpected passes; the actual assertion or exception is
-shown in the same cell.
-Expected failures and unsupported cases are excluded; an unexpected pass of a
-known failure remains actionable.
-
-The page reads the existing Prometheus failure index and a compact MIC-only run
-store, retaining case metadata and bounded failure text without adding Prometheus
-labels. Older observations still show their case identity and trace links even
-when their stored metadata predates this page. Missing assertion details are
-recovered from available traces, and pinned Hub build records supply model
-provenance. Historical build identities are indexed by immutable Hub revision in
-`contracts/data/fixture-provenance.json`; the dashboard needs no public Hub egress.
-New runner spans carry their own source model and weight strategy. The table
-refreshes every 30 seconds while visible. Upstream errors produce an explicit
-unavailable state, rather than an empty failure table.
-
-## Hub ownership and consolidated snapshots
-
-The active fleet uses 33 `huggingface-mic/<name>-mic` model repositories.
-Each contains the slim weights, `build.json`, `integration.json`, framework usage
-and `integrations/<framework>/expectations/<platform>/<target>[.<variant>].json`.
-All 373 copied reviewed reference files retained their original bytes. Weathernext2
-has no reviewed baseline yet; its expectations directory documents that gap.
-
-The migrated locks keep historical fixture target names with an explicit `target`
-field. Contract selection keys and known-failure names also stay stable across
-repository renames. `.mic-repo.json` defines the contract's file inventory, so
-adding a baseline cannot accidentally invalidate the weight hash or hide a
-contract source change. Contract and fixture roles pin the combined snapshot.
-
-The 24 old split fixture repositories were deleted after their replacements were
-verified. Land the consolidated runner before switching Transformers to these
-locks. The integration repo renames retain their original Git history and Hub
-redirects. Full usage and slim-model descriptions remain on the umbrella cards.
+The dashboard's MIC page reads the failure index and compact per-run records.
+It provides branch, variant, platform, failure-type and time-window filters,
+model links, internal PR/trace/run links, assertion details and daily failure bars.
+The global rate divides failed checks by recorded MIC checks for the selected
+window and branch scope, across all variants and platforms. The exporter uses a
+small offline provenance index for historical labels; it does not fetch fleets
+or model metadata over public egress.

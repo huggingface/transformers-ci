@@ -111,6 +111,13 @@
   },
   "lock": {
    "type": "string"
+  },
+  "fleet_repository": {
+   "type": "string"
+  },
+  "fleet_revision": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{40}$"
   }
  },
  "allOf": [

@@ -34,6 +34,8 @@ class Telemetry:
                 "revision",
                 "variant",
                 "framework",
+                "fleet_repository",
+                "fleet_revision",
                 "selected_by",
             )
             if record.get(key) is not None

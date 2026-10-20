@@ -1,8 +1,8 @@
 """Markdown summary of a contract run, for a CI job summary.
 
-    python example/run.py ... --output results.jsonl 2> run.log
-    python example/report.py results.jsonl --log run.log --runner "python utils/contracts/run.py" \
-        --lock tests/contracts/fleet-lock.json >> "$GITHUB_STEP_SUMMARY"
+    run-model-contracts --fleet prototypes --variant bfloat16 --fixtures-only \
+        --output results.jsonl 2> run.log
+    report-model-contracts results.jsonl --log run.log >> "$GITHUB_STEP_SUMMARY"
 
 One row per target (status, first failure line, baseline), the contracts the
 changed files selected and why (read from the runner's stderr), and for each
@@ -129,6 +129,8 @@ def main(argv=None):
                 if r.get("fleet")
                 else (f" --lock {lock_path}" if lock_path else "")
             )
+            if r.get("fleet") and r.get("fleet_revision"):
+                lock += f" --fleet-revision {r['fleet_revision']}"
             command = f"{args.runner} --framework transformers --fixtures-only{lock} --contract {r.get('contract_name', short(r['contract']))} --target {r['target']}"
             if r.get("variant", "default") != "default":
                 command += f" --variant {r['variant']}"

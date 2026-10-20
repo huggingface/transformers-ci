@@ -21,6 +21,8 @@ FIELDS = (
     "target",
     "variant",
     "framework",
+    "fleet_repository",
+    "fleet_revision",
     "platform",
     "selected_by",
     "baseline_repo",
@@ -52,13 +54,12 @@ def _samples(items):
 @lru_cache(maxsize=1)
 def fixture_catalog():
     fixtures = {}
-    for name in ("fleet-lock.json", "prototype-fleet.lock"):
-        path = Path(__file__).parents[1] / "contracts/data" / name
-        for contract in json.loads(path.read_text())["contracts"].values():
-            for repo, pin in contract.get("fixtures", {}).items():
-                item = (repo, pin["revision"])
-                fixtures[pin.get("target", repo.split("/")[-1])] = item
-                fixtures[repo.split("/")[-1]] = item
+    path = Path(__file__).parents[1] / "contracts/data/fixture-provenance.json"
+    for pin, metadata in json.loads(path.read_text())["fixtures"].items():
+        repo, revision = pin.rsplit("@", 1)
+        if target := metadata.get("target"):
+            fixtures.setdefault(target, (repo, revision))
+            fixtures.setdefault(repo.split("/")[-1], (repo, revision))
     return fixtures
 
 
