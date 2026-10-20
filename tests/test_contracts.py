@@ -508,3 +508,37 @@ def test_changed_sources_uses_merge_base_and_falls_back_when_missing(
         path: (original, file.read_text())
     }
     assert select_contracts.changed_sources([path], "missing-ref") == {}
+
+
+@pytest.mark.parametrize("constructor", ["OrderedDict", "OrderedDict[str, str | None]"])
+def test_registry_preserves_existing_duplicates_and_typed_constructor(constructor):
+    path = "src/transformers/models/auto/modeling_auto.py"
+    before = f'{constructor}([("sam3_tracker", "Sam3Tracker"), ("sam3_tracker", "Sam3Tracker")])'
+    before = "MODEL_MAPPING_NAMES = " + before
+    after = before.replace(
+        '[("sam3_tracker"', '[("new", "NewModel"), ("sam3_tracker"', 1
+    )
+    dirs = {"New": ["new"], "SAM": ["sam3_tracker"]}
+    assert set(select_contracts.select([path], dirs, {path: (before, after)})) == {
+        "New"
+    }
+    changed = after.replace(
+        '("sam3_tracker", "Sam3Tracker")', '("sam3_tracker", "Changed")', 1
+    )
+    assert set(select_contracts.select([path], dirs, {path: (before, changed)})) == set(
+        dirs
+    )
+
+
+def test_registry_additions_preserve_composed_mapping_splices():
+    path = "src/transformers/models/auto/modeling_auto.py"
+    before = "MODEL_MAPPING_NAMES = OrderedDict([*list(BASE_MAPPING_NAMES.items())])"
+    after = before.replace("])", ', ("new", "NewModel")])')
+    dirs = {"New": ["new"], "BERT": ["bert"]}
+    assert set(select_contracts.select([path], dirs, {path: (before, after)})) == {
+        "New"
+    }
+    changed = after.replace("BASE_MAPPING_NAMES", "OTHER_MAPPING_NAMES")
+    assert set(select_contracts.select([path], dirs, {path: (before, changed)})) == set(
+        dirs
+    )

@@ -93,13 +93,20 @@ def _entries(value):
         pairs = list(zip(value.keys, value.values))
     elif (
         isinstance(value, ast.Call)
-        and isinstance(value.func, ast.Name)
-        and value.func.id == "OrderedDict"
+        and (
+            isinstance(value.func, ast.Name)
+            and value.func.id == "OrderedDict"
+            or isinstance(value.func, ast.Subscript)
+            and isinstance(value.func.value, ast.Name)
+            and value.func.value.id == "OrderedDict"
+        )
         and len(value.args) == 1
         and isinstance(value.args[0], (ast.List, ast.Tuple))
     ):
         pairs = []
         for item in value.args[0].elts:
+            if isinstance(item, ast.Starred):
+                continue  # Unchanged splices are checked by the final AST comparison.
             if not isinstance(item, (ast.List, ast.Tuple)) or len(item.elts) != 2:
                 return None
             pairs.append(item.elts)
@@ -110,7 +117,7 @@ def _entries(value):
     ):
         return None
     result = {key.value: ast.dump(val) for key, val in pairs}
-    return result if len(result) == len(pairs) else None
+    return result
 
 
 def _registration_value(node):
@@ -221,6 +228,17 @@ def registry_models(path, before, after):
             )
             if any(not _registration_value(values[key]) for key in added):
                 continue
+            keys = (
+                [key.value for key in node.value.keys]
+                if isinstance(node.value, ast.Dict)
+                else [
+                    item.elts[0].value
+                    for item in node.value.args[0].elts
+                    if not isinstance(item, ast.Starred)
+                ]
+            )
+            if any(keys.count(key) != 1 for key in added):
+                continue
             models.update(added)
             if isinstance(node.value, ast.Dict):
                 pairs = [
@@ -234,7 +252,7 @@ def registry_models(path, before, after):
                 node.value.args[0].elts = [
                     item
                     for item in node.value.args[0].elts
-                    if item.elts[0].value not in added
+                    if isinstance(item, ast.Starred) or item.elts[0].value not in added
                 ]
     return models if models and ast.dump(old) == ast.dump(new) else None
 
