@@ -47,6 +47,11 @@
     press(id);
   }
   function render() {
+    const summary = data.summary;
+    byId('failure-rate').textContent = summary?.rate == null ? '—' : `${summary.rate.toFixed(1)}%`;
+    byId('failure-counts').textContent = summary
+      ? `${summary.failed.toLocaleString()} failed / ${summary.total.toLocaleString()} recorded checks · last ${data.days} days · ${data.scope === 'main' ? 'main' : data.scope === 'prs' ? 'PRs' : 'all branches'} · all variants and platforms`
+      : 'Loading recorded MIC outcomes…';
     const filter = byId('search').value.toLowerCase();
     const rows = data.rows.filter(r => Object.values(r).join(' ').toLowerCase().includes(filter));
     const opened = new Set([...byId('rows').querySelectorAll('details[open]')].map(node => node.dataset.case));

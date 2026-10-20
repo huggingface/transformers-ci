@@ -78,6 +78,30 @@ def parse_scope(raw):
     return raw if raw in {"all", "main", "prs"} else "all"
 
 
+def failure_summary(query, *, days, scope):
+    """Count recorded MIC check outcomes across all variants and platforms."""
+    selector = 'test_job="fast-integration"'
+    if scope == "main":
+        selector += ',pr="main"'
+    elif scope == "prs":
+        selector += ',pr=~"[0-9]+|gh-readonly-queue/.*"'
+    counts = {}
+    for field in ("total", "failed"):
+        samples = query(
+            "max by (run_id, hardware) "
+            f"(last_over_time(pytest_run_job_{field}_tests{{{selector}}}[{days}d]))"
+        )
+        counts[field] = sum(
+            int(value)
+            for labels, value in _samples(samples)
+            if re.fullmatch(r"\d+(?::\d+)?", labels.get("run_id", "")) and value >= 0
+        )
+    counts["rate"] = (
+        100 * counts["failed"] / counts["total"] if counts["total"] else None
+    )
+    return counts
+
+
 def _parallel(items, loader):
     def one(item):
         try:
@@ -384,6 +408,7 @@ def build_rows(
     for case in cases:
         case["fails"] = len(case.pop("_runs"))
     return {
+        "summary": failure_summary(query, days=days, scope=scope),
         "rows": cases[:LIMIT],
         "days": days,
         "scope": scope,

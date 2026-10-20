@@ -11,6 +11,7 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:4px;margin-bottom:10px;min-width:0}
 .ph{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .ph h1{margin:0 6px 0 0;font-size:14px;font-weight:600;color:var(--strong)}
+.overview{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:12px;border-bottom:1px solid var(--line)}.overview strong{font-size:24px;color:var(--strong)}
 .sub{color:var(--muted);font-size:12px}.ctl{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}.lbl{color:var(--muted);font-size:12px}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
 .seg button{border:0;border-right:1px solid var(--line);background:transparent;color:var(--muted);padding:4px 9px;font:500 12px Inter,system-ui,sans-serif;cursor:pointer}
@@ -39,6 +40,7 @@ summary{cursor:pointer}pre{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monos
 <span class="ctl"><span class="lbl">Platform</span><span class="seg" id="platform"></span></span>
 <input class="search" id="search" type="search" placeholder="Search model, PR or assertion" aria-label="Search MIC failures">
 </div>
+<div class="overview" role="status" aria-live="polite"><span>Global failure rate</span><strong id="failure-rate">—</strong><span class="sub" id="failure-counts">Loading recorded MIC outcomes…</span></div>
 <div class="progress" id="progress"><span></span></div>
 <div class="scroll"><table><thead><tr><th>Model</th><th>Weights</th><th>Variant / platform</th><th>PR / branch</th><th id="days-head">Last 7 days</th><th>Date</th><th>Failure</th><th>Links</th></tr></thead><tbody id="rows"></tbody></table></div>
 <div class="foot"><p id="state" role="status" aria-live="polite">Loading MIC failures…</p><p>Observational checks · failures do not block CI · expected failures and unsupported cases are excluded</p></div>

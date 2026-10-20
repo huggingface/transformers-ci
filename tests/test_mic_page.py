@@ -35,6 +35,8 @@ def queries(failures):
                 vector({"run_id": "123:1"}, 1000),
                 vector({"run_id": "124:1"}, 2000),
             ]
+        if "pytest_run_job_" in expression:
+            return []
         if "pytest_pr_info" in expression:
             return [vector({"pr": "42", "title": "Fix demo attention"})]
         assert 'test_job="fast-integration"' in expression
@@ -199,11 +201,11 @@ def test_http_page_data_caching_and_unavailable_state(monkeypatch):
         )
         assert json.load(urlopen(base + "/mic/data?days=1"))["rows"] == []
         urlopen(base + "/mic/data?days=1").read()
-        assert len(calls) == 3
+        assert len(calls) == 5
         urlopen(base + "/mic/data?days=1&failure_type=Runtime%20traceback").read()
-        assert len(calls) == 6
+        assert len(calls) == 10
         urlopen(base + "/mic/data?days=1&failure_type=Runtime%20traceback").read()
-        assert len(calls) == 6
+        assert len(calls) == 10
 
         def broken(expression):
             raise RuntimeError("private internal URL")
@@ -319,6 +321,8 @@ def test_daily_strip_counts_distinct_runs_and_keeps_latest_failure():
                 vector({"run_id": "123:1"}, today - day),
                 vector({"run_id": "124:1"}, today + 60),
             ]
+        if "pytest_run_job_" in expression:
+            return []
         if "pytest_pr_info" in expression:
             return []
         return [failure(), failure(), failure("124:1")]
@@ -434,3 +438,57 @@ def test_failure_type_filter_precedes_grouping_and_row_limit(monkeypatch):
         )["rows"]
         == []
     )
+
+
+@pytest.mark.parametrize(
+    "scope,matcher",
+    [
+        ("all", None),
+        ("main", 'pr="main"'),
+        ("prs", 'pr=~"[0-9]+|gh-readonly-queue/.*"'),
+    ],
+)
+def test_failure_rate_uses_weighted_check_totals(scope, matcher):
+    def query(expression):
+        assert "[14d]" in expression
+        assert 'test_job="fast-integration"' in expression
+        assert "max by (run_id, hardware)" in expression
+        if matcher:
+            assert matcher in expression
+        values = [10, 90] if "_total_tests" in expression else [10, 0]
+        return [
+            vector({"run_id": f"{i + 1}:1"}, value) for i, value in enumerate(values)
+        ]
+
+    assert mic_page.failure_summary(query, days=14, scope=scope) == {
+        "total": 100,
+        "failed": 10,
+        "rate": 10.0,
+    }
+
+
+def test_failure_rate_with_no_recorded_checks_is_unknown():
+    assert mic_page.failure_summary(lambda query: [], days=7, scope="all") == {
+        "total": 0,
+        "failed": 0,
+        "rate": None,
+    }
+
+
+def test_failure_rate_is_independent_of_table_filters():
+    def query(expression):
+        if "pytest_run_job_" in expression:
+            return [
+                vector({"run_id": "123:1"}, 10 if "_total_tests" in expression else 2)
+            ]
+        return queries([failure()])(expression)
+
+    result = mic_page.build_rows(
+        query,
+        lambda run: [detail()],
+        variant="absent",
+        platform="absent",
+        failure_type="Runtime traceback",
+    )
+    assert result["rows"] == []
+    assert result["summary"] == {"total": 10, "failed": 2, "rate": 20.0}
