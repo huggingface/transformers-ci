@@ -7286,25 +7286,18 @@ def _mic_trace_rows(trace_id: str) -> list[dict]:
     return rows
 
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=1)
+def _mic_provenance_index() -> dict:
+    path = Path(__file__).parents[1] / "contracts/data/fixture-provenance.json"
+    return json.loads(path.read_text())["fixtures"]
+
+
 def _mic_build_metadata(pin: tuple[str, str]) -> dict:
+    # Public egress is denied in production. Resolve historical build identity
+    # from the exact pinned Hub records shipped with the runner; new runs emit
+    # their own provenance, so an unknown pin never causes a network request.
     repo, revision = pin
-    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo) or not re.fullmatch(
-        r"[a-fA-F0-9]{40}", revision
-    ):
-        return {}
-    build = _http_get_json(
-        f"https://huggingface.co/{repo}/resolve/{revision}/build.json",
-        timeout=10,
-        upstream="hub",
-    )
-    if not isinstance(build, dict):
-        return {}
-    source = build.get("built_from", {})
-    return {
-        "source_model": source.get("repo", "") if isinstance(source, dict) else "",
-        "weights": build.get("weights", "unknown"),
-    }
+    return dict(_mic_provenance_index().get(f"{repo}@{revision}", {}))
 
 
 def load_mic_rows(run_id: str) -> list[dict[str, str | float]] | None:

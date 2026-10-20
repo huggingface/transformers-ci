@@ -382,3 +382,16 @@ def test_recovered_details_survive_writes_from_older_main_rows(tmp_path):
     stored = trace_exporter.load_run_rows("123:1", directory=directory)[0]
     assert stored["mic.failure"] == "logits: over tolerance"
     assert stored["mic.weights"] == "random"
+
+
+def test_fixture_provenance_is_available_without_public_network(monkeypatch):
+    monkeypatch.setattr(
+        trace_exporter,
+        "_http_get_json",
+        lambda *a, **k: pytest.fail("public network lookup"),
+    )
+    for pin in set(mic_page.fixture_catalog().values()):
+        metadata = trace_exporter._mic_build_metadata(pin)
+        assert metadata["source_model"]
+        assert metadata["weights"] in {"random", "overfit", "unknown"}
+    assert trace_exporter._mic_build_metadata(("unknown/model", "f" * 40)) == {}

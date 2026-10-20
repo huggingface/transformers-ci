@@ -1,0 +1,169 @@
+{
+  "format": "mic-fixture-provenance-v1",
+  "fixtures": {
+    "huggingface-mic/bert-base-uncased-mic@a1f96617d0b6c9f76ed6822ec843c922da95878b": {
+      "source_model": "google-bert/bert-base-uncased",
+      "weights": "random"
+    },
+    "huggingface-mic/bert-base-uncased-mic@faa5f7a24350db87b0b9992eab1e07ad01032c70": {
+      "source_model": "google-bert/bert-base-uncased",
+      "weights": "random"
+    },
+    "huggingface-mic/bert-mic@565fb1745a10faab255312b06a69c6a7d9a698ee": {
+      "source_model": "google-bert/bert-base-uncased",
+      "weights": "random"
+    },
+    "huggingface-mic/clip-mic@945db810ef3b08579db2fe2dd57e4b37ed8e462b": {
+      "source_model": "openai/clip-vit-base-patch32",
+      "weights": "random"
+    },
+    "huggingface-mic/clip-vit-base-patch32-mic@5eb92c4457ab608437d2a495fbed71df19740da8": {
+      "source_model": "openai/clip-vit-base-patch32",
+      "weights": "random"
+    },
+    "huggingface-mic/clip-vit-base-patch32-mic@adad0f30de071148ab0b55bb2263ac909e58cc5b": {
+      "source_model": "openai/clip-vit-base-patch32",
+      "weights": "random"
+    },
+    "huggingface-mic/detr-mic@85e28d302059d0540aaf2ed34dfba458a8040882": {
+      "source_model": "facebook/detr-resnet-50",
+      "weights": "random"
+    },
+    "huggingface-mic/gemma3-mic@5f50fc50fea580b11176a7063ba6569281555903": {
+      "source_model": "google/gemma-3-4b-it",
+      "weights": "random"
+    },
+    "huggingface-mic/got_ocr2-mic@c35a1e642aa983aca9eb77e151db3e406b4eb63f": {
+      "source_model": "stepfun-ai/GOT-OCR-2.0-hf",
+      "weights": "overfit"
+    },
+    "huggingface-mic/gpt2-mic@fd0b7d99b893833541cecafbc953d8a85aa4d438": {
+      "source_model": "openai-community/gpt2",
+      "weights": "random"
+    },
+    "huggingface-mic/gpt_oss-mic@adb29e36a5bb98d7bc0729ddf90698c6e61efa67": {
+      "source_model": "openai/gpt-oss-20b",
+      "weights": "random"
+    },
+    "huggingface-mic/internvl-mic@f01c184e89421347e12f440365cce1b3cc9e3bf1": {
+      "source_model": "OpenGVLab/InternVL3-1B-hf",
+      "weights": "random"
+    },
+    "huggingface-mic/llama-mic@8d226a7446d25c950cc09a3f7101ab553f01699a": {
+      "source_model": "HuggingFaceTB/SmolLM2-135M",
+      "weights": "random"
+    },
+    "huggingface-mic/llava-mic@4b1f1435225c55dfa06c35e63319c36a0f5a9ce2": {
+      "source_model": "llava-hf/llava-1.5-7b-hf",
+      "weights": "random"
+    },
+    "huggingface-mic/mistral3-mic@4e05ef6b5d73ea89e0f35563c284162b1eb8a10f": {
+      "source_model": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+      "weights": "random"
+    },
+    "huggingface-mic/modernbert-mic@82c6dab7d0832dad0556878a513392a6af7b9b36": {
+      "source_model": "answerdotai/ModernBERT-base",
+      "weights": "random"
+    },
+    "huggingface-mic/musicgen-melody-mic@c81d5a554014860f347652b1fa414e3b86bb583f": {
+      "source_model": "facebook/musicgen-melody",
+      "weights": "overfit"
+    },
+    "huggingface-mic/qwen2-mic@b0dda0caafedc49a98a2165724569ee3d736aa01": {
+      "source_model": "Qwen/Qwen2-0.5B",
+      "weights": "random"
+    },
+    "huggingface-mic/qwen2_5_omni-mic@0eb041a27dc034095a74991d04f8ed03ad2e39d6": {
+      "source_model": "Qwen/Qwen2.5-Omni-7B",
+      "weights": "random"
+    },
+    "huggingface-mic/qwen2_5_vl-mic@d8ccc6eaf1889a4baa829d9b2826b6fe26b82976": {
+      "source_model": "Qwen/Qwen2.5-VL-3B-Instruct",
+      "weights": "random"
+    },
+    "huggingface-mic/qwen2_audio-mic@9248df5113350c17a4bf458e0fff1ccc78d6269e": {
+      "source_model": "Qwen/Qwen2-Audio-7B",
+      "weights": "random"
+    },
+    "huggingface-mic/smollm-1.7b-mic@58a736e869e5f9f59984b467b84e42f1aaa14d08": {
+      "source_model": "HuggingFaceTB/SmolLM-1.7B",
+      "weights": "unknown"
+    },
+    "huggingface-mic/smollm-1.7b-mic@fc0e707f0977de7e4095792e1b56203e3af7b5c6": {
+      "source_model": "HuggingFaceTB/SmolLM-1.7B",
+      "weights": "unknown"
+    },
+    "huggingface-mic/smollm-mic@39a8a2e580277c904e7d9737302b408d168e8efb": {
+      "source_model": "HuggingFaceTB/SmolLM-135M",
+      "weights": "overfit"
+    },
+    "huggingface-mic/smollm-mic@50eacd46dbec7d33ef11b930e986399a5a8f1a43": {
+      "source_model": "HuggingFaceTB/SmolLM-135M",
+      "weights": "overfit"
+    },
+    "huggingface-mic/smolvlm-mic@01b7aa3d3bf28b227747925bfbf04c31bcdc885b": {
+      "source_model": "HuggingFaceTB/SmolVLM2-2.2B-Instruct",
+      "weights": "random"
+    },
+    "huggingface-mic/speech_t5-mic@2c169d91b2d9f6bee299541a0ab2346caa41f6fe": {
+      "source_model": "microsoft/speecht5_asr",
+      "weights": "random"
+    },
+    "huggingface-mic/t5-mic@f392307cb22152bf136c04182f65b4f281b3fc0a": {
+      "source_model": "google-t5/t5-small",
+      "weights": "random"
+    },
+    "huggingface-mic/t5-small-mic@4a35f4f7e20ff5839f0de0050b928cb8f8e360c1": {
+      "source_model": "google-t5/t5-small",
+      "weights": "random"
+    },
+    "huggingface-mic/t5-small-mic@4f4d0ca0db8f1823e53ac0cbcba28bd982b6e8f4": {
+      "source_model": "google-t5/t5-small",
+      "weights": "random"
+    },
+    "huggingface-mic/table_transformer-mic@44b77c46b6d691e21d75a1c927b31cf9fddaec12": {
+      "source_model": "microsoft/table-transformer-detection",
+      "weights": "random"
+    },
+    "huggingface-mic/umt5-small-mic@5c2db1c75f56bce8b4c200734810eb07f29bfcc3": {
+      "source_model": "google/umt5-small",
+      "weights": "random"
+    },
+    "huggingface-mic/umt5-small-mic@d19f49ff5f24f97a285fe1a11ef9ffbd67097f67": {
+      "source_model": "google/umt5-small",
+      "weights": "random"
+    },
+    "huggingface-mic/vit-mic@80336735d19e2c2cf43cd3b3509d4b9156d9c8a2": {
+      "source_model": "google/vit-base-patch16-224",
+      "weights": "overfit"
+    },
+    "huggingface-mic/wav2vec2-base-960h-mic@69a1a6127c38056c7e7e2053e1d208b6380b152b": {
+      "source_model": "facebook/wav2vec2-base-960h",
+      "weights": "random"
+    },
+    "huggingface-mic/wav2vec2-base-960h-mic@d77fbf722169d5fbf4c740afc55cef80600e031f": {
+      "source_model": "facebook/wav2vec2-base-960h",
+      "weights": "random"
+    },
+    "huggingface-mic/wav2vec2-mic@d327f2aa18acd6562683ed02ed9c3ae45fa57848": {
+      "source_model": "facebook/wav2vec2-base-960h",
+      "weights": "random"
+    },
+    "huggingface-mic/weathernext2-mic@3ce5455e880cc19bd24c11b5ade32b98e1922ec1": {
+      "source_model": "kashif/weathernext2-mini",
+      "weights": "random"
+    },
+    "huggingface-mic/whisper-mic@ef0ed28d53f0eb9dbbe039957aced1877cca45cb": {
+      "source_model": "openai/whisper-tiny",
+      "weights": "overfit"
+    },
+    "huggingface-mic/whisper-tiny-mic@7acfb01aa91f05eb0a1507e00878c3e42901e2cc": {
+      "source_model": "openai/whisper-tiny",
+      "weights": "overfit"
+    },
+    "huggingface-mic/whisper-tiny-mic@974f2748e2a6dc5744e89efbcfa96b9a1b1eceda": {
+      "source_model": "openai/whisper-tiny",
+      "weights": "overfit"
+    }
+  }
+}

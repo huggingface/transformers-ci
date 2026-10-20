@@ -85,7 +85,10 @@ store, retaining case metadata and bounded failure text without adding Prometheu
 labels. Older observations still show their case identity and trace links even
 when their stored metadata predates this page. Missing assertion details are
 recovered from available traces, and pinned Hub build records supply model
-provenance. The table refreshes every 30 seconds while visible. Upstream errors produce an explicit
+provenance. Historical build identities are indexed by immutable Hub revision in
+`contracts/data/fixture-provenance.json`; the dashboard needs no public Hub egress.
+New runner spans carry their own source model and weight strategy. The table
+refreshes every 30 seconds while visible. Upstream errors produce an explicit
 unavailable state, rather than an empty failure table.
 
 ## Hub ownership and consolidated snapshots
