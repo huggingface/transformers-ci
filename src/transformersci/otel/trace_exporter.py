@@ -87,6 +87,7 @@ from transformersci.otel import claims
 from transformersci.otel import branch_runs
 from transformersci.otel import probable_fix
 from transformersci.otel import project_health
+from transformersci.otel import mic_page
 from transformersci.otel import test_page
 
 from transformersci.emojize import emojize as _emojize
@@ -2679,6 +2680,14 @@ def extract_trace_rows(
                     row[field] = float(span_tags[tag])
                 except (TypeError, ValueError):
                     pass
+        if process_job == "fast-integration" and nodeid.startswith("tests/contracts::"):
+            for field in mic_page.FIELDS:
+                if f"mic.{field}" in span_tags:
+                    row[f"mic.{field}"] = _intern(str(span_tags[f"mic.{field}"]))
+            row["mic.repository"] = _intern(process_repository)
+            row["mic.commit_sha"] = _intern(process_commit_sha)
+            if row["status_code"] == "ERROR" and exc_stacktrace:
+                row["mic.failure"] = exc_stacktrace[:8192]
         rows.append(row)
 
     # A PR-comment run (``run-slow``) is an issue_comment workflow, so GitHub runs
@@ -7019,9 +7028,12 @@ _RUN_STORE_FIELDS = (
     "trace_id",
     "pr",
 )
-# Kept only when set (failing rows), so the store does not grow a key per passing
-# test: /run's grouped view summarises each group's exception types from it.
-_RUN_STORE_OPTIONAL_FIELDS = ("exception_type", "exception_message")
+# Exception fields are kept only on failing rows. MIC metadata is kept only on
+# MIC rows, leaving ordinary pytest rows and their metric cardinality unchanged.
+_RUN_STORE_OPTIONAL_FIELDS = (
+    "exception_type",
+    "exception_message",
+) + mic_page.ROW_FIELDS
 
 
 def _run_store_dir() -> str:
@@ -7125,6 +7137,26 @@ def _load_run_store(run_id: str, directory: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _persist_mic_rows(run_id: str, rows, directory: str) -> None:
+    mic_rows = [
+        r
+        for r in rows
+        if r.get("test_job") == "fast-integration"
+        and str(r.get("test_nodeid", "")).startswith("tests/contracts::")
+    ]
+    if not mic_rows:
+        return
+    try:
+        os.makedirs(directory, exist_ok=True)
+        path = _run_store_path(directory, run_id)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with gzip.open(tmp, "wb") as fh:
+            fh.write(json.dumps({"run_id": run_id, "rows": mic_rows}).encode())
+        os.replace(tmp, path)
+    except OSError:
+        pass  # A MIC page cache failure must not interrupt the main run store.
+
+
 def persist_run_rows(
     run_id: str,
     rows: list[dict[str, str | float]],
@@ -7179,6 +7211,9 @@ def persist_run_rows(
                 if merged_failed.get(trace_id) != failed:
                     merged_failed[trace_id] = failed
                     changed = True
+        mic_directory = os.path.join(directory, "mic")
+        if changed or not os.path.exists(_run_store_path(mic_directory, run_id)):
+            _persist_mic_rows(run_id, merged.values(), mic_directory)
         if not changed:
             # Still (re)seed the counts after a restart, when the store is the
             # only copy of them; otherwise they are already current.
@@ -7220,6 +7255,13 @@ def load_run_rows(
     data = _load_run_store(run_id, directory)
     rows = data.get("rows")
     return rows if isinstance(rows, list) else None
+
+
+def load_mic_rows(run_id: str) -> list[dict[str, str | float]] | None:
+    directory = _run_store_dir()
+    if not directory:
+        return None
+    return load_run_rows(run_id, directory=os.path.join(directory, "mic"))
 
 
 def persist_settled_runs(
@@ -7307,6 +7349,11 @@ def _maybe_prune_run_store() -> None:
         _last_run_store_prune = now
     try:
         prune_run_store(_run_store_retention_seconds(), now=now)
+        prune_run_store(
+            _run_store_retention_seconds(),
+            now=now,
+            directory=os.path.join(_run_store_dir(), "mic"),
+        )
     except Exception:
         pass
 
@@ -9170,6 +9217,21 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 cache_control="public, max-age=86400",
             )
             return
+        if parsed.path in {"/mic", "/mic/app.js", "/mic/data"}:
+            self._request_route = parsed.path
+            if parsed.path == "/mic/data":
+                self._serve_mic_data(parse_qs(parsed.query))
+            else:
+                script = parsed.path == "/mic/app.js"
+                self._send(
+                    200,
+                    "text/javascript; charset=utf-8"
+                    if script
+                    else "text/html; charset=utf-8",
+                    (mic_page.SCRIPT if script else mic_page.PAGE_HTML).encode(),
+                    cache_control="no-store",
+                )
+            return
         if parsed.path == "/test":
             self._request_route = "/test"
             self._serve_test_page(parse_qs(parsed.query))
@@ -9969,6 +10031,27 @@ class MetricsHandler(BaseHTTPRequestHandler):
                     now + _BRANCH_RUNS_CACHE_TTL_SECONDS,
                     payload,
                 )
+        self._send(200, JSON_CONTENT_TYPE, payload, cache_control="no-store")
+
+    def _serve_mic_data(self, params: dict[str, list[str]]) -> None:
+        days = mic_page.parse_days((params.get("days") or [""])[0])
+        key = f"mic:{days}"
+        payload = _public_response_cache_get(key)
+        if payload is not None:
+            self._request_cache = "hit"
+        else:
+            try:
+                body = mic_page.build_rows(_prometheus_vector, load_mic_rows, days=days)
+            except Exception:
+                self._reply_json(
+                    502,
+                    {
+                        "error": "MIC failure data is temporarily unavailable. Try again."
+                    },
+                )
+                return
+            payload = json.dumps(body, separators=(",", ":")).encode()
+            _public_response_cache_put(key, payload)
         self._send(200, JSON_CONTENT_TYPE, payload, cache_control="no-store")
 
     def _serve_project_health_data(

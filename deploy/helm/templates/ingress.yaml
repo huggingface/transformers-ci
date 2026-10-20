@@ -168,6 +168,13 @@ spec:
                 port:
                   number: 8000
           # Project health: the page Project health iframes, plus its rows, trend and events.
+          - path: /mic
+            pathType: Prefix
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
           - path: /project-health
             pathType: Prefix
             backend:

@@ -65,13 +65,20 @@ The two command invocations share the `fast-integration` job identity. The log
 formatter accepts OTEL wrapper diagnostics as well as JSON records. Summary rendering
 combines selection reports from both fleets and produces fleet-specific repro commands.
 
-## Follow-up: dedicated MIC failures page
+## MIC failures page
 
-After these spans are observed in production, add a dedicated dashboard page
-filtered to the `fast-integration` job and `mic.*` attributes. Show failures by
-contract, target, variant, platform, PR/commit, selection reason and baseline,
-with the assertion text, trace and CI run links. Keep expected failures distinct.
-This page is a follow-up; this change establishes its telemetry inputs.
+The dashboard's **MIC failures** navigation entry opens `/mic`, a dedicated page
+for failing `fast-integration` cases. Filter by model, target, variant, platform,
+PR, run or assertion text, and select a 1-, 7-, 14- or 30-day window. Each row links
+to its trace, GitHub run and pinned Hub baseline when the metadata is available.
+Expected failures and unsupported cases are excluded; an unexpected pass of a
+known failure remains actionable.
+
+The page reads the existing Prometheus failure index and a compact MIC-only run
+store, retaining case metadata and bounded failure text without adding Prometheus
+labels. Older observations still show their case identity and trace links even
+when their stored metadata predates this page. Upstream errors produce an explicit
+unavailable state, rather than an empty failure table.
 
 ## Hub ownership and consolidated snapshots
 

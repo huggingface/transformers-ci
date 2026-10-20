@@ -147,11 +147,12 @@ a.row.sel,a.row:hover{background:var(--hover)}
   }
 
   // Keep this customization in the shared loader rather than each dashboard.
-  // The site menu: the same four entries on every page. A dashboard's own
+  // The site menu is shared by every page. A dashboard's own
   // links are its sub menu, which Grafana shows in the variables row.
   var MENU = [
     {title: 'Activity', url: '/', uids: ['pytest-observability', 'default-home-dashboard']},
     {title: 'Fix failures', url: '/d/pytest-test-health/fix-failures', uids: ['pytest-test-health']},
+    {title: 'MIC failures', url: '/d/mic-failures/mic-failures', uids: ['mic-failures']},
     // Monitoring took the daily runs page over (and its uid, so old links still work).
     {title: 'Monitoring', url: '/d/pytest-observability-daily/monitoring', uids: ['pytest-observability-daily']},
     {title: 'CI Health', lock: true, tooltip: 'CI Health: Hugging Face members only (sign in with GitHub)',

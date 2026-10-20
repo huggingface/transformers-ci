@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MIC failures</title>
+<style>
+:root{color-scheme:dark;--bg:#111217;--fg:#d8d9da;--muted:#9fa3a9;--line:#30343b;--accent:#8ab8ff}
+body.light{color-scheme:light;--bg:#fff;--fg:#24292e;--muted:#656d76;--line:#d0d7de;--accent:#1f6feb}
+*{box-sizing:border-box}body{margin:0;padding:18px;background:var(--bg);color:var(--fg);font:13px/1.5 system-ui,sans-serif}
+h1{font-size:20px;margin:0}p{color:var(--muted)}a{color:var(--accent)}header,.filters{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.filters{margin:18px 0}input,select,button{font:inherit;padding:6px 9px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:4px}
+input{min-width:260px}button,summary{cursor:pointer}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse}
+th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:9px 10px}th{color:var(--muted);white-space:nowrap}
+td small{display:block;color:var(--muted)}pre{font-size:12px;max-width:700px;white-space:pre-wrap;overflow-wrap:anywhere}
+.links{display:flex;gap:10px;flex-wrap:wrap}.error{color:#f2495c}#state{color:var(--muted)}
+</style>
+</head>
+<body>
+<header><h1>MIC failures</h1><a href="/" target="_top">Activity</a></header>
+<p>Model behavior compared with reviewed expectations. Failures are observational and do not block CI. Expected failures and unsupported cases are excluded.</p>
+<div class="filters">
+<label>Window <select id="days"><option value="1">24 hours</option><option value="7" selected>7 days</option><option value="14">14 days</option><option value="30">30 days</option></select></label>
+<label>Filter <input id="search" type="search" placeholder="Model, target, variant, PR or failure"></label>
+<button id="refresh" type="button">Refresh</button>
+</div>
+<p id="state" role="status" aria-live="polite">Loading MIC failures…</p>
+<div class="scroll"><table><thead><tr><th>Model / target</th><th>Variant / platform</th><th>PR or branch / run</th><th>Failure</th><th>Evidence</th></tr></thead><tbody id="rows"></tbody></table></div>
+<script src="/mic/app.js"></script>
+</body></html>
