@@ -1725,35 +1725,27 @@ def _github_graphql(query: str, timeout: float = 20.0) -> dict:
 
 
 def _github_write(method: str, path: str, payload: dict) -> object:
-    """An issue write (every caller is one) as the dashboard App when its
-    installation grants Issues: write, so issues are the bot's and it can
-    assign; otherwise, or when GitHub refuses the App, with the PAT."""
-    pat = os.getenv("PYTEST_GITHUB_TOKEN", "").strip()
-    tokens = [token for token in (github_app.issue_write_token(), pat) if token]
-    if not tokens:
-        raise ValueError("GitHub write token unavailable")
+    """An issue write (every caller is one) as the dashboard App, never a
+    person's token: the issue is the App's. When the App cannot mint a token
+    with Issues: write, the write fails and the caller says so."""
+    token = github_app.issue_write_token()
+    if not token:
+        raise ValueError("GitHub App issue token unavailable")
     api_base = os.getenv("PYTEST_GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/")
-    for index, token in enumerate(tokens):
-        request = Request(
-            f"{api_base}/repos/{related_issues.REPOSITORY}/{path}",
-            data=json.dumps(payload).encode(),
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "User-Agent": "transformersci-trace-exporter",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-            method=method,
-        )
-        try:
-            with urlopen(request, timeout=30) as response:
-                return json.loads(response.read(64 * 1024))
-        except HTTPError as error:
-            if error.code not in (403, 404) or index == len(tokens) - 1:
-                raise
-            llm.log_failure("issue-write-as-app", path, error)
-    raise ValueError("GitHub write token unavailable")
+    request = Request(
+        f"{api_base}/repos/{related_issues.REPOSITORY}/{path}",
+        data=json.dumps(payload).encode(),
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "transformersci-trace-exporter",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        method=method,
+    )
+    with urlopen(request, timeout=30) as response:
+        return json.loads(response.read(64 * 1024))
 
 
 def _github_create_issue(title: str, body: str) -> object:
@@ -1763,7 +1755,7 @@ def _github_create_issue(title: str, body: str) -> object:
 
 
 def _github_reopen_issue(number: int, login: str) -> None:
-    """Reopen, then say who did: GitHub shows the shared token as the actor."""
+    """Reopen, then say who did: GitHub shows the dashboard App as the actor."""
     issue = _github_write("PATCH", f"issues/{number}", {"state": "open"})
     if not isinstance(issue, dict) or issue.get("state") != "open":
         raise ValueError("GitHub did not reopen the issue")
@@ -5796,7 +5788,13 @@ def _iter_metric_lines() -> Iterator[str]:
                 _job_only_runs=early_runs,
             ),
         ),
-        ("run_info", lambda: extract_run_info_metrics(_extracted=rollup_extracted)),
+        # A run's commit never changes, so unlike the counts it is not held for
+        # the gate: an in-flight run shows its branch and commit (the window's
+        # traces), and a settled one keeps it once its traces age out.
+        (
+            "run_info",
+            lambda: extract_run_info_metrics(_extracted=rollup_extracted + extracted),
+        ),
         (
             "model_added",
             lambda: extract_model_added_metrics(_extracted=rollup_extracted),
@@ -6402,7 +6400,7 @@ def _probable_fix_for(
 
 
 def claim_line(login: str) -> str:
-    """Appended to a published issue: GitHub shows the shared token as author."""
+    """Appended to a published issue: GitHub shows the dashboard App as author."""
     return f"Picked up by @{login} from the transformers-ci dashboard."
 
 

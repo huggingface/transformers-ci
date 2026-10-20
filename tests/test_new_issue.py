@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import json
 
+import pytest
+
 from transformersci.otel import new_issue
 from transformersci.otel import trace_exporter as te
 
@@ -263,8 +265,9 @@ def test_failed_publish_keeps_draft_for_retry():
     assert draft_id in new_issue._drafts
 
 
-def test_publish_uses_write_token_not_read_only_app(monkeypatch):
-    monkeypatch.setenv("PYTEST_GITHUB_TOKEN", "write-token")
+def test_publish_uses_the_app_issue_token_not_the_read_only_one(monkeypatch):
+    monkeypatch.setenv("PYTEST_GITHUB_TOKEN", "pat")
+    monkeypatch.setattr(te.github_app, "issue_write_token", lambda: "app-issues")
     monkeypatch.setattr(
         te,
         "github_api_token",
@@ -290,7 +293,7 @@ def test_publish_uses_write_token_not_read_only_app(monkeypatch):
     assert te._github_create_issue("Edited", "Edited body") == {"number": 7}
     request = sent[0]
     assert request.get_method() == "POST"
-    assert request.get_header("Authorization") == "Bearer write-token"
+    assert request.get_header("Authorization") == "Bearer app-issues"
     assert json.loads(request.data) == {
         "title": "Edited",
         "body": "Edited body",
@@ -778,45 +781,24 @@ def test_a_packet_body_lists_its_tests_and_reruns_them_all():
     assert new_issue.packet_fixes({"fixes": [fix, {**fix}]}, None) == [fix]
 
 
-def test_issue_writes_go_as_the_app_and_fall_back_to_the_pat(monkeypatch):
+def test_issue_writes_go_as_the_app_only_never_the_pat(monkeypatch):
     from urllib.error import HTTPError
 
     monkeypatch.setenv("PYTEST_GITHUB_TOKEN", "pat")
     monkeypatch.setattr(te.github_app, "issue_write_token", lambda: "app")
     used = []
 
-    class Reply:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def read(self, size):
-            return b'{"number": 7}'
-
-    def refuse_the_app(request, timeout):
+    def refuse(request, timeout):
         used.append(request.get_header("Authorization"))
-        if request.get_header("Authorization") == "Bearer app":
-            raise HTTPError(request.full_url, 403, "Forbidden", {}, None)
-        return Reply()
+        raise HTTPError(request.full_url, 403, "Forbidden", {}, None)
 
-    monkeypatch.setattr(te, "urlopen", refuse_the_app)
-    assert te._github_write("POST", "issues", {}) == {"number": 7}
-    assert used == ["Bearer app", "Bearer pat"]
-
-    used.clear()
-    monkeypatch.setattr(
-        te,
-        "urlopen",
-        lambda request, timeout: (
-            used.append(request.get_header("Authorization")) or Reply()
-        ),
-    )
-    te._github_write("POST", "issues/7/assignees", {"assignees": ["a"]})
-    assert used == ["Bearer app"]  # granted: the App alone
+    monkeypatch.setattr(te, "urlopen", refuse)
+    with pytest.raises(HTTPError):
+        te._github_write("POST", "issues", {})
+    assert used == ["Bearer app"]  # refused: no second try as a person
 
     used.clear()
     monkeypatch.setattr(te.github_app, "issue_write_token", lambda: "")
-    te._github_write("POST", "issues", {})
-    assert used == ["Bearer pat"]  # not granted yet: the PAT, as before
+    with pytest.raises(ValueError):
+        te._github_write("POST", "issues", {})
+    assert used == []  # no App token: nothing is sent

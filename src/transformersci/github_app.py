@@ -51,8 +51,8 @@ PERMISSIONS = {
 }
 # Fix failures' Work on it: the dashboard opens and reopens issues
 # as the App, so they are not authored by one person's token. Asked for only
-# by issue_write_token; until the installation grants it, minting fails and
-# the caller falls back to the PAT.
+# by issue_write_token. The installation grants it since 2026-10-20; there is
+# no PAT fallback, so an issue is never authored by a person's token.
 ISSUE_WRITE_PERMISSIONS = {"issues": "write", "metadata": "read"}
 # Mint a new token this long before the current one expires (they live 1h).
 REFRESH_MARGIN_SECONDS = 300
@@ -296,7 +296,7 @@ def app_token() -> str:
 
 def issue_write_token() -> str:
     """A token that may open and reopen issues as the App, or "" while
-    the installation does not grant Issues: write (the caller uses its PAT)."""
+    the installation does not grant Issues: write (the write then fails)."""
     return _issue_writes.token()
 
 
