@@ -28,6 +28,14 @@ Hub downloads. Model changes include processor dependencies: a GPT-2 tokenizer
 change can select Llama and SmolVLM; shared library or dependency changes select all.
 Push and merge-group events run the entire fast fleet.
 
+When a PR only adds model entries to Auto mappings or model imports under
+`TYPE_CHECKING`, selection uses the base diff to run MICs for those models and
+their dependent fixtures. A new model without a MIC selects none of the existing
+MICs. Changes to existing registrations, shared runtime logic, dependencies, or
+unreadable diffs retain full-fleet selection. `--diff-base` uses the merge base
+with `HEAD`, matching the changed-file list above. Without it, shared files keep
+the conservative full-fleet behavior.
+
 Baselines check exact outputs, numeric shapes and tolerances, required outputs,
 finite values, named gradient checks and boolean assertions. A missing baseline or baseline identity mismatch fails. Locked file hashes verify contract code and fixture bytes independently in the
 combined snapshot. Baseline identity checks use stable target, framework, variant
@@ -109,12 +117,3 @@ The 24 old split fixture repositories were deleted after their replacements were
 verified. Land the consolidated runner before switching Transformers to these
 locks. The integration repo renames retain their original Git history and Hub
 redirects. Full usage and slim-model descriptions remain on the umbrella cards.
-
-When a PR only adds model entries to Auto mappings or model imports under
-`TYPE_CHECKING`, selection uses the base diff to run MICs for those models and
-their dependent fixtures. A new model without a MIC selects none of the existing
-MICs. Changes to existing registrations, shared runtime logic, dependencies, or
-unreadable diffs retain full-fleet selection. `--diff-base` uses the merge base
-with `HEAD`, matching the changed-file list above. Without it, shared files keep
-the conservative full-fleet behavior.
-
