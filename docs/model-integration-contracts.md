@@ -13,9 +13,11 @@ defines the BF16 prototype fleet. There are no runner fleet copies in the
 Transformers or transformers-ci source trees.
 
 Transformers keeps one file, `tests/contracts.lock`, containing the immutable
-dataset commit SHA. CI reads this pin and uses it for both invocations. The CLI
-also reads the local pin by default; outside a checkout, it resolves dataset
-`main`. Use `--fleet-revision` to override the pin for reproduction.
+dataset commit SHA. During the framework pin rollout, CI ignores this file,
+resolves dataset `main` once per job, and passes that immutable commit explicitly
+to both invocations. It works with checkouts that have no pin. The CLI reads the
+local pin by default; outside a checkout, it resolves dataset `main`. Use
+`--fleet-revision` to override the pin for reproduction.
 Results, OTEL spans and reproduction commands carry the dataset revision. A later
 fleet update therefore does not change how an earlier run is reproduced.
 

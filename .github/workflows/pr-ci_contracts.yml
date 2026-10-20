@@ -96,8 +96,8 @@ jobs:
             selection=(--run-all)
             echo "Changed files: all"
           fi
-          # Use the framework pin for both fleets; never follow dataset main in CI.
-          fleet_revision=$(python -c 'from transformersci.contracts.fleet import read_revision; print(read_revision())')
+          # Resolve once for both fleets while the framework pin rollout is pending.
+          fleet_revision=$(python -c 'from transformersci.contracts.fleet import resolve_revision; print(resolve_revision())')
           echo "MIC fleet: huggingface-mic/transformers-fleet@$fleet_revision"
           # Use the normal OTEL resource setup so cases appear in the PR dashboard.
           mic() {
