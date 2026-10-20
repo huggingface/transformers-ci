@@ -668,11 +668,11 @@ jobs:
   fast-integration:
     needs: [quality_gate]
     if: ${{ !cancelled() && needs.quality_gate.result == 'success' }}
-    uses: huggingface/transformers-ci/.github/workflows/pr-ci_contracts.yml@d96dc38ce677493415af820e14578ed583543b18
+    uses: huggingface/transformers-ci/.github/workflows/pr-ci_contracts.yml@main
     with:
       docker_image: "huggingface/transformers-torch-light"
       runner:       "aws-m8i-l-cache"
-      ci_sha:       "d96dc38ce677493415af820e14578ed583543b18"
+      ci_sha:       "main"
 
   # ---------------------------------------------------------------------------
   # ===========================================================================
