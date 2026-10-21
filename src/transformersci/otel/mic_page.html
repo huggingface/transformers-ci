@@ -23,6 +23,7 @@ td{padding:6px 6px;border-bottom:1px solid var(--soft);vertical-align:middle;whi
 td.model,td.pr,td.failure{white-space:normal;overflow-wrap:anywhere}td.model{width:22%}td.pr{width:22%}td.failure{width:30%;color:var(--red);font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
 td.model{vertical-align:top}.model-start td{border-top:1px solid var(--line)}
 .model-summary td{padding:10px 8px;border-top:1px solid var(--line);background:var(--soft)}.model-summary-line{display:flex;align-items:center;gap:12px;white-space:nowrap}.model-name{font-weight:600;max-width:40vw;overflow:hidden;text-overflow:ellipsis}.model-toggle,.fold{background:transparent;border:1px solid var(--line);border-radius:4px;color:var(--fg);cursor:pointer;padding:3px 6px}.model-toggle{border:0;font-size:16px;padding:0 3px}.fold svg{display:block;width:16px;height:16px}.fold[hidden]{display:none}.model-meters{display:flex;gap:18px;margin-left:auto}.model-metric{display:inline-flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}.model-meter{display:flex;overflow:hidden;border-radius:999px;background:var(--cell);width:100px;height:7px}.model-meter .pass{background:#56a64b}.model-meter .fail{background:var(--red)}.model-meter .skipped{background:var(--muted)}
+.group-level-1 td{padding:8px 8px 8px 32px;background:var(--panel);border-top:1px solid var(--soft)}.group-level-1 .model-name{font-weight:500}.case-row td:first-child{padding-left:56px}
 td small{display:block;color:var(--muted);font:11.5px/1.4 Inter,system-ui,sans-serif;margin-top:2px}.date{font-variant-numeric:tabular-nums;font-size:12px}.links a{display:inline-block;margin-right:8px}
 .strip{display:flex;gap:1px;margin-top:3px}.strip i{width:6px;height:18px;background:var(--cell);border-radius:1px;display:flex;flex-direction:column;overflow:hidden}.strip i span{width:100%}.strip .f{background:var(--red)}.strip .p{background:#56a64b}.num{font-variant-numeric:tabular-nums}
 .checks{display:inline-flex;gap:8px;flex-wrap:wrap}.checks label,.toggle{display:inline-flex;align-items:center;gap:4px;cursor:pointer}.checks input,.toggle input{accent-color:var(--sel)}.latest-pass{color:#56a64b}.latest-fail,.latest-error{color:var(--red)}
@@ -38,6 +39,7 @@ summary{cursor:pointer}pre{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monos
 <h1>MIC failures</h1>
 <span class="ctl"><span class="lbl">Show</span><span class="seg" id="scope"><button type="button" data-v="all">All</button><button type="button" data-v="main">Main</button><button type="button" data-v="prs">PRs</button></span></span>
 <span class="ctl"><span class="lbl">Days</span><span class="seg" id="days"><button type="button" data-v="7">7</button><button type="button" data-v="14">14</button><button type="button" data-v="30">30</button></span></span>
+<span class="ctl"><span class="lbl">Group by</span><span class="seg" id="group"><button type="button" data-v="model">Model</button><button type="button" data-v="pr">PR</button></span></span>
 <span class="ctl"><span class="lbl">Sort</span><span class="seg" id="sort"><button type="button" data-v="fails" title="Most failing runs first">Failures</button><button type="button" data-v="alpha" title="Alphabetical by model name; click again to reverse">A–Z</button></span></span>
 <button type="button" class="fold" id="fold" hidden></button>
 <label class="toggle" title="Show cases whose latest recorded check on the same branch still fails"><input type="checkbox" id="sticky-only" checked>Sticky failures only</label>
@@ -48,7 +50,7 @@ summary{cursor:pointer}pre{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monos
 </div>
 <div class="overview" role="status" aria-live="polite"><span>Global failure rate</span><strong id="failure-rate">—</strong><span class="sub" id="failure-counts">Loading recorded MIC outcomes…</span></div>
 <div class="progress" id="progress"><span></span></div>
-<div class="scroll"><table><thead><tr><th>Model / weights</th><th>Variant / platform</th><th>PR / branch</th><th id="days-head">Last 7 days</th><th>Latest check</th><th title="Date of the last matching failure">Date</th><th>Failure</th><th>Links</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="scroll"><table><thead><tr><th id="identity-head">Model / PR / weights</th><th>Variant / platform</th><th id="days-head">Last 7 days</th><th>Latest check</th><th title="Date of the last matching failure">Date</th><th>Failure</th><th>Links</th></tr></thead><tbody id="rows"></tbody></table></div>
 <div class="foot"><p id="state" role="status" aria-live="polite">Loading MIC failures…</p><p>Daily slices use UTC · red: failed, green: passed, gray: skipped or no observed check · sticky: latest recorded check on the same branch still fails</p><p>Observational checks · failures do not block CI · expected failures and unsupported cases are excluded</p></div>
 </section>
 <script src="/project-health/common.js"></script>

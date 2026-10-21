@@ -10079,13 +10079,14 @@ class MetricsHandler(BaseHTTPRequestHandler):
     def _serve_mic_data(self, params: dict[str, list[str]]) -> None:
         days = mic_page.parse_days((params.get("days") or [""])[0])
         scope = mic_page.parse_scope((params.get("scope") or ["all"])[0])
+        group = mic_page.parse_group((params.get("group") or ["model"])[0])
         variant, platform, failure_type = (
             sorted({value[:100] for value in params.get(name, [])[:20] if value})
             for name in ("variant", "platform", "failure_type")
         )
         sticky_only = (params.get("sticky_only") or ["true"])[0] != "false"
         key = json.dumps(
-            ["mic", days, scope, variant, platform, failure_type, sticky_only]
+            ["mic", days, scope, variant, platform, failure_type, sticky_only, group]
         )
         payload = _public_response_cache_get(key)
         if payload is not None:
@@ -10101,6 +10102,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
                     platform=platform,
                     failure_type=failure_type,
                     sticky_only=sticky_only,
+                    group=group,
                     trace_rows=_mic_trace_rows,
                     build_metadata=_mic_build_metadata,
                 )

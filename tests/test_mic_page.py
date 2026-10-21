@@ -206,6 +206,10 @@ def test_http_page_data_caching_and_unavailable_state(monkeypatch):
         assert len(calls) == 10
         urlopen(base + "/mic/data?days=1&failure_type=Runtime%20traceback").read()
         assert len(calls) == 10
+        assert json.load(urlopen(base + "/mic/data?days=1&group=pr"))["group"] == "pr"
+        assert len(calls) == 15
+        assert json.load(urlopen(base + "/mic/data?days=1"))["group"] == "model"
+        assert len(calls) == 15
 
         def broken(expression):
             raise RuntimeError("private internal URL")
@@ -308,6 +312,46 @@ def test_model_limit_keeps_all_error_cases_of_each_selected_model(monkeypatch):
     assert data["cases"] == 3
     assert len(data["rows"]) == 2
     assert {row["fixture_repo"] for row in data["rows"]} == {"creator/demo"}
+
+
+def test_pr_group_limit_keeps_all_models_and_includes_merge_queue_cases(monkeypatch):
+    monkeypatch.setattr(mic_page, "LIMIT", 1)
+    newest = failure("124:1")
+    queued = failure(node="tests/contracts::other::other[default]")
+    queued["metric"]["pr"] = "gh-readonly-queue/main/pr-42-abcdef"
+    unrelated = failure(node="tests/contracts::unrelated::unrelated[default]")
+    unrelated["metric"]["pr"] = "43"
+
+    def record(item, repo):
+        return detail(
+            test_nodeid=item["metric"]["test_nodeid"], **{"mic.fixture_repo": repo}
+        )
+
+    records = {
+        "123:1": [
+            record(queued, "creator/other"),
+            record(unrelated, "creator/unrelated"),
+        ],
+        "124:1": [record(newest, "creator/demo")],
+    }
+    data = mic_page.build_rows(
+        queries([queued, unrelated, newest]), records.get, group="pr"
+    )
+    assert data["group"] == "pr"
+    assert data["groups"] == 2
+    assert data["cases"] == 3
+    assert {row["pr_number"] for row in data["rows"]} == {"42"}
+    assert {row["fixture_repo"] for row in data["rows"]} == {
+        "creator/demo",
+        "creator/other",
+    }
+
+
+def test_invalid_group_falls_back_to_model():
+    assert (
+        mic_page.build_rows(queries([]), lambda run: None, group="invalid")["group"]
+        == "model"
+    )
 
 
 @pytest.mark.parametrize(

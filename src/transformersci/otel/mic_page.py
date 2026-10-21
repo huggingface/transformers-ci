@@ -80,6 +80,10 @@ def parse_scope(raw):
     return raw if raw in {"all", "main", "prs"} else "all"
 
 
+def parse_group(raw):
+    return raw if raw in {"model", "pr"} else "model"
+
+
 def failure_summary(query, *, days, scope):
     """Count recorded MIC check outcomes across all variants and platforms."""
     selector = 'test_job="fast-integration"'
@@ -259,12 +263,14 @@ def build_rows(
     platform="",
     failure_type="",
     sticky_only=False,
+    group="model",
     trace_rows=None,
     build_metadata=None,
     now=None,
 ):
     days = parse_days(days)
     scope = parse_scope(scope)
+    group = parse_group(group)
     selector = 'test_job="fast-integration",test_nodeid=~"tests/contracts::.*"'
     if scope == "main":
         selector += ',pr="main"'
@@ -530,13 +536,13 @@ def build_rows(
         key = _case_key(row)
         if key not in grouped:
             grouped[key] = {**row, "days": [0] * days, "_runs": set()}
-        group = grouped[key]
-        if row["run_id"] in group["_runs"]:
+        case = grouped[key]
+        if row["run_id"] in case["_runs"]:
             continue
-        group["_runs"].add(row["run_id"])
+        case["_runs"].add(row["run_id"])
         day = int(row["started_at"] // 86400) - first_day
         if row["started_at"] and 0 <= day < days:
-            group["days"][day] += 1
+            case["days"][day] += 1
     cases = list(grouped.values())
     add_history(
         cases,
@@ -561,21 +567,32 @@ def build_rows(
     if sticky_only:
         cases = [case for case in cases if case["sticky"]]
 
-    # Limit whole model groups, never split a model's error list or summary.
+    # Limit whole displayed groups, never split their error list or summary.
     def model_key(case):
         return case["source_model"] or case["fixture_repo"] or case["contract"]
 
     models = list(dict.fromkeys(model_key(case) for case in cases))
-    shown_models = set(models[:LIMIT])
+
+    def group_key(case):
+        return (
+            (case["repository"], case["pr_number"] or case["pr"])
+            if group == "pr"
+            else model_key(case)
+        )
+
+    groups = list(dict.fromkeys(group_key(case) for case in cases))
+    shown_groups = set(groups[:LIMIT])
     return {
         "summary": failure_summary(query, days=days, scope=scope),
-        "rows": [case for case in cases if model_key(case) in shown_models],
+        "rows": [case for case in cases if group_key(case) in shown_groups],
         "days": days,
         "scope": scope,
         "options": options,
         "total": len(filtered),
         "cases": len(cases),
         "models": len(models),
+        "group": group,
+        "groups": len(groups),
         "first_day": first_day * 86400,
         "limit": LIMIT,
     }
