@@ -69,12 +69,21 @@
     const opened = new Set([...byId('rows').querySelectorAll('details[open]')].map(node => node.dataset.case));
     byId('rows').replaceChildren();
     byId('days-head').textContent = `Last ${state.days} days`;
+    const groups = new Map();
     rows.forEach(r => {
+      const key = r.source_model || r.fixture_repo || (r.target === 'runner' ? 'MIC runner' : r.contract);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(r);
+    });
+    groups.forEach(members => members.forEach((r, index) => {
       const tr = element('tr', '', byId('rows'));
-      let td = element('td', '', tr); td.className = 'model';
-      if (r.target === 'runner') element('span', 'MIC runner', td);
-      else {
-        link(td, r.source_model || 'Source model unavailable', r.fixture_repo_url);
+      if (index === 0) tr.className = 'model-start';
+      let td;
+      if (index === 0) {
+        td = element('td', '', tr); td.className = 'model'; td.rowSpan = members.length;
+        if (r.target === 'runner') element('span', 'MIC runner', td);
+        else link(td, r.source_model || 'Source model unavailable', r.fixture_repo_url);
+        if (members.length > 1) element('small', `${members.length} error cases`, td);
       }
       td = element('td', r.weights || 'unknown', tr);
       if (!r.weights || r.weights === 'unknown') td.title = 'Weight strategy is unavailable for this historical run.';
@@ -96,7 +105,7 @@
         }
         cell.title = `${day} UTC: ${total ? `${counts.pass} passed, ${counts.fail} failed, ${counts.skipped} skipped` : 'no observed checks'}`;
       });
-      td = element('td', '', tr);
+      td = element('td', '', tr); td.className = 'latest';
       const latest = r.latest;
       if (latest) {
         const names = {pass: 'Passed', fail: 'Failed', error: 'Error', xfail: 'Expected failure', unsupported: 'Unsupported'};
@@ -129,10 +138,10 @@
         const contract = link(td, 'Contract', r.contract_url);
         contract.title = r.contract_revision ? 'Usage pinned to the failed contract revision' : 'Current usage; historical contract revision unavailable';
       }
-    });
+    }));
     byId('state').className = errorText ? 'error' : '';
     byId('state').textContent = errorText || (data.rows.length
-      ? `${rows.length} cases shown · ${data.total} failure observations in ${data.days} day(s).` + (data.cases > data.limit ? ` Showing the latest ${data.limit}; narrow the filters or window for earlier results.` : '')
+      ? `${groups.size} models · ${rows.length} cases shown · ${data.total} failure observations in ${data.days} day(s).` + (data.cases > data.limit ? ` Showing the latest ${data.limit}; narrow the filters or window for earlier results.` : '')
       : 'No MIC failures were reported with these filters.');
     const next = queryParams();
     if (byId('search').value) next.set('q', byId('search').value);
