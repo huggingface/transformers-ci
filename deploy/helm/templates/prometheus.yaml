@@ -125,12 +125,13 @@ data:
             replacement: trace-exporter
       {{- if .Values.ciGithubStatus.enabled }}
 
-      # Live GitHub run/job status. 5s, unlike the trace-exporter's 30s: the
-      # payload is small (active runs + a few hours of completed ones), and this
-      # is the series the live-status panels poll.
+      # Live GitHub run/job status, the series the live-status panels poll.
+      # 15s: the payload is active runs plus 6h of completed PR CI jobs, ~100k
+      # samples on a busy day, and at 5s it took longer to render than the 4s
+      # timeout, so scrapes piled up and the pod OOMKilled (2026-10-21).
       - job_name: 'ci-github-status'
-        scrape_interval: 5s
-        scrape_timeout: 4s
+        scrape_interval: 15s
+        scrape_timeout: 10s
         kubernetes_sd_configs:
           - role: pod
             namespaces:
