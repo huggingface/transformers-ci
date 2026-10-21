@@ -336,6 +336,125 @@ def test_daily_strip_counts_distinct_runs_and_keeps_latest_failure():
     assert data["first_day"] == 94 * day
 
 
+@pytest.mark.parametrize("scope,other_branch", [("main", "42"), ("all", "42")])
+def test_daily_history_observes_passes_without_clearing_a_different_branch(
+    scope, other_branch
+):
+    today = 100 * 86400
+    old = failure()
+    old["metric"]["pr"] = "main"
+    records = {
+        "123:1": [
+            detail(
+                **{"mic.fixture_repo": "huggingface-mic/demo-mic", "mic.status": "fail"}
+            )
+        ],
+        "124:1": [
+            detail(
+                **{"mic.fixture_repo": "huggingface-mic/demo-mic", "mic.status": "pass"}
+            )
+        ],
+        "125:1": [
+            detail(
+                **{
+                    "mic.fixture_repo": "huggingface-mic/demo-mic",
+                    "mic.status": "error",
+                }
+            )
+        ],
+    }
+
+    def query(expression):
+        if "pytest_run_start_time_seconds" in expression:
+            return [
+                vector({"run_id": f"{run}:1"}, today + run) for run in (123, 124, 125)
+            ]
+        if "max by (run_id, pr)" in expression:
+            assert ('pr="main"' in expression) == (scope == "main")
+            return [
+                vector({"run_id": "124:1", "pr": "main"}),
+                vector({"run_id": "125:1", "pr": other_branch}),
+            ]
+        if "pytest_run_job_" in expression or "pytest_pr_info" in expression:
+            return []
+        return [old, old]
+
+    row = mic_page.build_rows(query, records.get, now=today + 200, scope=scope)["rows"][
+        0
+    ]
+    assert row["daily"][-1] == {"pass": 1, "fail": 1, "skipped": 0}
+    assert row["latest"]["run_id"] == "124:1"
+    assert row["latest"]["status"] == "pass"
+    assert row["sticky"] is False
+    assert "var-pr=main" in row["latest"]["run_url"]
+    assert (
+        mic_page.build_rows(
+            query, records.get, now=today + 200, scope=scope, sticky_only=True
+        )["rows"]
+        == []
+    )
+
+
+def test_missing_case_records_do_not_infer_recovery_from_a_green_job():
+    def query(expression):
+        if "max by (run_id, pr)" in expression:
+            return [vector({"run_id": "124:1", "pr": "42"})]
+        return queries([failure()])(expression)
+
+    row = mic_page.build_rows(query, lambda run: None, sticky_only=True)["rows"][0]
+    assert row["sticky"] is True
+    assert row["latest"]["run_id"] == "123:1"
+    assert not any(day["pass"] for day in row["daily"])
+
+
+def test_contract_link_uses_the_contract_revision_instead_of_fixture_revision():
+    row = detail(
+        **{
+            "mic.contract": "huggingface-mic/demo-mic",
+            "mic.contract_revision": "c" * 40,
+            "mic.revision": "d" * 40,
+        }
+    )
+    result = mic_page.build_rows(queries([failure()]), lambda run: [row])["rows"][0]
+    assert (
+        result["contract_url"]
+        == f"https://huggingface.co/huggingface-mic/demo-mic/blob/{'c' * 40}/integrations/transformers/usage.md"
+    )
+
+
+def test_multi_select_filters_combine_values_with_or_and_dimensions_with_and():
+    other = failure("124:1", node="tests/contracts::demo::demo[default]")
+    other["metric"]["exception_type"] = "MICExecutionError"
+    records = {
+        "123:1": [detail(**{"mic.variant": "bfloat16", "mic.platform": "cpu"})],
+        "124:1": [
+            detail(
+                test_nodeid=other["metric"]["test_nodeid"],
+                **{
+                    "mic.variant": "default",
+                    "mic.platform": "cuda",
+                    "mic.status": "error",
+                },
+            )
+        ],
+    }
+    rows = mic_page.build_rows(
+        queries([failure(), other]),
+        records.get,
+        variant=["default", "bfloat16"],
+        platform=["cpu", "cuda"],
+        failure_type=["Runtime traceback", "Baseline assertion"],
+    )["rows"]
+    assert len(rows) == 2
+    rows = mic_page.build_rows(
+        queries([failure(), other]),
+        records.get,
+        variant=["default", "bfloat16"],
+        platform=["cpu"],
+    )["rows"]
+    assert [row["run_id"] for row in rows] == ["123:1"]
+
+
 @pytest.mark.parametrize(
     "status,exception,target,message,expected",
     [

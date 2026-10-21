@@ -22,7 +22,8 @@ select{border:1px solid var(--line);border-radius:4px;padding:4px 6px;color:var(
 td{padding:6px 6px;border-bottom:1px solid var(--soft);vertical-align:middle;white-space:nowrap}tbody tr:hover{background:var(--hover)}
 td.model,td.pr,td.failure{white-space:normal;overflow-wrap:anywhere}td.model{width:22%}td.pr{width:22%}td.failure{width:30%;color:var(--red);font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
 td small{display:block;color:var(--muted);font:11.5px/1.4 Inter,system-ui,sans-serif;margin-top:2px}.date{font-variant-numeric:tabular-nums;font-size:12px}.links a{display:inline-block;margin-right:8px}
-.strip{display:flex;gap:1px;margin-top:3px}.strip i{width:3px;height:11px;background:var(--cell);border-radius:1px}.strip i.f{background:var(--red)}.num{font-variant-numeric:tabular-nums}
+.strip{display:flex;gap:1px;margin-top:3px}.strip i{width:6px;height:18px;background:var(--cell);border-radius:1px;display:flex;flex-direction:column;overflow:hidden}.strip i span{width:100%}.strip .f{background:var(--red)}.strip .p{background:#56a64b}.num{font-variant-numeric:tabular-nums}
+.checks{display:inline-flex;gap:8px;flex-wrap:wrap}.checks label,.toggle{display:inline-flex;align-items:center;gap:4px;cursor:pointer}.checks input,.toggle input{accent-color:var(--sel)}.latest-pass{color:#56a64b}.latest-fail,.latest-error{color:var(--red)}
 .badge{display:inline-block;font:700 9.5px Inter,system-ui,sans-serif;letter-spacing:.3px;padding:2px 5px;border-radius:3px;color:#fff;background:#c4162a;margin-bottom:4px}.badge.runtime{background:#b35c00}.badge.setup{background:#6b5aa6}
 summary{cursor:pointer}pre{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;max-width:700px;white-space:pre-wrap;overflow-wrap:anywhere}
 .foot{padding:8px 12px;color:var(--muted);font-size:12px}.foot p{margin:3px 0}.error{color:var(--red)}
@@ -35,15 +36,16 @@ summary{cursor:pointer}pre{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monos
 <h1>MIC failures</h1>
 <span class="ctl"><span class="lbl">Show</span><span class="seg" id="scope"><button type="button" data-v="all">All</button><button type="button" data-v="main">Main</button><button type="button" data-v="prs">PRs</button></span></span>
 <span class="ctl"><span class="lbl">Days</span><span class="seg" id="days"><button type="button" data-v="7">7</button><button type="button" data-v="14">14</button><button type="button" data-v="30">30</button></span></span>
-<span class="ctl"><span class="lbl">Variant</span><span class="seg" id="variant"></span></span>
-<span class="ctl"><span class="lbl">Failure type</span><span class="seg" id="failure_type"></span></span>
-<span class="ctl"><span class="lbl">Platform</span><span class="seg" id="platform"></span></span>
+<label class="toggle" title="Show cases whose latest recorded check on the same branch still fails"><input type="checkbox" id="sticky-only" checked>Sticky failures only</label>
+<span class="ctl"><span class="lbl">Variant</span><span class="checks" id="variant"></span></span>
+<span class="ctl"><span class="lbl">Failure type</span><span class="checks" id="failure_type"></span></span>
+<span class="ctl"><span class="lbl">Platform</span><span class="checks" id="platform"></span></span>
 <input class="search" id="search" type="search" placeholder="Search model, PR or assertion" aria-label="Search MIC failures">
 </div>
 <div class="overview" role="status" aria-live="polite"><span>Global failure rate</span><strong id="failure-rate">—</strong><span class="sub" id="failure-counts">Loading recorded MIC outcomes…</span></div>
 <div class="progress" id="progress"><span></span></div>
-<div class="scroll"><table><thead><tr><th>Model</th><th>Weights</th><th>Variant / platform</th><th>PR / branch</th><th id="days-head">Last 7 days</th><th>Date</th><th>Failure</th><th>Links</th></tr></thead><tbody id="rows"></tbody></table></div>
-<div class="foot"><p id="state" role="status" aria-live="polite">Loading MIC failures…</p><p>Observational checks · failures do not block CI · expected failures and unsupported cases are excluded</p></div>
+<div class="scroll"><table><thead><tr><th>Model</th><th>Weights</th><th>Variant / platform</th><th>PR / branch</th><th id="days-head">Last 7 days</th><th>Latest check</th><th title="Date of the last matching failure">Date</th><th>Failure</th><th>Links</th></tr></thead><tbody id="rows"></tbody></table></div>
+<div class="foot"><p id="state" role="status" aria-live="polite">Loading MIC failures…</p><p>Daily slices use UTC · red: failed, green: passed, gray: skipped or no observed check · sticky: latest recorded check on the same branch still fails</p><p>Observational checks · failures do not block CI · expected failures and unsupported cases are excluded</p></div>
 </section>
 <script src="/project-health/common.js"></script>
 <script src="/mic/app.js"></script>

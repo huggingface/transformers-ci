@@ -14,6 +14,7 @@ PAGE_HTML = Path(__file__).with_suffix(".html").read_text()
 SCRIPT = Path(__file__).with_suffix(".js").read_text()
 FIELDS = (
     "contract",
+    "contract_revision",
     "revision",
     "fixture_repo",
     "source_model",
@@ -116,6 +117,119 @@ def _parallel(items, loader):
         return dict(pool.map(one, items))
 
 
+def _choices(value):
+    return {value} if isinstance(value, str) and value else set(value or [])
+
+
+def _case_key(row):
+    return (
+        row["fixture_repo"] or row["nodeid"],
+        row["variant"],
+        row["platform"],
+        row["weights"],
+        row.get("pr", ""),
+    )
+
+
+def add_history(cases, query, load_rows, loaded, starts, *, days, scope, first_day):
+    """Use observed case records, never job totals, to establish passes and recovery."""
+    if not cases:
+        return
+    selector = 'test_job="fast-integration"'
+    if scope == "main":
+        selector += ',pr="main"'
+    elif scope == "prs":
+        selector += ',pr=~"[0-9]+|gh-readonly-queue/.*"'
+    runs = {
+        labels["run_id"]: labels.get("pr", "")
+        for labels, _ in _samples(
+            query(
+                "max by (run_id, pr) "
+                f"(last_over_time(pytest_run_job_total_tests{{{selector}}}[{days}d]))"
+            )
+        )
+        if re.fullmatch(r"\d+(?::\d+)?", labels.get("run_id", ""))
+    }
+    records = dict(loaded)
+    for run, rows in _parallel(set(runs) - set(loaded), load_rows).items():
+        records[run] = {
+            (r.get("trace_id"), r.get("test_nodeid")): r
+            for r in rows or []
+            if r.get("test_job") == "fast-integration"
+        }
+    by_key = {_case_key(case): case for case in cases}
+    for case in cases:
+        case["daily"] = [{"pass": 0, "fail": n, "skipped": 0} for n in case["days"]]
+        case["latest"] = {
+            "status": case["status"],
+            "run_id": case["run_id"],
+            "started_at": case["started_at"],
+            "run_url": case["run_url"],
+        }
+        case["_observed"] = set(case["_runs"])
+    for run, rows in records.items():
+        for record in rows.values():
+            status = record.get("mic.status")
+            if status not in {"pass", "fail", "error", "xfail", "unsupported"}:
+                continue
+            node = str(record.get("test_nodeid", ""))
+            if not node.startswith("tests/contracts::"):
+                continue
+            parts = node.split("::")
+            target, _, variant = parts[-1].partition("[")
+            repo = (
+                record.get("mic.fixture_repo")
+                or record.get("mic.baseline_repo")
+                or record.get("mic.contract", "")
+            )
+            if not repo or repo.endswith("-integration"):
+                repo = fixture_catalog().get(target, (repo, ""))[0]
+            pr = runs.get(run)
+            if pr is None:
+                # Failure-only indexes already supply the branch identity.
+                pr = next((c["pr"] for c in cases if run in c["_runs"]), "")
+            key = (
+                repo or node,
+                record.get("mic.variant") or variant.rstrip("]"),
+                record.get("mic.platform", ""),
+                record.get("mic.weights") or "unknown",
+                pr,
+            )
+            case = by_key.get(key)
+            if case is None:
+                continue
+            stamp = starts.get(run, 0)
+            day = int(stamp // 86400) - first_day
+            if run not in case["_observed"]:
+                case["_observed"].add(run)
+                if stamp and 0 <= day < days:
+                    bucket = (
+                        "pass"
+                        if status == "pass"
+                        else "fail"
+                        if status in {"fail", "error"}
+                        else "skipped"
+                    )
+                    case["daily"][day][bucket] += 1
+            if stamp > case["latest"]["started_at"]:
+                case["latest"] = {
+                    "status": status,
+                    "run_id": run,
+                    "started_at": stamp,
+                    "run_url": "/d/pytest-observability-by-run/pytest-observability-run?"
+                    + urlencode(
+                        {
+                            "var-run_id": run,
+                            "var-pr": pr,
+                            "var-gh_run_id": run.split(":")[0],
+                        }
+                    ),
+                }
+    for case in cases:
+        case.pop("_observed")
+        case["sticky"] = case["latest"]["status"] in {"fail", "error"}
+
+
 def build_rows(
     query,
     load_rows,
@@ -125,6 +239,7 @@ def build_rows(
     variant="",
     platform="",
     failure_type="",
+    sticky_only=False,
     trace_rows=None,
     build_metadata=None,
     now=None,
@@ -379,23 +494,21 @@ def build_rows(
         "variant": sorted({r["variant"] for r in rows if r["variant"]}),
         "platform": sorted({r["platform"] for r in rows if r["platform"]}),
     }
+    variants, platforms, failure_types = map(
+        _choices, (variant, platform, failure_type)
+    )
     filtered = [
         r
         for r in rows
-        if (not variant or r["variant"] == variant)
-        and (not platform or r["platform"] == platform)
-        and (not failure_type or r["failure_kind"] == failure_type)
+        if (not variants or r["variant"] in variants)
+        and (not platforms or r["platform"] in platforms)
+        and (not failure_types or r["failure_kind"] in failure_types)
     ]
     now = time.time() if now is None else now
     first_day = int(now // 86400) - days + 1
     grouped = {}
     for row in filtered:
-        key = (
-            row["fixture_repo"] or row["nodeid"],
-            row["variant"],
-            row["platform"],
-            row["weights"],
-        )
+        key = _case_key(row)
         if key not in grouped:
             grouped[key] = {**row, "days": [0] * days, "_runs": set()}
         group = grouped[key]
@@ -406,8 +519,28 @@ def build_rows(
         if row["started_at"] and 0 <= day < days:
             group["days"][day] += 1
     cases = list(grouped.values())
+    add_history(
+        cases,
+        query,
+        load_rows,
+        loaded,
+        starts,
+        days=days,
+        scope=scope,
+        first_day=first_day,
+    )
     for case in cases:
         case["fails"] = len(case.pop("_runs"))
+        repo = case["contract"]
+        revision = case.get("contract_revision") or "main"
+        case["contract_url"] = (
+            f"https://huggingface.co/{repo}/blob/{revision}/integrations/transformers/usage.md"
+            if re.fullmatch(r"[\w.-]+/[\w.-]+", repo)
+            and (revision == "main" or re.fullmatch(r"[a-fA-F0-9]{40}", revision))
+            else ""
+        )
+    if sticky_only:
+        cases = [case for case in cases if case["sticky"]]
     return {
         "summary": failure_summary(query, days=days, scope=scope),
         "rows": cases[:LIMIT],
