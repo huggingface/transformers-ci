@@ -140,9 +140,9 @@ def add_history(cases, query, load_rows, loaded, starts, *, days, scope, first_d
         selector += ',pr="main"'
     elif scope == "prs":
         selector += ',pr=~"[0-9]+|gh-readonly-queue/.*"'
-    runs = {
-        labels["run_id"]: labels.get("pr", "")
-        for labels, _ in _samples(
+    totals = {
+        labels["run_id"]: (labels.get("pr", ""), int(value))
+        for labels, value in _samples(
             query(
                 "max by (run_id, pr) "
                 f"(last_over_time(pytest_run_job_total_tests{{{selector}}}[{days}d]))"
@@ -150,6 +150,7 @@ def add_history(cases, query, load_rows, loaded, starts, *, days, scope, first_d
         )
         if re.fullmatch(r"\d+(?::\d+)?", labels.get("run_id", ""))
     }
+    runs = {run: pr for run, (pr, _) in totals.items()}
     records = dict(loaded)
     for run, rows in _parallel(set(runs) - set(loaded), load_rows).items():
         records[run] = {
@@ -167,6 +168,36 @@ def add_history(cases, query, load_rows, loaded, starts, *, days, scope, first_d
             "run_url": case["run_url"],
         }
         case["_observed"] = set(case["_runs"])
+
+    def observe(case, run, pr, status):
+        stamp = starts.get(run, 0)
+        day = int(stamp // 86400) - first_day
+        if run not in case["_observed"]:
+            case["_observed"].add(run)
+            if stamp and 0 <= day < days:
+                bucket = (
+                    "pass"
+                    if status == "pass"
+                    else "fail"
+                    if status in {"fail", "error"}
+                    else "skipped"
+                )
+                case["daily"][day][bucket] += 1
+        if stamp > case["latest"]["started_at"]:
+            case["latest"] = {
+                "status": status,
+                "run_id": run,
+                "started_at": stamp,
+                "run_url": "/d/pytest-observability-by-run/pytest-observability-run?"
+                + urlencode(
+                    {
+                        "var-run_id": run,
+                        "var-pr": pr,
+                        "var-gh_run_id": run.split(":")[0],
+                    }
+                ),
+            }
+
     for run, rows in records.items():
         for record in rows.values():
             status = record.get("mic.status")
@@ -198,33 +229,21 @@ def add_history(cases, query, load_rows, loaded, starts, *, days, scope, first_d
             case = by_key.get(key)
             if case is None:
                 continue
-            stamp = starts.get(run, 0)
-            day = int(stamp // 86400) - first_day
-            if run not in case["_observed"]:
-                case["_observed"].add(run)
-                if stamp and 0 <= day < days:
-                    bucket = (
-                        "pass"
-                        if status == "pass"
-                        else "fail"
-                        if status in {"fail", "error"}
-                        else "skipped"
-                    )
-                    case["daily"][day][bucket] += 1
-            if stamp > case["latest"]["started_at"]:
-                case["latest"] = {
-                    "status": status,
-                    "run_id": run,
-                    "started_at": stamp,
-                    "run_url": "/d/pytest-observability-by-run/pytest-observability-run?"
-                    + urlencode(
-                        {
-                            "var-run_id": run,
-                            "var-pr": pr,
-                            "var-gh_run_id": run.split(":")[0],
-                        }
-                    ),
-                }
+            observe(case, run, pr, status)
+        # Setup errors have no success span. Clear them only when all recorded
+        # checks of a later job are present and non-failing, never from totals alone.
+        pr, total = totals.get(run, ("", 0))
+        checks = {r.get("test_nodeid"): r.get("mic.status") for r in rows.values()}
+        if (
+            total > 0
+            and len(checks) == total
+            and all(
+                status in {"pass", "xfail", "unsupported"} for status in checks.values()
+            )
+        ):
+            for case in cases:
+                if case["target"] == "runner" and case["pr"] == pr:
+                    observe(case, run, pr, "pass")
     for case in cases:
         case.pop("_observed")
         case["sticky"] = case["latest"]["status"] in {"fail", "error"}

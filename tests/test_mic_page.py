@@ -407,6 +407,23 @@ def test_missing_case_records_do_not_infer_recovery_from_a_green_job():
     assert not any(day["pass"] for day in row["daily"])
 
 
+@pytest.mark.parametrize("complete", [True, False])
+def test_setup_error_clears_only_after_observing_a_complete_successful_job(complete):
+    setup = failure(node="tests/contracts::runner")
+
+    def query(expression):
+        if "max by (run_id, pr)" in expression:
+            return [vector({"run_id": "124:1", "pr": "42"}, 1 if complete else 2)]
+        return queries([setup])(expression)
+
+    def load(run):
+        return [detail(**{"mic.status": "pass"})] if run == "124:1" else None
+
+    row = mic_page.build_rows(query, load)["rows"][0]
+    assert row["sticky"] is not complete
+    assert row["latest"]["status"] == ("pass" if complete else "fail")
+
+
 def test_contract_link_uses_the_contract_revision_instead_of_fixture_revision():
     row = detail(
         **{
