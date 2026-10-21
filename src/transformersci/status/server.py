@@ -35,6 +35,13 @@ from . import metrics
 from .store import Store
 from .webhook import Filters, Ignored, Rejected, parse_delivery, verify_signature
 
+# One /metrics body serves every scrape for this long. Rendering it is the
+# costly part: 7.6 MB for 7.5k jobs, ~130 MiB peak RSS for one render, about
+# twice that on a busy day. A scrape that times out keeps its thread rendering,
+# so at a 5s scrape interval renders also stacked; the pod OOMKilled at 256Mi
+# every ~25 min (2026-10-21). Single flight keeps it to one render at a time.
+METRICS_MAX_AGE_SECONDS = 2.0
+
 # GitHub caps payloads at 25 MB; workflow_run/workflow_job are a few KB. Anything
 # near the cap is not a CI event and is refused before it is read.
 MAX_BODY_BYTES = 5 * 1024 * 1024
@@ -71,6 +78,11 @@ class Service:
     lock: threading.Lock = field(default_factory=threading.Lock)
     # Set when reconciliation is on; its health joins the payload.
     reconciler: object | None = None
+    # The last /metrics body and when it was rendered (monotonic): see
+    # metrics_body. The render lock makes one render at a time, ever.
+    metrics_max_age: float = METRICS_MAX_AGE_SECONDS
+    _metrics: tuple[float, bytes] = (float("-inf"), b"")
+    _render_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def _count(self, outcome: str, started: float) -> None:
         with self.lock:
@@ -120,6 +132,22 @@ class Service:
         self._count("accepted" if applied else "duplicate", started)
         return 200, "stored" if applied else "duplicate delivery"
 
+    def metrics_body(self) -> bytes:
+        """The encoded /metrics payload, rendered at most once per
+        ``metrics_max_age``.
+
+        Single flight: a scrape that arrives while another renders waits for
+        that render and serves its bytes, so concurrent scrapes never hold two
+        renders in memory at once.
+        """
+        with self._render_lock:
+            rendered_at, body = self._metrics
+            if time.monotonic() - rendered_at < self.metrics_max_age:
+                return body
+            body = self.render_metrics().encode("utf-8")
+            self._metrics = (time.monotonic(), body)
+            return body
+
     def render_metrics(self, now: float | None = None) -> str:
         now = time.time() if now is None else now
         since = now - self.completed_window_seconds
@@ -153,9 +181,9 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
         server_version = "ci-github-status"
 
         def _reply(
-            self, status: int, body: str, content_type: str = "text/plain"
+            self, status: int, body: str | bytes, content_type: str = "text/plain"
         ) -> None:
-            data = body.encode("utf-8")
+            data = body if isinstance(body, bytes) else body.encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", f"{content_type}; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
@@ -185,7 +213,7 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:  # noqa: N802 - http.server API
             if self.path == "/metrics":
-                self._reply(200, service.render_metrics(), "text/plain; version=0.0.4")
+                self._reply(200, service.metrics_body(), "text/plain; version=0.0.4")
             elif self.path == "/healthz":
                 service.store.counts()
                 self._reply(200, "ok\n")

@@ -419,6 +419,8 @@ def running_service(tmp_path):
             # Fixtures carry fixed 2026 timestamps: a real 6h window would
             # expire them as the wall clock moves on.
             completed_window_seconds=10**10,
+            # Each test reads /metrics right after a delivery: no cached body.
+            metrics_max_age=0.0,
         )
         server = serve(service, "127.0.0.1", 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -432,6 +434,43 @@ def running_service(tmp_path):
         server.shutdown()
         server.server_close()
         service.store.close()
+
+
+def test_concurrent_scrapes_share_one_render(tmp_path) -> None:
+    service = Service(
+        store=Store(tmp_path / "status.db"),
+        secret=SECRET,
+        filters=FILTERS,
+        completed_window_seconds=10**10,
+    )
+    renders, inside, most = [], [0], [0]
+    gate = threading.Event()
+
+    def render(now=None) -> str:
+        inside[0] += 1
+        most[0] = max(most[0], inside[0])
+        gate.wait(5)
+        renders.append(1)
+        inside[0] -= 1
+        return f"render {len(renders)}\n"
+
+    service.render_metrics = render
+    bodies: list[bytes] = []
+    threads = [
+        threading.Thread(target=lambda: bodies.append(service.metrics_body()))
+        for _ in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    gate.set()
+    for thread in threads:
+        thread.join(5)
+    # One render at a time, and the scrapes that waited serve its bytes.
+    assert most[0] == 1 and len(renders) == 1
+    assert bodies == [b"render 1\n"] * 4
+    service.metrics_max_age = 0.0
+    assert service.metrics_body() == b"render 2\n"  # stale: rendered again
+    service.store.close()
 
 
 def post(

@@ -124,18 +124,22 @@ spec:
               mountPath: /app/src
             - name: data
               mountPath: /data
+          # /healthz shares the GIL with a /metrics render (seconds on a busy
+          # day): at the default 1s timeout the probe killed a healthy pod.
           livenessProbe:
             httpGet:
               path: /healthz
               port: {{ .Values.ciGithubStatus.port }}
             initialDelaySeconds: 20
             periodSeconds: 30
+            timeoutSeconds: 5
           readinessProbe:
             httpGet:
               path: /healthz
               port: {{ .Values.ciGithubStatus.port }}
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
       volumes:
         - name: src
           emptyDir: {}
