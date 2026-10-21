@@ -9,7 +9,7 @@
     variant: params.getAll('variant').filter(Boolean), platform: params.getAll('platform').filter(Boolean),
     failure_type: params.getAll('failure_type').filter(Boolean),
     sticky_only: params.get('sticky_only') !== 'false',
-    sort: ['fails', 'alpha', 'alpha_desc'].includes(params.get('sort')) ? params.get('sort') : 'fails',
+    sort: ['fails', 'recent', 'alpha', 'alpha_desc'].includes(params.get('sort')) ? params.get('sort') : 'fails',
     group: params.get('group') === 'pr' ? 'pr' : 'model',
   };
   byId('sticky-only').checked = state.sticky_only;
@@ -98,7 +98,8 @@
   function sortGroups(groups) {
     const byName = (a, b) => a.sortName.localeCompare(b.sortName, undefined, {sensitivity: 'base'}) || a.key.localeCompare(b.key);
     const failures = group => group.members.reduce((sum, row) => sum + (row.fails || 0), 0);
-    return [...groups].sort(state.sort === 'alpha' ? byName : state.sort === 'alpha_desc' ? (a, b) => -byName(a, b) : (a, b) => failures(b) - failures(a) || byName(a, b));
+    const recent = group => group.members.reduce((stamp, row) => Math.max(stamp, row.latest?.started_at || row.started_at || 0), 0);
+    return [...groups].sort(state.sort === 'alpha' ? byName : state.sort === 'alpha_desc' ? (a, b) => -byName(a, b) : state.sort === 'recent' ? (a, b) => recent(b) - recent(a) || byName(a, b) : (a, b) => failures(b) - failures(a) || byName(a, b));
   }
   function groupSummary({name, href, members}, key, level, label) {
     const open = expanded().has(key);
@@ -256,7 +257,7 @@
   byId('sticky-only').addEventListener('change', event => { state.sticky_only = event.target.checked; load(); });
   byId('sort').addEventListener('click', event => {
     const button = event.target.closest('button'); if (!button) return;
-    state.sort = button.dataset.v === 'alpha' ? (state.sort === 'alpha' ? 'alpha_desc' : 'alpha') : 'fails';
+    state.sort = button.dataset.v === 'alpha' ? (state.sort === 'alpha' ? 'alpha_desc' : 'alpha') : button.dataset.v;
     render();
   });
   byId('fold').addEventListener('click', () => {
