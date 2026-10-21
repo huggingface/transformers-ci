@@ -88,6 +88,11 @@ spec:
               value: /app/src/src
             - name: PYTHONUNBUFFERED
               value: "1"
+            # glibc keeps freed memory per arena (up to 8 per CPU). Each /metrics
+            # render frees ~55 MiB that its arena kept; spread over arenas, that
+            # grew the pod in steps to its 512Mi limit (2026-10-21).
+            - name: MALLOC_ARENA_MAX
+              value: "2"
             # Required: the service refuses to start without it.
             - name: GITHUB_WEBHOOK_SECRET
               valueFrom:

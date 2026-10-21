@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -471,6 +472,79 @@ def test_concurrent_scrapes_share_one_render(tmp_path) -> None:
     service.metrics_max_age = 0.0
     assert service.metrics_body() == b"render 2\n"  # stale: rendered again
     service.store.close()
+
+
+@pytest.fixture
+def render_worker(tmp_path):
+    service = Service(
+        store=Store(tmp_path / "status.db"),
+        secret=SECRET,
+        filters=FILTERS,
+        completed_window_seconds=10**10,
+        metrics_max_age=0.0,
+    )
+    stop = threading.Event()
+    worker = threading.Thread(
+        target=service.render_loop, args=(stop,), daemon=True, name="render"
+    )
+    worker.start()
+    deadline = time.monotonic() + 5
+    while not service._render_worker and time.monotonic() < deadline:
+        time.sleep(0.01)
+    yield service
+    stop.set()
+    with service._render_wanted:
+        service._render_wanted.notify_all()
+    worker.join(5)
+    service.store.close()
+
+
+def test_scrapes_render_on_the_render_thread(render_worker) -> None:
+    service = render_worker
+    threads, renders = [], []
+
+    def render(now=None) -> str:
+        threads.append(threading.current_thread().name)
+        renders.append(1)
+        time.sleep(0.2)  # long enough for the scrapes below to overlap
+        return f"render {len(renders)}\n"
+
+    service.render_metrics = render
+    bodies: list[bytes] = []
+    scrapes = [
+        threading.Thread(target=lambda: bodies.append(service.metrics_body()))
+        for _ in range(4)
+    ]
+    for scrape in scrapes:
+        scrape.start()
+    for scrape in scrapes:
+        scrape.join(5)
+    # Every render ran on the one long-lived thread, never a request thread,
+    # and overlapping scrapes shared renders instead of starting their own.
+    assert set(threads) == {"render"}
+    assert bodies == [b"render 1\n"] * 4 and len(renders) == 1
+    assert service.metrics_body() == b"render 2\n"  # stale: rendered again
+
+
+def test_a_failed_render_serves_the_previous_body(render_worker) -> None:
+    service = render_worker
+    service.render_metrics = lambda now=None: "good\n"
+    assert service.metrics_body() == b"good\n"
+
+    def fail(now=None) -> str:
+        raise ValueError("boom")
+
+    service.render_metrics = fail
+    assert service.metrics_body() == b"good\n"
+
+
+def test_a_failed_first_render_is_an_error(render_worker) -> None:
+    def fail(now=None) -> str:
+        raise ValueError("boom")
+
+    render_worker.render_metrics = fail
+    with pytest.raises(RuntimeError):
+        render_worker.metrics_body()
 
 
 def post(

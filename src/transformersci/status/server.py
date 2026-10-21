@@ -24,6 +24,7 @@ the reconciliation worker.
 
 from __future__ import annotations
 
+import ctypes
 import json
 import sys
 import threading
@@ -41,6 +42,24 @@ from .webhook import Filters, Ignored, Rejected, parse_delivery, verify_signatur
 # so at a 5s scrape interval renders also stacked; the pod OOMKilled at 256Mi
 # every ~25 min (2026-10-21). Single flight keeps it to one render at a time.
 METRICS_MAX_AGE_SECONDS = 2.0
+
+# How long a scrape waits for the render thread before serving the previous
+# body: under Prometheus' 10s scrape timeout, so a slow render still answers.
+METRICS_WAIT_SECONDS = 8.0
+
+
+def _release_free_memory() -> None:
+    """Hand free heap pages back to the OS (glibc only; a no-op elsewhere).
+
+    A render frees ~80 MiB of objects, but glibc keeps freed pages in the
+    arena that served them. With 256Mi and then 512Mi the pod still grew in
+    50-60 MiB steps (one render each) until OOMKilled (2026-10-21).
+    """
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
 
 # GitHub caps payloads at 25 MB; workflow_run/workflow_job are a few KB. Anything
 # near the cap is not a CI event and is refused before it is read.
@@ -81,8 +100,16 @@ class Service:
     # The last /metrics body and when it was rendered (monotonic): see
     # metrics_body. The render lock makes one render at a time, ever.
     metrics_max_age: float = METRICS_MAX_AGE_SECONDS
+    metrics_wait: float = METRICS_WAIT_SECONDS
     _metrics: tuple[float, bytes] = (float("-inf"), b"")
     _render_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Set by render_loop: scrapes then ask its thread to render instead of
+    # rendering on their own short-lived request threads.
+    _render_wanted: threading.Condition = field(default_factory=threading.Condition)
+    _render_requested: bool = False
+    _rendering: bool = False
+    _render_failed_at: float = float("-inf")
+    _render_worker: bool = False
 
     def _count(self, outcome: str, started: float) -> None:
         with self.lock:
@@ -138,15 +165,74 @@ class Service:
 
         Single flight: a scrape that arrives while another renders waits for
         that render and serves its bytes, so concurrent scrapes never hold two
-        renders in memory at once.
+        renders in memory at once. With ``render_loop`` running, the render
+        happens on its thread, never on a request thread.
         """
-        with self._render_lock:
+        if not self._render_worker:
+            with self._render_lock:
+                rendered_at, body = self._metrics
+                if time.monotonic() - rendered_at < self.metrics_max_age:
+                    return body
+                body = self.render_metrics().encode("utf-8")
+                self._metrics = (time.monotonic(), body)
+                return body
+        with self._render_wanted:
             rendered_at, body = self._metrics
             if time.monotonic() - rendered_at < self.metrics_max_age:
                 return body
-            body = self.render_metrics().encode("utf-8")
-            self._metrics = (time.monotonic(), body)
-            return body
+            asked = time.monotonic()
+            if not self._rendering:  # else the render in flight answers this scrape
+                self._render_requested = True
+                self._render_wanted.notify_all()
+            self._render_wanted.wait_for(
+                lambda: (
+                    self._metrics[0] > rendered_at or self._render_failed_at >= asked
+                ),
+                timeout=self.metrics_wait,
+            )
+            body = self._metrics[1]
+        if not body:
+            raise RuntimeError("no /metrics body rendered yet")
+        return body  # fresh, or the previous one if the render failed or is slow
+
+    def render_loop(self, stop: threading.Event) -> None:
+        """Render /metrics on this one long-lived thread, when a scrape asks.
+
+        Every render then allocates from the same glibc arena. Rendered on
+        each request's own thread, a render could land in a new arena that
+        kept its ~55 MiB after the render ended, and the pod OOMKilled every
+        ~1.5h at 512Mi (2026-10-21).
+        """
+        self._render_worker = True
+        while not stop.is_set():
+            with self._render_wanted:
+                if not self._render_wanted.wait_for(
+                    lambda: self._render_requested or stop.is_set(), timeout=1.0
+                ):
+                    continue
+                if stop.is_set():
+                    break
+                self._render_requested = False
+                self._rendering = True
+            try:
+                body = self.render_metrics().encode("utf-8")
+            except Exception as error:  # keep serving the previous body
+                print(
+                    f"[ci-github-status] /metrics render failed: {error!r}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                with self._render_wanted:
+                    self._rendering = False
+                    self._render_failed_at = time.monotonic()
+                    self._render_wanted.notify_all()
+                continue
+            with self._render_wanted:
+                self._rendering = False
+                self._metrics = (time.monotonic(), body)
+                self._render_wanted.notify_all()
+            del body
+            _release_free_memory()
 
     def render_metrics(self, now: float | None = None) -> str:
         now = time.time() if now is None else now
