@@ -560,14 +560,22 @@ def build_rows(
         )
     if sticky_only:
         cases = [case for case in cases if case["sticky"]]
+
+    # Limit whole model groups, never split a model's error list or summary.
+    def model_key(case):
+        return case["source_model"] or case["fixture_repo"] or case["contract"]
+
+    models = list(dict.fromkeys(model_key(case) for case in cases))
+    shown_models = set(models[:LIMIT])
     return {
         "summary": failure_summary(query, days=days, scope=scope),
-        "rows": cases[:LIMIT],
+        "rows": [case for case in cases if model_key(case) in shown_models],
         "days": days,
         "scope": scope,
         "options": options,
         "total": len(filtered),
         "cases": len(cases),
+        "models": len(models),
         "first_day": first_day * 86400,
         "limit": LIMIT,
     }

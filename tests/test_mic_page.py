@@ -288,6 +288,28 @@ def test_variant_and_platform_filters_apply_before_row_limit(monkeypatch):
     }
 
 
+def test_model_limit_keeps_all_error_cases_of_each_selected_model(monkeypatch):
+    monkeypatch.setattr(mic_page, "LIMIT", 1)
+    other = failure(node="tests/contracts::other::other[default]")
+    older = failure()
+    newer = failure("124:1", node="tests/contracts::demo::demo[eager]")
+
+    def record(item, repo):
+        return detail(
+            test_nodeid=item["metric"]["test_nodeid"], **{"mic.fixture_repo": repo}
+        )
+
+    records = {
+        "123:1": [record(other, "creator/other"), record(older, "creator/demo")],
+        "124:1": [record(newer, "creator/demo")],
+    }
+    data = mic_page.build_rows(queries([other, older, newer]), records.get)
+    assert data["models"] == 2
+    assert data["cases"] == 3
+    assert len(data["rows"]) == 2
+    assert {row["fixture_repo"] for row in data["rows"]} == {"creator/demo"}
+
+
 @pytest.mark.parametrize(
     "scope,matcher",
     [("main", ',pr="main"'), ("prs", ',pr=~"[0-9]+|gh-readonly-queue/.*"')],
