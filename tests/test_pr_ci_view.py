@@ -5,6 +5,8 @@ import threading
 from http.server import ThreadingHTTPServer
 from urllib.request import urlopen
 
+import pytest
+
 from transformersci.otel import pr_ci_view, trace_exporter
 
 
@@ -438,12 +440,15 @@ def test_job_pages_after_the_first_are_fetched_together_in_order(
     assert len(jobs) == 100 and notes == []
     assert [job["name"] for job in jobs[::30]] == ["p1-0", "p2-0", "p3-0", "p4-0"]
     assert len(calls) == 4
-    # A finished run's jobs never change: the second read costs no GitHub call.
-    assert trace_exporter._pr_ci_run_jobs("77:2", completed=True)[0] == jobs
+    # A finished attempt's jobs never change: the second read costs no GitHub call.
+    assert trace_exporter._pr_ci_run_jobs("77:1", completed=True)[0] == jobs
     assert len(calls) == 4
+    # A rerun is a new job list under the same run id: read again.
+    trace_exporter._pr_ci_run_jobs("77:2", completed=True)
+    assert len(calls) == 8
     trace_exporter._pr_ci_run_jobs("88", completed=False)
     trace_exporter._pr_ci_run_jobs("88", completed=False)
-    assert len(calls) == 12  # a running run is read again
+    assert len(calls) == 16  # a running run is read again
     trace_exporter._completed_jobs_cache.clear()
 
 
@@ -545,3 +550,229 @@ def test_a_value_built_during_a_failure_is_rebuilt_on_the_next_request() -> None
         threading.Event().wait(0.01)
     assert fetch()[:2] == (b"good", "hit")
     trace_exporter._swr_cache.clear()
+
+
+def _view_sources(gpu_run_id: str = "123:1") -> dict:
+    def run(run_id: str, conclusion: str) -> dict:
+        return {
+            "run_id": run_id,
+            "url": f"https://github.com/huggingface/transformers/actions/runs/{run_id.split(':')[0]}",
+            "status": "completed",
+            "conclusion": conclusion,
+            "created_at": "2026-10-14T10:00:00Z",
+        }
+
+    return {
+        "cpu": {"source_run": run("100:1", "failure"), "active_runs": [], "notes": []},
+        "gpu": {
+            "source_run": run(gpu_run_id, "success"),
+            "active_runs": [],
+            "notes": [],
+        },
+    }
+
+
+def _nvidia_comment(run: str) -> dict:
+    body = (
+        "<!-- nvidia-section-start -->\n"
+        f"[Workflow Run](https://github.com/huggingface/transformers/actions/runs/{run})\n"
+        "✅ No failing test specific to this PR\n<!-- nvidia-section-end -->"
+    )
+    return {"body": body, "updated_at": "2026-10-14T12:00:00Z"}
+
+
+def _payload(monkeypatch, api, rows=lambda run_id: []) -> dict:
+    trace_exporter._swr_cache.clear()
+    trace_exporter._completed_jobs_cache.clear()
+    monkeypatch.setattr(trace_exporter, "_rerun_github_api", api)
+    monkeypatch.setattr(trace_exporter, "gather_run_test_rows", rows)
+    handler = object.__new__(trace_exporter.MetricsHandler)
+    try:
+        return json.loads(handler._pr_ci_view_payload("49599"))
+    finally:
+        trace_exporter._swr_cache.clear()
+        trace_exporter._completed_jobs_cache.clear()
+
+
+def test_nvidia_jobs_are_read_while_the_comments_load(monkeypatch) -> None:
+    monkeypatch.setattr(
+        trace_exporter.MetricsHandler,
+        "_pr_ci_sources",
+        lambda self, pr: _view_sources(),
+    )
+    gpu_jobs_requested = threading.Event()
+
+    def api(path: str, **_kwargs) -> object:
+        if path.startswith("issues/"):
+            # Before: the Nvidia jobs were only requested after this returned.
+            assert gpu_jobs_requested.wait(5)
+            return [_nvidia_comment("123")]
+        if path.startswith("actions/runs/123/jobs"):
+            gpu_jobs_requested.set()
+        return {"jobs": []}
+
+    payload = _payload(monkeypatch, api)
+    assert [lane["run"]["run_id"] for lane in payload["lanes"]] == ["100:1", "123:1"]
+
+
+def test_a_newer_nvidia_run_in_the_comments_replaces_the_early_reads(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        trace_exporter.MetricsHandler,
+        "_pr_ci_sources",
+        lambda self, pr: _view_sources(),
+    )
+    paths: list[str] = []
+
+    def api(path: str, **_kwargs) -> object:
+        paths.append(path)
+        if path.startswith("issues/"):
+            return [_nvidia_comment("124")]
+        if path == "actions/runs/124":
+            return {
+                "id": 124,
+                "run_attempt": 1,
+                "path": ".github/workflows/self-comment-ci.yml@main",
+                "event": "issue_comment",
+                "status": "completed",
+                "conclusion": "failure",
+                "html_url": "https://github.com/huggingface/transformers/actions/runs/124",
+                "created_at": "2026-10-14T13:00:00Z",
+            }
+        if path.startswith("actions/runs/124/jobs"):
+            return {
+                "jobs": [
+                    {
+                        "name": "Model CI / run_models_gpu (aws-g5-4xlarge-cache, 0) / run_models_gpu (models/vit)",
+                        "status": "completed",
+                        "conclusion": "failure",
+                    }
+                ]
+            }
+        return {"jobs": []}
+
+    payload = _payload(monkeypatch, api)
+    gpu = payload["lanes"][1]
+    assert gpu["run"]["run_id"] == "124:1"
+    assert [job["name"] for job in gpu["jobs"]] == ["run_models_gpu"]  # run 124's
+    assert any(path.startswith("actions/runs/124/jobs") for path in paths)
+
+
+def test_full_view_starts_the_queue_history_the_page_asks_for_next(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        trace_exporter.MetricsHandler,
+        "_pr_ci_sources",
+        lambda self, pr: _view_sources(),
+    )
+    requested: list[tuple[str, list[str]]] = []
+    started = threading.Event()
+
+    def history(pr: str, nodeids: list[str]) -> tuple[bytes, str]:
+        requested.append((pr, nodeids))
+        started.set()
+        return b"{}", "miss"
+
+    monkeypatch.setattr(trace_exporter, "_queue_history", history)
+
+    def rows(run_id: str) -> list[dict]:
+        if run_id != "100:1":
+            return []
+        return [
+            {
+                "test_nodeid": nodeid,
+                "test_job": "tests_torch",
+                "hardware": "cpu",
+                "status_code": "ERROR",
+                "pr": "49599",
+            }
+            for nodeid in (
+                "tests/b.py::test_b",
+                "tests/a.py::test_a",
+                "tests/b.py::test_b",
+            )
+        ]
+
+    _payload(
+        monkeypatch,
+        lambda path, **_kwargs: [] if path.startswith("issues/") else {"jobs": []},
+        rows,
+    )
+    assert started.wait(5)
+    # Exactly the request pr_ci_view.js makes: unique CPU failures, sorted.
+    assert requested == [("49599", ["tests/a.py::test_a", "tests/b.py::test_b"])]
+
+
+def test_no_queue_history_is_started_without_cpu_failures(monkeypatch) -> None:
+    monkeypatch.setattr(
+        trace_exporter,
+        "_queue_history",
+        lambda pr, nodeids: pytest.fail("no failures, no Tempo search"),
+    )
+    trace_exporter._prefetch_queue_history("49599", [{"id": "cpu", "failures": []}])
+    trace_exporter._prefetch_queue_history(
+        "49599", [{"id": "gpu", "failures": [{"nodeid": "tests/a.py::test_a"}]}]
+    )
+
+
+def test_a_lane_reads_the_pages_its_last_run_needed_together_with_page_one(
+    monkeypatch,
+) -> None:
+    trace_exporter._completed_jobs_cache.clear()
+    monkeypatch.setattr(trace_exporter, "_job_pages_seen", {})
+    sizes = {"7": 100, "8": 100, "9": 10}
+    calls: list[tuple[str, int]] = []
+    barrier: list[threading.Barrier] = []
+
+    def api(path: str, **_kwargs) -> object:
+        run = path.split("/")[2]
+        number = int(path.rsplit("page=", 1)[1])
+        calls.append((run, number))
+        if barrier:
+            barrier[0].wait()
+        start = (number - 1) * 30
+        count = max(0, min(30, sizes[run] - start))
+        return {
+            "total_count": sizes[run],
+            "jobs": [{"name": f"{run}-{start + n}"} for n in range(count)],
+        }
+
+    monkeypatch.setattr(trace_exporter, "_rerun_github_api", api)
+    jobs, _ = trace_exporter._pr_ci_run_jobs("7:1", completed=False, lane="cpu")
+    assert len(jobs) == 100 and calls[0] == ("7", 1)
+    assert trace_exporter._job_pages_seen == {"cpu": 4}
+    # Next cpu run: pages 1-4 must all be in flight at once.
+    calls.clear()
+    barrier.append(threading.Barrier(4, timeout=5))
+    jobs, notes = trace_exporter._pr_ci_run_jobs("8:1", completed=False, lane="cpu")
+    barrier.clear()
+    assert sorted(calls) == [("8", n) for n in range(1, 5)]
+    assert [job["name"] for job in jobs] == [
+        f"8-{n}" for n in range(100)
+    ] and notes == []
+    # A smaller run wastes the guessed pages but returns only its own jobs.
+    jobs, _ = trace_exporter._pr_ci_run_jobs("9:1", completed=False, lane="cpu")
+    assert [job["name"] for job in jobs] == [f"9-{n}" for n in range(10)]
+    assert trace_exporter._job_pages_seen == {"cpu": 1}
+    # Other lanes keep their own hint.
+    calls.clear()
+    trace_exporter._pr_ci_run_jobs("8:1", completed=False, lane="gpu")
+    assert calls[0] == ("8", 1) and len(calls) == 4
+
+
+def test_guessed_pages_without_a_count_stop_at_the_first_short_page(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(trace_exporter, "_job_pages_seen", {"cpu": 4})
+    calls: list[int] = []
+
+    def api(path: str, **_kwargs) -> object:
+        number = int(path.rsplit("page=", 1)[1])
+        calls.append(number)
+        return {"jobs": [{"name": f"p{number}"}] * (30 if number < 4 else 5)}
+
+    monkeypatch.setattr(trace_exporter, "_rerun_github_api", api)
+    jobs, notes = trace_exporter._pr_ci_run_jobs("5:1", completed=False, lane="cpu")
+    assert len(jobs) == 95 and notes == [] and sorted(calls) == [1, 2, 3, 4]
