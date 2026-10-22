@@ -949,7 +949,39 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "query_result(label_replace(count by (runner_type) ((last_over_time(ci_github_job_runner_info[30d]) * on (repository, run_id) group_left() max by (repository, run_id) (last_over_time(ci_github_run_info{pr=~\"$pr\"}[30d]))) or last_over_time(pytest_run_runner_info{pr=~\"$pr\"}[90d])), \"md\", \"<a href='/d/ci-runners/runners'>$1</a>\", \"runner_type\", \"(.+)\"))",
+        "definition": "query_result(max by (run_id) (last_over_time(ci_github_run_info{pr=~\"$pr\"}[30d])))",
+        "description": "Run ids of the PR's GitHub workflow runs, so pr_runners reads runner info for those runs only: unfiltered, it read every job's runner series for 30 days (26s, often a 502).",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "label": "",
+        "name": "pr_run_ids",
+        "options": [],
+        "query": {
+          "qryType": 3,
+          "query": "query_result(max by (run_id) (last_over_time(ci_github_run_info{pr=~\"$pr\"}[30d])))",
+          "refId": "Prometheus-pr_run_ids-Variable-Query"
+        },
+        "regex": "/run_id=\"([^\"]+)\"/",
+        "refresh": 2,
+        "skipUrlSync": true,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "definition": "query_result(label_replace(count by (runner_type) ((last_over_time(ci_github_job_runner_info{run_id=~\"${pr_run_ids:regex}\"}[30d]) * on (repository, run_id) group_left() max by (repository, run_id) (last_over_time(ci_github_run_info{pr=~\"$pr\"}[30d]))) or last_over_time(pytest_run_runner_info{pr=~\"$pr\"}[90d])), \"md\", \"<a href='/d/ci-runners/runners'>$1</a>\", \"runner_type\", \"(.+)\"))",
         "hide": 2,
         "includeAll": true,
         "multi": true,
@@ -958,7 +990,7 @@
         "options": [],
         "query": {
           "qryType": 3,
-          "query": "query_result(label_replace(count by (runner_type) ((last_over_time(ci_github_job_runner_info[30d]) * on (repository, run_id) group_left() max by (repository, run_id) (last_over_time(ci_github_run_info{pr=~\"$pr\"}[30d]))) or last_over_time(pytest_run_runner_info{pr=~\"$pr\"}[90d])), \"md\", \"<a href='/d/ci-runners/runners'>$1</a>\", \"runner_type\", \"(.+)\"))",
+          "query": "query_result(label_replace(count by (runner_type) ((last_over_time(ci_github_job_runner_info{run_id=~\"${pr_run_ids:regex}\"}[30d]) * on (repository, run_id) group_left() max by (repository, run_id) (last_over_time(ci_github_run_info{pr=~\"$pr\"}[30d]))) or last_over_time(pytest_run_runner_info{pr=~\"$pr\"}[90d])), \"md\", \"<a href='/d/ci-runners/runners'>$1</a>\", \"runner_type\", \"(.+)\"))",
           "refId": "Prometheus-pr_runners-Variable-Query"
         },
         "regex": "/md=\"([^\"]+)\"/",
