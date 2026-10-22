@@ -87,8 +87,17 @@ def parse_group(raw):
     return raw if raw in {"model", "pr"} else "model"
 
 
-def failure_summary(query, *, days, scope):
-    """Count recorded MIC check outcomes across all variants and platforms."""
+def failure_summary(query, *, days, scope, cases=None):
+    """Count fleet outcomes, or observed checks for selected sticky cases."""
+    if cases is not None:
+        buckets = [bucket for case in cases for bucket in case["daily"]]
+        total = sum(sum(bucket.values()) for bucket in buckets)
+        failed = sum(bucket["fail"] for bucket in buckets)
+        return {
+            "total": total,
+            "failed": failed,
+            "rate": 100 * failed / total if total else None,
+        }
     selector = 'test_job="fast-integration"'
     if scope == "main":
         selector += ',pr="main"'
@@ -729,7 +738,15 @@ def build_rows(
     groups = list(dict.fromkeys(group_key(case) for case in cases))
     shown_groups = set(groups[:LIMIT])
     return {
-        "summary": {**summary, "now": current},
+        "summary": {
+            **(
+                failure_summary(query, days=days, scope=scope, cases=cases)
+                if sticky_only
+                else summary
+            ),
+            "now": current,
+        },
+        "sticky_only": sticky_only,
         "rows": [case for case in cases if group_key(case) in shown_groups],
         "days": days,
         "scope": scope,

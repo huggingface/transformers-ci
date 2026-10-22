@@ -138,9 +138,10 @@
     byId('failing-now-counts').textContent = current
       ? `${current.failing.toLocaleString()} of ${current.cases.toLocaleString()} cases fail their latest check`
       : '';
+    byId('failure-rate-label').textContent = data.sticky_only ? 'Sticky failure rate' : 'Global failure rate';
     byId('failure-rate').textContent = summary?.rate == null ? '—' : `${summary.rate.toFixed(1)}%`;
     byId('failure-counts').textContent = summary
-      ? `${summary.failed.toLocaleString()} failed / ${summary.total.toLocaleString()} recorded checks · last ${data.days} days · ${data.scope === 'main' ? 'main' : data.scope === 'prs' ? 'PRs' : 'all branches'} · all variants and platforms`
+      ? `${summary.failed.toLocaleString()} failed / ${summary.total.toLocaleString()} recorded checks · last ${data.days} days · ${data.scope === 'main' ? 'main' : data.scope === 'prs' ? 'PRs' : 'all branches'} · ${data.sticky_only ? 'matching sticky cases' : 'all variants and platforms'}`
       : 'Loading recorded MIC outcomes…';
     const filter = byId('search').value.toLowerCase();
     const rows = data.rows.filter(r => Object.values(r).join(' ').toLowerCase().includes(filter));

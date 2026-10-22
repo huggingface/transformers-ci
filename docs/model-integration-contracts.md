@@ -85,3 +85,8 @@ The global rate divides failed checks by recorded MIC checks for the selected
 window and branch scope, across all variants and platforms. The exporter uses a
 small offline provenance index for historical labels; it does not fetch fleets
 or model metadata over public egress.
+
+With **Sticky failures only** enabled, the historical rate instead uses observed
+checks for matching cases whose latest check still fails, before the group limit.
+Its label changes to **Sticky failure rate**. The separate **Failing now** metric
+continues to describe the latest state across all cases in the branch scope.

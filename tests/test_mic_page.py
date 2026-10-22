@@ -212,6 +212,12 @@ def test_http_page_data_caching_and_unavailable_state(monkeypatch):
         assert len(calls) == 12
         assert json.load(urlopen(base + "/mic/data?days=1"))["group"] == "model"
         assert len(calls) == 12
+        fleet = json.load(urlopen(base + "/mic/data?days=1&sticky_only=false"))
+        assert fleet["sticky_only"] is False
+        assert len(calls) == 16
+        sticky = json.load(urlopen(base + "/mic/data?days=1"))
+        assert sticky["sticky_only"] is True
+        assert len(calls) == 16
 
         def broken(expression):
             raise RuntimeError("private internal URL")
@@ -455,12 +461,16 @@ def test_daily_history_observes_passes_without_clearing_a_different_branch(
     assert row["latest"]["status"] == "pass"
     assert row["sticky"] is False
     assert "var-pr=main" in row["latest"]["run_url"]
-    assert (
-        mic_page.build_rows(
-            query, records.get, now=today + 200, scope=scope, sticky_only=True
-        )["rows"]
-        == []
+    sticky = mic_page.build_rows(
+        query, records.get, now=today + 200, scope=scope, sticky_only=True
     )
+    assert sticky["rows"] == []
+    assert {k: v for k, v in sticky["summary"].items() if k != "now"} == {
+        "total": 0,
+        "failed": 0,
+        "rate": None,
+    }
+    assert sticky["sticky_only"] is True
 
 
 def test_missing_case_records_do_not_infer_recovery_from_a_green_job():
@@ -921,3 +931,47 @@ def test_records_without_weights_match_their_case_through_provenance():
     )
     assert data["summary"]["now"] == {"failing": 0, "cases": 1, "rate": 0.0}
     assert [row["sticky"] for row in data["rows"]] == [False]
+
+
+def test_sticky_failure_rate_weights_observed_checks():
+    cases = [
+        {"daily": [{"pass": 2, "fail": 1, "skipped": 1}]},
+        {"daily": [{"pass": 0, "fail": 6, "skipped": 0}]},
+    ]
+
+    def query(expression):
+        raise AssertionError("Sticky summaries must not use fleet totals")
+
+    assert mic_page.failure_summary(query, days=7, scope="all", cases=cases) == {
+        "total": 10,
+        "failed": 7,
+        "rate": 70.0,
+    }
+
+
+def test_sticky_failure_rate_respects_filters_before_group_limit(monkeypatch):
+    def query(expression):
+        if "max by (run_id, hardware)" in expression:
+            return [
+                vector({"run_id": "123:1"}, 10 if "_total_tests" in expression else 2)
+            ]
+        return queries([failure()])(expression)
+
+    kwargs = dict(query=query, load_rows=lambda run: [detail()], now=2000)
+    fleet = mic_page.build_rows(**kwargs)
+    assert fleet["summary"]["rate"] == 20.0
+    assert fleet["sticky_only"] is False
+    monkeypatch.setattr(mic_page, "LIMIT", 0)
+    sticky = mic_page.build_rows(**kwargs, sticky_only=True)
+    assert sticky["rows"] == []
+    assert {k: v for k, v in sticky["summary"].items() if k != "now"} == {
+        "total": 1,
+        "failed": 1,
+        "rate": 100.0,
+    }
+    filtered = mic_page.build_rows(**kwargs, sticky_only=True, variant="absent")
+    assert {k: v for k, v in filtered["summary"].items() if k != "now"} == {
+        "total": 0,
+        "failed": 0,
+        "rate": None,
+    }
