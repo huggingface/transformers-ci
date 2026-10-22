@@ -38,6 +38,9 @@ ROW_FIELDS = tuple(f"mic.{field}" for field in FIELDS) + (
     "mic.commit_sha",
 )
 LIMIT = 200
+# Above this many runs the start-time query reads all runs instead of naming
+# them, keeping the request URL bounded (~15 bytes per run id).
+MAX_RUN_MATCHER = 2000
 
 
 def parse_days(raw):
@@ -135,16 +138,14 @@ def _case_key(row):
     )
 
 
-def add_history(cases, query, load_rows, loaded, starts, *, days, scope, first_day):
-    """Use observed case records, never job totals, to establish passes and recovery."""
-    if not cases:
-        return
+def run_totals(query, *, days, scope):
+    """``run_id -> (pr, total checks)`` for every MIC job in the window."""
     selector = 'test_job="fast-integration"'
     if scope == "main":
         selector += ',pr="main"'
     elif scope == "prs":
         selector += ',pr=~"[0-9]+|gh-readonly-queue/.*"'
-    totals = {
+    return {
         labels["run_id"]: (labels.get("pr", ""), int(value))
         for labels, value in _samples(
             query(
@@ -154,6 +155,37 @@ def add_history(cases, query, load_rows, loaded, starts, *, days, scope, first_d
         )
         if re.fullmatch(r"\d+(?::\d+)?", labels.get("run_id", ""))
     }
+
+
+def run_starts(query, run_ids, *, days):
+    """Start times of the given runs only: the unfiltered query reads every
+    CI run of the window (4,188 series over 30 days, 1.2-20s on 2026-10-22)."""
+    if not run_ids:
+        return {}
+    matcher = (
+        f'{{run_id=~"{"|".join(sorted(run_ids))}"}}'
+        if len(run_ids) <= MAX_RUN_MATCHER
+        else ""
+    )
+    return {
+        labels.get("run_id", ""): stamp
+        for labels, stamp in _samples(
+            query(
+                "max by (run_id) "
+                f"(last_over_time(pytest_run_start_time_seconds{matcher}[{days}d]))"
+            )
+        )
+    }
+
+
+def add_history(
+    cases, query, load_rows, loaded, starts, *, days, scope, first_day, totals=None
+):
+    """Use observed case records, never job totals, to establish passes and recovery."""
+    if not cases:
+        return
+    if totals is None:
+        totals = run_totals(query, days=days, scope=scope)
     runs = {run: pr for run, (pr, _) in totals.items()}
     records = dict(loaded)
     for run, rows in _parallel(set(runs) - set(loaded), load_rows).items():
@@ -253,6 +285,107 @@ def add_history(cases, query, load_rows, loaded, starts, *, days, scope, first_d
         case["sticky"] = case["latest"]["status"] in {"fail", "error"}
 
 
+def failure_index(query, *, days, scope):
+    """``(labels, value)`` of every MIC check failure in the window."""
+    selector = 'test_job="fast-integration",test_nodeid=~"tests/contracts::.*"'
+    if scope == "main":
+        selector += ',pr="main"'
+    elif scope == "prs":
+        selector += ',pr=~"[0-9]+|gh-readonly-queue/.*"'
+    return [
+        (labels, value)
+        for labels, value in _samples(
+            query(
+                "max by (pr, run_id, trace_id, test_nodeid, exception_type) "
+                f"(last_over_time(pytest_test_last_failure_info{{{selector}}}[{days}d]))"
+            )
+        )
+        if labels.get("test_nodeid", "").startswith("tests/contracts::")
+        and re.fullmatch(r"\d+(?::\d+)?", labels.get("run_id", ""))
+    ]
+
+
+def pr_titles(query, failures, *, days):
+    """Newest title of each PR the failures name; empty when unavailable."""
+    numbers = sorted(
+        {
+            match.group(1)
+            for labels, _ in failures
+            if (
+                match := re.fullmatch(
+                    r"(?:gh-readonly-queue/[^/]+/pr-)?([0-9]+)(?:-.*)?",
+                    labels.get("pr", ""),
+                )
+            )
+        }
+    )
+    if not numbers:
+        return {}
+    try:
+        titles = _newest_titles(query, "pytest_pr_info", numbers, days=days)
+        rest = [number for number in numbers if number not in titles]
+        if rest:
+            titles.update(
+                _newest_titles(query, "ci_github_run_title_info", rest, days=days)
+            )
+        return titles
+    except Exception:
+        return {}  # PR metadata may lag the failure index; case/trace links still work.
+
+
+# A renamed PR has one title series per name. The newest name is the one seen in
+# the narrowest window; a subquery over the whole window (per-minute timestamps
+# of every series, 6.5s for 30 days) is only needed to break ties inside it.
+TITLE_WINDOWS = ((3600, "1h"), (6 * 3600, "6h"), (86400, "1d"), (7 * 86400, "7d"))
+
+
+def _newest_titles(query, metric, numbers, *, days):
+    windows = [label for seconds, label in TITLE_WINDOWS if seconds < days * 86400]
+    windows.append(f"{days}d")
+    selector = f'{metric}{{pr=~"{"|".join(numbers)}",title!=""}}'
+    seen = {}
+    for window, result in zip(
+        windows,
+        _map(
+            lambda window: query(
+                f"max by (pr, title) (last_over_time({selector}[{window}]))"
+            ),
+            windows,
+        ),
+    ):
+        for labels, _ in _samples(result):
+            if "pr" in labels:
+                seen.setdefault(window, {}).setdefault(labels["pr"], set()).add(
+                    labels.get("title", "")
+                )
+    titles, ties = {}, {}
+    for number in numbers:
+        for window in windows:
+            names = seen.get(window, {}).get(number)
+            if names:
+                if len(names) == 1:
+                    titles[number] = next(iter(names))
+                else:
+                    ties.setdefault(window, []).append(number)
+                break
+    for window, tied in ties.items():
+        for labels, _ in _samples(
+            query(
+                "topk by (pr) (1, max by (pr, title) (max_over_time((timestamp("
+                f'{metric}{{pr=~"{"|".join(tied)}",title!=""}}))[{window}:])))'
+            )
+        ):
+            if "pr" in labels:
+                titles[labels["pr"]] = labels.get("title", "")
+    return titles
+
+
+def _map(function, items):
+    """``function`` over ``items`` concurrently, in order; raises the first error."""
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        return list(pool.map(function, items))
+
+
 def build_rows(
     query,
     load_rows,
@@ -271,102 +404,53 @@ def build_rows(
     days = parse_days(days)
     scope = parse_scope(scope)
     group = parse_group(group)
-    selector = 'test_job="fast-integration",test_nodeid=~"tests/contracts::.*"'
-    if scope == "main":
-        selector += ',pr="main"'
-    elif scope == "prs":
-        selector += ',pr=~"[0-9]+|gh-readonly-queue/.*"'
-    failures = list(
-        _samples(
-            query(
-                "max by (pr, run_id, trace_id, test_nodeid, exception_type) "
-                f"(last_over_time(pytest_test_last_failure_info{{{selector}}}[{days}d]))"
-            )
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        # Queries that do not depend on the failures run beside them.
+        summary = pool.submit(failure_summary, query, days=days, scope=scope)
+        totals = pool.submit(run_totals, query, days=days, scope=scope)
+        failures = failure_index(query, days=days, scope=scope)
+        titles = pool.submit(pr_titles, query, failures, days=days)
+        totals = totals.result()
+        run_ids = {item[0].get("run_id", "") for item in failures}
+        starts = run_starts(query, run_ids | set(totals), days=days)
+        failures.sort(
+            key=lambda item: (
+                starts.get(item[0].get("run_id", ""), 0),
+                item[0].get("run_id", ""),
+            ),
+            reverse=True,
         )
-    )
-    failures = [
-        (labels, value)
-        for labels, value in failures
-        if labels.get("test_nodeid", "").startswith("tests/contracts::")
-        and re.fullmatch(r"\d+(?::\d+)?", labels.get("run_id", ""))
-    ]
-    starts = {
-        labels.get("run_id", ""): stamp
-        for labels, stamp in _samples(
-            query(
-                "max by (run_id) "
-                f"(last_over_time(pytest_run_start_time_seconds[{days}d]))"
-            )
-        )
-    }
-    failures.sort(
-        key=lambda item: (
-            starts.get(item[0].get("run_id", ""), 0),
-            item[0].get("run_id", ""),
-        ),
-        reverse=True,
-    )
-    # Load compact MIC records once per run, then recover missing older details
-    # from small MIC traces. Bound concurrent Tempo requests and history backfill.
-    run_ids = {
-        item[0].get("run_id", "")
-        for item in failures
-        if re.fullmatch(r"\d+(?::\d+)?", item[0].get("run_id", ""))
-    }
-    loaded = {
-        run: {
-            (r.get("trace_id"), r.get("test_nodeid")): r
-            for r in (records or [])
-            if r.get("test_job") == "fast-integration"
+        # Load compact MIC records once per run (the failing runs and the ones
+        # the history reads), then recover missing older details from small MIC
+        # traces. Bound concurrent Tempo requests and history backfill.
+        loaded = {
+            run: {
+                (r.get("trace_id"), r.get("test_nodeid")): r
+                for r in (records or [])
+                if r.get("test_job") == "fast-integration"
+            }
+            for run, records in _parallel(run_ids | set(totals), load_rows).items()
         }
-        for run, records in _parallel(run_ids, load_rows).items()
-    }
-    missing = []
-    for labels, _ in failures:
-        run, trace, node = (
-            labels.get(k, "") for k in ("run_id", "trace_id", "test_nodeid")
-        )
-        record = loaded.get(run, {}).get((trace, node), {})
-        if (
-            not record.get("mic.failure")
-            and re.fullmatch(r"[0-9a-fA-F]{32}", trace)
-            and trace not in missing
-        ):
-            missing.append(trace)
-    for trace, records in _parallel(missing[:256], trace_rows).items():
-        for record in records or []:
-            if record.get("test_job") == "fast-integration":
-                loaded.setdefault(record.get("run_id", ""), {})[
-                    (trace, record.get("test_nodeid"))
-                ] = record
-    titles = {}
-    numbers = sorted(
-        {
-            match.group(1)
-            for labels, _ in failures
+        missing = []
+        for labels, _ in failures:
+            run, trace, node = (
+                labels.get(k, "") for k in ("run_id", "trace_id", "test_nodeid")
+            )
+            record = loaded.get(run, {}).get((trace, node), {})
             if (
-                match := re.fullmatch(
-                    r"(?:gh-readonly-queue/[^/]+/pr-)?([0-9]+)(?:-.*)?",
-                    labels.get("pr", ""),
-                )
-            )
-        }
-    )
-    matcher = "|".join(numbers) or "0"
-    title_query = (
-        "topk by (pr) (1, max by (pr, title) (max_over_time("
-        f'(timestamp(pytest_pr_info{{pr=~"{matcher}",title!=""}}))[{days}d:]))) '
-        "or on (pr) topk by (pr) (1, max by (pr, title) (max_over_time("
-        f'(timestamp(ci_github_run_title_info{{pr=~"{matcher}",title!=""}}))[{days}d:])))'
-    )
-    try:
-        titles = {
-            labels["pr"]: labels.get("title", "")
-            for labels, _ in _samples(query(title_query))
-            if "pr" in labels
-        }
-    except Exception:
-        pass  # PR metadata may lag the failure index; case/trace links still work.
+                not record.get("mic.failure")
+                and re.fullmatch(r"[0-9a-fA-F]{32}", trace)
+                and trace not in missing
+            ):
+                missing.append(trace)
+        for trace, records in _parallel(missing[:256], trace_rows).items():
+            for record in records or []:
+                if record.get("test_job") == "fast-integration":
+                    loaded.setdefault(record.get("run_id", ""), {})[
+                        (trace, record.get("test_nodeid"))
+                    ] = record
+        titles = titles.result()
+        summary = summary.result()
     rows = []
     seen = set()
     for labels, _ in failures:
@@ -553,6 +637,7 @@ def build_rows(
         days=days,
         scope=scope,
         first_day=first_day,
+        totals=totals,
     )
     for case in cases:
         case["fails"] = len(case.pop("_runs"))
@@ -583,7 +668,7 @@ def build_rows(
     groups = list(dict.fromkeys(group_key(case) for case in cases))
     shown_groups = set(groups[:LIMIT])
     return {
-        "summary": failure_summary(query, days=days, scope=scope),
+        "summary": summary,
         "rows": [case for case in cases if group_key(case) in shown_groups],
         "days": days,
         "scope": scope,

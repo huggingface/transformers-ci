@@ -6705,6 +6705,11 @@ def _pr_ci_run_jobs(run_id: str, completed: bool) -> tuple[list[dict], list[str]
 
 PR_CI_VIEW_FRESH_SECONDS = 30.0
 PR_CI_VIEW_STALE_SECONDS = 900.0
+# A cold /mic/data build reads a month of Prometheus series plus every MIC run's
+# records (12.5s for 30 days on 2026-10-22), while its inputs change only when a
+# MIC job finishes: serve the last build and rebuild behind it.
+MIC_DATA_FRESH_SECONDS = 300.0
+MIC_DATA_STALE_SECONDS = 3600.0
 
 
 def _prometheus_badge_lookup(
@@ -7457,11 +7462,29 @@ def load_run_rows(
     return rows if isinstance(rows, list) else None
 
 
+# Traces read for MIC details that carried none (older runner, pruned spans):
+# nothing is persisted for them, so without this every /mic/data build fetched
+# them from Tempo again. A failed fetch is not remembered and is retried.
+MIC_TRACE_MISS_TTL_SECONDS = 6 * 3600.0
+_mic_trace_misses: dict[str, float] = {}
+_mic_trace_misses_lock = threading.Lock()
+
+
 def _mic_trace_rows(trace_id: str) -> list[dict]:
+    now = time.monotonic()
+    with _mic_trace_misses_lock:
+        if _mic_trace_misses.get(trace_id, 0.0) > now:
+            return []
     trace = fetch_failure_trace(trace_id)
     if not trace:
         return []
     info, rows = extract_trace_rows(trace)
+    if not any(row.get("mic.failure") for row in rows):
+        with _mic_trace_misses_lock:
+            for key, expires in list(_mic_trace_misses.items()):
+                if expires <= now:
+                    del _mic_trace_misses[key]
+            _mic_trace_misses[trace_id] = now + MIC_TRACE_MISS_TTL_SECONDS
     directory = _run_store_dir()
     if directory:
         _persist_mic_rows(
@@ -10269,35 +10292,52 @@ class MetricsHandler(BaseHTTPRequestHandler):
         key = json.dumps(
             ["mic", days, scope, variant, platform, failure_type, sticky_only, group]
         )
-        payload = _public_response_cache_get(key)
-        if payload is not None:
-            self._request_cache = "hit"
-        else:
-            try:
-                body = mic_page.build_rows(
-                    _prometheus_vector,
-                    load_mic_rows,
-                    days=days,
-                    scope=scope,
-                    variant=variant,
-                    platform=platform,
-                    failure_type=failure_type,
-                    sticky_only=sticky_only,
-                    group=group,
-                    trace_rows=_mic_trace_rows,
-                    build_metadata=_mic_build_metadata,
-                )
-            except Exception:
-                self._reply_json(
-                    502,
-                    {
-                        "error": "MIC failure data is temporarily unavailable. Try again."
-                    },
-                )
-                return
+
+        # Only the gzipped body is cached (~10x smaller: a 30-day build is 1 MB
+        # of JSON); the rare client without gzip gets it decompressed.
+        def build() -> bytes:
+            body = mic_page.build_rows(
+                _prometheus_vector,
+                load_mic_rows,
+                days=days,
+                scope=scope,
+                variant=variant,
+                platform=platform,
+                failure_type=failure_type,
+                sticky_only=sticky_only,
+                group=group,
+                trace_rows=_mic_trace_rows,
+                build_metadata=_mic_build_metadata,
+            )
             payload = json.dumps(body, separators=(",", ":")).encode()
-            _public_response_cache_put(key, payload)
-        self._send(200, JSON_CONTENT_TYPE, payload, cache_control="no-store")
+            return gzip.compress(payload, compresslevel=6)
+
+        try:
+            payload, state, age = _swr_fetch(
+                key,
+                build,
+                fresh_seconds=MIC_DATA_FRESH_SECONDS,
+                stale_seconds=MIC_DATA_STALE_SECONDS,
+            )
+        except Exception:
+            self._reply_json(
+                502,
+                {"error": "MIC failure data is temporarily unavailable. Try again."},
+            )
+            return
+        self._request_cache = state
+        headers = {
+            "Vary": "Accept-Encoding",
+            "X-Cache-State": state,
+            "X-Cache-Age": str(int(age)),
+        }
+        if "gzip" in self.headers.get("Accept-Encoding", ""):
+            headers["Content-Encoding"] = "gzip"
+        else:
+            payload = gzip.decompress(payload)
+        self._send(
+            200, JSON_CONTENT_TYPE, payload, cache_control="no-store", headers=headers
+        )
 
     def _serve_project_health_data(
         self, path: str, params: dict[str, list[str]]

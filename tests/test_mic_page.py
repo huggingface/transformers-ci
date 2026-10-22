@@ -1,9 +1,10 @@
+import gzip
 import json
 import threading
 from collections import OrderedDict
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import pytest
 
@@ -187,7 +188,8 @@ def test_http_page_data_caching_and_unavailable_state(monkeypatch):
         return []
 
     monkeypatch.setattr(trace_exporter, "_prometheus_vector", query)
-    monkeypatch.setattr(trace_exporter, "_public_response_cache", OrderedDict())
+    monkeypatch.setattr(trace_exporter, "_swr_cache", OrderedDict())
+    monkeypatch.setattr(trace_exporter, "_swr_inflight", {})
     server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -201,15 +203,15 @@ def test_http_page_data_caching_and_unavailable_state(monkeypatch):
         )
         assert json.load(urlopen(base + "/mic/data?days=1"))["rows"] == []
         urlopen(base + "/mic/data?days=1").read()
-        assert len(calls) == 5
+        assert len(calls) == 4
         urlopen(base + "/mic/data?days=1&failure_type=Runtime%20traceback").read()
-        assert len(calls) == 10
+        assert len(calls) == 8
         urlopen(base + "/mic/data?days=1&failure_type=Runtime%20traceback").read()
-        assert len(calls) == 10
+        assert len(calls) == 8
         assert json.load(urlopen(base + "/mic/data?days=1&group=pr"))["group"] == "pr"
-        assert len(calls) == 15
+        assert len(calls) == 12
         assert json.load(urlopen(base + "/mic/data?days=1"))["group"] == "model"
-        assert len(calls) == 15
+        assert len(calls) == 12
 
         def broken(expression):
             raise RuntimeError("private internal URL")
@@ -694,3 +696,136 @@ def test_failure_rate_is_independent_of_table_filters():
     )
     assert result["rows"] == []
     assert result["summary"] == {"total": 10, "failed": 2, "rate": 20.0}
+
+
+def test_http_data_is_gzipped_for_clients_that_accept_it(monkeypatch):
+    monkeypatch.setattr(trace_exporter, "_prometheus_vector", lambda expression: [])
+    monkeypatch.setattr(trace_exporter, "_swr_cache", OrderedDict())
+    monkeypatch.setattr(trace_exporter, "_swr_inflight", {})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/mic/data?days=7"
+        response = urlopen(Request(url, headers={"Accept-Encoding": "gzip, br"}))
+        assert response.headers["Content-Encoding"] == "gzip"
+        assert response.headers["Vary"] == "Accept-Encoding"
+        assert json.loads(gzip.decompress(response.read()))["rows"] == []
+        plain = urlopen(url)
+        assert plain.headers["Content-Encoding"] is None
+        assert plain.headers["X-Cache-State"] == "hit"
+        assert json.load(plain)["days"] == 7
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_start_times_are_read_only_for_failing_and_history_runs():
+    expressions = []
+
+    def query(expression):
+        expressions.append(expression)
+        if "max by (run_id, pr)" in expression:
+            return [vector({"run_id": "124:1", "pr": "42"})]
+        return queries([failure()])(expression)
+
+    mic_page.build_rows(query, lambda run: None)
+    (starts,) = [e for e in expressions if "pytest_run_start_time_seconds" in e]
+    assert 'run_id=~"123:1|124:1"' in starts
+
+
+def test_start_times_fall_back_to_all_runs_above_the_matcher_limit(monkeypatch):
+    monkeypatch.setattr(mic_page, "MAX_RUN_MATCHER", 1)
+    expressions = []
+    mic_page.run_starts(lambda e: expressions.append(e) or [], {"1:1", "2:1"}, days=7)
+    assert expressions == [
+        "max by (run_id) (last_over_time(pytest_run_start_time_seconds[7d]))"
+    ]
+    assert mic_page.run_starts(lambda e: pytest.fail(e), set(), days=7) == {}
+
+
+def test_renamed_pr_shows_its_newest_title_without_a_month_long_subquery():
+    expressions = []
+
+    def query(expression):
+        expressions.append(expression)
+        if "ci_github_run_title_info" in expression:
+            return [vector({"pr": "43", "title": "From the run"})]
+        if "[1h]" in expression:
+            return [vector({"pr": "42", "title": "Renamed"})]
+        if "[6h:]" in expression:
+            return [vector({"pr": "44", "title": "Second rename"})]
+        if "[6h]" in expression:
+            return [
+                vector({"pr": "44", "title": "First rename"}),
+                vector({"pr": "44", "title": "Second rename"}),
+            ]
+        return [
+            vector({"pr": "42", "title": "Original"}),
+            vector({"pr": "42", "title": "Renamed"}),
+            vector({"pr": "44", "title": "Original"}),
+        ]
+
+    failures = [
+        ({"pr": pr}, 1) for pr in ("42", "gh-readonly-queue/main/pr-43-ab", "44")
+    ]
+    assert mic_page.pr_titles(query, failures, days=30) == {
+        "42": "Renamed",
+        "43": "From the run",
+        "44": "Second rename",
+    }
+    # Only the tie inside the 6h window needs per-sample timestamps, over 6h.
+    subqueries = [e for e in expressions if "timestamp(" in e]
+    assert len(subqueries) == 1
+    assert subqueries[0].endswith('pr=~"44",title!=""}))[6h:])))')
+    assert not any("[30d:" in e for e in expressions)
+
+
+def test_title_lookup_is_skipped_without_prs_and_never_fails_the_page():
+    assert (
+        mic_page.pr_titles(lambda e: pytest.fail(e), [({"pr": "main"}, 1)], days=7)
+        == {}
+    )
+
+    def broken(expression):
+        raise RuntimeError("down")
+
+    assert mic_page.pr_titles(broken, [({"pr": "42"}, 1)], days=7) == {}
+
+
+def test_each_run_is_loaded_once_for_rows_and_history():
+    calls = []
+
+    def query(expression):
+        if "max by (run_id, pr)" in expression:
+            return [
+                vector({"run_id": "123:1", "pr": "42"}),
+                vector({"run_id": "124:1", "pr": "42"}),
+            ]
+        return queries([failure()])(expression)
+
+    def load(run):
+        calls.append(run)
+        return [detail(**{"mic.status": "fail"})] if run == "123:1" else None
+
+    mic_page.build_rows(query, load)
+    assert sorted(calls) == ["123:1", "124:1"]
+
+
+def test_traces_without_mic_details_are_not_fetched_again(monkeypatch, tmp_path):
+    fetched = []
+    traces = {"a" * 32: {"spans": []}, "b" * 32: None}
+
+    def fetch(trace_id):
+        fetched.append(trace_id)
+        return traces[trace_id]
+
+    monkeypatch.setattr(trace_exporter, "fetch_failure_trace", fetch)
+    monkeypatch.setattr(trace_exporter, "extract_trace_rows", lambda trace: ({}, []))
+    monkeypatch.setattr(trace_exporter, "_run_store_dir", lambda: "")
+    monkeypatch.setattr(trace_exporter, "_mic_trace_misses", {})
+    for _ in range(2):
+        assert trace_exporter._mic_trace_rows("a" * 32) == []
+        assert trace_exporter._mic_trace_rows("b" * 32) == []
+    # The empty trace is remembered; the failed fetch is retried.
+    assert fetched == ["a" * 32, "b" * 32, "b" * 32]
