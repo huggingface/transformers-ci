@@ -711,10 +711,47 @@ def test_no_queue_history_is_started_without_cpu_failures(monkeypatch) -> None:
         "_queue_history",
         lambda pr, nodeids: pytest.fail("no failures, no Tempo search"),
     )
-    trace_exporter._prefetch_queue_history("49599", [{"id": "cpu", "failures": []}])
-    trace_exporter._prefetch_queue_history(
-        "49599", [{"id": "gpu", "failures": [{"nodeid": "tests/a.py::test_a"}]}]
+    passed = {
+        "test_nodeid": "tests/a.py::test_a",
+        "test_job": "tests_torch",
+        "hardware": "cpu",
+        "status_code": "OK",
+    }
+    trace_exporter._prefetch_queue_history("49599", [])
+    trace_exporter._prefetch_queue_history("49599", [passed])
+
+
+def test_queue_history_starts_before_the_github_jobs_are_read(monkeypatch) -> None:
+    monkeypatch.setattr(
+        trace_exporter.MetricsHandler,
+        "_pr_ci_sources",
+        lambda self, pr: _view_sources(),
     )
+    started = threading.Event()
+
+    def history(pr: str, nodeids: list[str]) -> tuple[bytes, str]:
+        started.set()
+        return b"{}", "miss"
+
+    monkeypatch.setattr(trace_exporter, "_queue_history", history)
+
+    def api(path: str, **_kwargs) -> object:
+        if path.startswith("actions/runs/100/jobs"):
+            # Before: queue history only started after every lane was read.
+            assert started.wait(5)
+        return [] if path.startswith("issues/") else {"jobs": []}
+
+    rows = [
+        {
+            "test_nodeid": "tests/a.py::test_a",
+            "test_job": "tests_torch",
+            "hardware": "cpu",
+            "status_code": "ERROR",
+            "pr": "49599",
+        }
+    ]
+    _payload(monkeypatch, api, lambda run_id: rows if run_id == "100:1" else [])
+    assert started.is_set()
 
 
 def test_a_lane_reads_the_pages_its_last_run_needed_together_with_page_one(

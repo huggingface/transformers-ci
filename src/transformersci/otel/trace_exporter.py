@@ -6552,17 +6552,13 @@ def _queue_history(pr: str, nodeids: list[str]) -> tuple[bytes, str]:
     return payload, state
 
 
-def _prefetch_queue_history(pr: str, lanes: list[dict]) -> None:
+def _prefetch_queue_history(pr: str, cpu_rows: list[dict]) -> None:
     """Start the queue history the PR CI view asks for next, as the page does:
-    the CPU lane's failing tests, sorted, first 60 (HISTORY_MAX_TESTS). The page only asks once it
-    has the full view, and the Tempo searches take ~5s, so they start here."""
+    the CPU lane's failing tests, sorted, first 60 (HISTORY_MAX_TESTS). The page
+    only asks once it has the full view, ~5s of GitHub reads later, and the
+    Tempo searches take ~5s, so they start as soon as the CPU test rows are in."""
     nodeids = sorted(
-        {
-            failure["nodeid"]
-            for lane in lanes
-            if lane["id"] == "cpu"
-            for failure in lane["failures"]
-        }
+        {failure["nodeid"] for failure in pr_ci_view.failures(cpu_rows, None)}
     )[: merge_queue.MAX_NODEIDS]
     if not nodeids or not all(merge_queue.valid_nodeid(n) for n in nodeids):
         return
@@ -10629,6 +10625,12 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 )
 
             reads = {"cpu": lane_reads(runs["cpu"], "cpu")}
+            if reads["cpu"][1] is not None:
+                reads["cpu"][1].add_done_callback(
+                    lambda rows: (
+                        rows.exception() or _prefetch_queue_history(pr, rows.result())
+                    )
+                )
             # The comments only change the Nvidia run when they report a newer
             # one, so its reads start now instead of after the comments (~1s).
             expected_gpu = pr_ci_view.newest_run(sources["gpu"])
@@ -10721,7 +10723,6 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 nodeid = failure["nodeid"]
                 failure["model"] = run_row_model(nodeid)
                 failure["test_name"] = run_row_test_name({"test_nodeid": nodeid})
-        _prefetch_queue_history(pr, lanes)
         return json.dumps({"pr": pr, "lanes": lanes}).encode()
 
     def _serve_rerun_failed_data(self, params: dict[str, list[str]]) -> None:
