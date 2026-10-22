@@ -179,11 +179,24 @@ def run_starts(query, run_ids, *, days):
 
 
 def add_history(
-    cases, query, load_rows, loaded, starts, *, days, scope, first_day, totals=None
+    cases,
+    query,
+    load_rows,
+    loaded,
+    starts,
+    *,
+    days,
+    scope,
+    first_day,
+    totals=None,
+    build_metadata=None,
 ):
-    """Use observed case records, never job totals, to establish passes and recovery."""
+    """Use observed case records, never job totals, to establish passes and recovery.
+
+    Returns the latest status of every case seen, the failing ones and every
+    recorded check, keyed like ``_case_key``."""
     if not cases:
-        return
+        return {}
     if totals is None:
         totals = run_totals(query, days=days, scope=scope)
     runs = {run: pr for run, (pr, _) in totals.items()}
@@ -195,6 +208,29 @@ def add_history(
             if r.get("test_job") == "fast-integration"
         }
     by_key = {_case_key(case): case for case in cases}
+    latest = {key: (case["started_at"], case["status"]) for key, case in by_key.items()}
+
+    provenance = {}
+
+    def weights(repo, record):
+        # As build_rows fills a row's weights: older records carry none, and
+        # keyed "unknown" they never matched their case, so an old failure
+        # read as a separate case that no later pass could clear.
+        revision = record.get("mic.revision") or record.get("mic.baseline_revision")
+        if not (repo and revision and build_metadata):
+            return "unknown"
+        if (repo, revision) not in provenance:
+            try:
+                provenance[repo, revision] = build_metadata((repo, revision)) or {}
+            except Exception:
+                provenance[repo, revision] = {}
+        return provenance[repo, revision].get("weights", "unknown")
+
+    def note(key, run, status):
+        stamp = starts.get(run, 0)
+        if key not in latest or stamp > latest[key][0]:
+            latest[key] = (stamp, status)
+
     for case in cases:
         case["daily"] = [{"pass": 0, "fail": n, "skipped": 0} for n in case["days"]]
         case["latest"] = {
@@ -259,9 +295,10 @@ def add_history(
                 repo or node,
                 record.get("mic.variant") or variant.rstrip("]"),
                 record.get("mic.platform", ""),
-                record.get("mic.weights") or "unknown",
+                record.get("mic.weights") or weights(repo, record),
                 pr,
             )
+            note(key, run, status)
             case = by_key.get(key)
             if case is None:
                 continue
@@ -280,9 +317,40 @@ def add_history(
             for case in cases:
                 if case["target"] == "runner" and case["pr"] == pr:
                     observe(case, run, pr, "pass")
+                    note(_case_key(case), run, "pass")
     for case in cases:
         case.pop("_observed")
         case["sticky"] = case["latest"]["status"] in {"fail", "error"}
+    return {key: status for key, (_stamp, status) in latest.items()}
+
+
+def _group_cases(rows, *, days, first_day):
+    grouped = {}
+    for row in rows:
+        key = _case_key(row)
+        if key not in grouped:
+            grouped[key] = {**row, "days": [0] * days, "_runs": set()}
+        case = grouped[key]
+        if row["run_id"] in case["_runs"]:
+            continue
+        case["_runs"].add(row["run_id"])
+        day = int(row["started_at"] // 86400) - first_day
+        if row["started_at"] and 0 <= day < days:
+            case["days"][day] += 1
+    return list(grouped.values())
+
+
+def failing_now(latest):
+    """Cases whose latest recorded check fails, out of every case with a check
+    in the window: what Sticky shows, where the global rate counts every failed
+    outcome, including the ones a later run cleared."""
+    checked = [status for status in latest.values() if status != "unsupported"]
+    failing = sum(status in {"fail", "error"} for status in checked)
+    return {
+        "failing": failing,
+        "cases": len(checked),
+        "rate": 100 * failing / len(checked) if checked else None,
+    }
 
 
 def failure_index(query, *, days, scope):
@@ -615,30 +683,23 @@ def build_rows(
     ]
     now = time.time() if now is None else now
     first_day = int(now // 86400) - days + 1
-    grouped = {}
-    for row in filtered:
-        key = _case_key(row)
-        if key not in grouped:
-            grouped[key] = {**row, "days": [0] * days, "_runs": set()}
-        case = grouped[key]
-        if row["run_id"] in case["_runs"]:
-            continue
-        case["_runs"].add(row["run_id"])
-        day = int(row["started_at"] // 86400) - first_day
-        if row["started_at"] and 0 <= day < days:
-            case["days"][day] += 1
-    cases = list(grouped.values())
-    add_history(
-        cases,
-        query,
-        load_rows,
-        loaded,
-        starts,
+    history = dict(
+        query=query,
+        load_rows=load_rows,
+        loaded=loaded,
+        starts=starts,
         days=days,
         scope=scope,
         first_day=first_day,
         totals=totals,
+        build_metadata=build_metadata,
     )
+    # Like the global rate, independent of the table's filters.
+    current = failing_now(
+        add_history(_group_cases(rows, days=days, first_day=first_day), **history)
+    )
+    cases = _group_cases(filtered, days=days, first_day=first_day)
+    add_history(cases, **history)
     for case in cases:
         case["fails"] = len(case.pop("_runs"))
         repo = case["contract"]
@@ -668,7 +729,7 @@ def build_rows(
     groups = list(dict.fromkeys(group_key(case) for case in cases))
     shown_groups = set(groups[:LIMIT])
     return {
-        "summary": summary,
+        "summary": {**summary, "now": current},
         "rows": [case for case in cases if group_key(case) in shown_groups],
         "days": days,
         "scope": scope,

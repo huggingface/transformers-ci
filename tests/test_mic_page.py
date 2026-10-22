@@ -695,7 +695,8 @@ def test_failure_rate_is_independent_of_table_filters():
         failure_type="Runtime traceback",
     )
     assert result["rows"] == []
-    assert result["summary"] == {"total": 10, "failed": 2, "rate": 20.0}
+    summary = {k: v for k, v in result["summary"].items() if k != "now"}
+    assert summary == {"total": 10, "failed": 2, "rate": 20.0}
 
 
 def test_http_data_is_gzipped_for_clients_that_accept_it(monkeypatch):
@@ -829,3 +830,94 @@ def test_traces_without_mic_details_are_not_fetched_again(monkeypatch, tmp_path)
         assert trace_exporter._mic_trace_rows("b" * 32) == []
     # The empty trace is remembered; the failed fetch is retried.
     assert fetched == ["a" * 32, "b" * 32, "b" * 32]
+
+
+def _case(node, run, repo, status, **extra):
+    return {
+        **detail(test_nodeid=node),
+        "run_id": run,
+        **{"mic.fixture_repo": repo, "mic.status": status},
+        **extra,
+    }
+
+
+def test_failing_now_counts_each_case_by_its_latest_check():
+    x = "tests/contracts::x::x[bfloat16]"
+    y = "tests/contracts::y::y[bfloat16]"
+    z = "tests/contracts::z::z[bfloat16]"
+    u = "tests/contracts::u::u[bfloat16]"
+    k = "tests/contracts::k::k[bfloat16]"
+    records = {
+        "123:1": [
+            _case(x, "123:1", "creator/x", "fail"),
+            _case(y, "123:1", "creator/y", "pass"),
+            _case(u, "123:1", "creator/u", "unsupported"),
+            _case(k, "123:1", "creator/k", "xfail"),
+        ],
+        "124:1": [
+            _case(x, "124:1", "creator/x", "pass"),  # x recovered
+            _case(z, "124:1", "creator/z", "fail", **{"mic.platform": "cuda"}),
+        ],
+    }
+    failures = [
+        failure("123:1", node=x),
+        failure("124:1", node=z),
+    ]
+    data = mic_page.build_rows(queries(failures), records.get)
+    # z fails now; x recovered; y and k never failed; u is not a check.
+    assert data["summary"]["now"] == {"failing": 1, "cases": 4, "rate": 25.0}
+    sticky = mic_page.build_rows(queries(failures), records.get, sticky_only=True)
+    assert sticky["cases"] == data["summary"]["now"]["failing"]
+    # Like the global rate, the table's filters do not change it.
+    filtered = mic_page.build_rows(
+        queries(failures), records.get, platform="cpu-x86_64-bf16", sticky_only=True
+    )
+    assert filtered["rows"] == []
+    assert filtered["summary"]["now"] == data["summary"]["now"]
+
+
+def test_failing_now_follows_a_cleared_setup_error():
+    setup = failure(node="tests/contracts::runner")
+
+    def query(expression):
+        if "max by (run_id, pr)" in expression:
+            return [vector({"run_id": "124:1", "pr": "42"}, 1)]
+        return queries([setup])(expression)
+
+    def load(run):
+        return [detail(**{"mic.status": "pass"})] if run == "124:1" else None
+
+    now = mic_page.build_rows(query, load)["summary"]["now"]
+    assert now["failing"] == 0 and now["cases"] == 2
+
+
+def test_failing_now_without_checks_is_unknown():
+    assert mic_page.failing_now({}) == {"failing": 0, "cases": 0, "rate": None}
+
+
+def test_records_without_weights_match_their_case_through_provenance():
+    # Older runs did not record weights; the row's comes from the fixture's
+    # provenance. Keyed "unknown", the old failure never met its later pass.
+    revision = "b" * 40
+    old = _case(NODE, "123:1", "creator/demo", "fail", **{"mic.revision": revision})
+    new = _case(
+        NODE,
+        "124:1",
+        "creator/demo",
+        "pass",
+        **{"mic.revision": revision, "mic.weights": "random"},
+    )
+    records = {"123:1": [old], "124:1": [new]}
+
+    def query(expression):
+        if "max by (run_id, pr)" in expression:
+            return [vector({"run_id": "124:1", "pr": "42"}, 1)]
+        return queries([failure()])(expression)
+
+    data = mic_page.build_rows(
+        query,
+        records.get,
+        build_metadata=lambda pin: {"weights": "random"},
+    )
+    assert data["summary"]["now"] == {"failing": 0, "cases": 1, "rate": 0.0}
+    assert [row["sticky"] for row in data["rows"]] == [False]

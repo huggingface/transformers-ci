@@ -133,6 +133,11 @@
   }
   function render() {
     const summary = data.summary;
+    const current = summary?.now;
+    byId('failing-now').textContent = current?.rate == null ? '—' : `${current.rate.toFixed(1)}%`;
+    byId('failing-now-counts').textContent = current
+      ? `${current.failing.toLocaleString()} of ${current.cases.toLocaleString()} cases fail their latest check`
+      : '';
     byId('failure-rate').textContent = summary?.rate == null ? '—' : `${summary.rate.toFixed(1)}%`;
     byId('failure-counts').textContent = summary
       ? `${summary.failed.toLocaleString()} failed / ${summary.total.toLocaleString()} recorded checks · last ${data.days} days · ${data.scope === 'main' ? 'main' : data.scope === 'prs' ? 'PRs' : 'all branches'} · all variants and platforms`
