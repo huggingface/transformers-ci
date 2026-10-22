@@ -45,6 +45,7 @@ Pipeline (and roughly the order functions appear in the file):
 from __future__ import annotations
 
 import gzip
+import copy
 import hashlib
 import html
 import json
@@ -6507,9 +6508,8 @@ def _public_response_cache_get(key: str) -> bytes | None:
 # Merge-queue history costs a few Tempo searches per PR view and moves slowly
 # (a queue run every ~40 min), so it is cached far longer than other responses.
 _QUEUE_HISTORY_CACHE_TTL_SECONDS = 600.0
-_QUEUE_HISTORY_CACHE_MAX = 64
-_queue_history_cache: "OrderedDict[str, tuple[float, bytes]]" = OrderedDict()
-_queue_history_cache_lock = threading.Lock()
+# Past that, an old answer is still shown at once while a fresh one is built.
+_QUEUE_HISTORY_STALE_SECONDS = 6 * 3600.0
 
 
 def _public_response_cache_put(key: str, payload: bytes) -> None:
@@ -6521,6 +6521,190 @@ def _public_response_cache_put(key: str, payload: bytes) -> None:
         _public_response_cache.move_to_end(key)
         while len(_public_response_cache) > _PUBLIC_RESPONSE_CACHE_MAX:
             _public_response_cache.popitem(last=False)
+
+
+# Stale-while-revalidate for the PR CI view. A miss costs 5-6s of GitHub and
+# Tempo reads (2026-10-22: 266 misses/day at 6.4s), and the panel polls every
+# 30s, so a 30s TTL missed on nearly every poll. A cached value is now served at
+# once however old (up to stale_seconds), and an old one is rebuilt in the
+# background. One build per key at a time: concurrent requests share it.
+_SWR_CACHE_MAX = 256
+_swr_cache: "OrderedDict[str, tuple[float, object]]" = OrderedDict()
+_swr_inflight: dict[str, threading.Event] = {}
+_swr_lock = threading.Lock()
+
+
+def _swr_store(key: str, value: object, built_at: float | None = None) -> None:
+    with _swr_lock:
+        _swr_cache[key] = (time.monotonic() if built_at is None else built_at, value)
+        _swr_cache.move_to_end(key)
+        while len(_swr_cache) > _SWR_CACHE_MAX:
+            _swr_cache.popitem(last=False)
+
+
+def _swr_build(key: str, build, event: threading.Event, keep=None) -> object:
+    try:
+        value = build()
+        # A value that should not be kept (built while a source was failing)
+        # is stored as already stale: served once more, rebuilt behind it.
+        _swr_store(key, value, None if keep is None or keep(value) else float("-inf"))
+        return value
+    finally:
+        with _swr_lock:
+            if _swr_inflight.get(key) is event:
+                del _swr_inflight[key]
+        event.set()
+
+
+def _swr_rebuild(key: str, build, event: threading.Event, keep=None) -> None:
+    try:
+        _swr_build(key, build, event, keep)
+    except Exception as error:  # the stale value keeps being served
+        print(
+            f"[trace-exporter] background refresh of {key} failed: {error!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def _swr_fetch(
+    key: str,
+    build,
+    *,
+    fresh_seconds: float,
+    stale_seconds: float,
+    wait_seconds: float = 60.0,
+    keep=None,
+) -> tuple[object, str, float]:
+    """``(value, state, age_seconds)``; state is ``hit``, ``stale`` or ``miss``.
+
+    A miss builds in the caller (or waits for the build already running); a
+    stale hit returns at once and starts a background rebuild. ``keep(value)``
+    false marks a value for rebuilding on its next request."""
+    for _attempt in range(2):
+        now = time.monotonic()
+        with _swr_lock:
+            hit = _swr_cache.get(key)
+            age = now - hit[0] if hit is not None else 0.0
+            if hit is not None and hit[0] == float("-inf"):
+                age = fresh_seconds  # marked for rebuilding: stale, not gone
+            if hit is not None and age < stale_seconds:
+                _swr_cache.move_to_end(key)
+                if age < fresh_seconds:
+                    return hit[1], "hit", age
+                if key in _swr_inflight:
+                    return hit[1], "stale", age
+                event = threading.Event()
+                _swr_inflight[key] = event
+                threading.Thread(
+                    target=_swr_rebuild,
+                    args=(key, build, event, keep),
+                    daemon=True,
+                    name="swr-refresh",
+                ).start()
+                return hit[1], "stale", age
+            running = _swr_inflight.get(key)
+            if running is None:
+                event = threading.Event()
+                _swr_inflight[key] = event
+        if running is None:
+            return _swr_build(key, build, event, keep), "miss", 0.0
+        running.wait(wait_seconds)  # then read what that build stored
+    event = threading.Event()
+    with _swr_lock:
+        _swr_inflight.setdefault(key, event)
+    return _swr_build(key, build, event, keep), "miss", 0.0
+
+
+# A finished run's job list never changes, so it is kept far longer than the
+# 30s GitHub cache.
+_COMPLETED_JOBS_TTL_SECONDS = 900.0
+_COMPLETED_JOBS_CACHE_MAX = 128
+_completed_jobs_cache: "OrderedDict[str, tuple[float, list[dict]]]" = OrderedDict()
+_completed_jobs_lock = threading.Lock()
+# GitHub's jobs endpoint costs ~0.4s + 40ms per job returned (2026-10-22:
+# per_page=100 took 4.4s, per_page=30 1.6s), so small pages fetched together
+# beat big pages fetched in turn: a 100-job run reads in ~3.2s instead of ~4.9s.
+PR_CI_JOBS_PER_PAGE = 30
+PR_CI_MAX_JOBS = 500
+PR_CI_JOB_PAGE_WORKERS = 8
+# A cold run can still take GitHub several seconds; at the default 5s, 46 reads
+# a day timed out and the panel said "GitHub job details are temporarily
+# unavailable" (2026-10-22).
+PR_CI_JOBS_TIMEOUT_SECONDS = 15.0
+
+
+def _pr_ci_run_jobs(run_id: str, completed: bool) -> tuple[list[dict], list[str]]:
+    """The GitHub jobs of one run (first 500), and notes on what is missing.
+
+    Page 1 says how many jobs there are; the other pages are fetched together."""
+    github_id = run_id.split(":", 1)[0]
+    now = time.monotonic()
+    capped = f"Showing the first {PR_CI_MAX_JOBS} GitHub jobs."
+    if completed:
+        with _completed_jobs_lock:
+            hit = _completed_jobs_cache.get(github_id)
+            if hit is not None and now - hit[0] < _COMPLETED_JOBS_TTL_SECONDS:
+                _completed_jobs_cache.move_to_end(github_id)
+                return list(hit[1]), [capped] if len(hit[1]) >= PR_CI_MAX_JOBS else []
+
+    def page(number: int) -> tuple[list[dict], object] | str:
+        try:
+            payload = _rerun_github_api(
+                f"actions/runs/{github_id}/jobs"
+                f"?per_page={PR_CI_JOBS_PER_PAGE}&page={number}",
+                timeout=PR_CI_JOBS_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            return "GitHub job details are temporarily unavailable."
+        batch = payload.get("jobs") if isinstance(payload, dict) else None
+        if not isinstance(batch, list):
+            return "GitHub job details are unavailable."
+        return [item for item in batch if isinstance(item, dict)], payload.get(
+            "total_count"
+        )
+
+    last_page = -(-PR_CI_MAX_JOBS // PR_CI_JOBS_PER_PAGE)
+    first = page(1)
+    if isinstance(first, str):
+        return [], [first]
+    jobs, total = first
+    notes: list[str] = []
+    if len(jobs) >= PR_CI_JOBS_PER_PAGE:
+        if isinstance(total, int) and not isinstance(total, bool):
+            pages = range(2, min(last_page, -(-total // PR_CI_JOBS_PER_PAGE)) + 1)
+            with ThreadPoolExecutor(
+                max_workers=max(1, min(PR_CI_JOB_PAGE_WORKERS, len(pages)))
+            ) as pool:
+                results = list(pool.map(page, pages))
+        else:  # no count: one page at a time, as far as the pages go
+            results = []
+            for number in range(2, last_page + 1):
+                results.append(page(number))
+                if (
+                    isinstance(results[-1], str)
+                    or len(results[-1][0]) < PR_CI_JOBS_PER_PAGE
+                ):
+                    break
+        for result in results:
+            if isinstance(result, str):
+                notes.append(result)
+                break
+            jobs.extend(result[0])
+    jobs = jobs[:PR_CI_MAX_JOBS]
+    if len(jobs) >= PR_CI_MAX_JOBS:
+        notes.append(capped)
+    if completed and not [note for note in notes if note != capped]:
+        with _completed_jobs_lock:
+            _completed_jobs_cache[github_id] = (now, jobs)
+            _completed_jobs_cache.move_to_end(github_id)
+            while len(_completed_jobs_cache) > _COMPLETED_JOBS_CACHE_MAX:
+                _completed_jobs_cache.popitem(last=False)
+    return list(jobs), notes
+
+
+PR_CI_VIEW_FRESH_SECONDS = 30.0
+PR_CI_VIEW_STALE_SECONDS = 900.0
 
 
 def _prometheus_badge_lookup(
@@ -8258,7 +8442,9 @@ class GitHubRateLimited(Exception):
         self.reset = reset
 
 
-def _rerun_github_api(path: str, *, fresh: bool = False) -> object:
+def _rerun_github_api(
+    path: str, *, fresh: bool = False, timeout: float = 5.0
+) -> object:
     """GET under the rerun repository's REST root, with the exporter's token.
 
     Cached for RERUN_GITHUB_CACHE_SECONDS: a picker open costs 10-25 reads on a
@@ -8272,7 +8458,8 @@ def _rerun_github_api(path: str, *, fresh: bool = False) -> object:
             return cached[1]
     try:
         payload = _github_api_get(
-            f"https://api.github.com/repos/{rerun_failed.REPOSITORY}/{path}"
+            f"https://api.github.com/repos/{rerun_failed.REPOSITORY}/{path}",
+            timeout=timeout,
         )
     except HTTPError as error:
         headers = error.headers
@@ -10004,14 +10191,6 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._reply_json(400, {"error": "Too many or invalid test ids"})
             return
         key = hashlib.sha256("\n".join([pr, *nodeids]).encode()).hexdigest()
-        now = time.monotonic()
-        with _queue_history_cache_lock:
-            hit = _queue_history_cache.get(key)
-            if hit and hit[0] > now:
-                _queue_history_cache.move_to_end(key)
-                self._request_cache = "hit"
-                self._send(200, JSON_CONTENT_TYPE, hit[1], cache_control="no-store")
-                return
         base_url = tempo_base_url()
 
         def search(traceql: str, start: int, end: int) -> object:
@@ -10026,32 +10205,34 @@ class MetricsHandler(BaseHTTPRequestHandler):
             )
             return _http_get_json(f"{base_url}/api/search?{query}")
 
-        rows, incomplete = merge_queue.fetch_rows(
-            nodeids,
-            search,
-            service_name=os.getenv(
-                "PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME
-            ),
-            repository="huggingface/transformers",
+        def build() -> tuple[bytes, bool]:
+            rows, incomplete = merge_queue.fetch_rows(
+                nodeids,
+                search,
+                service_name=os.getenv(
+                    "PYTEST_TRACE_EXPORTER_SERVICE_NAME", DEFAULT_SERVICE_NAME
+                ),
+                repository="huggingface/transformers",
+            )
+            payload = json.dumps(
+                {
+                    "pr": pr,
+                    "window": merge_queue.WINDOW,
+                    "lookback_days": merge_queue.LOOKBACK_DAYS,
+                    "incomplete": incomplete,
+                    "tests": merge_queue.history(rows, nodeids, pr),
+                }
+            ).encode()
+            return payload, incomplete
+
+        (payload, _incomplete), state, _age = _swr_fetch(
+            f"queue-history:{key}",
+            build,
+            fresh_seconds=_QUEUE_HISTORY_CACHE_TTL_SECONDS,
+            stale_seconds=_QUEUE_HISTORY_STALE_SECONDS,
+            keep=lambda value: not value[1],  # incomplete: the next view rebuilds
         )
-        payload = json.dumps(
-            {
-                "pr": pr,
-                "window": merge_queue.WINDOW,
-                "lookback_days": merge_queue.LOOKBACK_DAYS,
-                "incomplete": incomplete,
-                "tests": merge_queue.history(rows, nodeids, pr),
-            }
-        ).encode()
-        if not incomplete:
-            with _queue_history_cache_lock:
-                _queue_history_cache[key] = (
-                    now + _QUEUE_HISTORY_CACHE_TTL_SECONDS,
-                    payload,
-                )
-                _queue_history_cache.move_to_end(key)
-                while len(_queue_history_cache) > _QUEUE_HISTORY_CACHE_MAX:
-                    _queue_history_cache.popitem(last=False)
+        self._request_cache = state
         self._send(200, JSON_CONTENT_TYPE, payload, cache_control="no-store")
 
     def _serve_branch_runs(self, params: dict[str, list[str]]) -> None:
@@ -10178,42 +10359,163 @@ class MetricsHandler(BaseHTTPRequestHandler):
 
     def _serve_pr_ci_view(self, params: dict[str, list[str]]) -> None:
         pr = (params.get("pr") or [""])[0].strip()
-        if not re.fullmatch(r"[1-9][0-9]*", pr):
+        stage = (params.get("stage") or ["full"])[0]
+        if not re.fullmatch(r"[1-9][0-9]*", pr) or stage not in ("full", "runs"):
             self._reply_json(400, {"error": "Invalid pull request"})
             return
-        cache_key = f"pr-ci-view:{pr}"
-        cached = _public_response_cache_get(cache_key)
-        if cached is not None:
-            self._request_cache = "hit"
-            self._send(200, JSON_CONTENT_TYPE, cached, cache_control="no-store")
-            return
+        build = self._pr_ci_view_runs if stage == "runs" else self._pr_ci_view_payload
         try:
-            sources = self._pr_ci_sources(pr)
-            nvidia_run = pr_ci_view.newest_run(sources["gpu"])
-            since = (
-                f"{nvidia_run['created_at'][:10]}T00:00:00Z"
-                if nvidia_run and nvidia_run.get("created_at")
-                else time.strftime(
-                    "%Y-%m-%dT00:00:00Z", time.gmtime(time.time() - 90 * 86400)
-                )
+            body, state, age = _swr_fetch(
+                f"pr-ci-view:{stage}:{pr}",
+                lambda: build(pr),
+                fresh_seconds=PR_CI_VIEW_FRESH_SECONDS,
+                stale_seconds=PR_CI_VIEW_STALE_SECONDS,
+                keep=lambda body: b"temporarily unavailable" not in body,
             )
-            comments: list[dict] = []
-            for page in range(1, 4):
-                try:
-                    batch = _rerun_github_api(
-                        f"issues/{pr}/comments?per_page=100&sort=updated&direction=desc&since={since}&page={page}"
-                    )
-                except Exception:
-                    break
-                if not isinstance(batch, list):
-                    break
-                comments.extend(item for item in batch if isinstance(item, dict))
-                if len(batch) < 100 or (
-                    nvidia_run
-                    and pr_ci_view.matching_comment(comments, nvidia_run["run_id"])
-                ):
-                    break
+        except Exception as error:
+            self._reply_json(*_rerun_source_error(error))
+            return
+        self._request_cache = state
+        self._send(
+            200,
+            JSON_CONTENT_TYPE,
+            body,
+            cache_control="no-store",
+            # A stale body is already being rebuilt: the page asks again soon.
+            headers={"X-Cache-State": state, "X-Cache-Age": str(int(age))},
+        )
 
+    def _pr_ci_view_sources(self, pr: str) -> dict:
+        """The newest runs per lane, shared by both stages of one page load
+        (single flight) and copied, since the full build adds runs to it."""
+        sources, _state, _age = _swr_fetch(
+            f"pr-ci-sources:{pr}",
+            lambda: self._pr_ci_sources(pr),
+            fresh_seconds=20.0,
+            stale_seconds=20.0,
+        )
+        return copy.deepcopy(sources)
+
+    def _pr_ci_view_runs(self, pr: str) -> bytes:
+        """The first stage of the view: each lane's run, before its jobs and
+        failures are read. About a second, where the full view takes several."""
+        sources = self._pr_ci_view_sources(pr)
+        lanes = [
+            {
+                "id": key,
+                "label": label,
+                "run": pr_ci_view.newest_run(sources[key]),
+                "jobs": [],
+                "failures": [],
+                "comparison": None,
+                "notes": sources[key].get("notes", []),
+                "pending": True,
+            }
+            for key, label in (("cpu", "CPU · PR CI"), ("gpu", "Nvidia · run-slow"))
+        ]
+        return json.dumps({"pr": pr, "lanes": lanes, "pending": True}).encode()
+
+    def _pr_ci_comments(self, pr: str, nvidia_run: dict | None) -> list[dict]:
+        """PR comments since the Nvidia run started, newest first, stopping at
+        the comment that reports on that run."""
+        since = (
+            f"{nvidia_run['created_at'][:10]}T00:00:00Z"
+            if nvidia_run and nvidia_run.get("created_at")
+            else time.strftime(
+                "%Y-%m-%dT00:00:00Z", time.gmtime(time.time() - 90 * 86400)
+            )
+        )
+        comments: list[dict] = []
+        for page in range(1, 4):
+            try:
+                batch = _rerun_github_api(
+                    f"issues/{pr}/comments?per_page=100&sort=updated&direction=desc&since={since}&page={page}"
+                )
+            except Exception:
+                break
+            if not isinstance(batch, list):
+                break
+            comments.extend(item for item in batch if isinstance(item, dict))
+            if len(batch) < 100 or (
+                nvidia_run
+                and pr_ci_view.matching_comment(comments, nvidia_run["run_id"])
+            ):
+                break
+        return comments
+
+    def _pr_ci_amd_lane(self, amd_comparison: dict) -> dict | None:
+        amd_id = amd_comparison["run_id"]
+        amd_notes = []
+        try:
+            raw_run = _rerun_github_api(f"actions/runs/{amd_id}")
+        except Exception:
+            raw_run = {
+                "path": ".github/workflows/self-comment-ci-amd.yml",
+                "event": "issue_comment",
+                "html_url": f"https://github.com/huggingface/transformers/actions/runs/{amd_id}",
+                "status": "unknown",
+            }
+            amd_notes.append("GitHub run status is temporarily unavailable.")
+        path = (
+            str(raw_run.get("path") or "").split("@", 1)[0]
+            if isinstance(raw_run, dict)
+            else ""
+        )
+        if not (
+            path == ".github/workflows/self-comment-ci-amd.yml"
+            and raw_run.get("event") == "issue_comment"
+        ):
+            return None
+        raw_jobs, notes = _pr_ci_run_jobs(amd_id, raw_run.get("status") == "completed")
+        amd_run = rerun_failed._run_summary(raw_run, amd_id)
+        attributed = [
+            {
+                "nodeid": item["nodeid"],
+                "hardware": "amd-2gpu"
+                if item["hardware"] == "multi-gpu"
+                else "amd-1gpu"
+                if item["hardware"] == "single-gpu"
+                else "amd-gpu",
+                "job": "run_models_gpu",
+                "trace_id": "",
+                "specific": True,
+            }
+            for item in amd_comparison["specific"]
+        ]
+        return {
+            "id": "amd",
+            "label": "AMD · run-slow",
+            "run": amd_run,
+            "jobs": pr_ci_view.summarize_jobs(raw_jobs, [], "amd"),
+            "failures": attributed,
+            "comparison": amd_comparison,
+            "notes": amd_notes
+            + notes
+            + [
+                "AMD failures come from the run-slow comparison report; full test telemetry is not available."
+            ],
+        }
+
+    def _pr_ci_view_payload(self, pr: str) -> bytes:
+        """The full view. Once the runs are known, two branches run at once:
+        the CPU lane (jobs + test rows), and the run-slow lanes, which first
+        need the PR comment that reports on the Nvidia run."""
+        sources = self._pr_ci_view_sources(pr)
+        runs: dict[str, dict | None] = {"cpu": pr_ci_view.newest_run(sources["cpu"])}
+        with ThreadPoolExecutor(max_workers=6) as pool:
+
+            def lane_reads(run: dict | None):
+                if not run:
+                    return None, None
+                return (
+                    pool.submit(
+                        _pr_ci_run_jobs, run["run_id"], run.get("status") == "completed"
+                    ),
+                    pool.submit(gather_run_test_rows, run["run_id"]),
+                )
+
+            reads = {"cpu": lane_reads(runs["cpu"])}
+            comments = self._pr_ci_comments(pr, pr_ci_view.newest_run(sources["gpu"]))
             latest_nvidia = pr_ci_view.latest_platform_comment(comments, "nvidia")
             latest_nvidia_body = (
                 str(latest_nvidia.get("body") or "") if latest_nvidia else ""
@@ -10221,6 +10523,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
             latest_nvidia_id = pr_ci_view.comparison(latest_nvidia_body, "nvidia")[
                 "run_id"
             ]
+            nvidia_run = pr_ci_view.newest_run(sources["gpu"])
             if latest_nvidia_id and (
                 not nvidia_run
                 or latest_nvidia_id != nvidia_run["run_id"].split(":", 1)[0]
@@ -10236,33 +10539,12 @@ class MetricsHandler(BaseHTTPRequestHandler):
                         )
                 except Exception:
                     pass
-            nvidia_run = pr_ci_view.newest_run(sources["gpu"])
-
-            def jobs_for(run_id: str) -> tuple[list[dict], list[str]]:
-                jobs: list[dict] = []
-                notes = []
-                for page in range(1, 6):
-                    try:
-                        payload = _rerun_github_api(
-                            f"actions/runs/{run_id.split(':', 1)[0]}/jobs?per_page=100&page={page}"
-                        )
-                    except Exception:
-                        notes.append("GitHub job details are temporarily unavailable.")
-                        break
-                    batch = payload.get("jobs") if isinstance(payload, dict) else None
-                    if not isinstance(batch, list):
-                        notes.append("GitHub job details are unavailable.")
-                        break
-                    jobs.extend(item for item in batch if isinstance(item, dict))
-                    if len(batch) < 100:
-                        break
-                if len(jobs) >= 500:
-                    notes.append("Showing the first 500 GitHub jobs.")
-                return jobs, notes
+            runs["gpu"] = pr_ci_view.newest_run(sources["gpu"])
+            reads["gpu"] = lane_reads(runs["gpu"])
 
             comment = (
-                pr_ci_view.matching_comment(comments, nvidia_run["run_id"])
-                if nvidia_run
+                pr_ci_view.matching_comment(comments, runs["gpu"]["run_id"])
+                if runs["gpu"]
                 else None
             )
             body = str(comment.get("body") or "") if comment else ""
@@ -10272,37 +10554,28 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 else pr_ci_view.latest_platform_comment(comments, "amd")
             )
             amd_body = str(amd_comment.get("body") or "") if amd_comment else ""
-            runs = {key: pr_ci_view.newest_run(sources[key]) for key in ("cpu", "gpu")}
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                job_futures = {
-                    key: pool.submit(jobs_for, run["run_id"])
-                    for key, run in runs.items()
-                    if run
-                }
-                nvidia_comparison = (
-                    pr_ci_view.comparison(body, "nvidia") if runs["gpu"] else None
-                )
-                amd_comparison = (
-                    pr_ci_view.comparison(amd_body, "amd") if amd_body else None
-                )
-                rows_by_key = {
-                    key: gather_run_test_rows(run["run_id"]) if run else []
-                    for key, run in runs.items()
-                }
-                jobs_by_key = {
-                    key: future.result() for key, future in job_futures.items()
-                }
+            nvidia_comparison = (
+                pr_ci_view.comparison(body, "nvidia") if runs["gpu"] else None
+            )
+            amd_comparison = (
+                pr_ci_view.comparison(amd_body, "amd") if amd_body else None
+            )
+            amd_lane = (
+                pool.submit(self._pr_ci_amd_lane, amd_comparison)
+                if amd_comparison and amd_comparison["run_id"]
+                else None
+            )
 
             lanes = []
             for key, label, comparison_platform in (
                 ("cpu", "CPU · PR CI", ""),
                 ("gpu", "Nvidia · run-slow", "nvidia"),
             ):
-                source = sources[key]
                 run = runs[key]
+                jobs_future, rows_future = reads[key]
+                raw_jobs, notes = jobs_future.result() if jobs_future else ([], [])
+                rows = rows_future.result() if rows_future else []
                 comparison_data = nvidia_comparison if comparison_platform else None
-                rows = rows_by_key[key]
-                raw_jobs, notes = jobs_by_key.get(key, ([], []))
                 lanes.append(
                     {
                         "id": key,
@@ -10313,74 +10586,19 @@ class MetricsHandler(BaseHTTPRequestHandler):
                         ),
                         "failures": pr_ci_view.failures(rows, comparison_data),
                         "comparison": comparison_data,
-                        "notes": source.get("notes", []) + notes,
+                        "notes": sources[key].get("notes", []) + notes,
                     }
                 )
-
-            amd_id = amd_comparison["run_id"] if amd_comparison else ""
-            if amd_id:
-                amd_notes = []
-                try:
-                    raw_run = _rerun_github_api(f"actions/runs/{amd_id}")
-                except Exception:
-                    raw_run = {
-                        "path": ".github/workflows/self-comment-ci-amd.yml",
-                        "event": "issue_comment",
-                        "html_url": f"https://github.com/huggingface/transformers/actions/runs/{amd_id}",
-                        "status": "unknown",
-                    }
-                    amd_notes.append("GitHub run status is temporarily unavailable.")
-                path = (
-                    str(raw_run.get("path") or "").split("@", 1)[0]
-                    if isinstance(raw_run, dict)
-                    else ""
-                )
-                if (
-                    path == ".github/workflows/self-comment-ci-amd.yml"
-                    and raw_run.get("event") == "issue_comment"
-                ):
-                    raw_jobs, notes = jobs_for(amd_id)
-                    amd_run = rerun_failed._run_summary(raw_run, amd_id)
-                    attributed = [
-                        {
-                            "nodeid": item["nodeid"],
-                            "hardware": "amd-2gpu"
-                            if item["hardware"] == "multi-gpu"
-                            else "amd-1gpu"
-                            if item["hardware"] == "single-gpu"
-                            else "amd-gpu",
-                            "job": "run_models_gpu",
-                            "trace_id": "",
-                            "specific": True,
-                        }
-                        for item in amd_comparison["specific"]
-                    ]
-                    lanes.append(
-                        {
-                            "id": "amd",
-                            "label": "AMD · run-slow",
-                            "run": amd_run,
-                            "jobs": pr_ci_view.summarize_jobs(raw_jobs, [], "amd"),
-                            "failures": attributed,
-                            "comparison": amd_comparison,
-                            "notes": amd_notes
-                            + notes
-                            + [
-                                "AMD failures come from the run-slow comparison report; full test telemetry is not available."
-                            ],
-                        }
-                    )
-            for lane in lanes:
-                for failure in lane["failures"]:
-                    nodeid = failure["nodeid"]
-                    failure["model"] = run_row_model(nodeid)
-                    failure["test_name"] = run_row_test_name({"test_nodeid": nodeid})
-            payload = json.dumps({"pr": pr, "lanes": lanes}).encode()
-            _public_response_cache_put(cache_key, payload)
-            self._request_cache = "miss"
-            self._send(200, JSON_CONTENT_TYPE, payload, cache_control="no-store")
-        except Exception as error:
-            self._reply_json(*_rerun_source_error(error))
+            if amd_lane is not None:
+                lane = amd_lane.result()
+                if lane is not None:
+                    lanes.append(lane)
+        for lane in lanes:
+            for failure in lane["failures"]:
+                nodeid = failure["nodeid"]
+                failure["model"] = run_row_model(nodeid)
+                failure["test_name"] = run_row_test_name({"test_nodeid": nodeid})
+        return json.dumps({"pr": pr, "lanes": lanes}).encode()
 
     def _serve_rerun_failed_data(self, params: dict[str, list[str]]) -> None:
         pr = (params.get("pr") or [""])[0].strip()
@@ -10630,12 +10848,15 @@ class MetricsHandler(BaseHTTPRequestHandler):
         payload: bytes,
         *,
         cache_control: str | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         if cache_control:
             self.send_header("Cache-Control", cache_control)
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(payload)
         self._observe_response(status, len(payload))

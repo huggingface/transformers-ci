@@ -282,7 +282,7 @@ def test_combined_view_endpoint_serves_both_lanes(monkeypatch) -> None:
 ✅ No failing test specific to this PR
 <!-- amd-section-end -->"""
 
-    def api(path: str) -> object:
+    def api(path: str, **_kwargs) -> object:
         if path.startswith("issues/"):
             return [{"body": comment_body, "updated_at": "2026-10-14T12:00:00Z"}]
         if path.startswith("actions/runs/100/jobs"):
@@ -348,3 +348,200 @@ def test_combined_view_endpoint_serves_both_lanes(monkeypatch) -> None:
     assert payload["lanes"][1]["failures"][0]["specific"] is False
     assert payload["lanes"][1]["failures"][0]["model"] == "vit"
     assert payload["lanes"][2]["jobs"][0]["hardware"] == "amd-2gpu"
+
+
+def test_stale_values_are_served_at_once_and_rebuilt_in_the_background(
+    monkeypatch,
+) -> None:
+    trace_exporter._swr_cache.clear()
+    clock = [1000.0]
+    monkeypatch.setattr(trace_exporter.time, "monotonic", lambda: clock[0])
+    builds: list[int] = []
+    rebuilt = threading.Event()
+
+    def build() -> bytes:
+        builds.append(1)
+        if len(builds) > 1:
+            rebuilt.set()
+        return f"v{len(builds)}".encode()
+
+    fetch = lambda: trace_exporter._swr_fetch(  # noqa: E731
+        "k", build, fresh_seconds=30, stale_seconds=900
+    )
+    assert fetch() == (b"v1", "miss", 0.0)
+    clock[0] += 10
+    assert fetch()[:2] == (b"v1", "hit")
+    clock[0] += 60  # past fresh, within stale: old value now, rebuild behind it
+    assert fetch()[:2] == (b"v1", "stale")
+    assert rebuilt.wait(5)
+    for _ in range(100):  # the rebuild stores just after building
+        if trace_exporter._swr_cache["k"][1] == b"v2":
+            break
+        threading.Event().wait(0.01)
+    assert fetch()[:2] == (b"v2", "hit")
+    clock[0] += 1000  # past stale: built in the request again
+    assert fetch() == (b"v3", "miss", 0.0)
+    trace_exporter._swr_cache.clear()
+
+
+def test_concurrent_misses_share_one_build() -> None:
+    trace_exporter._swr_cache.clear()
+    gate, builds = threading.Event(), []
+
+    def build() -> bytes:
+        builds.append(1)
+        gate.wait(5)
+        return b"shared"
+
+    results: list = []
+    threads = [
+        threading.Thread(
+            target=lambda: results.append(
+                trace_exporter._swr_fetch(
+                    "shared", build, fresh_seconds=30, stale_seconds=900
+                )[0]
+            )
+        )
+        for _ in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    threading.Event().wait(0.2)
+    gate.set()
+    for thread in threads:
+        thread.join(5)
+    assert results == [b"shared"] * 4 and len(builds) == 1
+    trace_exporter._swr_cache.clear()
+
+
+def test_job_pages_after_the_first_are_fetched_together_in_order(
+    monkeypatch,
+) -> None:
+    trace_exporter._completed_jobs_cache.clear()
+    calls: list[str] = []
+    together = threading.Barrier(3, timeout=5)
+
+    def api(path: str, **_kwargs) -> object:
+        calls.append(path)
+        assert "per_page=30&" in path
+        page = int(path.rsplit("page=", 1)[1])
+        if page > 1:
+            together.wait()  # pages 2-4 must be in flight at the same time
+        size = 30 if page < 4 else 10
+        return {
+            "total_count": 100,
+            "jobs": [{"name": f"p{page}-{n}"} for n in range(size)],
+        }
+
+    monkeypatch.setattr(trace_exporter, "_rerun_github_api", api)
+    jobs, notes = trace_exporter._pr_ci_run_jobs("77:1", completed=True)
+    assert len(jobs) == 100 and notes == []
+    assert [job["name"] for job in jobs[::30]] == ["p1-0", "p2-0", "p3-0", "p4-0"]
+    assert len(calls) == 4
+    # A finished run's jobs never change: the second read costs no GitHub call.
+    assert trace_exporter._pr_ci_run_jobs("77:2", completed=True)[0] == jobs
+    assert len(calls) == 4
+    trace_exporter._pr_ci_run_jobs("88", completed=False)
+    trace_exporter._pr_ci_run_jobs("88", completed=False)
+    assert len(calls) == 12  # a running run is read again
+    trace_exporter._completed_jobs_cache.clear()
+
+
+def test_job_reads_stop_at_the_cap(monkeypatch) -> None:
+    trace_exporter._completed_jobs_cache.clear()
+    pages: list[int] = []
+
+    def api(path: str, **_kwargs) -> object:
+        pages.append(int(path.rsplit("page=", 1)[1]))
+        return {"total_count": 1200, "jobs": [{"name": "j"}] * 30}
+
+    monkeypatch.setattr(trace_exporter, "_rerun_github_api", api)
+    jobs, notes = trace_exporter._pr_ci_run_jobs("55", completed=True)
+    assert len(jobs) == 500 and max(pages) == 17
+    assert notes == ["Showing the first 500 GitHub jobs."]
+    assert "55" in trace_exporter._completed_jobs_cache
+    trace_exporter._completed_jobs_cache.clear()
+
+
+def test_a_failed_job_page_keeps_the_pages_before_it(monkeypatch) -> None:
+    trace_exporter._completed_jobs_cache.clear()
+
+    def api(path: str, **_kwargs) -> object:
+        page = int(path.rsplit("page=", 1)[1])
+        if page == 3:
+            raise OSError("timeout")
+        return {"total_count": 120, "jobs": [{"name": f"p{page}"}] * 30}
+
+    monkeypatch.setattr(trace_exporter, "_rerun_github_api", api)
+    jobs, notes = trace_exporter._pr_ci_run_jobs("99", completed=True)
+    assert len(jobs) == 60
+    assert notes == ["GitHub job details are temporarily unavailable."]
+    assert "99" not in trace_exporter._completed_jobs_cache  # retried next time
+
+
+def test_the_runs_stage_answers_before_jobs_and_failures(monkeypatch) -> None:
+    trace_exporter._swr_cache.clear()
+    run = {
+        "run_id": "100:1",
+        "url": "https://github.com/huggingface/transformers/actions/runs/100",
+        "status": "in_progress",
+        "conclusion": "",
+        "created_at": "2026-10-22T10:00:00Z",
+    }
+    monkeypatch.setattr(
+        trace_exporter.MetricsHandler,
+        "_pr_ci_sources",
+        lambda self, pr: {
+            "cpu": {"source_run": run, "active_runs": [], "notes": []},
+            "gpu": {"source_run": None, "active_runs": [], "notes": []},
+        },
+    )
+
+    def no_api(path: str, **_kwargs) -> object:
+        raise AssertionError(f"the runs stage read {path}")
+
+    monkeypatch.setattr(trace_exporter, "_rerun_github_api", no_api)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = (
+            f"http://127.0.0.1:{server.server_port}/pr-ci-view/data?pr=49700&stage=runs"
+        )
+        with urlopen(url, timeout=5) as response:
+            assert response.headers["X-Cache-State"] == "miss"
+            payload = json.load(response)
+        with urlopen(url, timeout=5) as response:
+            assert response.headers["X-Cache-State"] == "hit"
+    finally:
+        server.shutdown()
+        server.server_close()
+        trace_exporter._swr_cache.clear()
+    assert payload["pending"] is True
+    assert [lane["id"] for lane in payload["lanes"]] == ["cpu", "gpu"]
+    assert payload["lanes"][0]["run"]["run_id"] == "100:1"
+    assert payload["lanes"][0]["jobs"] == [] and payload["lanes"][1]["run"] is None
+
+
+def test_a_value_built_during_a_failure_is_rebuilt_on_the_next_request() -> None:
+    trace_exporter._swr_cache.clear()
+    built = iter([b"unavailable", b"good"])
+    done = threading.Event()
+
+    def build() -> bytes:
+        value = next(built)
+        if value == b"good":
+            done.set()
+        return value
+
+    fetch = lambda: trace_exporter._swr_fetch(  # noqa: E731
+        "k", build, fresh_seconds=30, stale_seconds=900, keep=lambda v: v == b"good"
+    )
+    assert fetch()[:2] == (b"unavailable", "miss")
+    assert fetch()[:2] == (b"unavailable", "stale")  # served, rebuilt behind it
+    assert done.wait(5)
+    for _ in range(100):
+        if trace_exporter._swr_cache["k"][1] == b"good":
+            break
+        threading.Event().wait(0.01)
+    assert fetch()[:2] == (b"good", "hit")
+    trace_exporter._swr_cache.clear()

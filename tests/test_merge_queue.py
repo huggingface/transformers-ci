@@ -217,7 +217,7 @@ def test_queue_history_endpoint(monkeypatch):
         return payload(span("a", NODE, 49428, "2:1", NOW - 60))
 
     monkeypatch.setattr(te, "_http_get_json", fake_get)
-    te._queue_history_cache.clear()
+    te._swr_cache.clear()
     server = ThreadingHTTPServer(("127.0.0.1", 0), te.MetricsHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}/pr-ci-view/queue-history?"
@@ -246,3 +246,28 @@ def test_queue_history_endpoint(monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_incomplete_queue_history_is_rebuilt_on_the_next_view(monkeypatch):
+    from transformersci.otel import trace_exporter as te
+
+    monkeypatch.setattr(
+        te.merge_queue, "fetch_rows", lambda *args, **kwargs: ([], True)
+    )
+    te._swr_cache.clear()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), te.MetricsHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}/pr-ci-view/queue-history?"
+    try:
+        with urlopen(base + urlencode([("pr", "49566"), ("t", NODE)])) as reply:
+            assert json.load(reply)["incomplete"] is True
+    finally:
+        server.shutdown()
+        server.server_close()
+    # Kept only as already stale: the next view gets it and rebuilds it.
+    assert [
+        built_at
+        for key, (built_at, _value) in te._swr_cache.items()
+        if key.startswith("queue-history:")
+    ] == [float("-inf")]
+    te._swr_cache.clear()
