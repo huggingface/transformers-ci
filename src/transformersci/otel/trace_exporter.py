@@ -2002,6 +2002,25 @@ def python_changes_only_in_tests(paths: list[str] | None) -> bool:
 
 _pr_info_cache_lock = threading.Lock()
 _cached_pr_info: dict[tuple[str, str], tuple[float, dict[str, str]]] = {}
+# A closed or merged PR's labels, title and files rarely change: re-reading its
+# PR, reviews and changed files (3+ GitHub calls) every 5 minutes is waste.
+PR_INFO_CLOSED_CACHE_SECONDS = 3600.0
+# Page requests (the PR header's labels, polled every minute per open page) are
+# served an older value at once while it is refreshed in the background.
+PR_INFO_STALE_SECONDS = 6 * 3600.0
+_pr_info_refreshing: set[tuple[str, str]] = set()
+_pr_info_refresh_pool = ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="pr-info-refresh"
+)
+
+
+def _pr_info_fresh_seconds(payload: dict[str, str]) -> float:
+    ttl = github_cache_ttl_seconds()
+    if ttl > 0 and (
+        payload.get("state") == "closed" or payload.get("merged") == "true"
+    ):
+        return max(ttl, PR_INFO_CLOSED_CACHE_SECONDS)
+    return ttl
 
 
 # GitHub lookups a render needs (run activity, PR metadata) are independent
@@ -2047,13 +2066,12 @@ def _prefetch_concurrently(
 
 def fetch_github_pr_info_cached(repository: str, pr: str) -> dict[str, str]:
     key = (repository, pr)
-    ttl = github_cache_ttl_seconds()
     now = time.monotonic()
     with _pr_info_cache_lock:
         cached = _cached_pr_info.get(key)
-        if cached is not None and ttl > 0:
+        if cached is not None:
             cached_at, payload = cached
-            if now - cached_at < ttl:
+            if now - cached_at < _pr_info_fresh_seconds(payload):
                 return dict(payload)
 
     fallback = {
@@ -2077,6 +2095,46 @@ def fetch_github_pr_info_cached(repository: str, pr: str) -> dict[str, str]:
     with _pr_info_cache_lock:
         _cached_pr_info[key] = (now, dict(payload))
     return dict(payload)
+
+
+def fetch_github_pr_info_swr(repository: str, pr: str) -> dict[str, str]:
+    """``fetch_github_pr_info_cached`` for page requests: once a PR was read, an
+    expired value is returned at once and refreshed in the background (one
+    refresh per PR at a time); only a PR never read, or read over
+    ``PR_INFO_STALE_SECONDS`` ago, waits on GitHub. A failed refresh keeps the
+    last good value rather than the empty fallback."""
+    key = (repository, pr)
+    now = time.monotonic()
+    with _pr_info_cache_lock:
+        cached = _cached_pr_info.get(key)
+        if cached is not None and github_cache_ttl_seconds() > 0:
+            cached_at, payload = cached
+            age = now - cached_at
+            if age < _pr_info_fresh_seconds(payload):
+                return dict(payload)
+            # The fallback after a failed read has no state: retry it in the request.
+            if age < PR_INFO_STALE_SECONDS and payload.get("state"):
+                if key not in _pr_info_refreshing:
+                    _pr_info_refreshing.add(key)
+                    _pr_info_refresh_pool.submit(_refresh_pr_info, key)
+                return dict(payload)
+    return fetch_github_pr_info_cached(repository, pr)
+
+
+def _refresh_pr_info(key: tuple[str, str]) -> None:
+    try:
+        payload = fetch_github_pr_info(*key)
+        with _pr_info_cache_lock:
+            _cached_pr_info[key] = (time.monotonic(), dict(payload))
+    except Exception as error:  # the old value keeps being served
+        print(
+            f"[trace-exporter] background refresh of PR {key[0]}#{key[1]} failed: {error!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+    finally:
+        with _pr_info_cache_lock:
+            _pr_info_refreshing.discard(key)
 
 
 def github_commit_html_url(repository: str, sha: str) -> str:
@@ -9761,7 +9819,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
             ):
                 self._reply_json(400, {"error": "Invalid pull request"})
                 return
-            info = fetch_github_pr_info_cached(repository, pr)
+            info = fetch_github_pr_info_swr(repository, pr)
             try:
                 labels = clean_pr_labels(json.loads(info.get("labels_json", "[]")))
             except (TypeError, ValueError):
