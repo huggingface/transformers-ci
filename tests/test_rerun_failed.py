@@ -747,7 +747,7 @@ def test_github_reads_are_cached_and_fresh_reads_refill_the_cache(monkeypatch) -
     calls: list[str] = []
     payloads = iter([{"n": 1}, {"n": 2}, {"n": 3}])
 
-    def fake_get(url: str) -> object:
+    def fake_get(url: str, **_kwargs) -> object:
         calls.append(url)
         return next(payloads)
 
@@ -768,7 +768,7 @@ def test_github_reads_are_cached_and_fresh_reads_refill_the_cache(monkeypatch) -
 
 
 def test_a_spent_github_budget_is_reported_with_its_reset(monkeypatch) -> None:
-    def spent(url: str) -> object:
+    def spent(url: str, **_kwargs) -> object:
         raise _rate_limited(url)
 
     monkeypatch.setattr(trace_exporter, "_github_api_get", spent)

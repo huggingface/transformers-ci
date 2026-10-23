@@ -1,9 +1,10 @@
+import gzip
 import json
 import threading
 from collections import OrderedDict
 from http.server import ThreadingHTTPServer
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import pytest
 
@@ -187,7 +188,8 @@ def test_http_page_data_caching_and_unavailable_state(monkeypatch):
         return []
 
     monkeypatch.setattr(trace_exporter, "_prometheus_vector", query)
-    monkeypatch.setattr(trace_exporter, "_public_response_cache", OrderedDict())
+    monkeypatch.setattr(trace_exporter, "_swr_cache", OrderedDict())
+    monkeypatch.setattr(trace_exporter, "_swr_inflight", {})
     server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -201,11 +203,15 @@ def test_http_page_data_caching_and_unavailable_state(monkeypatch):
         )
         assert json.load(urlopen(base + "/mic/data?days=1"))["rows"] == []
         urlopen(base + "/mic/data?days=1").read()
-        assert len(calls) == 5
+        assert len(calls) == 4
         urlopen(base + "/mic/data?days=1&failure_type=Runtime%20traceback").read()
-        assert len(calls) == 10
+        assert len(calls) == 8
         urlopen(base + "/mic/data?days=1&failure_type=Runtime%20traceback").read()
-        assert len(calls) == 10
+        assert len(calls) == 8
+        assert json.load(urlopen(base + "/mic/data?days=1&group=pr"))["group"] == "pr"
+        assert len(calls) == 12
+        assert json.load(urlopen(base + "/mic/data?days=1"))["group"] == "model"
+        assert len(calls) == 12
 
         def broken(expression):
             raise RuntimeError("private internal URL")
@@ -288,6 +294,68 @@ def test_variant_and_platform_filters_apply_before_row_limit(monkeypatch):
     }
 
 
+def test_model_limit_keeps_all_error_cases_of_each_selected_model(monkeypatch):
+    monkeypatch.setattr(mic_page, "LIMIT", 1)
+    other = failure(node="tests/contracts::other::other[default]")
+    older = failure()
+    newer = failure("124:1", node="tests/contracts::demo::demo[eager]")
+
+    def record(item, repo):
+        return detail(
+            test_nodeid=item["metric"]["test_nodeid"], **{"mic.fixture_repo": repo}
+        )
+
+    records = {
+        "123:1": [record(other, "creator/other"), record(older, "creator/demo")],
+        "124:1": [record(newer, "creator/demo")],
+    }
+    data = mic_page.build_rows(queries([other, older, newer]), records.get)
+    assert data["models"] == 2
+    assert data["cases"] == 3
+    assert len(data["rows"]) == 2
+    assert {row["fixture_repo"] for row in data["rows"]} == {"creator/demo"}
+
+
+def test_pr_group_limit_keeps_all_models_and_includes_merge_queue_cases(monkeypatch):
+    monkeypatch.setattr(mic_page, "LIMIT", 1)
+    newest = failure("124:1")
+    queued = failure(node="tests/contracts::other::other[default]")
+    queued["metric"]["pr"] = "gh-readonly-queue/main/pr-42-abcdef"
+    unrelated = failure(node="tests/contracts::unrelated::unrelated[default]")
+    unrelated["metric"]["pr"] = "43"
+
+    def record(item, repo):
+        return detail(
+            test_nodeid=item["metric"]["test_nodeid"], **{"mic.fixture_repo": repo}
+        )
+
+    records = {
+        "123:1": [
+            record(queued, "creator/other"),
+            record(unrelated, "creator/unrelated"),
+        ],
+        "124:1": [record(newest, "creator/demo")],
+    }
+    data = mic_page.build_rows(
+        queries([queued, unrelated, newest]), records.get, group="pr"
+    )
+    assert data["group"] == "pr"
+    assert data["groups"] == 2
+    assert data["cases"] == 3
+    assert {row["pr_number"] for row in data["rows"]} == {"42"}
+    assert {row["fixture_repo"] for row in data["rows"]} == {
+        "creator/demo",
+        "creator/other",
+    }
+
+
+def test_invalid_group_falls_back_to_model():
+    assert (
+        mic_page.build_rows(queries([]), lambda run: None, group="invalid")["group"]
+        == "model"
+    )
+
+
 @pytest.mark.parametrize(
     "scope,matcher",
     [("main", ',pr="main"'), ("prs", ',pr=~"[0-9]+|gh-readonly-queue/.*"')],
@@ -334,6 +402,142 @@ def test_daily_strip_counts_distinct_runs_and_keeps_latest_failure():
     assert row["fails"] == 2
     assert row["run_id"] == "124:1"
     assert data["first_day"] == 94 * day
+
+
+@pytest.mark.parametrize("scope,other_branch", [("main", "42"), ("all", "42")])
+def test_daily_history_observes_passes_without_clearing_a_different_branch(
+    scope, other_branch
+):
+    today = 100 * 86400
+    old = failure()
+    old["metric"]["pr"] = "main"
+    records = {
+        "123:1": [
+            detail(
+                **{"mic.fixture_repo": "huggingface-mic/demo-mic", "mic.status": "fail"}
+            )
+        ],
+        "124:1": [
+            detail(
+                **{"mic.fixture_repo": "huggingface-mic/demo-mic", "mic.status": "pass"}
+            )
+        ],
+        "125:1": [
+            detail(
+                **{
+                    "mic.fixture_repo": "huggingface-mic/demo-mic",
+                    "mic.status": "error",
+                }
+            )
+        ],
+    }
+
+    def query(expression):
+        if "pytest_run_start_time_seconds" in expression:
+            return [
+                vector({"run_id": f"{run}:1"}, today + run) for run in (123, 124, 125)
+            ]
+        if "max by (run_id, pr)" in expression:
+            assert ('pr="main"' in expression) == (scope == "main")
+            return [
+                vector({"run_id": "124:1", "pr": "main"}),
+                vector({"run_id": "125:1", "pr": other_branch}),
+            ]
+        if "pytest_run_job_" in expression or "pytest_pr_info" in expression:
+            return []
+        return [old, old]
+
+    row = mic_page.build_rows(query, records.get, now=today + 200, scope=scope)["rows"][
+        0
+    ]
+    assert row["daily"][-1] == {"pass": 1, "fail": 1, "skipped": 0}
+    assert row["latest"]["run_id"] == "124:1"
+    assert row["latest"]["status"] == "pass"
+    assert row["sticky"] is False
+    assert "var-pr=main" in row["latest"]["run_url"]
+    assert (
+        mic_page.build_rows(
+            query, records.get, now=today + 200, scope=scope, sticky_only=True
+        )["rows"]
+        == []
+    )
+
+
+def test_missing_case_records_do_not_infer_recovery_from_a_green_job():
+    def query(expression):
+        if "max by (run_id, pr)" in expression:
+            return [vector({"run_id": "124:1", "pr": "42"})]
+        return queries([failure()])(expression)
+
+    row = mic_page.build_rows(query, lambda run: None, sticky_only=True)["rows"][0]
+    assert row["sticky"] is True
+    assert row["latest"]["run_id"] == "123:1"
+    assert not any(day["pass"] for day in row["daily"])
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_setup_error_clears_only_after_observing_a_complete_successful_job(complete):
+    setup = failure(node="tests/contracts::runner")
+
+    def query(expression):
+        if "max by (run_id, pr)" in expression:
+            return [vector({"run_id": "124:1", "pr": "42"}, 1 if complete else 2)]
+        return queries([setup])(expression)
+
+    def load(run):
+        return [detail(**{"mic.status": "pass"})] if run == "124:1" else None
+
+    row = mic_page.build_rows(query, load)["rows"][0]
+    assert row["sticky"] is not complete
+    assert row["latest"]["status"] == ("pass" if complete else "fail")
+
+
+def test_contract_link_uses_the_contract_revision_instead_of_fixture_revision():
+    row = detail(
+        **{
+            "mic.contract": "huggingface-mic/demo-mic",
+            "mic.contract_revision": "c" * 40,
+            "mic.revision": "d" * 40,
+        }
+    )
+    result = mic_page.build_rows(queries([failure()]), lambda run: [row])["rows"][0]
+    assert (
+        result["contract_url"]
+        == f"https://huggingface.co/huggingface-mic/demo-mic/blob/{'c' * 40}/integrations/transformers/usage.md"
+    )
+
+
+def test_multi_select_filters_combine_values_with_or_and_dimensions_with_and():
+    other = failure("124:1", node="tests/contracts::demo::demo[default]")
+    other["metric"]["exception_type"] = "MICExecutionError"
+    records = {
+        "123:1": [detail(**{"mic.variant": "bfloat16", "mic.platform": "cpu"})],
+        "124:1": [
+            detail(
+                test_nodeid=other["metric"]["test_nodeid"],
+                **{
+                    "mic.variant": "default",
+                    "mic.platform": "cuda",
+                    "mic.status": "error",
+                },
+            )
+        ],
+    }
+    rows = mic_page.build_rows(
+        queries([failure(), other]),
+        records.get,
+        variant=["default", "bfloat16"],
+        platform=["cpu", "cuda"],
+        failure_type=["Runtime traceback", "Baseline assertion"],
+    )["rows"]
+    assert len(rows) == 2
+    rows = mic_page.build_rows(
+        queries([failure(), other]),
+        records.get,
+        variant=["default", "bfloat16"],
+        platform=["cpu"],
+    )["rows"]
+    assert [row["run_id"] for row in rows] == ["123:1"]
 
 
 @pytest.mark.parametrize(
@@ -491,4 +695,229 @@ def test_failure_rate_is_independent_of_table_filters():
         failure_type="Runtime traceback",
     )
     assert result["rows"] == []
-    assert result["summary"] == {"total": 10, "failed": 2, "rate": 20.0}
+    summary = {k: v for k, v in result["summary"].items() if k != "now"}
+    assert summary == {"total": 10, "failed": 2, "rate": 20.0}
+
+
+def test_http_data_is_gzipped_for_clients_that_accept_it(monkeypatch):
+    monkeypatch.setattr(trace_exporter, "_prometheus_vector", lambda expression: [])
+    monkeypatch.setattr(trace_exporter, "_swr_cache", OrderedDict())
+    monkeypatch.setattr(trace_exporter, "_swr_inflight", {})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/mic/data?days=7"
+        response = urlopen(Request(url, headers={"Accept-Encoding": "gzip, br"}))
+        assert response.headers["Content-Encoding"] == "gzip"
+        assert response.headers["Vary"] == "Accept-Encoding"
+        assert json.loads(gzip.decompress(response.read()))["rows"] == []
+        plain = urlopen(url)
+        assert plain.headers["Content-Encoding"] is None
+        assert plain.headers["X-Cache-State"] == "hit"
+        assert json.load(plain)["days"] == 7
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_start_times_are_read_only_for_failing_and_history_runs():
+    expressions = []
+
+    def query(expression):
+        expressions.append(expression)
+        if "max by (run_id, pr)" in expression:
+            return [vector({"run_id": "124:1", "pr": "42"})]
+        return queries([failure()])(expression)
+
+    mic_page.build_rows(query, lambda run: None)
+    (starts,) = [e for e in expressions if "pytest_run_start_time_seconds" in e]
+    assert 'run_id=~"123:1|124:1"' in starts
+
+
+def test_start_times_fall_back_to_all_runs_above_the_matcher_limit(monkeypatch):
+    monkeypatch.setattr(mic_page, "MAX_RUN_MATCHER", 1)
+    expressions = []
+    mic_page.run_starts(lambda e: expressions.append(e) or [], {"1:1", "2:1"}, days=7)
+    assert expressions == [
+        "max by (run_id) (last_over_time(pytest_run_start_time_seconds[7d]))"
+    ]
+    assert mic_page.run_starts(lambda e: pytest.fail(e), set(), days=7) == {}
+
+
+def test_renamed_pr_shows_its_newest_title_without_a_month_long_subquery():
+    expressions = []
+
+    def query(expression):
+        expressions.append(expression)
+        if "ci_github_run_title_info" in expression:
+            return [vector({"pr": "43", "title": "From the run"})]
+        if "[1h]" in expression:
+            return [vector({"pr": "42", "title": "Renamed"})]
+        if "[6h:]" in expression:
+            return [vector({"pr": "44", "title": "Second rename"})]
+        if "[6h]" in expression:
+            return [
+                vector({"pr": "44", "title": "First rename"}),
+                vector({"pr": "44", "title": "Second rename"}),
+            ]
+        return [
+            vector({"pr": "42", "title": "Original"}),
+            vector({"pr": "42", "title": "Renamed"}),
+            vector({"pr": "44", "title": "Original"}),
+        ]
+
+    failures = [
+        ({"pr": pr}, 1) for pr in ("42", "gh-readonly-queue/main/pr-43-ab", "44")
+    ]
+    assert mic_page.pr_titles(query, failures, days=30) == {
+        "42": "Renamed",
+        "43": "From the run",
+        "44": "Second rename",
+    }
+    # Only the tie inside the 6h window needs per-sample timestamps, over 6h.
+    subqueries = [e for e in expressions if "timestamp(" in e]
+    assert len(subqueries) == 1
+    assert subqueries[0].endswith('pr=~"44",title!=""}))[6h:])))')
+    assert not any("[30d:" in e for e in expressions)
+
+
+def test_title_lookup_is_skipped_without_prs_and_never_fails_the_page():
+    assert (
+        mic_page.pr_titles(lambda e: pytest.fail(e), [({"pr": "main"}, 1)], days=7)
+        == {}
+    )
+
+    def broken(expression):
+        raise RuntimeError("down")
+
+    assert mic_page.pr_titles(broken, [({"pr": "42"}, 1)], days=7) == {}
+
+
+def test_each_run_is_loaded_once_for_rows_and_history():
+    calls = []
+
+    def query(expression):
+        if "max by (run_id, pr)" in expression:
+            return [
+                vector({"run_id": "123:1", "pr": "42"}),
+                vector({"run_id": "124:1", "pr": "42"}),
+            ]
+        return queries([failure()])(expression)
+
+    def load(run):
+        calls.append(run)
+        return [detail(**{"mic.status": "fail"})] if run == "123:1" else None
+
+    mic_page.build_rows(query, load)
+    assert sorted(calls) == ["123:1", "124:1"]
+
+
+def test_traces_without_mic_details_are_not_fetched_again(monkeypatch, tmp_path):
+    fetched = []
+    traces = {"a" * 32: {"spans": []}, "b" * 32: None}
+
+    def fetch(trace_id):
+        fetched.append(trace_id)
+        return traces[trace_id]
+
+    monkeypatch.setattr(trace_exporter, "fetch_failure_trace", fetch)
+    monkeypatch.setattr(trace_exporter, "extract_trace_rows", lambda trace: ({}, []))
+    monkeypatch.setattr(trace_exporter, "_run_store_dir", lambda: "")
+    monkeypatch.setattr(trace_exporter, "_mic_trace_misses", {})
+    for _ in range(2):
+        assert trace_exporter._mic_trace_rows("a" * 32) == []
+        assert trace_exporter._mic_trace_rows("b" * 32) == []
+    # The empty trace is remembered; the failed fetch is retried.
+    assert fetched == ["a" * 32, "b" * 32, "b" * 32]
+
+
+def _case(node, run, repo, status, **extra):
+    return {
+        **detail(test_nodeid=node),
+        "run_id": run,
+        **{"mic.fixture_repo": repo, "mic.status": status},
+        **extra,
+    }
+
+
+def test_failing_now_counts_each_case_by_its_latest_check():
+    x = "tests/contracts::x::x[bfloat16]"
+    y = "tests/contracts::y::y[bfloat16]"
+    z = "tests/contracts::z::z[bfloat16]"
+    u = "tests/contracts::u::u[bfloat16]"
+    k = "tests/contracts::k::k[bfloat16]"
+    records = {
+        "123:1": [
+            _case(x, "123:1", "creator/x", "fail"),
+            _case(y, "123:1", "creator/y", "pass"),
+            _case(u, "123:1", "creator/u", "unsupported"),
+            _case(k, "123:1", "creator/k", "xfail"),
+        ],
+        "124:1": [
+            _case(x, "124:1", "creator/x", "pass"),  # x recovered
+            _case(z, "124:1", "creator/z", "fail", **{"mic.platform": "cuda"}),
+        ],
+    }
+    failures = [
+        failure("123:1", node=x),
+        failure("124:1", node=z),
+    ]
+    data = mic_page.build_rows(queries(failures), records.get)
+    # z fails now; x recovered; y and k never failed; u is not a check.
+    assert data["summary"]["now"] == {"failing": 1, "cases": 4, "rate": 25.0}
+    sticky = mic_page.build_rows(queries(failures), records.get, sticky_only=True)
+    assert sticky["cases"] == data["summary"]["now"]["failing"]
+    # Like the global rate, the table's filters do not change it.
+    filtered = mic_page.build_rows(
+        queries(failures), records.get, platform="cpu-x86_64-bf16", sticky_only=True
+    )
+    assert filtered["rows"] == []
+    assert filtered["summary"]["now"] == data["summary"]["now"]
+
+
+def test_failing_now_follows_a_cleared_setup_error():
+    setup = failure(node="tests/contracts::runner")
+
+    def query(expression):
+        if "max by (run_id, pr)" in expression:
+            return [vector({"run_id": "124:1", "pr": "42"}, 1)]
+        return queries([setup])(expression)
+
+    def load(run):
+        return [detail(**{"mic.status": "pass"})] if run == "124:1" else None
+
+    now = mic_page.build_rows(query, load)["summary"]["now"]
+    assert now["failing"] == 0 and now["cases"] == 2
+
+
+def test_failing_now_without_checks_is_unknown():
+    assert mic_page.failing_now({}) == {"failing": 0, "cases": 0, "rate": None}
+
+
+def test_records_without_weights_match_their_case_through_provenance():
+    # Older runs did not record weights; the row's comes from the fixture's
+    # provenance. Keyed "unknown", the old failure never met its later pass.
+    revision = "b" * 40
+    old = _case(NODE, "123:1", "creator/demo", "fail", **{"mic.revision": revision})
+    new = _case(
+        NODE,
+        "124:1",
+        "creator/demo",
+        "pass",
+        **{"mic.revision": revision, "mic.weights": "random"},
+    )
+    records = {"123:1": [old], "124:1": [new]}
+
+    def query(expression):
+        if "max by (run_id, pr)" in expression:
+            return [vector({"run_id": "124:1", "pr": "42"}, 1)]
+        return queries([failure()])(expression)
+
+    data = mic_page.build_rows(
+        query,
+        records.get,
+        build_metadata=lambda pin: {"weights": "random"},
+    )
+    assert data["summary"]["now"] == {"failing": 0, "cases": 1, "rate": 0.0}
+    assert [row["sticky"] for row in data["rows"]] == [False]

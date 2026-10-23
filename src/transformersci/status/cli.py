@@ -140,6 +140,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         daemon=True,
         name="prune",
     ).start()
+    threading.Thread(
+        target=service.render_loop, args=(stop,), daemon=True, name="render"
+    ).start()
     if github_app.configured() or os.environ.get(args.github_token_env, ""):
         reconciler = Reconciler(
             store,

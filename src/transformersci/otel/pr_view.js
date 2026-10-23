@@ -90,7 +90,9 @@ function installPrView() {
     const controller = new host.AbortController(); activityRequest = controller;
     const timeout = host.setTimeout(() => controller.abort(), 10000);
     try {
-      const response = await host.fetch('/pr-ci-view/data?pr=' + encodeURIComponent(pr), {credentials:'same-origin',signal:controller.signal});
+      // The runs stage answers in ~1s where the full view takes ~5s, and a job
+      // can only be active while its run is.
+      const response = await host.fetch('/pr-ci-view/data?stage=runs&pr=' + encodeURIComponent(pr), {credentials:'same-origin',signal:controller.signal});
       if (!response.ok) throw Error('Live status unavailable');
       const result = await response.json();
       if (!Array.isArray(result.lanes)) throw Error('Live status unavailable');

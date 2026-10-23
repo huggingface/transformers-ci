@@ -13,7 +13,7 @@
   const pickedJobs = new Set();
   const jobKey = (lane, name, hardware) => `${lane.id}|${name}|${hardware || ''}`;
   const groupButtons = [...document.querySelectorAll('[data-group]')];
-  let snapshot = null, snapshotText = '', loading = false;
+  let snapshot = null, snapshotText = '', loading = false, soon = 0;
   // Merge-queue history per failing node id; null until loaded, {} when unavailable.
   let history = null, historyIncomplete = false, historyKey = '', historyAt = 0;
   const expanded = new Set();
@@ -340,6 +340,7 @@
     if (!snapshot) return;
     const opened = new Set([...failures.querySelectorAll('details[open]')].map(item => item.dataset.key));
     failures.replaceChildren();
+    if (snapshot.pending) { failures.append(node('div', 'notice', 'Loading failing tests…')); return; }
     const {listed, hidden} = visibleFailures();
     if (pickedJobs.size) {
       const banner = node('div', 'jobfilter', 'Only tests from ');
@@ -397,6 +398,7 @@
   }
   function renderJobs() {
     jobs.replaceChildren();
+    if (snapshot.pending) { jobsEmpty.hidden = false; jobsEmpty.textContent = 'Loading jobs…'; return; }
     const ordered = snapshot.lanes.flatMap(lane => lane.jobs.map(job => ({lane, job})));
     const rank = status => live(status) ? 0 : statusClass(status) === 'failure' ? 1 : status === 'success' ? 2 : 3;
     ordered.sort((a, b) => rank(a.job.status) - rank(b.job.status) || (b.job.fail || 0) - (a.job.fail || 0) || a.job.name.localeCompare(b.job.name));
@@ -435,19 +437,31 @@
     jobsEmpty.textContent = ordered.length ? '' : 'No jobs found in the latest available runs.';
   }
   function render() { renderRuns(); renderFailures(); renderJobs(); }
+  async function fetchView(stage) {
+    const response = await fetch(`/pr-ci-view/data?pr=${encodeURIComponent(pr)}${stage ? `&stage=${stage}` : ''}`, {credentials: 'same-origin', cache: 'no-store'});
+    if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
+      throw new Error(`CI results are temporarily unavailable (HTTP ${response.status}). Retrying shortly…`);
+    }
+    return {text: await response.text(), state: response.headers.get('X-Cache-State')};
+  }
   async function refresh() {
     if (loading || document.hidden) return;
     if (!/^[1-9][0-9]*$/.test(pr || '')) { runs.textContent = 'Open this view from a PR dashboard.'; progress.hidden = true; return; }
     loading = true; progress.hidden = false;
+    // First load: the runs come back in about a second, jobs and failures take
+    // longer, so show the runs while the rest loads.
+    if (!snapshot) {
+      fetchView('runs').then(({text}) => {
+        if (!snapshot) { snapshot = JSON.parse(text); render(); }
+      }).catch(() => {});
+    }
     try {
-      const response = await fetch(`/pr-ci-view/data?pr=${encodeURIComponent(pr)}`, {credentials: 'same-origin', cache: 'no-store'});
-      if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
-        throw new Error(`CI results are temporarily unavailable (HTTP ${response.status}). Retrying shortly…`);
-      }
-      const text = await response.text();
+      const {text, state} = await fetchView('');
       // An unchanged refresh must not re-render: that would close open tracebacks and history rows.
       if (text !== snapshotText) { snapshotText = text; snapshot = JSON.parse(text); render(); }
       loadHistory();
+      // A stale answer is being rebuilt on the server: pick it up shortly.
+      if (state === 'stale') { clearTimeout(soon); soon = setTimeout(refresh, 4000); }
     } catch (error) { runs.textContent = error.message || 'CI results are temporarily unavailable. Retrying shortly…'; }
     finally { loading = false; progress.hidden = true; }
   }
