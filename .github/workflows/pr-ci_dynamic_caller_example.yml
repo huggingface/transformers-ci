@@ -419,7 +419,7 @@ jobs:
           # torchvision already absent; PIL present from the torch-only restore above
           uv pip uninstall torch torchvision torchaudio -q
           python -c "from transformers import *" || (echo 'import failed with PIL only (no torch). Fix unprotected imports!!'; exit 1)
-          uv pip install -e ".[quality]" -q
+          # no restore: this is the last import-isolation step
 
   # ===========================================================================
   # Quality gate — the single place deciding whether a failing quality run stops
