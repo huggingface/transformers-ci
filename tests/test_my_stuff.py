@@ -119,9 +119,9 @@ def test_endpoint_requires_session_and_ignores_supplied_identity(monkeypatch):
         trace_exporter.wdyt, "config", lambda: {"grafana": "http://grafana"}
     )
     monkeypatch.setattr(
-        trace_exporter.wdyt,
-        "grafana_login",
-        lambda url, cookies: "alice" if cookies == "grafana_session=valid" else None,
+        trace_exporter.dashboard_auth,
+        "browser_login",
+        lambda headers: "alice" if headers.get("Cookie") == "tci-session=valid" else None,
     )
     monkeypatch.setattr(trace_exporter, "public_repositories", lambda: ("org/repo",))
     calls = []
@@ -139,7 +139,7 @@ def test_endpoint_requires_session_and_ignores_supplied_identity(monkeypatch):
             urlopen(url, timeout=5)
         assert error.value.code == 401
         assert not calls
-        request = Request(url, headers={"Cookie": "grafana_session=valid"})
+        request = Request(url, headers={"Cookie": "tci-session=valid"})
         with urlopen(request, timeout=5) as response:
             assert response.headers["Cache-Control"] == "no-store"
             assert json.load(response) == {"login": "alice", "prs": ["12"]}

@@ -158,6 +158,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
     {title: 'CI Health', lock: true, tooltip: 'CI Health: Hugging Face members only (sign in with GitHub)',
      url: '/login/github?redirectTo=%2Fd%2Fpytest-observability-stack-health%2Fci-health%3ForgId%3D1%26from%3Dnow-24h%26to%3Dnow%26timezone%3Dbrowser%26refresh%3D30s',
      uids: ['pytest-observability-stack-health']},
+    {title: 'Your profile', url: '/profile', uids: []},
   ];
   function current(item) {
     var path = parent.location.pathname;

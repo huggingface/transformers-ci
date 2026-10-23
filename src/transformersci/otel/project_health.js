@@ -523,7 +523,7 @@
   new MutationObserver(records => {
     if (records.some(record => [...record.removedNodes].some(node => node.id === 'tci-new-issue'))) loadRows(true);
   }).observe(dialogHost.body, {childList: true});
-  fetch('/api/user', {credentials: 'same-origin', cache: 'no-store'})
+  fetch('/auth/me', {credentials: 'same-origin', cache: 'no-store'})
     .then(response => response.ok ? response.json() : null)
     .then(user => { if (user?.login) { me = user.login; signedIn = true; $('mine-toggle').hidden = false; if (rows.length) drawRows(); } })
     .catch(() => {});

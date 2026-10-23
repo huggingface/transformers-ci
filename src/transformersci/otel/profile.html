@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Your profile · Transformers CI</title>
+<style>
+:root{color-scheme:dark;--bg:#111217;--panel:#181b1f;--text:#d8d9da;--muted:#9fa3a9;--line:#343940;--accent:#8bb4ff}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f4f5f5;--panel:#fff;--text:#24292e;--muted:#656d76;--line:#d0d7de;--accent:#1f6feb}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 Inter,system-ui,sans-serif}header{border-bottom:1px solid var(--line);padding:16px 24px}nav{display:flex;align-items:center;gap:24px;flex-wrap:wrap;max-width:1000px;margin:auto}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}nav a:first-child{font-weight:650;color:var(--text)}nav a[aria-current]{margin-left:auto}main{max-width:860px;margin:48px auto;padding:0 24px}h1{font-size:30px;margin:0}h2{font-size:19px;margin:0 0 12px}p{margin:8px 0 20px}.muted,small{color:var(--muted)}section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:24px;margin:24px 0}.identity{display:flex;align-items:center;gap:20px;flex-wrap:wrap}.identity>div{flex:1}.avatar{border-radius:50%;width:64px;height:64px}button,.button{display:inline-block;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text);padding:8px 14px;font:inherit;cursor:pointer}button:hover,.button:hover{border-color:var(--accent);text-decoration:none}button.primary,.button.primary{background:#245dbe;color:white;border-color:#245dbe}button:disabled{opacity:.5;cursor:wait}.actions{display:flex;gap:12px;flex-wrap:wrap}input{display:block;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:10px;font:18px ui-monospace,monospace;width:100%;max-width:300px;margin:8px 0 16px;text-transform:uppercase}.session{display:flex;gap:16px;align-items:center;padding:16px 0;border-top:1px solid var(--line)}.session>div{flex:1;min-width:0}.session small{display:block}code{font:13px ui-monospace,monospace;overflow-wrap:anywhere}#status{min-height:24px}#status.error{color:#ef7b87}[hidden]{display:none!important}
+</style>
+<script src="/profile/app.js" defer></script>
+</head>
+<body>
+<header><nav aria-label="Dashboard"><a href="/">🤗 Transformers CI</a><a href="/d/pytest-test-health/fix-failures">Fix failures</a><a href="/d/mic-failures/mic-failures">MIC failures</a><a href="/profile" aria-current="page">Your profile</a></nav></header>
+<main>
+<h1>Your profile</h1><p class="muted">Your GitHub account and access to the Transformers CI dashboard.</p>
+<p id="status" role="status" aria-live="polite">Loading your profile…</p>
+<section id="signed-out" hidden><h2>Sign in with GitHub</h2><p>Use your GitHub account to access dashboard actions and connect the MIC command line.</p><a class="button primary" id="sign-in" href="/auth/github">Sign in with GitHub</a></section>
+<div id="signed-in" hidden>
+<section class="identity"><div><h2 id="name"></h2><a id="github" rel="noreferrer"></a><small id="account-id" style="display:block"></small></div><button id="logout" type="button">Sign out</button></section>
+<section id="connect"><h2>Connect tmic</h2><p>Run <code>tmic auth login</code> in your terminal, then enter the code shown there.</p>
+<form id="authorize"><label for="user-code">Code from your terminal</label><input id="user-code" name="user_code" autocomplete="off" spellcheck="false" maxlength="13" required pattern="[A-Fa-f0-9]{6}-[A-Fa-f0-9]{6}">
+<p>Authorizing tmic lets it read your profile and request MIC measurements for eight hours. GPU jobs still require repository permission. Publishing and approving baselines require separate authorization.</p>
+<p class="muted">Only approve a code from a command you started yourself.</p><div class="actions"><button class="primary" type="submit">Authorize tmic</button><button id="deny" type="button">Deny</button></div></form></section>
+<section><h2>Active sessions</h2><p class="muted">Revoke access for a browser or CLI you no longer use. Sessions expire after eight hours.</p><div id="sessions"></div></section>
+</div>
+</main>
+</body></html>

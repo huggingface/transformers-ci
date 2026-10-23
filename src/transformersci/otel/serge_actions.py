@@ -1,9 +1,8 @@
 """Serge Actions panel for the pytest Test dashboard.
 
-A static shell for now: the three actions are shown to signed-in Grafana users
-and stay disabled until the authenticated action API behind them exists.
-Hiding them from anonymous viewers is presentation only, never the
-authorization gate.
+The panel discovers the dashboard-owned GitHub session and directs anonymous
+viewers to GitHub sign-in. Presentation is never the authorization gate: every
+action authenticates again on the server.
 """
 
 from __future__ import annotations
@@ -136,23 +135,13 @@ const ACTIONS=WORK?[['work-on-it','Work on it',
   "Draft the failure with Serge's take, then work on it with your coding agent or open a GitHub issue.",true]]:__ACTIONS__,LOCK=__LOCK__;
 const row=document.getElementById('actions'),note=document.getElementById('note');
 // Every button shows at once; signed out, each carries a lock and goes to the
-// Grafana sign-in, which brings the viewer back to the page they were on.
-// Grafana only returns to its own pages after sign-in, and a bare /test is the
-// exporter's: send that one back to the Grafana Test page for the same test.
-const TEST_PAGE_VARS={trace_id:'trace_id',test_nodeid:'test_nodeid',job:'test_job',
-  pr:'pr',run_id:'run_id',status:'status_code'};
+// dashboard GitHub sign-in, returning to the current page afterward.
 function signIn(){
   let back='/';
   try{
     const here=top.location;back=here.pathname+here.search;
-    if(here.pathname==='/test'){
-      const from=new URLSearchParams(here.search),to=new URLSearchParams();
-      for(const [key,name] of Object.entries(TEST_PAGE_VARS))
-        if(from.get(key))to.set('var-'+name,from.get(key));
-      back='/d/pytest-test/test?'+to;
-    }
   }catch(error){}
-  top.location.href='/login?redirectTo='+encodeURIComponent(back);
+  top.location.href='/auth/github?next='+encodeURIComponent(back);
 }
 const buttons={};
 function fitFrame(){
@@ -179,7 +168,7 @@ function render(signedIn){
   }
   fitFrame();
 }
-fetch('/api/user',{credentials:'same-origin',cache:'no-store'})
+fetch('/auth/me',{credentials:'same-origin',cache:'no-store'})
   .then(response=>render(response.ok)).catch(()=>render(false));
 
 const context=new URLSearchParams(location.search);
@@ -228,7 +217,7 @@ if(context.get('test_nodeid'))fetch('/serge-actions/probable-fix?'+
     p.hidden=false;fitFrame();
   }).catch(()=>{});
 const MESSAGES={disabled:'WDYT? is not configured on this server yet.',
-  unauthorized:'Your Grafana session expired. Sign in again.',
+  unauthorized:'Your dashboard session expired. Sign in again.',
   rate_limited:'You asked a lot this hour. Try again later.',
   busy:'Serge is busy with other questions. Try again in a minute.',
   unavailable:'Serge could not answer right now. Try again in a minute.',
@@ -550,7 +539,7 @@ function issuePopup(work){
     }
     if(data.status!=='ok'){
       const messages={invalid:'The selected failure is unavailable.',
-        unauthorized:'Your Grafana session expired. Sign in again.',
+        unauthorized:'Your dashboard session expired. Sign in again.',
         rate_limited:'You asked a lot this hour. Try again later.',
         busy:'Serge is busy. Try again shortly.',
         unavailable:'Could not draft the issue right now. Try again shortly.'};
@@ -623,7 +612,7 @@ function reopenIssue(doc,data,p){
     }
     if(result.status==='claimed'){box.replaceChildren(heldBy(doc,result));return;}
     button.disabled=false;button.textContent='Reopen #'+data.number;
-    note.textContent=result.status==='unauthorized'?'Your Grafana session expired. Sign in again.':
+    note.textContent=result.status==='unauthorized'?'Your dashboard session expired. Sign in again.':
       'Could not reopen the issue. Check GitHub permissions and try again.';
   };
   box.append(p,button,note);
@@ -714,7 +703,7 @@ function helpersPopup(){
       const messages={no_line:'The trace has no repository line to inspect.',
         no_people:'No people with enough evidence were found for this line.',
         invalid:'The selected failure is unavailable.',
-        unauthorized:'Your Grafana session expired. Sign in again.',
+        unauthorized:'Your dashboard session expired. Sign in again.',
         rate_limited:'You asked a lot this hour. Try again later.',
         busy:'Serge is busy. Try again shortly.',
         unavailable:'Could not find suggestions right now. Try again shortly.'};

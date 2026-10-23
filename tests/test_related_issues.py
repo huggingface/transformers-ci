@@ -272,15 +272,13 @@ def test_serge_actions_shell(server):
     for label in ("New issue", "Fix it!", "WDYT?"):
         assert label in page
     # Signed in: the wired actions only. Signed out: every button, locked,
-    # sending the viewer to the Grafana sign-in and back.
+    # sending the viewer to dashboard GitHub sign-in and back.
     assert "b.disabled=!enabled" in page
     assert "b.classList.add('locked')" in page and "b.onclick=signIn" in page
-    assert "'/login?redirectTo='+encodeURIComponent(back)" in page
-    # A bare /test returns to the Grafana Test page (Grafana's sign-in only
-    # lands on its own routes).
-    assert "back='/d/pytest-test/test?'+to" in page
-    assert "job:'test_job'" in page and "status:'status_code'" in page
-    assert "fetch('/api/user'" in page
+    assert "'/auth/github?next='+encodeURIComponent(back)" in page
+    # Standalone pages can return directly through dashboard-owned login.
+    assert "back=here.pathname+here.search" in page
+    assert "fetch('/auth/me'" in page
     # WDYT?'s popup goes to the top-most same-origin page, so it is centred on
     # the screen even when Serge Actions sits two iframes deep.
     assert "for(let w=window;w.parent!==w;)" in page

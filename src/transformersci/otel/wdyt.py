@@ -2,9 +2,9 @@
 
 The prompt is built server-side from the selected trace (exception, traceback
 tail) and the Relore related-issues lookup; the browser only names the trace
-and test. Callers must hold a signed-in Grafana session, checked against
-Grafana itself, so anonymous dashboard viewers cannot spend tokens. Answers
-are cached per trace and test, and each user is rate limited.
+and test. Callers must hold a dashboard-owned GitHub session, so anonymous
+dashboard viewers cannot spend tokens. Answers are cached per trace and test,
+and each user is rate limited.
 """
 
 from __future__ import annotations
@@ -116,32 +116,6 @@ def _fix_block(fix: dict) -> str:
 
 # Shared with Who can help and New issue (transformersci.otel.llm).
 config = llm.config
-
-
-def grafana_login(grafana_url: str, cookie_header: str) -> str | None:
-    """The signed-in Grafana login behind these cookies, or None.
-
-    Only Grafana's own session cookies are forwarded. Anonymous viewers get
-    401 from /api/user, which is exactly the gate this needs.
-    """
-    session = "; ".join(
-        part.strip()
-        for part in cookie_header.split(";")
-        if part.strip().startswith("grafana_session")
-    )
-    if not grafana_url or not session:
-        return None
-    request = Request(
-        grafana_url.rstrip("/") + "/api/user", headers={"Cookie": session}
-    )
-    try:
-        # The in-cluster Grafana Service: no proxy, never the public internet.
-        with build_opener(ProxyHandler({})).open(request, timeout=5) as response:
-            user = json.loads(response.read(64 * 1024))
-    except (OSError, URLError, ValueError, HTTPException):
-        return None
-    login = user.get("login") if isinstance(user, dict) else None
-    return login if isinstance(login, str) and login else None
 
 
 def _tail(text: str, limit: int) -> str:

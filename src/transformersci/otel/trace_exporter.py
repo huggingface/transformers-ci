@@ -71,6 +71,7 @@ from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from transformersci.otel import my_stuff
+from transformersci.otel import dashboard_auth
 from transformersci.otel.pr_search import SEARCH_HTML
 from transformersci import github_app
 from transformersci.otel import related_issues
@@ -8683,6 +8684,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self._request_started = time.monotonic()
         self._request_route = "notfound"
         self._request_cache = "none"
+        if dashboard_auth.handle(self, "POST"):
+            return
         path = urlparse(self.path).path
         if path not in (
             "/serge-actions/wdyt",
@@ -8789,10 +8792,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         return False
 
     def _action_user(self) -> str | None:
-        """The signed-in Grafana login, or None after replying 401."""
-        login = wdyt.grafana_login(
-            wdyt.config()["grafana"], self.headers.get("Cookie", "")
-        )
+        """The dashboard-owned GitHub identity; browser actions reject CLI tokens."""
+        login = dashboard_auth.browser_login(self.headers)
         if not login:
             self._reply_json(401, {"status": "unauthorized"})
         return login
@@ -9527,6 +9528,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self._request_route = "notfound"
         self._request_cache = "none"
         self.path = _normalize_trace_query(self.path)
+        if dashboard_auth.handle(self, "GET"):
+            return
         parsed = urlparse(self.path)
         if parsed.path in {
             "/patch-view",

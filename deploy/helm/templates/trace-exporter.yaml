@@ -78,6 +78,29 @@ spec:
             - -m
             - transformersci.otel.trace_exporter
           env:
+            {{- if .Values.traceExporter.auth.enabled }}
+            {{- if not .Values.traceExporter.runStore.enabled }}
+            {{- fail "traceExporter.auth requires traceExporter.runStore.enabled" }}
+            {{- end }}
+            {{- if ne (int .Values.traceExporter.replicas) 1 }}
+            {{- fail "traceExporter.auth currently requires one replica for its SQLite session store" }}
+            {{- end }}
+            - name: TCI_AUTH_URL
+              value: {{ required "traceExporter.auth.publicUrl is required" .Values.traceExporter.auth.publicUrl | quote }}
+            - name: TCI_AUTH_GITHUB_CLIENT_ID
+              value: {{ required "traceExporter.auth.githubClientId is required" .Values.traceExporter.auth.githubClientId | quote }}
+            - name: TCI_AUTH_ALLOWED_ORGS
+              value: {{ join "," .Values.traceExporter.auth.allowedOrganizations | quote }}
+            - name: TCI_AUTH_ALLOWED_USER_IDS
+              value: {{ join "," .Values.traceExporter.auth.allowedUserIds | quote }}
+            - name: TCI_AUTH_GITHUB_PROXY
+              value: {{ .Values.traceExporter.auth.githubProxy | quote }}
+            - name: TCI_AUTH_GITHUB_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.dashboardGithubClientSecret }}
+            {{- end }}
             - name: PYTHONPATH
               value: /app/src/src
             - name: PYTEST_TRACE_EXPORTER_RELORE_URL

@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from transformersci.otel import llm, related_issues as ri
+from transformersci.otel import dashboard_auth, llm, related_issues as ri
 from transformersci.otel import trace_exporter as te
 from transformersci.otel import wdyt
 from transformersci.otel import who_can_help
@@ -77,27 +77,6 @@ class Opener:
             )
             return Response((events + "data: [DONE]\n\n").encode(), "text/event-stream")
         return Response(json.dumps(self.payload).encode(), "application/json")
-
-
-def test_login_forwards_only_grafana_session_cookies(monkeypatch):
-    opener = Opener({"login": "octocat"})
-    monkeypatch.setattr(wdyt, "build_opener", opener)
-    cookies = "other=1; grafana_session=abc; grafana_session_expiry=9"
-    assert wdyt.grafana_login("http://g:3000", cookies) == "octocat"
-    request = opener.requests[0]
-    assert request.full_url == "http://g:3000/api/user"
-    assert (
-        request.get_header("Cookie") == "grafana_session=abc; grafana_session_expiry=9"
-    )
-    assert opener.proxies == [{}]  # in-cluster, never through the LLM proxy
-
-
-def test_login_rejects_anonymous_and_errors(monkeypatch):
-    assert wdyt.grafana_login("http://g:3000", "other=1") is None
-    monkeypatch.setattr(wdyt, "build_opener", Opener(error=URLError("401")))
-    assert wdyt.grafana_login("http://g:3000", "grafana_session=abc") is None
-    monkeypatch.setattr(wdyt, "build_opener", Opener({"login": ""}))
-    assert wdyt.grafana_login("http://g:3000", "grafana_session=abc") is None
 
 
 def test_prompt_bounds_and_fences_untrusted_text():
@@ -251,7 +230,7 @@ def post(url, body, headers):
 
 
 def test_route_refuses_csrf_and_anonymous(server, monkeypatch):
-    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: None)
+    monkeypatch.setattr(dashboard_auth, "browser_login", lambda headers: None)
     url = server + "/serge-actions/wdyt"
     body = {"trace_id": TRACE, "test_nodeid": NODE}
     assert post(url, body, {"Content-Type": "application/json"})[0] == 403
@@ -263,7 +242,7 @@ def test_route_refuses_csrf_and_anonymous(server, monkeypatch):
 
 def test_route_builds_prompt_from_the_trace(server, monkeypatch):
     prompts = []
-    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: "octocat")
+    monkeypatch.setattr(dashboard_auth, "browser_login", lambda headers: "octocat")
     monkeypatch.setattr(te, "get_trace", lambda trace: {"ok": True})
     monkeypatch.setattr(te, "trace_repository", lambda trace: ri.REPOSITORY)
     monkeypatch.setattr(te, "extract_failure_details", lambda trace, node: DETAILS)
@@ -292,7 +271,7 @@ def test_route_builds_prompt_from_the_trace(server, monkeypatch):
 
 
 def test_who_can_help_route_uses_only_selected_trace(server, monkeypatch):
-    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: "octocat")
+    monkeypatch.setattr(dashboard_auth, "browser_login", lambda headers: "octocat")
     monkeypatch.setattr(te, "get_trace", lambda trace: {"trace": trace})
     monkeypatch.setattr(te, "trace_repository", lambda trace: ri.REPOSITORY)
     monkeypatch.setattr(te, "extract_failure_details", lambda trace, node: DETAILS)
@@ -333,7 +312,7 @@ def test_who_can_help_route_uses_only_selected_trace(server, monkeypatch):
 def test_new_issue_draft_uses_selected_trace_and_publish_uses_draft(
     server, monkeypatch
 ):
-    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: "octocat")
+    monkeypatch.setattr(dashboard_auth, "browser_login", lambda headers: "octocat")
     monkeypatch.setattr(te, "get_trace", lambda trace: {"trace": trace})
     monkeypatch.setattr(te, "trace_repository", lambda trace: ri.REPOSITORY)
     monkeypatch.setattr(te, "extract_failure_details", lambda trace, node: DETAILS)
@@ -388,10 +367,10 @@ def test_cache_clear_route(server, monkeypatch):
     url = server + "/serge-actions/wdyt/cache"
     wdyt._cache[(TRACE, NODE)] = (1e18, {"status": "ok", "answer": "A"})
     assert post(url, {}, {})[0] == 403
-    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: None)
+    monkeypatch.setattr(dashboard_auth, "browser_login", lambda headers: None)
     assert post(url, {}, {"X-TCI-Action": "1"}) == (401, {"status": "unauthorized"})
     assert wdyt._cache
-    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: "octocat")
+    monkeypatch.setattr(dashboard_auth, "browser_login", lambda headers: "octocat")
     assert post(url, {}, {"X-TCI-Action": "1"}) == (200, {"status": "ok", "cleared": 1})
     assert not wdyt._cache
     with urlopen(server + "/serge-actions/admin") as response:
@@ -485,7 +464,7 @@ def test_cost_route_validates_and_authenticates(server, monkeypatch):
     url = server + "/serge-actions/wdyt/cost?session_id="
     assert post(url + "nope", {}, {"X-TCI-Action": "1"})[0] == 400
     sid = "2" * 8 + "-2222-4222-8222-" + "2" * 12
-    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: None)
+    monkeypatch.setattr(dashboard_auth, "browser_login", lambda headers: None)
     assert post(url + sid, {}, {"X-TCI-Action": "1"})[0] == 401
-    monkeypatch.setattr(wdyt, "grafana_login", lambda url, cookie: "octocat")
+    monkeypatch.setattr(dashboard_auth, "browser_login", lambda headers: "octocat")
     assert post(url + sid, {}, {"X-TCI-Action": "1"}) == (200, {"status": "unknown"})

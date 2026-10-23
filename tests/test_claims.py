@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from transformersci.otel import claims, new_issue, related_issues, trace_exporter, wdyt
+from transformersci.otel import dashboard_auth, claims, new_issue, related_issues, trace_exporter, wdyt
 
 NODEID = "tests/models/bert/test_modeling_bert.py::BertModelTest::test_fa2"
 TRACE = "a" * 32
@@ -177,7 +177,7 @@ def test_an_existing_database_gains_the_issue_columns(tmp_path) -> None:
 def server(monkeypatch):
     monkeypatch.setattr(claims, "_store", claims.Store(":memory:"))
     monkeypatch.setattr(
-        wdyt, "grafana_login", lambda config, cookie: cookie.removeprefix("user=")
+        dashboard_auth, "browser_login", lambda headers: headers.get("Cookie", "").removeprefix("user=")
     )
     monkeypatch.setattr(trace_exporter, "get_trace", lambda trace_id: {"spans": []})
     monkeypatch.setattr(

@@ -38,7 +38,7 @@
   function signInPrompt() {
     message('Sign in to use My Stuff: ');
     const link = document.createElement('a');
-    link.href = '/login/github?redirectTo=' + encodeURIComponent('/pr-table/auth-complete');
+    link.href = '/auth/github?next=' + encodeURIComponent('/pr-table/auth-complete');
     link.target = '_blank';
     link.rel = 'noopener';
     link.textContent = 'Sign in with GitHub';

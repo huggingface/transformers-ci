@@ -175,12 +175,23 @@ tempo:
 #------------------------------------------------------------------------------
 traceExporter:
   replicas: 1
+  # Dashboard-owned GitHub App user authorization, independent of Grafana.
+  # Register <publicUrl>/auth/callback on the existing dashboard GitHub App.
+  # Requires runStore.enabled and secrets.keys.dashboardGithubClientSecret.
+  auth:
+    enabled: false
+    publicUrl: ""
+    githubClientId: ""
+    allowedOrganizations: [huggingface]
+    allowedUserIds: []
+    # Optional CONNECT proxy for github.com and api.github.com.
+    githubProxy: ""
   # Read-only related-issue search. Empty disables lookups; the panel reports
   # unavailable. Adapter targets Relore 0.3.18; verify compatibility on upgrades.
   relore:
     url: http://ghlore.ghlore.svc.cluster.local
   # WDYT? on the Test page: one direct LLM call per (trace, test), for signed-in
-  # Grafana users only (checked against grafanaUrl). Disabled until apiBase,
+  # dashboard users only. Disabled until apiBase,
   # model and the secrets.keys.llmApiKey value are all set. proxy is an HTTP
   # CONNECT proxy for the call, since the network policy blocks the internet.
   wdyt:
@@ -687,6 +698,9 @@ secrets:
     # Grafana GitHub-OAuth client secret. Only consumed when
     # grafana.auth.github.enabled is true.
     githubOauthClientSecret: grafana-github-oauth-client-secret
+    # GitHub App client secret for dashboard-owned user login. Separate from
+    # both the App private key and Grafana's OAuth App secret.
+    dashboardGithubClientSecret: dashboard-github-client-secret
     # LLM API key for the exporter's WDYT? answers. Optional.
     llmApiKey: llm-api-key
     # Bearer token for serge's /dashboard/* API ("Re-run failed tests"); the
