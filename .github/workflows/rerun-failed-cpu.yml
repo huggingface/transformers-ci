@@ -105,6 +105,7 @@ jobs:
               "tests_non_model": {"image": LIGHT, "install": "serving", "marker": "not generate"},
               "tests_training_ci": {"image": LIGHT, "marker": "is_training_test", "env": {"RUN_TRAINING_TESTS": "true"}},
               "tests_tensor_parallel_ci": {"image": LIGHT, "install": "torchao", "marker": "is_tensor_parallel_test", "env": {"RUN_TENSOR_PARALLEL_TESTS": "true"}},
+              "tests_expert_parallel_ci": {"image": LIGHT, "marker": "is_expert_parallel_test", "env": {"RUN_EXPERT_PARALLEL_TESTS": "true"}},
               "tests_fsdp_ci": {"image": LIGHT, "marker": "is_fsdp_test", "env": {"RUN_FSDP_TESTS": "true"}},
               "tests_peft_integration": {"image": LIGHT, "install": "peft"},
           }
