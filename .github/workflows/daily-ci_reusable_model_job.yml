@@ -275,7 +275,7 @@ jobs:
             OTEL_WRAP="configure-ci-otel --suite $TRANSFORMERS_TEST_OTEL_SUITE --service-name pytest-observability --protocol http --otlp-endpoint $OTEL_EXPORTER_OTLP_ENDPOINT --token $OTEL_TOKEN --staging-endpoint 10.90.52.50:5317 --staging-protocol grpc --"
           fi
 
-          script -q -c "PATCH_TESTING_METHODS_TO_COLLECT_OUTPUTS=yes _PATCHED_TESTING_METHODS_OUTPUT_DIR=/transformers/reports/${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports $OTEL_WRAP python3 -m pytest -rsfE -v -m '${pytest_marker}' --make-reports=${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports ${test_path}" test_outputs.txt
+          script -q -c "PATCH_TESTING_METHODS_TO_COLLECT_OUTPUTS=yes _PATCHED_TESTING_METHODS_OUTPUT_DIR=/transformers/reports/${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports CI_RECORD_DEPS_OUTPUT=/transformers/reports/${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports/deps.json $OTEL_WRAP python3 -m pytest -rsfE -v -m '${pytest_marker}' --make-reports=${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports ${test_path}" test_outputs.txt
           ls -la
           # Extract the exit code from the output file
           EXIT_CODE=$(tail -1 test_outputs.txt | grep -o 'COMMAND_EXIT_CODE="[0-9]*"' | cut -d'"' -f2)
