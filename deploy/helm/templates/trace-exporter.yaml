@@ -78,6 +78,13 @@ spec:
             - -m
             - transformersci.otel.trace_exporter
           env:
+            {{- if and .Values.traceExporter.micJobs.enabled (not .Values.traceExporter.auth.enabled) }}
+            {{- fail "traceExporter.micJobs requires traceExporter.auth.enabled" }}
+            {{- end }}
+            - name: TCI_MIC_JOBS_ENABLED
+              value: {{ ternary "1" "0" .Values.traceExporter.micJobs.enabled | quote }}
+            - name: TCI_MIC_UPLOAD_NAMESPACES
+              value: {{ join "," .Values.traceExporter.micJobs.uploadNamespaces | quote }}
             {{- if .Values.traceExporter.auth.enabled }}
             {{- if not .Values.traceExporter.runStore.enabled }}
             {{- fail "traceExporter.auth requires traceExporter.runStore.enabled" }}

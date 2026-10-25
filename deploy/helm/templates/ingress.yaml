@@ -82,6 +82,13 @@ spec:
                 name: trace-exporter
                 port:
                   number: 8000
+          - path: /mic-jobs
+            pathType: Prefix
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
           - path: /profile
             pathType: Prefix
             backend:

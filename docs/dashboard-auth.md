@@ -101,6 +101,11 @@ capabilities for the future MIC job API, not permission to publish expectations,
 approve changed baselines or spend GPU resources without repository checks.
 This change adds authentication only; it does not add remote GPU job endpoints.
 
+The separate MIC collection service adds `/mic-jobs` behind
+`traceExporter.micJobs.enabled`. It reuses this identity and Serge's authorized
+workflow dispatch, and is independently disabled by default. See
+`transformers-mic/docs/cloud-baselines.md` for its CLI and operator prerequisites.
+
 The CLI stores its eight-hour credential in
 `$XDG_CONFIG_HOME/transformers-mic/dashboard-auth.json` (default
 `~/.config/transformers-mic/dashboard-auth.json`), atomically written with mode

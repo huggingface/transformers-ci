@@ -175,6 +175,10 @@ tempo:
 #------------------------------------------------------------------------------
 traceExporter:
   replicas: 1
+  micJobs:
+    # Requires dashboard auth, the Serge service token and MIC workflow access.
+    enabled: false
+    uploadNamespaces: [huggingface-mic]
   # Dashboard-owned GitHub App user authorization, independent of Grafana.
   # Register <publicUrl>/auth/callback on the existing dashboard GitHub App.
   # Requires runStore.enabled and secrets.keys.dashboardGithubClientSecret.

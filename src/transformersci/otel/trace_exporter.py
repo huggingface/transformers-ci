@@ -72,6 +72,7 @@ from urllib.request import Request, urlopen
 
 from transformersci.otel import my_stuff
 from transformersci.otel import dashboard_auth
+from transformersci.otel import mic_jobs
 from transformersci.otel.pr_search import SEARCH_HTML
 from transformersci import github_app
 from transformersci.otel import related_issues
@@ -8686,6 +8687,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self._request_cache = "none"
         if dashboard_auth.handle(self, "POST"):
             return
+        if mic_jobs.handle(self, "POST"):
+            return
         path = urlparse(self.path).path
         if path not in (
             "/serge-actions/wdyt",
@@ -9529,6 +9532,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self._request_cache = "none"
         self.path = _normalize_trace_query(self.path)
         if dashboard_auth.handle(self, "GET"):
+            return
+        if mic_jobs.handle(self, "GET"):
             return
         parsed = urlparse(self.path)
         if parsed.path in {
