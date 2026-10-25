@@ -143,3 +143,13 @@ helm lint deploy/helm
 OAuth tests mock GitHub and use real local HTTP requests for the dashboard.
 After provisioning the real App callback/client secret, verify browser login,
 CLI approval, profile session listing, and revocation on the deployment.
+
+### Model-scoped baseline inputs
+
+`tmic run MODEL` submits an immutable staged `<name>-mic` snapshot through the
+MIC jobs API before final publication. `workspace.repo` must be in
+`TCI_MIC_INPUT_NAMESPACES` (default `huggingface-mic`) and `workspace.revision`
+must be a full Hub commit SHA. Keep the workflow's `MIC_BASELINE_INPUT_NAMESPACES`
+repository variable aligned. Model requests cover both CPU and CUDA, all declared
+targets and variants, and exactly one model lock; they do not modify fleet pins.
+GitHub repository write access, ownership checks and submission limits still apply.

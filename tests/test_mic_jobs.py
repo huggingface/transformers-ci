@@ -107,6 +107,41 @@ def test_ambiguous_dispatch_is_not_repeated(service):
     assert sum(operation == "workflows/dispatch" for operation, _ in serge.calls) == 1
 
 
+def test_model_snapshot_is_pinned_authorized_and_bound_to_dispatch(service):
+    db, serge = service
+    workspace = {"repo": "huggingface-mic/demo-mic", "revision": "e" * 40}
+    result = jobs.submit(db, ACTOR, options(fleets=["prototypes"], workspace=workspace))
+    assert result["workspace"] == workspace
+    dispatched = [body for op, body in serge.calls if op == "workflows/dispatch"]
+    assert dispatched[0]["inputs"]["workspace_repo"] == workspace["repo"]
+    assert dispatched[0]["inputs"]["workspace_revision"] == "e" * 40
+
+
+@pytest.mark.parametrize(
+    "workspace",
+    [
+        {"repo": "unapproved/demo-mic", "revision": "e" * 40},
+        {"repo": "huggingface-mic/demo-mic", "revision": "main"},
+        {
+            "repo": "huggingface-mic/demo-mic",
+            "revision": "e" * 40,
+            "command": "arbitrary",
+        },
+        {"repo": "huggingface-mic/demo", "revision": "e" * 40},
+    ],
+)
+def test_unapproved_or_mutable_model_snapshots_are_rejected(workspace):
+    with pytest.raises(jobs.auth.AuthError):
+        jobs.request_options(options(fleets=["prototypes"], workspace=workspace))
+
+
+def test_model_input_cannot_silently_drop_checkpoints_or_repeat_in_two_fleets():
+    workspace = {"repo": "huggingface-mic/demo-mic", "revision": "e" * 40}
+    for patch in ({"fixtures_only": True, "fleets": ["prototypes"]}, {}):
+        with pytest.raises(jobs.auth.AuthError):
+            jobs.request_options(options(workspace=workspace, **patch))
+
+
 def test_no_write_permission_means_no_dispatch(service):
     db, serge = service
     serge.allowed = False

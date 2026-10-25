@@ -27,7 +27,7 @@ MAX_ARCHIVE_BYTES = 256_000_000
 
 
 def request_options(body):
-    if not isinstance(body, dict) or set(body) != {
+    if not isinstance(body, dict) or set(body) - {"workspace"} != {
         "request_id",
         "fleet_revision",
         "fleets",
@@ -63,6 +63,24 @@ def request_options(body):
             or destination.split("/")[0] not in allowed
         ):
             raise auth.AuthError(403, "upload_namespace_not_allowed")
+    if "workspace" in body:
+        workspace = body["workspace"]
+        allowed = os.getenv("TCI_MIC_INPUT_NAMESPACES", "huggingface-mic").split(",")
+        if (
+            not isinstance(workspace, dict)
+            or set(workspace) != {"repo", "revision"}
+            or not isinstance(workspace["repo"], str)
+            or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*-mic",
+                workspace["repo"],
+            )
+            or workspace["repo"].split("/")[0] not in allowed
+            or not isinstance(workspace["revision"], str)
+            or not SHA.fullmatch(workspace["revision"])
+            or len(body["fleets"]) != 1
+            or body["fixtures_only"]
+        ):
+            raise auth.AuthError(400, "invalid_model_workspace")
     return body
 
 
@@ -202,6 +220,8 @@ class Store:
                 "created": now,
                 "artifacts": [],
             }
+            if "workspace" in options:
+                record["workspace"] = options["workspace"]
             self.db.execute(
                 "INSERT INTO mic_jobs VALUES (?, ?, ?, ?, ?, ?)",
                 (
@@ -273,6 +293,11 @@ def submit(db, actor, options):
             fixtures_only=str(record["fixtures_only"]).lower(),
             upload_repo=record["upload_repo"] or "",
         )
+        if "workspace" in record:
+            inputs.update(
+                workspace_repo=record["workspace"]["repo"],
+                workspace_revision=record["workspace"]["revision"],
+            )
         try:
             status, _ = rerun_actions.default_serge().call(
                 "workflows/dispatch",
