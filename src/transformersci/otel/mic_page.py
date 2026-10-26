@@ -382,20 +382,41 @@ def failure_index(query, *, days, scope):
     ]
 
 
-def pr_titles(query, failures, *, days):
-    """Newest title of each PR the failures name; empty when unavailable."""
-    numbers = sorted(
-        {
-            match.group(1)
-            for labels, _ in failures
-            if (
-                match := re.fullmatch(
-                    r"(?:gh-readonly-queue/[^/]+/pr-)?([0-9]+)(?:-.*)?",
-                    labels.get("pr", ""),
+def _pr_number(pr):
+    match = re.fullmatch(r"(?:gh-readonly-queue/[^/]+/pr-)?([0-9]+)(?:-.*)?", pr)
+    return match.group(1) if match else ""
+
+
+def _pr_numbers(failures):
+    return sorted(
+        {n for labels, _ in failures if (n := _pr_number(labels.get("pr", "")))}
+    )
+
+
+def closed_prs(query, failures, *, days):
+    """PR numbers the failures name that are merged or closed: their failures
+    are no longer actionable. Unknown state keeps a PR; empty when unavailable."""
+    numbers = _pr_numbers(failures)
+    if not numbers:
+        return set()
+    try:
+        return {
+            labels["pr"]
+            for labels, value in _samples(
+                query(
+                    "max by (pr) (last_over_time(pytest_pr_state"
+                    f'{{pr=~"{"|".join(numbers)}"}}[{days}d]))'
                 )
             )
+            if "pr" in labels and value != 1
         }
-    )
+    except Exception:
+        return set()
+
+
+def pr_titles(query, failures, *, days):
+    """Newest title of each PR the failures name; empty when unavailable."""
+    numbers = _pr_numbers(failures)
     if not numbers:
         return {}
     try:
@@ -487,6 +508,10 @@ def build_rows(
         totals = pool.submit(run_totals, query, days=days, scope=scope)
         failures = failure_index(query, days=days, scope=scope)
         titles = pool.submit(pr_titles, query, failures, days=days)
+        closed = closed_prs(query, failures, days=days)
+        failures = [
+            item for item in failures if _pr_number(item[0].get("pr", "")) not in closed
+        ]
         totals = totals.result()
         run_ids = {item[0].get("run_id", "") for item in failures}
         starts = run_starts(query, run_ids | set(totals), days=days)
@@ -605,10 +630,7 @@ def build_rows(
             row["baseline_url"] = (
                 f"https://huggingface.co/{repo}/blob/{rev}/{quote(path, safe='/')}"
             )
-        number = re.fullmatch(
-            r"(?:gh-readonly-queue/[^/]+/pr-)?([0-9]+)(?:-.*)?", row["pr"]
-        )
-        row["pr_number"] = number.group(1) if number else ""
+        row["pr_number"] = _pr_number(row["pr"])
         row["pr_title"] = titles.get(row["pr_number"], titles.get(row["pr"], ""))
         row["pr_url"] = (
             "/d/pytest-observability-by-pr/pytest-observability-branch?"

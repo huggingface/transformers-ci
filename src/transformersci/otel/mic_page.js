@@ -148,13 +148,15 @@
     const opened = new Set([...byId('rows').querySelectorAll('details[open]')].map(node => node.dataset.case));
     byId('rows').replaceChildren();
     byId('days-head').textContent = `Last ${state.days} days`;
-    byId('identity-head').textContent = state.group === 'pr' ? 'PR / model / weights' : 'Model / PR / weights';
+    // On main every model has one branch: list its cases under the model.
+    const flat = state.group === 'model' && data.scope === 'main';
+    byId('identity-head').textContent = state.group === 'pr' ? 'PR / model / weights' : flat ? 'Model / weights' : 'Model / PR / weights';
     press('group');
     const groups = groupRows(rows, state.group), ordered = sortGroups(groups.values());
     const secondary = state.group === 'pr' ? 'model' : 'pr';
     ordered.forEach(primary => {
       primary.id = JSON.stringify([primary.key]);
-      primary.children = sortGroups(groupRows(primary.members, secondary).values());
+      primary.children = flat ? [] : sortGroups(groupRows(primary.members, secondary).values());
       primary.children.forEach(child => { child.id = JSON.stringify([primary.key, child.key]); });
     });
     rootGroupNames = ordered.map(primary => primary.id);
@@ -163,65 +165,68 @@
     byId('sort').querySelector('[data-v="alpha"]').textContent = state.sort === 'alpha_desc' ? 'Z–A' : 'A–Z';
     byId('sort').querySelector('[data-v="alpha"]').title = `Alphabetical by ${state.group === 'pr' ? 'PR title' : 'model name'}; click again to reverse`;
     ordered.forEach(primary => {
-      const label = `${quantity(primary.children.length, secondary === 'pr' ? 'PR / branch' : 'model', secondary === 'pr' ? 'PRs / branches' : 'models')} · ${quantity(primary.members.length, 'case')}`;
+      const cases = quantity(primary.members.length, 'case');
+      const label = flat ? cases : `${quantity(primary.children.length, secondary === 'pr' ? 'PR / branch' : 'model', secondary === 'pr' ? 'PRs / branches' : 'models')} · ${cases}`;
       if (!groupSummary(primary, primary.id, 0, label)) return;
+      if (flat) { primary.members.forEach(caseRow); return; }
       primary.children.forEach(child => {
         if (!groupSummary(child, child.id, 1, quantity(child.members.length, 'case'))) return;
-        child.members.forEach(r => {
-          const tr = element('tr', '', byId('rows')); tr.className = 'case-row';
-          let td = element('td', r.weights || 'unknown', tr);
-          if (!r.weights || r.weights === 'unknown') td.title = 'Weight strategy is unavailable for this historical run.';
-          td = element('td', r.variant || '—', tr); element('small', r.platform || '—', td);
-          td = element('td', '', tr);
-          element('span', String(r.fails || 1), td).className = 'num';
-          const strip = element('span', '', td); strip.className = 'strip';
-          (r.daily || []).forEach((counts, index) => {
-            const day = new Date((data.first_day + index * 86400) * 1000).toLocaleDateString('en', {month: 'short', day: 'numeric', timeZone: 'UTC'});
-            const cell = element('i', '', strip);
-            const total = counts.pass + counts.fail + counts.skipped;
-            for (const [kind, className] of [['fail', 'f'], ['pass', 'p'], ['skipped', 's']]) {
-              if (!counts[kind]) continue;
-              const part = element('span', '', cell); part.className = className;
-              part.style.flex = String(counts[kind]);
-            }
-            cell.title = `${day} UTC: ${total ? `${counts.pass} passed, ${counts.fail} failed, ${counts.skipped} skipped` : 'no observed checks'}`;
-          });
-          td = element('td', '', tr); td.className = 'latest';
-          const latest = r.latest;
-          if (latest) {
-            const names = {pass: 'Passed', fail: 'Failed', error: 'Error', xfail: 'Expected failure', unsupported: 'Unsupported'};
-            const check = link(td, names[latest.status] || 'Unknown', latest.run_url);
-            check.className = `latest-${latest.status}`;
-            if (latest.started_at) {
-              element('small', ago(latest.started_at), td).title = new Date(latest.started_at * 1000).toLocaleString('en-US');
-            }
-          } else element('span', 'Unknown', td);
-          td = element('td', '', tr); td.className = 'date';
-          if (r.started_at) {
-            const stamp = new Date(r.started_at * 1000);
-            element('span', stamp.toLocaleString('en-US'), td).title = stamp.toISOString();
-            element('small', `(${ago(r.started_at)})`, td);
-          } else td.textContent = '—';
-          td = element('td', '', tr); td.className = 'failure';
-          const kind = element('span', r.failure_kind || 'Baseline assertion', td);
-          kind.className = 'badge' + (r.failure_kind === 'Runtime traceback' ? ' runtime' : r.failure_kind === 'Setup error' ? ' setup' : '');
-          const detail = element('details', '', td);
-          detail.dataset.case = `${r.run_id}:${r.nodeid}`;
-          detail.open = opened.has(detail.dataset.case);
-          element('summary', r.failure.split('\n')[0] || 'Failure details unavailable', detail);
-          element('pre', r.failure, detail);
-          if (r.selected_by) element('small', `Selected by: ${r.selected_by}`, detail);
-          if (r.known_failure) element('small', `Known failure: ${r.known_failure}`, detail);
-          td = element('td', '', tr); td.className = 'links';
-          link(td, 'Trace', r.trace_url); link(td, 'Run', r.run_url);
-          if (r.baseline_url) link(td, 'Baseline', r.baseline_url);
-          if (r.contract_url) {
-            const contract = link(td, 'Contract', r.contract_url);
-            contract.title = r.contract_revision ? 'Usage pinned to the failed contract revision' : 'Current usage; historical contract revision unavailable';
-          }
-        });
+        child.members.forEach(caseRow);
       });
     });
+    function caseRow(r) {
+      const tr = element('tr', '', byId('rows')); tr.className = 'case-row';
+      let td = element('td', r.weights || 'unknown', tr);
+      if (!r.weights || r.weights === 'unknown') td.title = 'Weight strategy is unavailable for this historical run.';
+      td = element('td', r.variant || '—', tr); element('small', r.platform || '—', td);
+      td = element('td', '', tr);
+      element('span', String(r.fails || 1), td).className = 'num';
+      const strip = element('span', '', td); strip.className = 'strip';
+      (r.daily || []).forEach((counts, index) => {
+        const day = new Date((data.first_day + index * 86400) * 1000).toLocaleDateString('en', {month: 'short', day: 'numeric', timeZone: 'UTC'});
+        const cell = element('i', '', strip);
+        const total = counts.pass + counts.fail + counts.skipped;
+        for (const [kind, className] of [['fail', 'f'], ['pass', 'p'], ['skipped', 's']]) {
+          if (!counts[kind]) continue;
+          const part = element('span', '', cell); part.className = className;
+          part.style.flex = String(counts[kind]);
+        }
+        cell.title = `${day} UTC: ${total ? `${counts.pass} passed, ${counts.fail} failed, ${counts.skipped} skipped` : 'no observed checks'}`;
+      });
+      td = element('td', '', tr); td.className = 'latest';
+      const latest = r.latest;
+      if (latest) {
+        const names = {pass: 'Passed', fail: 'Failed', error: 'Error', xfail: 'Expected failure', unsupported: 'Unsupported'};
+        const check = link(td, names[latest.status] || 'Unknown', latest.run_url);
+        check.className = `latest-${latest.status}`;
+        if (latest.started_at) {
+          element('small', ago(latest.started_at), td).title = new Date(latest.started_at * 1000).toLocaleString('en-US');
+        }
+      } else element('span', 'Unknown', td);
+      td = element('td', '', tr); td.className = 'date';
+      if (r.started_at) {
+        const stamp = new Date(r.started_at * 1000);
+        element('span', stamp.toLocaleString('en-US'), td).title = stamp.toISOString();
+        element('small', `(${ago(r.started_at)})`, td);
+      } else td.textContent = '—';
+      td = element('td', '', tr); td.className = 'failure';
+      const kind = element('span', r.failure_kind || 'Baseline assertion', td);
+      kind.className = 'badge' + (r.failure_kind === 'Runtime traceback' ? ' runtime' : r.failure_kind === 'Setup error' ? ' setup' : '');
+      const detail = element('details', '', td);
+      detail.dataset.case = `${r.run_id}:${r.nodeid}`;
+      detail.open = opened.has(detail.dataset.case);
+      element('summary', r.failure.split('\n')[0] || 'Failure details unavailable', detail);
+      element('pre', r.failure, detail);
+      if (r.selected_by) element('small', `Selected by: ${r.selected_by}`, detail);
+      if (r.known_failure) element('small', `Known failure: ${r.known_failure}`, detail);
+      td = element('td', '', tr); td.className = 'links';
+      link(td, 'Trace', r.trace_url); link(td, 'Run', r.run_url);
+      if (r.baseline_url) link(td, 'Baseline', r.baseline_url);
+      if (r.contract_url) {
+        const contract = link(td, 'Contract', r.contract_url);
+        contract.title = r.contract_revision ? 'Usage pinned to the failed contract revision' : 'Current usage; historical contract revision unavailable';
+      }
+    }
     byId('state').className = errorText ? 'error' : '';
     byId('state').textContent = errorText || (data.rows.length
       ? `${groups.size} ${state.group === 'pr' ? 'PRs / branches' : 'models'} · ${rows.length} cases shown · ${data.total} failure observations in ${data.days} day(s).` + ((data.groups ?? data.models) > data.limit ? ` Showing the latest ${data.limit} groups; narrow the filters or window for earlier results.` : '')

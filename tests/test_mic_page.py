@@ -29,7 +29,9 @@ def failure(run="123:1", trace="a" * 32, node=NODE):
     )
 
 
-def queries(failures):
+def queries(failures, states=None):
+    states = states or {}
+
     def query(expression):
         if "pytest_run_start_time_seconds" in expression:
             return [
@@ -40,6 +42,8 @@ def queries(failures):
             return []
         if "pytest_pr_info" in expression:
             return [vector({"pr": "42", "title": "Fix demo attention"})]
+        if "pytest_pr_state" in expression:
+            return [vector({"pr": pr}, value) for pr, value in states.items()]
         assert 'test_job="fast-integration"' in expression
         return failures
 
@@ -374,6 +378,28 @@ def test_scope_is_applied_to_failure_query(scope, matcher):
         scope=scope,
     )
     assert matcher in expressions[0]
+
+
+def test_merged_and_closed_prs_are_dropped_but_unknown_state_is_kept():
+    def on(pr, node):
+        item = failure(node=node)
+        item["metric"]["pr"] = pr
+        return item
+
+    rows = [
+        on("42", "tests/contracts::open::open[default]"),
+        on("43", "tests/contracts::merged::merged[default]"),
+        on(
+            "gh-readonly-queue/main/pr-43-abcdef", "tests/contracts::queued::q[default]"
+        ),
+        on("44", "tests/contracts::closed::closed[default]"),
+        on("45", "tests/contracts::unknown::unknown[default]"),
+        on("main", "tests/contracts::main::main[default]"),
+    ]
+    data = mic_page.build_rows(
+        queries(rows, states={"42": 1, "43": 2, "44": 0}), lambda run: None
+    )
+    assert {row["pr"] for row in data["rows"]} == {"42", "45", "main"}
 
 
 def test_merge_queue_rows_link_to_the_original_pr():
