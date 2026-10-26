@@ -332,3 +332,39 @@ def test_cli_credentials_cannot_impersonate_the_progress_relay(service, monkeypa
     handler = Handler("/mic-jobs/progress", {"job_id": record["id"]})
     jobs.handle(handler, "POST")
     assert handler.reply[0] == 401
+
+
+def test_artifact_download_uses_the_github_proxy_for_both_hops(monkeypatch):
+    from urllib.error import HTTPError
+    from urllib.request import ProxyHandler
+
+    monkeypatch.setenv("TCI_AUTH_GITHUB_PROXY", "http://egress.test:3128")
+    monkeypatch.setattr(jobs.github_app, "read_token", lambda names: "app-token")
+    opened = []
+
+    class Opener:
+        def __init__(self, handlers):
+            self.handlers = handlers
+
+        def open(self, request, timeout):
+            proxies = [h for h in self.handlers if isinstance(h, ProxyHandler)]
+            opened.append(
+                (request.full_url, request.get_header("Authorization"), proxies)
+            )
+            if "api.github.com" in request.full_url:
+                raise HTTPError(
+                    request.full_url,
+                    302,
+                    "",
+                    {"Location": "https://x.blob.core.windows.net/a.zip?sig=1"},
+                    None,
+                )
+            return BytesIO(b"zip")
+
+    monkeypatch.setattr(jobs, "build_opener", lambda *h: Opener(h))
+    assert jobs.download_artifact(7) == b"zip"
+    (api, api_auth, api_proxy), (blob, blob_auth, blob_proxy) = opened
+    assert api.endswith("/actions/artifacts/7/zip") and api_auth == "Bearer app-token"
+    assert blob.startswith("https://x.blob.core.windows.net/") and blob_auth is None
+    for proxies in (api_proxy, blob_proxy):
+        assert proxies and proxies[0].proxies == {"https": "http://egress.test:3128"}
