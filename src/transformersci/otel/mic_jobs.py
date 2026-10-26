@@ -13,7 +13,13 @@ import threading
 import time
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+from urllib.request import (
+    HTTPRedirectHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
+    urlopen,
+)
 
 from transformersci import github_app
 from . import dashboard_auth as auth, rerun_actions
@@ -410,7 +416,13 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def download_artifact(artifact_id):
-    """GitHub's signed storage redirect must never receive the App token."""
+    """GitHub's signed storage redirect must never receive the App token.
+
+    The cluster boundary admits only GitHub's API ranges, not the Azure blob
+    storage the redirect points at, so both hops use the auth GitHub proxy.
+    """
+    proxy = os.getenv("TCI_AUTH_GITHUB_PROXY", "")
+    proxies = ProxyHandler({"https": proxy} if proxy else {})
     request = Request(
         f"https://api.github.com/repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip",
         headers={
@@ -420,7 +432,7 @@ def download_artifact(artifact_id):
         },
     )
     try:
-        response = build_opener(NoRedirect()).open(request, timeout=30)
+        response = build_opener(proxies, NoRedirect()).open(request, timeout=30)
     except HTTPError as error:
         if error.code not in (301, 302, 303, 307, 308):
             raise
@@ -438,7 +450,7 @@ def download_artifact(artifact_id):
             )
         ):
             raise auth.AuthError(502, "invalid_artifact_storage_location") from None
-        response = urlopen(
+        response = build_opener(proxies).open(
             Request(location), timeout=30
         )  # deliberately no Authorization
     with response:
