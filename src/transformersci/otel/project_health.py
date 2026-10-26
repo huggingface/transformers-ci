@@ -29,7 +29,7 @@ DAY = 86400
 
 # The failure metric carries no `hardware` label, so GPU vs CPU comes from the
 # job name, as on Main health.
-GPU_JOB_PATTERN = r".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci"
+GPU_JOB_PATTERN = r".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci|tests_expert_parallel_ci"
 
 # A sticky failure is cleared after this many full runs of its job since.
 CLEARING_RUNS = 4

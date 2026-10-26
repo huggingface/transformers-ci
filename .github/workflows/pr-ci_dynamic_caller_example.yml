@@ -59,6 +59,7 @@ jobs:
       run_tests_non_model:       ${{ steps.check.outputs.run_tests_non_model }}
       run_tests_training_ci:     ${{ steps.check.outputs.run_tests_training_ci }}
       run_tests_tensor_parallel_ci:     ${{ steps.check.outputs.run_tests_tensor_parallel_ci }}
+      run_tests_expert_parallel_ci:     ${{ steps.check.outputs.run_tests_expert_parallel_ci }}
       run_tests_fsdp_ci:         ${{ steps.check.outputs.run_tests_fsdp_ci }}
       run_tests_peft_integration:   ${{ steps.check.outputs.run_tests_peft_integration }}
       # Mirrors CircleCIJob.__post_init__: appends ':dev' when the commit
@@ -149,7 +150,8 @@ jobs:
           for job in tests_torch tests_generate tests_tokenization tests_processors \
                      pipelines_torch tests_custom_tokenizers \
                      tests_exotic_models tests_repo_utils tests_non_model \
-                     tests_training_ci tests_tensor_parallel_ci tests_fsdp_ci tests_peft_integration; do
+                     tests_training_ci tests_tensor_parallel_ci tests_expert_parallel_ci tests_fsdp_ci \
+                     tests_peft_integration; do
             FILE="test_preparation/${job}_test_list.txt"
             if [ -f "$FILE" ] && [ -s "$FILE" ]; then
               echo "run_${job}=true" >> $GITHUB_OUTPUT
@@ -163,7 +165,8 @@ jobs:
           for job in tests_torch tests_generate tests_tokenization tests_processors \
                      pipelines_torch tests_custom_tokenizers \
                      tests_exotic_models tests_repo_utils tests_non_model \
-                     tests_training_ci tests_tensor_parallel_ci tests_fsdp_ci tests_peft_integration; do
+                     tests_training_ci tests_tensor_parallel_ci tests_expert_parallel_ci tests_fsdp_ci \
+                     tests_peft_integration; do
             FILE="test_preparation/${job}_test_list.txt"
             if [ -f "$FILE" ]; then
               echo "$FILE: $(grep -c '' "$FILE") lines"
@@ -464,7 +467,7 @@ jobs:
   # only quality dependency, `quality_gate`, had succeeded. `always()` on
   # `quality_gate` lets that job run past the failure; it does not clear the
   # failure for anything downstream of it. Run 33674711072 on transformers#48473
-  # is the case: gate green ("Test matrix may run"), all 14 test jobs skipped one
+  # is the case: gate green ("Test matrix may run"), all 15 test jobs skipped one
   # second later. `needs.quality_gate.result == 'success'` then restores the
   # gating that the dropped implicit check used to do.
   # ===========================================================================
@@ -479,7 +482,7 @@ jobs:
       job_name:          "tests_torch"
       docker_image:      "huggingface/transformers-torch-light"
       parallelism:       8
-      marker:            "not (generate or is_training_test or is_tensor_parallel_test or is_fsdp_test)"
+      marker:            "not (generate or is_training_test or is_tensor_parallel_test or is_expert_parallel_test or is_fsdp_test)"
       use_dev_image:     ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
     secrets: inherit
       # install_steps, pytest_num_workers, etc. → all defaults
@@ -631,6 +634,22 @@ jobs:
       use_dev_image:       ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
     secrets: inherit
 
+  # Origin: expert_parallel_ci_job in .circleci/create_circleci_config.py
+  tests_expert_parallel_ci:
+    needs: [test-preparation, quality_gate]
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_tests_expert_parallel_ci == 'true' }}
+    uses: ./.github/workflows/pr-ci_reusable_test_job.yml
+    with:
+      job_name:            "tests_expert_parallel_ci"
+      docker_image:        "huggingface/transformers-torch-light"
+      parallelism:         8
+      install_steps:       "uv pip install -e ."
+      marker:              "is_expert_parallel_test"
+      run_expert_parallel_tests: true
+      use_dev_image:       ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
+    secrets: inherit
+
   # Origin: fsdp_ci_job in .circleci/create_circleci_config.py
   tests_fsdp_ci:
     needs: [test-preparation, quality_gate]
@@ -701,6 +720,7 @@ jobs:
       - tests_non_model
       - tests_training_ci
       - tests_tensor_parallel_ci
+      - tests_expert_parallel_ci
       - tests_fsdp_ci
       - tests_peft_integration
     if: always()
@@ -750,7 +770,7 @@ jobs:
   # Coverage:
   #   - test-preparation, check_code_quality, check_repository_consistency,
   #     quality_gate                                                        (Stage 1)
-  #   - all 14 conditional test jobs                                         (Stage 2)
+  #   - all 15 conditional test jobs                                         (Stage 2)
   #   - collection                                                            (Stage 3)
   # ===========================================================================
   ci_passed:
@@ -775,6 +795,7 @@ jobs:
       - tests_non_model
       - tests_training_ci
       - tests_tensor_parallel_ci
+      - tests_expert_parallel_ci
       - tests_fsdp_ci
       - tests_peft_integration
       # Stage 3

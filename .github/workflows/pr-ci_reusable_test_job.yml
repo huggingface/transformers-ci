@@ -184,6 +184,13 @@ on:
         type: boolean
         default: false
 
+      # expert_parallel_ci_job: additional_env={"RUN_EXPERT_PARALLEL_TESTS": True}
+      run_expert_parallel_tests:
+        description: "Set RUN_EXPERT_PARALLEL_TESTS=true. Used by expert_parallel_ci job."
+        required: false
+        type: boolean
+        default: false
+
       # fsdp_ci_job: additional_env={"RUN_FSDP_TESTS": True}
       run_fsdp_tests:
         description: "Set RUN_FSDP_TESTS=true. Used by fsdp_ci job."
@@ -369,6 +376,7 @@ jobs:
       RUN_CUSTOM_TOKENIZERS: ${{ inputs.run_custom_tokenizers }}
       RUN_TRAINING_TESTS: ${{ inputs.run_training_tests }}
       RUN_TENSOR_PARALLEL_TESTS: ${{ inputs.run_tensor_parallel_tests }}
+      RUN_EXPERT_PARALLEL_TESTS: ${{ inputs.run_expert_parallel_tests }}
       RUN_FSDP_TESTS: ${{ inputs.run_fsdp_tests }}
 
       # Conditionally set verbosity overrides (empty string = not set)
@@ -414,6 +422,7 @@ jobs:
           echo "RUN_CUSTOM_TOKENIZERS=$RUN_CUSTOM_TOKENIZERS"
           echo "RUN_TRAINING_TESTS=$RUN_TRAINING_TESTS"
           echo "RUN_TENSOR_PARALLEL_TESTS=$RUN_TENSOR_PARALLEL_TESTS"
+          echo "RUN_EXPERT_PARALLEL_TESTS=$RUN_EXPERT_PARALLEL_TESTS"
           echo "RUN_FSDP_TESTS=$RUN_FSDP_TESTS"
           echo "TRANSFORMERS_VERBOSITY=$TRANSFORMERS_VERBOSITY"
           echo "DATASETS_VERBOSITY=$DATASETS_VERBOSITY"

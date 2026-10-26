@@ -20,9 +20,9 @@ groups:
     interval: 15m
     rules:
       - record: pytest_test:duration_avg_main_cpu:top20_7d
-        expr: topk(20, avg by (test_nodeid, test_job, test_module, test_class, test_function) (last_over_time(pytest_main_test_duration_seconds{pr="main", test_job!~".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci"}[7d])))
+        expr: topk(20, avg by (test_nodeid, test_job, test_module, test_class, test_function) (last_over_time(pytest_main_test_duration_seconds{pr="main", test_job!~".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci|tests_expert_parallel_ci"}[7d])))
       - record: pytest_test:duration_avg_main_gpu:top20_7d
-        expr: topk(20, avg by (test_nodeid, test_job, test_module, test_class, test_function) (last_over_time(pytest_main_test_duration_seconds{pr="main", test_job=~".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci"}[7d])))
+        expr: topk(20, avg by (test_nodeid, test_job, test_module, test_class, test_function) (last_over_time(pytest_main_test_duration_seconds{pr="main", test_job=~".*gpu.*|tests_fsdp_ci|tests_tensor_parallel_ci|tests_expert_parallel_ci"}[7d])))
 {{- end }}
 ---
 apiVersion: v1
