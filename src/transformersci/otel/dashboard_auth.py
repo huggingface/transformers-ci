@@ -19,7 +19,8 @@ import secrets
 import sqlite3
 import threading
 import time
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener, ProxyHandler
 
 COOKIE = "__Host-tci_session"
@@ -389,31 +390,32 @@ def github_json(url, *, data=None, token=None):
 def require_membership(cfg, user, token):
     """Preserve the HF-member gate using the user's private memberships.
 
-    GitHub's list-own-memberships endpoint accepts App user tokens without
-    additional organization permissions. Only active memberships count.
+    With a GitHub App user token, GitHub answers membership only when the App
+    has the organization "Members: read" permission: 404 means not a member,
+    403 means the App cannot read memberships (or is blocked by the org), which
+    is reported separately so a missing permission does not look like a refusal.
+    Only active memberships count.
     """
     if user["id"] in cfg.allowed_user_ids or not (
         cfg.allowed_orgs or cfg.allowed_user_ids
     ):
         return
-    if cfg.allowed_orgs:
-        for page in range(1, 11):
-            memberships = github_json(
-                f"https://api.github.com/user/memberships/orgs?state=active&per_page=100&page={page}",
+    for org in cfg.allowed_orgs:
+        try:
+            membership = github_json(
+                f"https://api.github.com/user/memberships/orgs/{quote(org)}",
                 token=token,
             )
-            if not isinstance(memberships, list):
-                raise AuthError(502, "invalid_github_memberships")
-            if any(
-                isinstance(item, dict)
-                and item.get("state") == "active"
-                and str((item.get("organization") or {}).get("login", "")).lower()
-                in cfg.allowed_orgs
-                for item in memberships
-            ):
-                return
-            if len(memberships) < 100:
-                break
+        except HTTPError as exc:
+            if exc.code == 404:
+                continue
+            if exc.code == 403:
+                raise AuthError(503, "github_app_cannot_read_membership") from None
+            raise AuthError(502, "github_membership_check_failed") from None
+        if not isinstance(membership, dict):
+            raise AuthError(502, "invalid_github_memberships")
+        if membership.get("state") == "active":
+            return
     raise AuthError(403, "account_not_allowed")
 
 

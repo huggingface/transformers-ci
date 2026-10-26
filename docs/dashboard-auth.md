@@ -11,12 +11,16 @@ Use the **dashboard GitHub App**, rather than Grafana's separate OAuth App:
 
 1. Add `https://transformers-ci.huggingface.cool/auth/callback` as a user
    authorization callback URL on the GitHub App.
-2. Copy the App's **client ID** (different from its numeric App ID), and generate
+2. Under **Organization permissions**, grant **Members: Read-only**, and have an
+   organization owner accept the updated permissions on the installation. The
+   membership gate cannot read any user's membership without it, and login
+   then fails with `github_app_cannot_read_membership`.
+3. Copy the App's **client ID** (different from its numeric App ID), and generate
    a client secret. Its existing installation private key is not a client secret.
-3. Put the secret in `transformers-ci-secrets` under
+4. Put the secret in `transformers-ci-secrets` under
    `dashboard-github-client-secret`. Production uses Infisical's
    `/transformers-ci` secret sync; do not put the value in Helm values or Git.
-4. Set these deployment values, retaining the persistent run store:
+5. Set these deployment values, retaining the persistent run store:
 
    ```yaml
    traceExporter:
@@ -39,10 +43,12 @@ or through `traceExporter.auth.githubProxy`.
 
 GitHub's [web authorization flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)
 uses browser-bound, single-use state and PKCE. The server fetches `/user` and
-the authenticated user's active organization memberships, then discards the
-GitHub token. The [list-own-memberships endpoint](https://docs.github.com/en/rest/orgs/members#list-organization-memberships-for-the-authenticated-user)
-accepts GitHub App user tokens without additional permissions. Private active
-memberships count; pending invitations do not. GitHub SSO may require an active
+the authenticated user's membership in each allowed organization, then discards
+the GitHub token. The [own-membership endpoint](https://docs.github.com/en/rest/orgs/members#get-an-organization-membership-for-the-authenticated-user)
+needs the App's **organization `Members: read` permission** for GitHub App user
+tokens: GitHub answers 404 for a non-member (`account_not_allowed`) and 403 when
+the App lacks that permission or is blocked (`github_app_cannot_read_membership`).
+Private active memberships count; pending invitations do not. GitHub SSO may require an active
 organization SSO session during authorization.
 
 The default preserves the previous Hugging Face member login restriction.

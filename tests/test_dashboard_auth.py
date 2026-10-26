@@ -324,22 +324,20 @@ def test_membership_gate_is_active_only_and_accepts_explicit_account_ids(
     monkeypatch.setenv("TCI_AUTH_ALLOWED_ORGS", "huggingface")
     cfg = auth.config()
     user = {"id": 42, "login": "octocat"}
-    monkeypatch.setattr(
-        auth,
-        "github_json",
-        lambda *a, **kw: [
-            {"state": "pending", "organization": {"login": "huggingface"}}
-        ],
-    )
+    urls = []
+
+    def membership(state):
+        def github(url, **kw):
+            urls.append(url)
+            return {"state": state, "organization": {"login": "huggingface"}}
+
+        return github
+
+    monkeypatch.setattr(auth, "github_json", membership("pending"))
     error(lambda: auth.require_membership(cfg, user, "token"), "account_not_allowed")
-    monkeypatch.setattr(
-        auth,
-        "github_json",
-        lambda *a, **kw: [
-            {"state": "active", "organization": {"login": "HuggingFace"}}
-        ],
-    )
+    monkeypatch.setattr(auth, "github_json", membership("active"))
     auth.require_membership(cfg, user, "token")
+    assert urls[-1] == "https://api.github.com/user/memberships/orgs/huggingface"
     monkeypatch.setenv("TCI_AUTH_ALLOWED_USER_IDS", "42")
     monkeypatch.setattr(
         auth,
@@ -347,6 +345,33 @@ def test_membership_gate_is_active_only_and_accepts_explicit_account_ids(
         lambda *a, **kw: pytest.fail("explicit grant should not request membership"),
     )
     auth.require_membership(auth.config(), user, "token")
+
+
+def test_membership_gate_separates_non_members_from_missing_app_permission(
+    monkeypatch, configured
+):
+    monkeypatch.setenv("TCI_AUTH_ALLOWED_ORGS", "huggingface")
+    cfg = auth.config()
+    user = {"id": 42, "login": "octocat"}
+
+    def status(code):
+        def github(url, **kw):
+            raise HTTPError(url, code, "", {}, None)
+
+        return github
+
+    monkeypatch.setattr(auth, "github_json", status(404))
+    error(lambda: auth.require_membership(cfg, user, "token"), "account_not_allowed")
+    monkeypatch.setattr(auth, "github_json", status(403))
+    error(
+        lambda: auth.require_membership(cfg, user, "token"),
+        "github_app_cannot_read_membership",
+    )
+    monkeypatch.setattr(auth, "github_json", status(500))
+    error(
+        lambda: auth.require_membership(cfg, user, "token"),
+        "github_membership_check_failed",
+    )
 
 
 def test_github_client_never_follows_token_redirects():
