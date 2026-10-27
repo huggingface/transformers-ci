@@ -81,6 +81,9 @@ unsupported cases retain their MIC status. Without an endpoint, tracing is a no-
 The dashboard's MIC page reads the failure index and compact per-run records.
 It provides branch, variant, platform, failure-type and time-window filters,
 model links, internal PR/trace/run links, assertion details and daily failure bars.
+PRs with no recorded MIC run in the selected Days period are hidden in both
+model and PR groupings. Activity uses run start times, including successful and
+merge-queue runs, rather than the scrape times of retained metrics.
 The global rate divides failed checks by recorded MIC checks for the selected
 window and branch scope, across all variants and platforms. The exporter uses a
 small offline provenance index for historical labels; it does not fetch fleets
