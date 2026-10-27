@@ -13,6 +13,11 @@ from transformersci.otel import mic_page, trace_exporter
 NODE = "tests/contracts::mic-demo::mic-demo-slim[bfloat16]"
 
 
+@pytest.fixture(autouse=True)
+def fixed_time(monkeypatch):
+    monkeypatch.setattr(mic_page.time, "time", lambda: 2000)
+
+
 def vector(labels, value=1):
     return {"metric": labels, "value": [1000, str(value)]}
 
@@ -411,6 +416,41 @@ def test_merge_queue_rows_link_to_the_original_pr():
     assert result["pr_url"].endswith("var-pr=42")
 
 
+@pytest.mark.parametrize("group", ["model", "pr"])
+@pytest.mark.parametrize("days", [7, 14, 30])
+def test_inactive_prs_are_excluded_using_run_times(days, group):
+    now = 100 * 86400
+    cutoff = now - days * 86400
+    failures = []
+    for run, pr in [("1", "41"), ("2", "42"), ("3", "43"), ("4", "44")]:
+        item = failure(run)
+        item["metric"]["pr"] = pr
+        failures.append(item)
+
+    def query(expression):
+        if "pytest_run_start_time_seconds" in expression:
+            return [
+                vector({"run_id": "1"}, cutoff - 1),
+                vector({"run_id": "2"}, cutoff),
+                vector({"run_id": "3"}, cutoff - 86400),
+                vector({"run_id": "5"}, now - 60),
+            ]
+        if "max by (run_id, pr)" in expression:
+            # A recent successful merge-queue run is activity for PR 43.
+            return [vector({"run_id": "5", "pr": "gh-readonly-queue/main/pr-43-abc"})]
+        if "pytest_run_job_" in expression or "pytest_pr_" in expression:
+            return []
+        return failures
+
+    loaded = []
+    data = mic_page.build_rows(
+        query, lambda run: loaded.append(run), days=days, group=group, now=now
+    )
+    assert {row["pr"] for row in data["rows"]} == {"42", "43"}
+    assert set(loaded) == {"2", "3", "5"}
+    assert data["total"] == 2
+
+
 def test_daily_strip_counts_distinct_runs_and_keeps_latest_failure():
     day = 86400
     today = 100 * day
@@ -526,6 +566,21 @@ def test_setup_error_clears_only_after_observing_a_complete_successful_job(compl
     row = mic_page.build_rows(query, load)["rows"][0]
     assert row["sticky"] is not complete
     assert row["latest"]["status"] == ("pass" if complete else "fail")
+
+
+@pytest.mark.parametrize("group", ["model", "pr"])
+def test_setup_errors_remain_visible_without_counting_as_models(group):
+    setup = failure(node="tests/contracts::runner")
+    data = mic_page.build_rows(queries([setup]), lambda run: None, group=group)
+    assert data["models"] == 0
+    assert data["groups"] == 1
+    assert data["rows"][0]["failure_kind"] == "Setup error"
+    data = mic_page.build_rows(
+        queries([setup, failure()]), lambda run: None, group=group
+    )
+    assert data["models"] == 1
+    assert data["cases"] == 2
+    assert data["groups"] == (2 if group == "model" else 1)
 
 
 def test_contract_link_uses_the_contract_revision_instead_of_fixture_revision():

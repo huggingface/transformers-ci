@@ -83,8 +83,9 @@
       const name = row.pr_number ? `#${row.pr_number}${row.pr_title ? ` · ${row.pr_title}` : ''}` : identity;
       return {key: `${row.repository || 'huggingface/transformers'}:${identity}`, name, sortName: row.pr_title || name, href: row.pr_url};
     }
-    const name = row.source_model || row.fixture_repo || (row.target === 'runner' ? 'MIC runner' : row.contract) || 'Unknown model';
-    return {key: name, name, sortName: name, href: row.target === 'runner' ? '' : row.fixture_repo_url};
+    if (row.target === 'runner') return {key: '__mic_setup__', name: 'MIC setup errors', sortName: 'MIC setup errors', href: '', setup: true};
+    const name = row.source_model || row.fixture_repo || row.contract || 'Unknown model';
+    return {key: name, name, sortName: name, href: row.fixture_repo_url};
   }
   function groupRows(rows, by) {
     const groups = new Map();
@@ -100,6 +101,11 @@
     const failures = group => group.members.reduce((sum, row) => sum + (row.fails || 0), 0);
     const recent = group => group.members.reduce((stamp, row) => Math.max(stamp, row.latest?.started_at || row.started_at || 0), 0);
     return [...groups].sort(state.sort === 'alpha' ? byName : state.sort === 'alpha_desc' ? (a, b) => -byName(a, b) : state.sort === 'recent' ? (a, b) => recent(b) - recent(a) || byName(a, b) : (a, b) => failures(b) - failures(a) || byName(a, b));
+  }
+  function modelCount(groups) {
+    const items = [...groups];
+    const models = items.filter(group => !group.setup).length;
+    return quantity(models, 'model') + (items.some(group => group.setup) ? ' · setup errors' : '');
   }
   function groupSummary({name, href, members}, key, level, label) {
     const open = expanded().has(key);
@@ -166,7 +172,7 @@
     byId('sort').querySelector('[data-v="alpha"]').title = `Alphabetical by ${state.group === 'pr' ? 'PR title' : 'model name'}; click again to reverse`;
     ordered.forEach(primary => {
       const cases = quantity(primary.members.length, 'case');
-      const label = flat ? cases : `${quantity(primary.children.length, secondary === 'pr' ? 'PR / branch' : 'model', secondary === 'pr' ? 'PRs / branches' : 'models')} · ${cases}`;
+      const label = flat ? cases : `${secondary === 'pr' ? quantity(primary.children.length, 'PR / branch', 'PRs / branches') : modelCount(primary.children)} · ${cases}`;
       if (!groupSummary(primary, primary.id, 0, label)) return;
       if (flat) { primary.members.forEach(caseRow); return; }
       primary.children.forEach(child => {
@@ -176,8 +182,8 @@
     });
     function caseRow(r) {
       const tr = element('tr', '', byId('rows')); tr.className = 'case-row';
-      let td = element('td', r.weights || 'unknown', tr);
-      if (!r.weights || r.weights === 'unknown') td.title = 'Weight strategy is unavailable for this historical run.';
+      let td = element('td', r.target === 'runner' ? '—' : r.weights || 'unknown', tr);
+      if (r.target !== 'runner' && (!r.weights || r.weights === 'unknown')) td.title = 'Weight strategy is unavailable for this historical run.';
       td = element('td', r.variant || '—', tr); element('small', r.platform || '—', td);
       td = element('td', '', tr);
       element('span', String(r.fails || 1), td).className = 'num';
@@ -229,7 +235,7 @@
     }
     byId('state').className = errorText ? 'error' : '';
     byId('state').textContent = errorText || (data.rows.length
-      ? `${groups.size} ${state.group === 'pr' ? 'PRs / branches' : 'models'} · ${rows.length} cases shown · ${data.total} failure observations in ${data.days} day(s).` + ((data.groups ?? data.models) > data.limit ? ` Showing the latest ${data.limit} groups; narrow the filters or window for earlier results.` : '')
+      ? `${state.group === 'pr' ? `${groups.size} PRs / branches` : modelCount(groups.values())} · ${rows.length} cases shown · ${data.total} failure observations in ${data.days} day(s).` + ((data.groups ?? data.models) > data.limit ? ` Showing the latest ${data.limit} groups; narrow the filters or window for earlier results.` : '')
       : 'No MIC failures were reported with these filters.');
     const next = queryParams();
     if (byId('search').value) next.set('q', byId('search').value);

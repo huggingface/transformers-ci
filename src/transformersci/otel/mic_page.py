@@ -502,6 +502,7 @@ def build_rows(
     days = parse_days(days)
     scope = parse_scope(scope)
     group = parse_group(group)
+    now = time.time() if now is None else now
     with ThreadPoolExecutor(max_workers=3) as pool:
         # Queries that do not depend on the failures run beside them.
         summary = pool.submit(failure_summary, query, days=days, scope=scope)
@@ -515,6 +516,29 @@ def build_rows(
         totals = totals.result()
         run_ids = {item[0].get("run_id", "") for item in failures}
         starts = run_starts(query, run_ids | set(totals), days=days)
+        # Retained gauges are scraped long after a run ends. A range query
+        # alone therefore does not establish activity within the selected days.
+        activity = [
+            (labels.get("run_id", ""), labels.get("pr", "")) for labels, _ in failures
+        ]
+        activity.extend((run, pr) for run, (pr, _) in totals.items())
+        active_prs = {
+            _pr_number(pr)
+            for run, pr in activity
+            if starts.get(run, 0) >= now - days * 86400
+        }
+        failures = [
+            item
+            for item in failures
+            if not _pr_number(item[0].get("pr", ""))
+            or _pr_number(item[0].get("pr", "")) in active_prs
+        ]
+        run_ids = {item[0].get("run_id", "") for item in failures}
+        totals = {
+            run: (pr, total)
+            for run, (pr, total) in totals.items()
+            if not _pr_number(pr) or _pr_number(pr) in active_prs
+        }
         failures.sort(
             key=lambda item: (
                 starts.get(item[0].get("run_id", ""), 0),
@@ -712,7 +736,6 @@ def build_rows(
         and (not platforms or r["platform"] in platforms)
         and (not failure_types or r["failure_kind"] in failure_types)
     ]
-    now = time.time() if now is None else now
     first_day = int(now // 86400) - days + 1
     history = dict(
         query=query,
@@ -746,9 +769,13 @@ def build_rows(
 
     # Limit whole displayed groups, never split their error list or summary.
     def model_key(case):
+        if case["target"] == "runner":
+            return "__mic_setup__"
         return case["source_model"] or case["fixture_repo"] or case["contract"]
 
-    models = list(dict.fromkeys(model_key(case) for case in cases))
+    models = list(
+        dict.fromkeys(model_key(case) for case in cases if case["target"] != "runner")
+    )
 
     def group_key(case):
         return (
