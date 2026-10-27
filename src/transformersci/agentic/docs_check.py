@@ -89,7 +89,7 @@ def skip_reason(files: list[dict], docs_path: str, library_path: str) -> str | N
     Returns a short reason when the PR is skipped, or None when Serge should decide.
     """
     if edits_docs(files, docs_path):
-        return "PR updates the docs"
+        return "this PR updates the docs"
     src = [f["filename"] for f in files if f["filename"].startswith(library_path)]
     if not src:
         return f"no changes under {library_path}"
@@ -116,11 +116,10 @@ def decide_status(
     `verdict` is Serge's last saved answer for this PR. It's None if Serge
     hasn't been asked yet, or couldn't give an answer.
 
-    Checks the PR's own files first, because they settle the answer whatever
-    Serge said: docs edits turn it green, even after Serge said docs are needed.
+    Checks the PR's own files first (with `skip_reason`), because they settle the
+    answer whatever Serge said: docs edits turn it green, even after Serge said
+    docs are needed.
     """
-    if edits_docs(files, docs_path):
-        return "success", "This PR updates the docs."
     if reason := skip_reason(files, docs_path, library_path):
         return "success", f"No docs needed: {reason}."
     if verdict is None:
@@ -367,6 +366,21 @@ def set_status(
     r.raise_for_status()
 
 
+def missing_setup(args) -> str | None:
+    """Check that everything Serge needs is set up. Returns what's missing, or None.
+
+    Without a model, Serge would quietly use whichever model the service lists
+    first, so a missing model is treated as a setup error, not a default.
+    """
+    if not os.environ.get("LLM_MODEL"):
+        return "no model is set (LLM_MODEL)"
+    if not os.environ.get("LLM_API_KEY"):
+        return "no key for the model service is set (LLM_API_KEY)"
+    if not args.rules or not os.path.isfile(args.rules):
+        return f"the rules file wasn't found ({args.rules})"
+    return None
+
+
 def ask_for_verdict(args, pr: dict, files: list[dict]) -> dict | None:
     """Ask Serge about the PR. Returns None if the call fails or the answer can't be read."""
     from reviewbot.llm_client import ChatCompletionClient
@@ -393,7 +407,8 @@ def main() -> int:
     """Run the docs check on one PR.
 
     Returns 0 whether or not it comments, so a quiet run isn't marked as failed.
-    The run only fails if GitHub can't be reached or an option is wrong.
+    The run only fails if GitHub can't be reached, an option is wrong, or Serge
+    isn't set up (no model, no key, or no rules file).
     """
     from reviewbot.github_client import GitHubClient
 
@@ -464,6 +479,9 @@ def main() -> int:
         if reason := skip_reason(files, args.docs_path, library_path):
             log.info("PR #%d doesn't need Serge: %s", args.pr, reason)
         else:
+            if problem := missing_setup(args):
+                print(f"::error::docs-check isn't set up: {problem}")
+                return 1
             verdict = ask_for_verdict(args, pr, files)
             log.info("PR #%d verdict: %s", args.pr, verdict)
             if verdict and args.verdict_file:
@@ -477,6 +495,10 @@ def main() -> int:
                     print(body)
                 elif not already_commented(gh, owner, repo, args.pr):
                     gh.post_issue_comment(owner, repo, args.pr, body)
+
+        latest = gh.get_pr(owner, repo, args.pr)
+        if latest["head"]["sha"] != pr["head"]["sha"]:
+            pr, files = latest, gh.get_pr_files(owner, repo, args.pr)
 
     state, description = decide_status(files, verdict, args.docs_path, library_path)
     log.info("PR #%d status: %s (%s)", args.pr, state, description)
