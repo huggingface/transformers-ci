@@ -21,7 +21,7 @@ this workflow installs the package. The rules Serge follows come from the repo
 that runs this workflow, because each repo decides what needs docs.
 
 It runs in one of two modes:
-- `approval`: runs after a maintainer approves a PR`. It asks Serge
+- `approval`: runs after a maintainer approves a PR. It asks Serge
   whether the PR needs docs, saves the answer, leaves a comment
   if docs are needed, and sets the status. Serge can read the PR's code, but
   none of it is run.
@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from reviewbot.tools import ToolEnv
 
 
-log = logging.getLogger("docs-check")
+log = logging.getLogger(__name__)
 
 STATUS_CONTEXT = "docs-check"
 MARKER = "<!-- docs-check -->"
