@@ -103,6 +103,8 @@ jobs:
       # (daily, nightly, past, flash-attn, PR comment CI, push) therefore lands
       # on its own label value instead of all reporting as "daily".
       CI_EVENT: ${{ inputs.ci_event }}
+      # Write-capable token for hf-transformers-bot (needed for tests that push/delete repos in hf-internal-testing)
+      TRANSFORMERS_HUB_BOT_HF_TOKEN: ${{ secrets.TRANSFORMERS_HUB_BOT_HF_TOKEN }}
     outputs:
       machine_type: ${{ steps.set_machine_type.outputs.machine_type }}
     steps:
