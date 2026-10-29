@@ -785,3 +785,15 @@ def test_hub_fleet_rejects_a_contract_without_its_carrying_row():
     }
     with pytest.raises(ValueError, match="checkpoints belong on the row carrying"):
         fleet_api.from_tables(broken)
+
+
+def test_coverage_model_types_reads_mapping_and_updates():
+    from transformersci.contracts.coverage import model_types
+
+    mappings = 'CONFIG_MAPPING_NAMES = OrderedDict(\n    [\n        ("bert", "BertConfig"),\n        ("t5", "T5Config"),\n    ]\n)\n'
+    auto = (
+        'CONFIG_MAPPING_NAMES.update({"mimi_decoder": "MimiDecoderConfig"})\n'
+        'CONFIG_MAPPING_NAMES = OrderedDict(**{"gpt-sw3": "GPT2Config"}, **CONFIG_MAPPING_NAMES)\n'
+        'OTHER = OrderedDict([("ignored", "X")])\n'
+    )
+    assert model_types(mappings, auto) == ["bert", "gpt-sw3", "mimi_decoder", "t5"]

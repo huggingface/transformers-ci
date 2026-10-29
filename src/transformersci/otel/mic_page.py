@@ -67,6 +67,21 @@ def fixture_catalog():
     return fixtures
 
 
+@lru_cache(maxsize=1)
+def coverage():
+    """Fleet coverage of Transformers model types, from contracts/coverage.py."""
+    path = Path(__file__).parents[1] / "contracts/data/mic-coverage.json"
+    data = json.loads(path.read_text())
+    covered = set(data["covered"])
+    return {
+        "contracts": data["contracts"],
+        "covered": len(covered),
+        "model_types": data["transformers"]["model_types"],
+        "reachable": len(covered | set(data["sweep"]["shrinkable"])),
+        "generated_at": data["generated_at"],
+    }
+
+
 def failure_kind(status, exception, target, text):
     if target == "runner":
         return "Setup error"
@@ -80,7 +95,7 @@ def failure_kind(status, exception, target, text):
 
 
 def parse_scope(raw):
-    return raw if raw in {"all", "main", "prs"} else "all"
+    return raw if raw in {"all", "main", "prs"} else "main"
 
 
 def parse_group(raw):
@@ -807,4 +822,5 @@ def build_rows(
         "groups": len(groups),
         "first_day": first_day * 86400,
         "limit": LIMIT,
+        "coverage": coverage(),
     }
