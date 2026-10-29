@@ -5,7 +5,7 @@
   if (window.tci) tci.applyTheme();
   const state = {
     days: ['7', '14', '30'].includes(params.get('days')) ? params.get('days') : '7',
-    scope: ['all', 'main', 'prs'].includes(params.get('scope')) ? params.get('scope') : 'all',
+    scope: ['all', 'main', 'prs'].includes(params.get('scope')) ? params.get('scope') : 'main',
     variant: params.getAll('variant').filter(Boolean), platform: params.getAll('platform').filter(Boolean),
     failure_type: params.getAll('failure_type').filter(Boolean),
     sticky_only: params.get('sticky_only') !== 'false',
@@ -149,6 +149,14 @@
     byId('failure-counts').textContent = summary
       ? `${summary.failed.toLocaleString()} failed / ${summary.total.toLocaleString()} recorded checks · last ${data.days} days · ${data.scope === 'main' ? 'main' : data.scope === 'prs' ? 'PRs' : 'all branches'} · ${data.sticky_only ? 'matching sticky cases' : 'all variants and platforms'}`
       : 'Loading recorded MIC outcomes…';
+    const cover = data.coverage;
+    if (cover) {
+      const share = count => `${(100 * count / cover.model_types).toFixed(1)}%`;
+      byId('contracts').textContent = cover.contracts.toLocaleString();
+      byId('coverage').textContent = share(cover.covered);
+      byId('coverage-counts').textContent = `${cover.covered} of ${cover.model_types} model types · reachable ${share(cover.reachable)} (${cover.reachable}) with the generic shrink rule`;
+      byId('coverage-counts').title = `Snapshot ${cover.generated_at.slice(0, 10)}`;
+    }
     const filter = byId('search').value.toLowerCase();
     const rows = data.rows.filter(r => Object.values(r).join(' ').toLowerCase().includes(filter));
     const opened = new Set([...byId('rows').querySelectorAll('details[open]')].map(node => node.dataset.case));

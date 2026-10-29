@@ -1056,3 +1056,15 @@ def test_sticky_failure_rate_respects_filters_before_group_limit(monkeypatch):
         "failed": 0,
         "rate": None,
     }
+
+
+def test_scope_defaults_to_main():
+    assert mic_page.parse_scope("") == "main"
+    assert mic_page.parse_scope("bogus") == "main"
+    assert mic_page.parse_scope("all") == "all"
+
+
+def test_coverage_counts_reachable_as_covered_or_shrinkable():
+    cover = mic_page.coverage()
+    assert cover["contracts"] >= cover["covered"] > 0
+    assert cover["covered"] <= cover["reachable"] <= cover["model_types"]

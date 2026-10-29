@@ -10413,7 +10413,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
 
     def _serve_mic_data(self, params: dict[str, list[str]]) -> None:
         days = mic_page.parse_days((params.get("days") or [""])[0])
-        scope = mic_page.parse_scope((params.get("scope") or ["all"])[0])
+        scope = mic_page.parse_scope((params.get("scope") or ["main"])[0])
         group = mic_page.parse_group((params.get("group") or ["model"])[0])
         variant, platform, failure_type = (
             sorted({value[:100] for value in params.get(name, [])[:20] if value})
