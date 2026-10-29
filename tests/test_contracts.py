@@ -547,6 +547,7 @@ def test_registry_additions_preserve_composed_mapping_splices():
 
 def test_hub_fleet_resolves_and_downloads_an_immutable_dataset(monkeypatch, tmp_path):
     import huggingface_hub
+    from huggingface_hub.errors import EntryNotFoundError
     from types import SimpleNamespace
 
     revision = "c" * 40
@@ -560,6 +561,8 @@ def test_hub_fleet_resolves_and_downloads_an_immutable_dataset(monkeypatch, tmp_
 
     def download(repo, filename, **kwargs):
         calls.append((repo, filename, kwargs))
+        if filename.endswith(".csv"):  # a revision from before the tables
+            raise EntryNotFoundError(filename)
         return str(tmp_path / filename)
 
     monkeypatch.setattr(huggingface_hub, "HfApi", API)
@@ -568,13 +571,11 @@ def test_hub_fleet_resolves_and_downloads_an_immutable_dataset(monkeypatch, tmp_
         tmp_path / "prototype-fleet.lock",
         revision,
     )
-    assert calls == [
-        (
-            fleet_api.REPOSITORY,
-            "prototype-fleet.lock",
-            {"repo_type": "dataset", "revision": revision},
-        )
-    ]
+    assert calls[-1] == (
+        fleet_api.REPOSITORY,
+        "prototype-fleet.lock",
+        {"repo_type": "dataset", "revision": revision},
+    )
     monkeypatch.setattr(
         huggingface_hub,
         "HfApi",
@@ -654,3 +655,133 @@ def test_runner_reads_framework_pin_by_default(fleet, monkeypatch, tmp_path):
     monkeypatch.setattr(fleet_api, "lock_path", lock_path)
     assert run.main(["--fixtures-only"]) == 0
     assert calls == [("control", "f" * 40)]
+
+
+FLEET_TABLES = {
+    "contracts": (
+        "contract,target,mic_repo,revision,contract_sha256,fixture_sha256,checkpoints\n"
+        f"SmolLM,mic-SmolLM-slim,huggingface-mic/smollm-mic,{'c' * 40},{'3' * 64},{'4' * 64},"
+        f"HuggingFaceTB/SmolLM-135M@{'e' * 40}; HuggingFaceTB/SmolLM-1.7B@{'f' * 40}\n"
+        f"SmolLM,mic-SmolLM-1.7B-slim,huggingface-mic/smollm-1.7b-mic,{'d' * 40},,{'5' * 64},\n"
+        f"TimesFM,,huggingface-mic/timesfm-mic,{'a' * 40},{'1' * 64},{'2' * 64},google/timesfm@{'b' * 40}\n"
+    ),
+    "environment": "package,version\npython,3.11\ntorch,2.14.0\n",
+    "known_failures": (
+        "contract,target,issue,match,skip_outputs\n"
+        "SmolLM,mic-SmolLM-slim,https://github.com/org/repo/issues/1,,\n"
+        "TimesFM,timesfm-mic,https://github.com/org/repo/issues/2,overflow,training.loss; training.gradients\n"
+    ),
+}
+FLEET_LOCK = {
+    "framework": "transformers",
+    "environment": {"python": "3.11", "torch": "2.14.0"},
+    "contracts": {
+        "SmolLM": {
+            "integration": {
+                "repo": "huggingface-mic/smollm-mic",
+                "revision": "c" * 40,
+                "files_sha256": "3" * 64,
+            },
+            "fixtures": {
+                "huggingface-mic/smollm-mic": {
+                    "revision": "c" * 40,
+                    "files_sha256": "4" * 64,
+                    "target": "mic-SmolLM-slim",
+                },
+                "huggingface-mic/smollm-1.7b-mic": {
+                    "revision": "d" * 40,
+                    "files_sha256": "5" * 64,
+                    "target": "mic-SmolLM-1.7B-slim",
+                },
+            },
+            "checkpoints": {
+                "HuggingFaceTB/SmolLM-135M": "e" * 40,
+                "HuggingFaceTB/SmolLM-1.7B": "f" * 40,
+            },
+        },
+        "TimesFM": {
+            "integration": {
+                "repo": "huggingface-mic/timesfm-mic",
+                "revision": "a" * 40,
+                "files_sha256": "1" * 64,
+            },
+            "fixtures": {
+                "huggingface-mic/timesfm-mic": {
+                    "revision": "a" * 40,
+                    "files_sha256": "2" * 64,
+                }
+            },
+            "checkpoints": {"google/timesfm": "b" * 40},
+        },
+    },
+    "known_failures": {
+        "SmolLM/mic-SmolLM-slim": "https://github.com/org/repo/issues/1",
+        "TimesFM/timesfm-mic": {
+            "issue": "https://github.com/org/repo/issues/2",
+            "match": "overflow",
+            "skip_outputs": ["training.loss", "training.gradients"],
+        },
+    },
+}
+
+
+@pytest.fixture
+def hub_fleet(monkeypatch, tmp_path):
+    """A fake fleet dataset: {revision: {filename: text}}."""
+    import huggingface_hub
+    from huggingface_hub.errors import EntryNotFoundError
+
+    files = {}
+
+    def download(repo, filename, repo_type, revision):
+        assert (repo, repo_type) == (fleet_api.REPOSITORY, "dataset")
+        if filename not in files[revision]:
+            raise EntryNotFoundError(filename)
+        path = tmp_path / "hub" / revision / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(files[revision][filename])
+        return str(path)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    monkeypatch.setattr(fleet_api.tempfile, "gettempdir", lambda: str(tmp_path / "tmp"))
+    return files
+
+
+def tables(fleet):
+    return {f"{fleet}/{name}.csv": text for name, text in FLEET_TABLES.items()}
+
+
+def test_hub_fleet_reads_the_tables_into_a_valid_lock(hub_fleet):
+    revision = "1" * 40
+    hub_fleet[revision] = tables("prototypes")
+    path, resolved = fleet_api.lock_path("prototypes", revision)
+    assert resolved == revision and path.name == "prototype-fleet.lock"
+    assert run.load(path, "fleet-lock") == FLEET_LOCK
+
+
+def test_hub_fleet_tables_must_agree_with_the_transition_json(hub_fleet):
+    agreeing, stale = "1" * 40, "2" * 40
+    hub_fleet[agreeing] = {
+        **tables("control"),
+        "fleet-lock.json": json.dumps({"comment": "ignored", **FLEET_LOCK}),
+    }
+    assert (
+        json.loads(fleet_api.lock_path("control", agreeing)[0].read_text())
+        == FLEET_LOCK
+    )
+    # An older tmic that updated only the JSON must not be shadowed by stale tables
+    hub_fleet[stale] = {
+        **tables("control"),
+        "fleet-lock.json": json.dumps({**FLEET_LOCK, "environment": {}}),
+    }
+    with pytest.raises(ValueError, match="tables and fleet-lock.json disagree"):
+        fleet_api.lock_path("control", stale)
+
+
+def test_hub_fleet_rejects_a_contract_without_its_carrying_row():
+    broken = {
+        **FLEET_TABLES,
+        "contracts": FLEET_TABLES["contracts"].replace(f",{'3' * 64},", ",,"),
+    }
+    with pytest.raises(ValueError, match="checkpoints belong on the row carrying"):
+        fleet_api.from_tables(broken)
