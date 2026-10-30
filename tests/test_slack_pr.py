@@ -48,6 +48,10 @@ def test_pr_pages_all_checks_and_preserves_head_and_metadata(monkeypatch):
         }
 
     result = slack_commands.pr_status("50071", github, "https://dashboard")
+    assert (
+        "https://dashboard/d/pytest-observability-by-pr/branch?var-pr=50071&from=now-90d&to=now&timezone=browser&refresh=10s"
+        in result
+    )
     assert "Fix &lt;@everyone&gt;" in result
     assert "@author" in result and "opened 3d" in result
     assert "2 files, +10 / −3" in result

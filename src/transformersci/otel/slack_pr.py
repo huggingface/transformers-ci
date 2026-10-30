@@ -156,7 +156,7 @@ def summary(pr, pull, sha, github, dashboard):
     )
     base, head = pull.get("base") or {}, pull.get("head") or {}
     lines = [
-        f"*<{dashboard}/pr-ci-view?pr={pr}|Transformers PR #{pr}> — {title}*",
+        f"*<{dashboard}/d/pytest-observability-by-pr/branch?var-pr={pr}&from=now-90d&to=now&timezone=browser&refresh=10s|Transformers PR #{pr}> — {title}*",
         f"{escape(state)} · @{author} · opened {age(pull.get('created_at'))} ago · updated {age(pull.get('updated_at'))} ago",
         f"{escape(head.get('ref', '?'))} → {escape(base.get('ref', '?'))} · head `{sha[:8]}`",
         f"Changes: {pull.get('changed_files', '?')} files, +{pull.get('additions', '?')} / −{pull.get('deletions', '?')}",
