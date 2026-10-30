@@ -35,7 +35,25 @@ def verified(body: bytes, timestamp: str, signature: str, secret: str) -> bool:
 def command_reply(text: str, summary, dashboard: str, serge: str) -> str:
     parts = text.split()
     if not parts or parts == ["help"]:
-        return "Mention @askserge with `look at the traceback: <traceback or dashboard link>` for an interactive investigation by DM. Commands: `/askserge pr <number>`, `/askserge rerun <number>`, `/askserge investigate <number>`, `/askserge result <id>`, `/askserge dashboard`, `/askserge serge`, `/askserge help`."
+        return (
+            "*Investigate a failure and prepare a fix*\n"
+            "Mention `@askserge look at the traceback: <traceback or dashboard link>`, "
+            "or send `look at the traceback: ...` in this DM. "
+            "I’ll investigate, prepare a fix, and run the configured verification. "
+            "You’ll receive phase updates in a private thread, and I’ll ask before creating a PR.\n\n"
+            "*Commands*\n"
+            "• `/askserge pr <number>` — Show CI check status for the PR’s current commit and link to its dashboard.\n"
+            "• `/askserge rerun <number>` — Rerun failed CI for that PR. If active runs need cancellation, confirm in the dashboard first.\n"
+            "• `/askserge investigate <number>` — Ask Serge for a draft review of the PR; returns a link to the review.\n"
+            "• `/askserge result <id>` — Retrieve a saved command result using the ID from its receipt.\n"
+            "• `/askserge dashboard` — Open the CI dashboard.\n"
+            "• `/askserge serge` — Open Serge.\n"
+            "• `/askserge help` — Show this guide.\n\n"
+            "In a DM, omit `/askserge` (for example, `pr 123`). "
+            "In a channel, mention `@askserge pr 123`; replies arrive privately.\n"
+            "Investigations and CI reruns require a linked GitHub account and repository permission. "
+            "For a proposed fix, use *Create PR* / *No PR*, or reply *yes* / *no* in its thread."
+        )
     if text.strip().lower() in {"yes", "create pr", "no", "no pr"}:
         return "Use the Create PR or No PR button on the investigation you mean, or reply yes/no in the investigation’s thread."
     if parts == ["dashboard"]:
