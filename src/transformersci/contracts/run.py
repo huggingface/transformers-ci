@@ -953,6 +953,20 @@ def _main(argv, telemetry):
                         if kind == "fixture"
                         else resources.get(short_names.get(target))
                     )
+                    if (spec or {}).get("variants", {}).get(args.variant, {}).get(
+                        "devices"
+                    ) == []:
+                        emit(
+                            {
+                                **record,
+                                "status": "unsupported",
+                                "skip": "declared",
+                                "failures": [
+                                    f"not measured in the {args.variant} variant (resources declare no devices)"
+                                ],
+                            }
+                        )
+                        continue
                     too_small = resource_problem(spec, args.variant)
                     if too_small:
                         emit(
