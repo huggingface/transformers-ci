@@ -65,7 +65,9 @@ jobs:
         env:
           INPUTS_CI_SHA: ${{ inputs.ci_sha }}
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore only: saving is a separate step that skips PRs (see the end of the job).
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: hf_cache
         continue-on-error: true
         with:
           path: /tmp/hf_home/hub
@@ -196,6 +198,21 @@ jobs:
             /tmp/results.jsonl
             /tmp/run.log
             /tmp/contracts-observation.json
+
+      # A PR's cache is only visible to that PR, so saving there buys little. When the
+      # restore fails (e.g. "Egress is over the account limit") every fixture is
+      # downloaded, and tarring the whole hub cache ran the job into its timeout,
+      # which marks the PR CI run cancelled. Save from push runs only, after the
+      # results are uploaded, and bound it.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: >-
+          !cancelled() && github.event_name != 'pull_request'
+          && steps.install.outcome == 'success' && steps.hf_cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        with:
+          path: /tmp/hf_home/hub
+          key: contracts-hf-${{ runner.arch }}-${{ inputs.ci_sha }}
 
       - name: Flag contract failures for review
         if: always() && (steps.install.outcome == 'failure' || steps.run.outcome == 'failure' || steps.summary.outcome == 'failure')
