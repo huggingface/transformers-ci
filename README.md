@@ -200,7 +200,7 @@ Dashboard GitHub sign-in, user profiles and CLI authorization: [setup and API](d
 
 ## @askserge in Slack and on failure pages
 
-See the [infra handoff and rollout guide](docs/askserge-deployment.md) for prerequisites,
+See the [infra handoff and rollout guide](https://github.com/huggingface/transformers-ci-playbooks/blob/main/dashboard/playbooks/askserge-deployment.md) for prerequisites,
 deployment order, acceptance checks, and disablement.
 
 Mention `@askserge look at the traceback: <traceback or dashboard test link>` in a
@@ -237,57 +237,12 @@ concurrently; users can start 20 commands/hour, with Serge additionally limiting
 investigations to five/hour and one running job per GitHub account. The first
 version uses operator-verified account mappings rather than self-service linking.
 
-### Configure the existing Slack app
+### Deployment
 
-Use [the app manifest](deploy/slack-app-manifest.yaml) as the settings reference
-for the existing **askserge** app. Preserve its other features. The manifest enables
-`agent_view`, the Messages tab, and suggested prompts. Reinstall the app after
-adding scopes. Slack’s Stop control is deliberately not enabled: backend worker
-cancellation is not implemented for these sessions yet. It adds
-`assistant:write`, `app_mentions:read`, `chat:write`, `im:write`, `im:history`, and `commands`, subscribes
-to `app_mention` and `message.im`, and configures signed requests at:
-
-- `https://transformers-ci.huggingface.cool/slack/events`
-- `https://transformers-ci.huggingface.cool/slack/actions`
-- `https://transformers-ci.huggingface.cool/slack/commands`
-
-Reinstall the app after changing scopes and invite it to the desired channels.
-Put its signing secret and bot token in the existing dashboard secret via the
-normal secret manager, under `slack-signing-secret` and `slack-bot-token`.
-Do not put credentials in Helm values or Git.
-
-```yaml
-traceExporter:
-  replicas: 1
-  runStore:
-    enabled: true
-  slack:
-    enabled: true
-    publicUrl: https://transformers-ci.huggingface.cool
-    sergePublicUrl: https://serge.huggingface.tech
-    appId: A_REPLACE_ME
-    botUserId: U_REPLACE_ME
-    teamIds: [T_REPLACE_ME]
-    actors:
-      "T_REPLACE_ME:U_REQUESTER": verified-github-login
-    proxy: "" # HTTPS CONNECT proxy if outbound access requires one
-```
-
-Verify each mapping with the account holder. Never derive GitHub identity from a
-Slack display name. Keep mappings current when a GitHub login changes. Dashboard
-users need exactly one matching Slack account. Existing GitHub sign-in and CSRF
-checks protect dashboard buttons; Serge independently checks repository access.
-The dashboard needs HTTPS access to `slack.com` (directly or through the configured
-proxy), in addition to its existing Serge connection. The bot token belongs to
-the configured workspace. The Slack routes are disabled unless configured.
-
-Deploy matching Serge web **and task-runner** images containing deferred PR
-support before setting `DASHBOARD_INTERACTIVE_TASKS_ENABLED=1` in Serge's
-`envVars`. An older runner ignores fields it does not recognize and cannot honor
-the approval gate. Retain the existing `TASK_API_ENABLED`, per-repository task
-opt-in, dashboard service token/repository allowlist, and ITF verification
-configuration. Then deploy and enable the dashboard Slack settings. This change
-does not alter production values or install the app.
+The app manifest is in [deploy/slack-app-manifest.yaml](deploy/slack-app-manifest.yaml).
+Operator configuration, secret provisioning, and deployment order are documented
+in the [internal rollout guide](https://github.com/huggingface/transformers-ci-playbooks/blob/main/dashboard/playbooks/askserge-deployment.md). Deploy matching Serge web and task-runner versions supporting deferred PR
+publication before enabling interactive investigations.
 
 Active investigation IDs and phase cursors survive exporter restarts. A lost
 Serge dispatch response is reconciled by its deterministic task ID. Queued command
