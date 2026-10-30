@@ -23,7 +23,7 @@ view. At transformers scale a single ``tests_torch`` shard trace reached
 ~50 MB / ~100k spans, over Tempo's read-path message limit, so
 ``GET /api/traces/{id}`` 500'd and the exporter silently dropped the whole job
 from both the run store and the roll-ups (it vanished from the Jobs table). See
-docs/plan-large-trace-read-limit-2026-07-03.md.
+docs/trace-completeness.md.
 
 Dropping the unused spans shrinks a shard trace ~6x (≈8 MB) with **no** change to
 the trace topology, the exporter, or Tempo cardinality. Correctness is preserved:

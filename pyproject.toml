@@ -36,7 +36,7 @@ otel = [
   # instead of ~1), the traces stay large, and the read path truncates failures
   # off the dashboard. 1.1.0 is verified fully effective (single-process + xdist);
   # bump deliberately and re-run tests/test_span_pruning.py before raising it.
-  # See docs/plan-failure-visibility-regression-2026-07-15.md (fix #1).
+  # See docs/trace-completeness.md (source-side reduction).
   "pytest-opentelemetry==1.1.0",
 ]
 pytest-plugin = [

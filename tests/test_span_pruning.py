@@ -134,7 +134,7 @@ def test_failure_status_and_exception_land_on_protocol_span(in_memory_tracer) ->
 # catch a regression where the *real* plugin routes some spans around the wrap
 # (the prod symptom that started this: ~2.76 spans/test instead of ~1, from an
 # unpinned pytest-opentelemetry — see the [otel] pin in pyproject.toml and
-# docs/plan-failure-visibility-regression-2026-07-15.md). These run an actual
+# docs/trace-completeness.md). These run an actual
 # pytest session with the installed transformersci_otel plugin and assert only
 # run + per-test protocol spans are exported — first single-process, then under
 # xdist where each worker is a fresh process that must re-install the wrap.

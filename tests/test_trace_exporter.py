@@ -4106,7 +4106,7 @@ def test_run_rollup_reconciles_late_failure_from_store(tmp_path, monkeypatch) ->
 
 # ---------------------------------------------------------------------------
 # Run-span failure floor
-# (docs/plan-failure-visibility-regression-2026-07-15.md)
+# (docs/trace-completeness.md)
 # ---------------------------------------------------------------------------
 
 
@@ -4179,7 +4179,7 @@ def test_rollup_run_span_floor_keeps_truncated_failed_job_red(monkeypatch) -> No
     single ERROR *test* span was dropped by a truncated read (every read-back row
     is OK) still reports the job as failed, because its run/session span errored.
     Mirrors real run 29334708040 / PR #46766 (the moonshine assertion).
-    See docs/plan-failure-visibility-regression-2026-07-15.md."""
+    See docs/trace-completeness.md."""
     monkeypatch.setattr(
         trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
     )

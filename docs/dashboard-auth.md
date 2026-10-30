@@ -9,7 +9,7 @@ revocation, and provides the confirmation page for `tmic auth login`.
 
 Use the **dashboard GitHub App**, rather than Grafana's separate OAuth App:
 
-1. Add `https://transformers-ci.huggingface.cool/auth/callback` as a user
+1. Add `https://dashboard.example.com/auth/callback` as a user
    authorization callback URL on the GitHub App.
 2. Under **Organization permissions**, grant **Members: Read-only**, and have an
    organization owner accept the updated permissions on the installation. The
@@ -17,9 +17,10 @@ Use the **dashboard GitHub App**, rather than Grafana's separate OAuth App:
    then fails with `github_app_cannot_read_membership`.
 3. Copy the App's **client ID** (different from its numeric App ID), and generate
    a client secret. Its existing installation private key is not a client secret.
-4. Put the secret in `transformers-ci-secrets` under
-   `dashboard-github-client-secret`. Production uses Infisical's
-   `/transformers-ci` secret sync; do not put the value in Helm values or Git.
+4. Provision the client secret through your secret manager into the Kubernetes
+   Secret named by `secrets.name`, under the key configured by
+   `secrets.keys.dashboardGithubClientSecret` (default
+   `dashboard-github-client-secret`). Do not put the value in Helm values or Git.
 5. Set these deployment values, retaining the persistent run store:
 
    ```yaml
@@ -27,9 +28,9 @@ Use the **dashboard GitHub App**, rather than Grafana's separate OAuth App:
      replicas: 1
      auth:
        enabled: true
-       publicUrl: https://transformers-ci.huggingface.cool
+       publicUrl: https://dashboard.example.com
        githubClientId: <GitHub App client ID>
-       allowedOrganizations: [huggingface]
+       allowedOrganizations: [your-organization]
        allowedUserIds: []
      runStore:
        enabled: true

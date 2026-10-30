@@ -2680,7 +2680,7 @@ def extract_trace_rows(
         # run green — can never make a genuinely-failed job report zero failures.
         # The run span is tiny and near the trace root, so it survives partial
         # reads that lose per-test spans. See
-        # docs/plan-failure-visibility-regression-2026-07-15.md.
+        # docs/trace-completeness.md.
         if span_type == "run" and span_tags.get("otel.status_code") == "ERROR":
             run_failed = True
         if nodeid is None or span_type != "test" or operation_name != nodeid:
@@ -4358,7 +4358,7 @@ def extract_run_rollup_metrics(
         # non-zero exit status implies. A truncated large trace can lose the one
         # ERROR *test* span (making a red run look green) but still carries the
         # ERROR run span, so max(...) keeps the job red. See
-        # docs/plan-failure-visibility-regression-2026-07-15.md.
+        # docs/trace-completeness.md.
         failed = max(
             sum(1 for r in rows if str(r["status_code"]) == "ERROR"), run_failed
         )

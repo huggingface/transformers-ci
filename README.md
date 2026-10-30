@@ -193,8 +193,7 @@ and leaves the gate unchanged for callers that do not set it.
 
 An initial Grafana dashboard implementation lives under [`dashboard/`](dashboard/README.md).
 
-MIC execution and baselines: [runner and telemetry](docs/model-integration-contracts.md),
-[rollout audit](docs/mic-rollout-audit-2026-10-20.md).
+MIC execution and baselines: [runner and telemetry](docs/model-integration-contracts.md).
 
 Dashboard GitHub sign-in, user profiles and CLI authorization: [setup and API](docs/dashboard-auth.md).
 

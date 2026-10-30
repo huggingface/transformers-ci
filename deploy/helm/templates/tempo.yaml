@@ -73,7 +73,7 @@ data:
         # runs (~27k trace-by-id 500s/24h ≈ 17% of reads). Raise to the 64 MiB
         # ingestion ceiling so whole shard traces read back. NOTE: buffers the full
         # trace in querier/frontend RAM per read — watch Tempo RSS; the durable fix
-        # is smaller per-shard traces (see docs/plan-large-trace-read-limit-2026-07-03.md).
+        # is smaller per-shard traces (see docs/trace-completeness.md).
         grpc_client_config:
           max_send_msg_size: 67108864  # 64 MiB (was 16 MiB default)
           max_recv_msg_size: 67108864  # 64 MiB (default is already 100 MiB; pin for symmetry)
