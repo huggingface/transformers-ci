@@ -232,7 +232,15 @@ Other commands work as mentions, DMs or `/askserge` commands:
 - `connect`, `disconnect`: link or unlink your GitHub account.
 - `help`, `dashboard`, `serge`, `result <id>`.
 
-Mention/DM results are delivered privately. Slash commands immediately return a
+Ask `@askserge introduce yourself to the team` for an introduction in the channel
+thread. Unrecognized requests become conversational chat using the dashboard's
+configured LLM. Mention the bot in each channel follow-up, or chat in a DM.
+Channel chat replies stay in that thread; private conversations are separate.
+Chat remembers up to eight exchanges for seven days, can explain commands and
+help reason about problems, and cannot execute actions or inspect live PRs itself.
+Use the explicit commands for current PR facts, reruns, and investigations.
+
+Command results are delivered privately. Slash commands immediately return a
 private receipt; `result <id>` retrieves the saved result. Interactive traceback
 investigations also send their phase updates by DM. Command receipts are retained
 for seven days and deduplicate Slack retries. At most four command handlers run

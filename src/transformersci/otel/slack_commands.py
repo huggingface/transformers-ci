@@ -48,7 +48,9 @@ def actor_for(team, user):
     return slack_accounts.lookup(f"{team}:{user}")
 
 
-def queue(fields, raw, execute, *, notify=None, fallback=None, onboarding=False):
+def queue(
+    fields, raw, execute, *, notify=None, fallback=None, onboarding=False, chat=False
+):
     team, user = fields["team_id"][0], fields["user_id"][0]
     owner = f"{team}:{user}"
     text = fields.get("text", [""])[0]
@@ -58,7 +60,9 @@ def queue(fields, raw, execute, *, notify=None, fallback=None, onboarding=False)
     from . import slack_accounts
 
     linked = actor_for(team, user) if onboarding else None
-    if onboarding and (
+    if chat:
+        operation, pr = "chat", text
+    elif onboarding and (
         text.strip().lower() in {"connect", "disconnect"}
         or (len(parts) == 2 and parts[0] == "link-confirm")
     ):

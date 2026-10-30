@@ -32,7 +32,61 @@ def verified(body: bytes, timestamp: str, signature: str, secret: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
+def introduction_requested(text):
+    return bool(
+        re.fullmatch(
+            r"(?:please\s+)?(?:introduce yourself(?:\s+to (?:the|our) team)?|who are you|what can you do|intro)(?:[.!?])?",
+            text.strip(),
+            re.I,
+        )
+    )
+
+
+def chat_requested(text):
+    value = text.strip()
+    if not value or introduction_requested(value):
+        return False
+    if value.lower() in {
+        "help",
+        "dashboard",
+        "serge",
+        "connect",
+        "disconnect",
+        "yes",
+        "no",
+        "create pr",
+        "no pr",
+    }:
+        return False
+    return not (
+        re.fullmatch(r"(?:pr|rerun|investigate)\s+[1-9][0-9]{0,9}", value)
+        or re.fullmatch(r"result\s+[a-f0-9]{24}", value)
+        or re.fullmatch(r"link-confirm\s+[a-f0-9]{32}", value)
+        or re.fullmatch(r"decision\s+[a-f0-9]{24}\s+(?:approve|decline)", value)
+        or re.match(r"look at the traceback\s*:", value, re.I)
+    )
+
+
+def introduction(dashboard):
+    return (
+        "Hi team! I’m *askserge*, your Transformers CI assistant.\n\n"
+        "• Mention `@askserge pr 50071` for the PR title, age, CI status, and related project history.\n"
+        "• Mention `@askserge look at the traceback: <traceback or dashboard link>` "
+        "to investigate a failure, prepare a fix, and run the configured verification. "
+        "I’ll send progress updates by DM and ask before creating a PR.\n"
+        "• Use `/askserge rerun <number>` to rerun failed CI, or "
+        "`/askserge investigate <number>` for a draft PR review.\n\n"
+        "You can also ask me questions in plain language. Mention me in a channel thread "
+        "to chat there, or message me privately. Command results and investigations arrive privately. "
+        "Send me `help` in a DM for all commands, or `connect` to link your GitHub account "
+        "for investigations and reruns. Your repository permissions still apply.\n"
+        f"<{dashboard}/pr-table|Open the CI dashboard>"
+    )
+
+
 def command_reply(text: str, summary, dashboard: str, serge: str) -> str:
+    if introduction_requested(text):
+        return introduction(dashboard)
     parts = text.split()
     if not parts or parts == ["help"]:
         return (
@@ -51,8 +105,10 @@ def command_reply(text: str, summary, dashboard: str, serge: str) -> str:
             "• `/askserge connect` — Securely link your GitHub account.\n"
             "• `/askserge disconnect` — Remove your self-service account link.\n"
             "• `/askserge help` — Show this guide.\n\n"
+            "You can also chat in plain language; mention me for each reply in a channel thread.\n"
             "In a DM, omit `/askserge` (for example, `pr 123`). "
-            "In a channel, mention `@askserge pr 123`; replies arrive privately.\n"
+            "In a channel, mention `@askserge pr 123`; replies arrive privately. "
+            "Ask `@askserge introduce yourself to the team` for a public introduction.\n"
             "Investigations and CI reruns require a linked GitHub account and repository permission. "
             "For a proposed fix, use *Create PR* / *No PR*, or reply *yes* / *no* in its thread."
         )
@@ -149,10 +205,7 @@ def handle(handler, summary, execute=None, investigation=None) -> bool:
             if (
                 not bot
                 or event.get("user") == bot
-                or (
-                    not direct
-                    and not str(event.get("text", "")).startswith(f"<@{bot}>")
-                )
+                or (not direct and f"<@{bot}>" not in str(event.get("text", "")))
             ):
                 handler._reply_json(200, {})
                 return True
@@ -164,7 +217,7 @@ def handle(handler, summary, execute=None, investigation=None) -> bool:
                 "text": [
                     event.get("text", "").strip()
                     if direct
-                    else event["text"][len(bot) + 3 :].strip()
+                    else event["text"].replace(f"<@{bot}>", "", 1).strip()
                 ],
             }
         else:
@@ -247,6 +300,17 @@ def handle(handler, summary, execute=None, investigation=None) -> bool:
 
     def run(operation, argument, actor, command_id):
         reply_id[0] = command_id
+        if operation == "chat":
+            from . import slack_chat
+
+            shared = path == "/slack/events" and not direct
+            scope = (
+                f"channel:{team}:{fields['channel_id'][0]}:{fields['thread_ts'][0] or event.get('ts') or payload['event_id']}"
+                if shared
+                else f"private:{team}:{user}:{fields.get('channel_id', [''])[0]}:{fields.get('thread_ts', [''])[0]}"
+            )
+            return slack_chat.answer(scope, user, argument, dashboard, shared=shared)
+
         if path != "/slack/commands" or operation == "traceback":
             channel()  # Establish the private reply channel before starting work.
         if operation == "traceback" and investigation is not None:
@@ -271,28 +335,41 @@ def handle(handler, summary, execute=None, investigation=None) -> bool:
             os.getenv("TCI_SLACK_SERGE_PUBLIC_URL", "").rstrip("/"),
         )
 
+    intro = introduction_requested(fields.get("text", [""])[0])
+    chat = chat_requested(fields.get("text", [""])[0])
+    public_reply = path == "/slack/events" and not direct and (intro or chat)
+
+    def notify(text):
+        if public_reply:
+            # Public conversation never includes private command history or
+            # account-link grants. Commands and investigations still use DMs.
+            slack_api.message(
+                fields["channel_id"][0],
+                text,
+                thread_ts=fields["thread_ts"][0] or event.get("ts"),
+            )
+        else:
+            slack_investigations.reply(
+                f"{team}:{user}",
+                reply_id[0],
+                user,
+                text,
+                channel=channel(),
+                thread_ts=fields.get("thread_ts", [""])[0]
+                if fields.get("channel_id", [""])[0] == channel()
+                else None,
+            )
+
     if execute is not None:
         try:
             reply = slack_commands.queue(
                 fields,
                 raw,
                 run,
-                notify=(
-                    lambda text: slack_investigations.reply(
-                        f"{team}:{user}",
-                        reply_id[0],
-                        user,
-                        text,
-                        channel=channel(),
-                        thread_ts=fields.get("thread_ts", [""])[0]
-                        if fields.get("channel_id", [""])[0] == channel()
-                        else None,
-                    )
-                )
-                if path != "/slack/commands"
-                else None,
+                notify=notify if path != "/slack/commands" else None,
                 fallback=fallback,
-                onboarding=True,
+                onboarding=not (intro or chat),
+                chat=chat,
             )
         except Exception:
             handler._reply_json(503, {"error": "command_store_unavailable"})

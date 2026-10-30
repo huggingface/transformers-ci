@@ -590,3 +590,149 @@ def test_native_schema_migrates_existing_investigations(commands):
         assert db.execute(
             "SELECT id,thread_ts,session_status,session_updated FROM investigations"
         ).fetchone() == ("old", "", "", 0)
+
+
+@pytest.mark.parametrize("thread", ["", "100.1"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "  <@UBOT> introduce yourself to the team",
+        "please <@UBOT> introduce yourself to the team",
+    ],
+)
+def test_channel_introduction_is_public_without_linking(
+    monkeypatch, commands, thread, message
+):
+    from transformersci.otel import slack_api
+
+    monkeypatch.setenv("TCI_SLACK_ACTORS", "{}")
+    monkeypatch.setattr(
+        slack_api, "open_dm", lambda user: pytest.fail("No DM for introduction")
+    )
+    sent = []
+    monkeypatch.setattr(
+        slack_api,
+        "message",
+        lambda channel, text, **kw: sent.append((channel, text, kw)),
+    )
+    payload = {
+        "api_app_id": "A1",
+        "team_id": "T1",
+        "event_id": "EvIntro",
+        "event": {
+            "type": "app_mention",
+            "user": "U2",
+            "channel": "CTEAM",
+            "ts": "200.1",
+            "thread_ts": thread,
+            "text": message,
+        },
+    }
+    for _ in range(2):
+        handler, replies = event_handler(monkeypatch, payload)
+        slack_bot.handle(handler, lambda pr: None, lambda *a: pytest.fail("No action"))
+        assert replies == [(200, {})]
+    assert len(sent) == 1
+    assert sent[0][0] == "CTEAM" and sent[0][2] == {"thread_ts": thread or "200.1"}
+    assert "Hi team!" in sent[0][1] and "/auth/slack#" not in sent[0][1]
+
+
+def test_freeform_channel_chat_uses_worker_and_shared_thread(monkeypatch, commands):
+    from transformersci.otel import slack_api, slack_chat
+
+    monkeypatch.setenv("TCI_SLACK_ACTORS", "{}")
+    jobs, sent, seen = [], [], []
+    monkeypatch.setattr(slack_commands, "_POOL", SimpleNamespace(submit=jobs.append))
+    monkeypatch.setattr(
+        slack_api, "open_dm", lambda user: pytest.fail("No private data in public chat")
+    )
+    monkeypatch.setattr(
+        slack_api,
+        "message",
+        lambda channel, text, **kw: sent.append((channel, text, kw)),
+    )
+
+    def answer(*args, **kwargs):
+        seen.append((args, kwargs))
+        return "Here is an explanation."
+
+    monkeypatch.setattr(slack_chat, "answer", answer)
+    payload = {
+        "api_app_id": "A1",
+        "team_id": "T1",
+        "event_id": "EvChat",
+        "event": {
+            "type": "app_mention",
+            "user": "U2",
+            "channel": "CTEAM",
+            "ts": "200.2",
+            "thread_ts": "200.1",
+            "text": "<@UBOT> help me understand flaky tests",
+        },
+    }
+    handler, replies = event_handler(monkeypatch, payload)
+    slack_bot.handle(handler, lambda pr: None, lambda *a: pytest.fail("No action"))
+    assert replies == [(200, {})] and not seen and len(jobs) == 1
+    jobs.pop()()
+    assert seen[0][0][:3] == (
+        "channel:T1:CTEAM:200.1",
+        "U2",
+        "help me understand flaky tests",
+    )
+    assert seen[0][1] == {"shared": True}
+    assert sent == [("CTEAM", "Here is an explanation.", {"thread_ts": "200.1"})]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "pr 42",
+        "rerun 42",
+        "investigate 42",
+        "connect",
+        "help",
+        "yes",
+        "no pr",
+        "look at the traceback: error",
+    ],
+)
+def test_actions_never_become_chat(text):
+    assert not slack_bot.chat_requested(text)
+
+
+def test_freeform_dm_keeps_private_scope(monkeypatch, commands):
+    from transformersci.otel import slack_api, slack_chat
+
+    sent, seen = [], []
+    monkeypatch.setenv("TCI_SLACK_ACTORS", "{}")
+    monkeypatch.setattr(slack_api, "open_dm", lambda user: "DPRIVATE")
+    monkeypatch.setattr(
+        slack_api,
+        "message",
+        lambda channel, text, **kw: sent.append((channel, text, kw)),
+    )
+
+    def answer(*args, **kwargs):
+        seen.append((args, kwargs))
+        return "A private answer"
+
+    monkeypatch.setattr(slack_chat, "answer", answer)
+    payload = {
+        "api_app_id": "A1",
+        "team_id": "T1",
+        "event_id": "EvDMChat",
+        "event": {
+            "type": "message",
+            "channel_type": "im",
+            "user": "U2",
+            "channel": "DPRIVATE",
+            "text": "Can you explain test isolation?",
+        },
+    }
+    handler, replies = event_handler(monkeypatch, payload)
+    slack_bot.handle(handler, lambda pr: None, lambda *a: pytest.fail("No action"))
+    assert replies == [(200, {})]
+    assert seen[0][0][0] == "private:T1:U2:DPRIVATE:" and seen[0][1] == {
+        "shared": False
+    }
+    assert sent == [("DPRIVATE", "A private answer", {})]
