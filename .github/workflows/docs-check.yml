@@ -80,7 +80,7 @@ jobs:
     steps:
       - name: Download PR number (approval)
         if: inputs.mode == 'approval'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: docs-check-pr
           path: ${{ runner.temp }}/docs-check-pr
@@ -115,7 +115,7 @@ jobs:
 
       - name: Look up the last answer for this PR
         id: verdict-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/docs-check-verdict
           key: docs-check-pr${{ steps.pr.outputs.number }}-${{ steps.pr.outputs.sha || 'push' }}
@@ -153,7 +153,7 @@ jobs:
 
       - name: Set up Python
         if: steps.run.outputs.go == 'true'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ inputs.python_version || '3.13' }}
 
@@ -196,7 +196,7 @@ jobs:
 
       - name: Remember the answer for this commit
         if: steps.check.outputs.verdict == 'done'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/docs-check-verdict
           key: docs-check-pr${{ steps.pr.outputs.number }}-${{ steps.pr.outputs.sha }}
