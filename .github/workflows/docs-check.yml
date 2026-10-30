@@ -1,0 +1,202 @@
+name: Docs check
+
+# Checks whether a PR needs docs and shows the answer as a `docs-check` status on
+# the PR. Other repos run this workflow from their own workflow file. For
+# transformers, that's `.github/workflows/docs-check.yml`.
+#
+# The code that does the checking is the `docs-check` command in this package, so
+# this workflow installs the package. The rules Serge follows come from the repo
+# that runs this workflow, because each repo decides what needs docs.
+#
+# It runs in one of two modes:
+# - `approval`: runs after a maintainer approves a PR. It asks Serge
+#   whether the PR needs docs, saves the answer, leaves a comment
+#   if docs are needed, and sets the status. Serge can read the PR's code, but
+#   none of it is run.
+# - `push`: runs when a PR is opened or updated. It doesn't ask Serge
+#   and doesn't download the PR's code. It reuses the last saved answer to set the
+#   status on the new commit.
+#
+# The status doesn't block merging unless the calling repo makes it a required check.
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "approval (ask Serge) or push (reuse the last saved answer)"
+        type: string
+        required: true
+      pr_number:
+        description: "Push mode only: the PR number. Approval mode gets it from the approval trigger."
+        type: string
+        default: ""
+      rules_file:
+        description: "The file with the rules Serge follows, in the repo being checked"
+        type: string
+        default: .ai/docs-check-rules.md
+      docs_path:
+        description: "The docs folder. A PR that edits it turns the status green."
+        type: string
+        default: docs/source/en/
+      library_path:
+        description: "The library code folder. Defaults to src/<repo name>/."
+        type: string
+        default: ""
+      llm_model:
+        description: "The model Serge uses. It must be able to use tools to read files."
+        type: string
+        default: ""
+      llm_api_base:
+        description: "The address of the model service Serge calls. Defaults to the Hugging Face router."
+        type: string
+        default: https://router.huggingface.co/v1
+      llm_bill_to:
+        description: "The Hugging Face organization that pays for Serge's model calls"
+        type: string
+        default: ""
+      python_version:
+        description: "The Python version to run the check with"
+        type: string
+        default: "3.13"
+      transformersci_ref:
+        description: "The branch, tag, or commit of transformers-ci to install"
+        type: string
+        default: main
+    secrets:
+      llm_api_key:
+        description: "The key for the model service Serge calls. Only needed in approval mode."
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  docs_check:
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+      statuses: write
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download PR number (approval)
+        if: inputs.mode == 'approval'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: docs-check-pr
+          path: ${{ runner.temp }}/docs-check-pr
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve PR
+        id: pr
+        env:
+          MODE: ${{ inputs.mode }}
+          INPUT_PR: ${{ inputs.pr_number }}
+          PR_FILE: ${{ runner.temp }}/docs-check-pr/number
+          APPROVAL_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = "approval" ]; then
+            number="$(head -c 20 "$PR_FILE" | tr -d '[:space:]')"
+            sha="$APPROVAL_SHA"
+          elif [ "$MODE" = "push" ]; then
+            number="$INPUT_PR"
+            sha=""
+          else
+            echo "::error::mode must be approval or push" >&2
+            exit 1
+          fi
+          if ! echo "$number" | grep -qE '^[0-9]+$'; then
+            echo "::error::Invalid PR number" >&2
+            exit 1
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Look up the last answer for this PR
+        id: verdict-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/docs-check-verdict
+          key: docs-check-pr${{ steps.pr.outputs.number }}-${{ steps.pr.outputs.sha || 'push' }}
+          restore-keys: docs-check-pr${{ steps.pr.outputs.number }}-
+
+      - name: Decide whether to run
+        id: run
+        env:
+          MODE: ${{ inputs.mode }}
+          EXACT_HIT: ${{ steps.verdict-cache.outputs.cache-hit }}
+        run: |
+          if [ "$MODE" = "approval" ] && [ "$EXACT_HIT" = "true" ]; then
+            echo "This commit was already checked."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout rules
+        if: steps.run.outputs.go == 'true' && inputs.mode == 'approval'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: base
+          persist-credentials: false
+          sparse-checkout: ${{ inputs.rules_file }}
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout PR head (read by Serge, never executed)
+        if: steps.run.outputs.go == 'true' && inputs.mode == 'approval'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: pr-head
+          ref: ${{ steps.pr.outputs.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        if: steps.run.outputs.go == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python_version || '3.13' }}
+
+      - name: Install docs check
+        if: steps.run.outputs.go == 'true'
+        run: |
+          set -euo pipefail
+          if ! echo "$TRANSFORMERSCI_REF" | grep -qE '^[a-zA-Z0-9/_.-]+$'; then
+            echo "::error::Invalid transformersci_ref format" >&2
+            exit 1
+          fi
+          pip install --disable-pip-version-check "transformers-ci[docs-check] @ git+https://github.com/huggingface/transformers-ci@${TRANSFORMERSCI_REF}"
+        env:
+          TRANSFORMERSCI_REF: ${{ inputs.transformersci_ref || 'main' }}
+
+      - name: Check whether the PR needs docs
+        id: check
+        if: steps.run.outputs.go == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LLM_API_KEY: ${{ secrets.llm_api_key }}
+          LLM_API_BASE: ${{ inputs.llm_api_base }}
+          LLM_MODEL: ${{ inputs.llm_model }}
+          LLM_BILL_TO: ${{ inputs.llm_bill_to }}
+          MODE: ${{ inputs.mode }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.sha }}
+          RULES_FILE: base/${{ inputs.rules_file }}
+          VERDICT_FILE: ${{ runner.temp }}/docs-check-verdict/verdict.json
+          DOCS_PATH: ${{ inputs.docs_path }}
+          LIBRARY_PATH: ${{ inputs.library_path }}
+        run: |
+          args=(--mode "$MODE" --pr "$PR_NUMBER" --verdict-file "$VERDICT_FILE"
+                --docs-path "$DOCS_PATH")
+          if [ -n "$LIBRARY_PATH" ]; then args+=(--library-path "$LIBRARY_PATH"); fi
+          if [ "$MODE" = "approval" ]; then
+            args+=(--head-sha "$HEAD_SHA" --rules "$RULES_FILE" --checkout pr-head)
+          fi
+          docs-check "${args[@]}"
+
+      - name: Remember the answer for this commit
+        if: steps.check.outputs.verdict == 'done'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/docs-check-verdict
+          key: docs-check-pr${{ steps.pr.outputs.number }}-${{ steps.pr.outputs.sha }}

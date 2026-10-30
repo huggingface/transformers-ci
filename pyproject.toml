@@ -19,6 +19,12 @@ contracts = [
 agentic = [
   "huggingface_hub>=0.25",
 ]
+docs-check = [
+  # PINNED to one Serge commit. docs_check uses Serge to talk to GitHub and
+  # the model, and to read files. Before moving to a newer commit,
+  # try `docs-check --dry-run` on a few PRs to make sure nothing broke.
+  "reviewbot @ git+https://github.com/huggingface/serge@91665cc22cbe07168c01cb10629800a80a9c5fc1",
+]
 otel = [
   "opentelemetry-api",
   "opentelemetry-exporter-otlp",
@@ -80,6 +86,7 @@ dashboard-failure-triage = "transformersci.agentic.dashboard_failure_triage:main
 serge-verify-verdict = "transformersci.agentic.serge_verify_verdict:main"
 relore-ensure-current = "transformersci.agentic.relore_version:main"
 assign-reviewers = "transformersci.reviewers.assign:main"
+docs-check = "transformersci.agentic.docs_check:main"
 
 [project.entry-points.pytest11]
 transformersci_otel = "transformersci.otel.resource_plugin"
