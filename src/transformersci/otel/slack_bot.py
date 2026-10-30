@@ -105,7 +105,9 @@ def command_reply(text: str, summary, dashboard: str, serge: str) -> str:
             "• `/askserge connect` — Securely link your GitHub account.\n"
             "• `/askserge disconnect` — Remove your self-service account link.\n"
             "• `/askserge help` — Show this guide.\n\n"
-            "You can also chat in plain language; mention me for each reply in a channel thread.\n"
+            "You can also ask naturally, for example ‘check PR 123’ or ‘rerun its failed CI’. "
+            "I’ll run the matching command when the target is clear; results arrive privately. "
+            "Mention me for each reply in a channel thread.\n"
             "In a DM, omit `/askserge` (for example, `pr 123`). "
             "In a channel, mention `@askserge pr 123`; replies arrive privately. "
             "Ask `@askserge introduce yourself to the team` for a public introduction.\n"
@@ -309,7 +311,37 @@ def handle(handler, summary, execute=None, investigation=None) -> bool:
                 if shared
                 else f"private:{team}:{user}:{fields.get('channel_id', [''])[0]}:{fields.get('thread_ts', [''])[0]}"
             )
-            return slack_chat.answer(scope, user, argument, dashboard, shared=shared)
+
+            def dispatch(name, value):
+                from . import slack_accounts
+
+                # Establish private delivery before starting any command.
+                channel()
+                try:
+                    verified_actor = None
+                    if name in {"rerun", "investigate", "traceback"}:
+                        verified_actor = slack_accounts.lookup(
+                            f"{team}:{user}", refresh=True
+                        )
+                    if name != "pr" and not verified_actor:
+                        result = slack_accounts.prompt(f"{team}:{user}")
+                    else:
+                        result = run(name, value, verified_actor, command_id)
+                except ValueError as error:
+                    result = str(error)
+                except Exception:
+                    result = "Command failed. Check the dashboard before retrying."
+                if shared:
+                    slack_investigations.reply(
+                        f"{team}:{user}", command_id, user, result, channel=channel()
+                    )
+                    target = f" for PR #{value}" if name != "traceback" else ""
+                    return f"I interpreted that as `{name}`{target}. I sent the response to your DM."
+                return result
+
+            return slack_chat.answer(
+                scope, user, argument, dashboard, shared=shared, dispatch=dispatch
+            )
 
         if path != "/slack/commands" or operation == "traceback":
             channel()  # Establish the private reply channel before starting work.

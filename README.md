@@ -236,9 +236,14 @@ Ask `@askserge introduce yourself to the team` for an introduction in the channe
 thread. Unrecognized requests become conversational chat using the dashboard's
 configured LLM. Mention the bot in each channel follow-up, or chat in a DM.
 Channel chat replies stay in that thread; private conversations are separate.
-Chat remembers up to eight exchanges for seven days, can explain commands and
-help reason about problems, and cannot execute actions or inspect live PRs itself.
-Use the explicit commands for current PR facts, reruns, and investigations.
+Chat remembers up to eight exchanges for seven days. Natural requests such as
+“How is PR 50071 doing?”, “rerun its failed CI”, or “investigate this traceback”
+can invoke the corresponding command. Each request selects at most one command;
+ambiguous targets trigger clarification. Channel requests get a short public
+acknowledgment, with results and linking prompts delivered privately. Actions use
+the requesting user's verified identity and existing permissions. Creating a PR
+still requires the investigation's explicit confirmation. General questions remain
+conversation; the bot does not execute shell commands or browse arbitrary links.
 
 Command results are delivered privately. Slash commands immediately return a
 private receipt; `result <id>` retrieves the saved result. Interactive traceback

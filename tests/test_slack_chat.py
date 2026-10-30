@@ -58,3 +58,111 @@ def test_chat_limits_failure_and_retention(chat, monkeypatch):
     )
     result = slack_chat.answer("scope", "U1", "question", "https://dashboard")
     assert "couldn’t answer" in result and "secret" not in result
+
+
+def test_intent_routes_once_without_saving_private_result(chat, monkeypatch):
+    requested = []
+    monkeypatch.setattr(
+        slack_chat.llm,
+        "chat_json",
+        lambda *a, **k: {"reply": "", "command": {"name": "pr", "argument": "42"}},
+    )
+
+    def dispatch(name, argument):
+        requested.append((name, argument))
+        return "private result"
+
+    assert (
+        slack_chat.answer(
+            "scope", "U1", "How is PR 42 doing?", "https://dashboard", dispatch=dispatch
+        )
+        == "private result"
+    )
+    assert requested == [("pr", "42")]
+    with slack_chat.slack_commands.connect() as db:
+        saved = db.execute("SELECT answer FROM slack_chat_turns").fetchone()[0]
+    assert "private result" not in saved and "PR 42" in saved
+    monkeypatch.setattr(
+        slack_chat.llm,
+        "chat_json",
+        lambda *a, **k: {"reply": "", "command": {"name": "rerun", "argument": "42"}},
+    )
+    slack_chat.answer(
+        "scope",
+        "U1",
+        "Please rerun its failed CI",
+        "https://dashboard",
+        dispatch=dispatch,
+    )
+    assert requested[-1] == ("rerun", "42")
+
+
+def test_intent_requires_grounded_unambiguous_target(chat, monkeypatch):
+    def fail(*args):
+        pytest.fail("Invalid command must never execute")
+
+    for prompt, command in [
+        ("Please check PR 42", {"name": "pr", "argument": "99"}),
+        (
+            "Check https://github.com/another/project/pull/42",
+            {"name": "pr", "argument": "42"},
+        ),
+        ("Rerun PR 42 and PR 99", {"name": "rerun", "argument": "42"}),
+        ("Create the PR", {"name": "approve", "argument": "42"}),
+        ("Fix this", {"name": "traceback", "argument": "ValueError: invented"}),
+        ("Fix this", {"name": "traceback", "argument": "this"}),
+    ]:
+        monkeypatch.setattr(
+            slack_chat.llm,
+            "chat_json",
+            lambda *a, **k: {"reply": "", "command": command},
+        )
+        slack_chat.answer(prompt, "U1", prompt, "https://dashboard", dispatch=fail)
+
+
+def test_intent_quoted_evidence_and_clarification(chat, monkeypatch):
+    requested = []
+    monkeypatch.setattr(
+        slack_chat.llm,
+        "chat_json",
+        lambda *a, **k: {"reply": "Which PR?", "command": None},
+    )
+    assert (
+        slack_chat.answer(
+            "scope",
+            "U1",
+            "Please rerun failed CI",
+            "https://dashboard",
+            dispatch=lambda *a: None,
+        )
+        == "Which PR?"
+    )
+    monkeypatch.setattr(
+        slack_chat.llm,
+        "chat_json",
+        lambda *a, **k: {"reply": "", "command": {"name": "rerun", "argument": "42"}},
+    )
+    slack_chat.answer(
+        "scope",
+        "U1",
+        "42",
+        "https://dashboard",
+        dispatch=lambda *a: requested.append(a) or "ok",
+    )
+    assert requested == [("rerun", "42")]
+    monkeypatch.setattr(
+        slack_chat.llm,
+        "chat_json",
+        lambda *a, **k: {
+            "reply": "",
+            "command": {"name": "traceback", "argument": "ValueError: bad shape"},
+        },
+    )
+    slack_chat.answer(
+        "failure",
+        "U1",
+        "Can you fix this? ValueError: bad shape",
+        "https://dashboard",
+        dispatch=lambda *a: requested.append(a) or "ok",
+    )
+    assert requested[-1] == ("traceback", "ValueError: bad shape")

@@ -679,7 +679,8 @@ def test_freeform_channel_chat_uses_worker_and_shared_thread(monkeypatch, comman
         "U2",
         "help me understand flaky tests",
     )
-    assert seen[0][1] == {"shared": True}
+    assert seen[0][1]["shared"] is True
+    assert callable(seen[0][1]["dispatch"])
     assert sent == [("CTEAM", "Here is an explanation.", {"thread_ts": "200.1"})]
 
 
@@ -732,7 +733,57 @@ def test_freeform_dm_keeps_private_scope(monkeypatch, commands):
     handler, replies = event_handler(monkeypatch, payload)
     slack_bot.handle(handler, lambda pr: None, lambda *a: pytest.fail("No action"))
     assert replies == [(200, {})]
-    assert seen[0][0][0] == "private:T1:U2:DPRIVATE:" and seen[0][1] == {
-        "shared": False
-    }
+    assert seen[0][0][0] == "private:T1:U2:DPRIVATE:" and seen[0][1]["shared"] is False
     assert sent == [("DPRIVATE", "A private answer", {})]
+
+
+@pytest.mark.parametrize("linked", [True, False])
+def test_natural_action_keeps_identity_gates_results_private_and_deduplicates(
+    monkeypatch, commands, linked
+):
+    from transformersci.otel import slack_api, slack_accounts, slack_chat
+
+    sent, calls, lookups = [], [], []
+    monkeypatch.setattr(slack_api, "open_dm", lambda user: "DPRIVATE")
+    monkeypatch.setattr(
+        slack_api, "message", lambda channel, text, **kw: sent.append((channel, text))
+    )
+
+    def lookup(owner, **kwargs):
+        lookups.append((owner, kwargs))
+        return "verified-user" if linked else None
+
+    monkeypatch.setattr(slack_accounts, "lookup", lookup)
+    monkeypatch.setattr(slack_accounts, "prompt", lambda owner: "PRIVATE-CONNECT-LINK")
+    monkeypatch.setattr(
+        slack_chat, "answer", lambda *a, **kw: kw["dispatch"]("rerun", "42")
+    )
+    payload = {
+        "api_app_id": "A1",
+        "team_id": "T1",
+        "event_id": "EvNatural",
+        "event": {
+            "type": "app_mention",
+            "user": "U2",
+            "channel": "CTEAM",
+            "ts": "200.1",
+            "text": "<@UBOT> Please rerun failed CI for PR 42",
+        },
+    }
+
+    def execute(*args):
+        calls.append(args)
+        return "PRIVATE-RESULT"
+
+    for _ in range(2):
+        handler, replies = event_handler(monkeypatch, payload)
+        slack_bot.handle(handler, lambda pr: None, execute)
+        assert replies == [(200, {})]
+    assert lookups == [("T1:U2", {"refresh": True})]
+    if linked:
+        assert len(calls) == 1 and calls[0][:3] == ("rerun", "42", "verified-user")
+        assert sent[0] == ("DPRIVATE", "PRIVATE-RESULT")
+    else:
+        assert not calls and sent[0] == ("DPRIVATE", "PRIVATE-CONNECT-LINK")
+    assert len(sent) == 2 and sent[1][0] == "CTEAM"
+    assert "PRIVATE-" not in sent[1][1] and "`rerun`" in sent[1][1]

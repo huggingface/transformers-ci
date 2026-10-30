@@ -5,7 +5,7 @@ import html
 import logging
 import time
 
-from . import llm, slack_commands
+from . import llm, slack_commands, slack_intent
 
 _LOG = logging.getLogger(__name__)
 MAX_INPUT = 8000
@@ -14,7 +14,7 @@ HISTORY_TURNS = 8
 RETENTION = 7 * 86400
 
 
-def answer(scope, user, prompt, dashboard, *, shared=False):
+def answer(scope, user, prompt, dashboard, *, shared=False, dispatch=None):
     if len(prompt) > MAX_INPUT:
         return "That message is too long for chat. Please keep it under 8,000 characters, or use `look at the traceback: ...` for an investigation."
     cfg = llm.config()
@@ -55,6 +55,16 @@ def answer(scope, user, prompt, dashboard, *, shared=False):
         + "Supported functionality:\n"
         + command_reply("help", lambda pr: None, dashboard, "")
     )
+    if dispatch is not None:
+        system = (
+            "You are askserge, the Transformers CI assistant. Be friendly and concise. "
+            "Use Slack formatting. Command results are delivered privately, even when requested in a channel. "
+            "Never request credentials. GitHub identity and permissions are verified by the backend. "
+            "You see only this conversation, not private results or other conversations. "
+            + slack_intent.INSTRUCTIONS
+            + "\nSupported functionality:\n"
+            + command_reply("help", lambda pr: None, dashboard, "")
+        )
     messages = [{"role": "system", "content": system}]
     for author, question, reply in reversed(history):
         messages.extend(
@@ -65,16 +75,41 @@ def answer(scope, user, prompt, dashboard, *, shared=False):
         )
     messages.append({"role": "user", "content": f"Slack user {user}: {prompt}"})
     try:
-        result = llm.chat(
+        completion = llm.chat_json if dispatch is not None else llm.chat
+        result = completion(
             cfg,
             messages,
             max_tokens=4096,
             temperature=0.4,
             timeout=60,
             session_id="slack-" + hashlib.sha256(scope.encode()).hexdigest()[:24],
-        ).strip()
+        )
+        if dispatch is not None:
+            command = slack_intent.validate(result, prompt, history)
+            if command is not None:
+                name, argument = command
+                response = dispatch(name, argument)
+                # Keep only the requested action in chat history, never its private result.
+                remember(
+                    scope,
+                    user,
+                    prompt,
+                    f"Requested {name}"
+                    + (
+                        f" for PR {argument}"
+                        if name != "traceback"
+                        else " investigation"
+                    )
+                    + "; response delivered privately.",
+                )
+                return response
+            result = result["reply"]
+        result = result.strip()
         if not result:
             raise ValueError("empty answer")
+    except slack_intent.InvalidIntent as error:
+        remember(scope, user, prompt, str(error))
+        return str(error)
     except Exception:
         _LOG.warning("Slack chat generation failed", exc_info=False)
         return "I couldn’t answer just now. Please try again, or send `help` for the available commands."
@@ -82,6 +117,12 @@ def answer(scope, user, prompt, dashboard, *, shared=False):
         result = (
             result[:MAX_ANSWER] + "\n[Answer shortened for Slack; ask me to continue.]"
         )
+    remember(scope, user, prompt, result)
+    # Model output must not generate Slack mentions or special control syntax.
+    return html.escape(result, quote=False)
+
+
+def remember(scope, user, prompt, result):
     with slack_commands.connect() as db:
         db.execute(
             "INSERT INTO slack_chat_turns(scope,user,prompt,answer,created) VALUES (?,?,?,?,?)",
@@ -91,5 +132,3 @@ def answer(scope, user, prompt, dashboard, *, shared=False):
             "DELETE FROM slack_chat_turns WHERE scope=? AND id NOT IN (SELECT id FROM slack_chat_turns WHERE scope=? ORDER BY id DESC LIMIT ?)",
             (scope, scope, HISTORY_TURNS),
         )
-    # Model output must not generate Slack mentions or special control syntax.
-    return html.escape(result, quote=False)
