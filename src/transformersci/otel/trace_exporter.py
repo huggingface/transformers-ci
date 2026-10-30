@@ -73,7 +73,7 @@ from urllib.request import Request, urlopen
 from transformersci.otel import my_stuff
 from transformersci.otel import dashboard_auth
 from transformersci.otel import mic_jobs
-from transformersci.otel import slack_bot, slack_commands, slack_investigations
+from transformersci.otel import slack_accounts, slack_bot, slack_commands, slack_investigations
 from transformersci.otel.pr_search import SEARCH_HTML
 from transformersci import github_app
 from transformersci.otel import related_issues
@@ -8810,6 +8810,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
             ),
         ):
             return
+        if slack_accounts.handle(self, "POST"):
+            return
         if dashboard_auth.handle(self, "POST"):
             return
         if mic_jobs.handle(self, "POST"):
@@ -8915,22 +8917,14 @@ class MetricsHandler(BaseHTTPRequestHandler):
             )
             return
         try:
-            mappings = json.loads(os.getenv("TCI_SLACK_ACTORS", "{}"))
-            allowed = os.getenv("TCI_SLACK_TEAM_IDS", "").split(",")
-            owners = [
-                owner
-                for owner, actor in mappings.items()
-                if isinstance(actor, str)
-                and actor.lower() == login.lower()
-                and re.fullmatch(r"T[A-Z0-9]+:[UW][A-Z0-9]+", owner)
-                and owner.split(":")[0] in allowed
-            ]
+            identity = dashboard_auth.identity(self.headers)
+            owners = slack_accounts.owners_for(login, identity["user_id"] if identity else None)
             if len(owners) != 1:
                 self._reply_json(
                     409,
                     {
                         "status": "slack_account_not_linked",
-                        "detail": "Ask the dashboard administrator to link your GitHub account to one Slack account.",
+                        "detail": "Send `connect` to @askserge in Slack and link your GitHub account, then retry.",
                     },
                 )
                 return
@@ -9776,6 +9770,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         self._request_route = "notfound"
         self._request_cache = "none"
         self.path = _normalize_trace_query(self.path)
+        if slack_accounts.handle(self, "GET"):
+            return
         if dashboard_auth.handle(self, "GET"):
             return
         if mic_jobs.handle(self, "GET"):

@@ -42,12 +42,14 @@ def command_reply(text: str, summary, dashboard: str, serge: str) -> str:
             "I’ll investigate, prepare a fix, and run the configured verification. "
             "You’ll receive phase updates in a private thread, and I’ll ask before creating a PR.\n\n"
             "*Commands*\n"
-            "• `/askserge pr <number>` — Show CI check status for the PR’s current commit and link to its dashboard.\n"
+            "• `/askserge pr <number>` — Show the title, author, age, current CI checks, and a Relore brief with review and project history.\n"
             "• `/askserge rerun <number>` — Rerun failed CI for that PR. If active runs need cancellation, confirm in the dashboard first.\n"
             "• `/askserge investigate <number>` — Ask Serge for a draft review of the PR; returns a link to the review.\n"
             "• `/askserge result <id>` — Retrieve a saved command result using the ID from its receipt.\n"
             "• `/askserge dashboard` — Open the CI dashboard.\n"
             "• `/askserge serge` — Open Serge.\n"
+            "• `/askserge connect` — Securely link your GitHub account.\n"
+            "• `/askserge disconnect` — Remove your self-service account link.\n"
             "• `/askserge help` — Show this guide.\n\n"
             "In a DM, omit `/askserge` (for example, `pr 123`). "
             "In a channel, mention `@askserge pr 123`; replies arrive privately.\n"
@@ -181,6 +183,7 @@ def handle(handler, summary, execute=None, investigation=None) -> bool:
                 if len(actions) != 1 or actions[0].get("action_id") not in {
                     "serge_approve",
                     "serge_decline",
+                    "serge_link_confirm",
                 }:
                     raise ValueError
                 decision = actions[0]["action_id"].removeprefix("serge_")
@@ -189,7 +192,11 @@ def handle(handler, summary, execute=None, investigation=None) -> bool:
                     "user_id": [payload["user"]["id"]],
                     "channel_id": [payload["channel"]["id"]],
                     "thread_ts": [(payload.get("message") or {}).get("thread_ts", "")],
-                    "text": [f"decision {actions[0]['value']} {decision}"],
+                    "text": [
+                        f"link-confirm {actions[0]['value']}"
+                        if decision == "link_confirm"
+                        else f"decision {actions[0]['value']} {decision}"
+                    ],
                 }
             elif fields.get("command") != ["/askserge"]:
                 raise ValueError
@@ -285,6 +292,7 @@ def handle(handler, summary, execute=None, investigation=None) -> bool:
                 if path != "/slack/commands"
                 else None,
                 fallback=fallback,
+                onboarding=True,
             )
         except Exception:
             handler._reply_json(503, {"error": "command_store_unavailable"})

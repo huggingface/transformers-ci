@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect GitHub to askserge</title>
+<style>body{font:17px system-ui,sans-serif;max-width:38rem;margin:4rem auto;padding:0 1rem;color:#18212b}button,a{font:inherit}button{padding:.7rem 1rem;cursor:pointer}p{line-height:1.5}[hidden]{display:none!important}</style>
+<script src="/auth/slack/app.js" defer></script></head><body>
+<h1>Connect GitHub to askserge</h1>
+<p>Link your GitHub identity to the Slack account that requested this connection. Serge will still check repository permissions for each action.</p>
+<p id="status" role="status">Loading…</p>
+<p><a id="signin" href="/auth/github?next=%2Fauth%2Fslack" hidden>Sign in with GitHub</a></p>
+<button id="confirm" type="button" hidden>Continue in Slack</button>
+<p>Only continue if you requested this link yourself. You’ll confirm the connection in your Slack DM before it becomes active.</p>
+<p>To unlink later, send <code>disconnect</code> to askserge. Administrator-managed mappings must be changed by the administrator.</p>
+</body></html>

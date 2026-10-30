@@ -5,7 +5,6 @@ No response URLs or Slack credentials are stored. Users retrieve results with
 """
 
 import hashlib
-import json
 import logging
 import os
 import re
@@ -29,6 +28,9 @@ def connect():
     if not root:
         raise ValueError("persistent run store required")
     path = Path(root) / "slack-commands.sqlite3"
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    os.close(fd)
+    os.chmod(path, 0o600)
     db = sqlite3.connect(path, timeout=1)
     db.execute("""CREATE TABLE IF NOT EXISTS commands (
         id TEXT PRIMARY KEY, owner TEXT NOT NULL, created REAL NOT NULL,
@@ -41,30 +43,42 @@ def connect():
 
 
 def actor_for(team, user):
-    try:
-        mapping = json.loads(os.getenv("TCI_SLACK_ACTORS", "{}"))
-        actor = mapping.get(f"{team}:{user}")
-        if isinstance(actor, str) and re.fullmatch(
-            r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", actor
-        ):
-            return actor
-    except (ValueError, AttributeError):
-        pass
-    return None
+    from . import slack_accounts
+
+    return slack_accounts.lookup(f"{team}:{user}")
 
 
-def queue(fields, raw, execute, *, notify=None, fallback=None):
+def queue(fields, raw, execute, *, notify=None, fallback=None, onboarding=False):
     team, user = fields["team_id"][0], fields["user_id"][0]
     owner = f"{team}:{user}"
     text = fields.get("text", [""])[0]
     parts = text.split()
     static_result = None
     operation, pr, actor = "reply", "", None
-    if (
+    from . import slack_accounts
+
+    linked = actor_for(team, user) if onboarding else None
+    if onboarding and (
+        text.strip().lower() in {"connect", "disconnect"}
+        or (len(parts) == 2 and parts[0] == "link-confirm")
+    ):
+        operation, pr = (
+            ("link-confirm", parts[1])
+            if len(parts) == 2
+            else (text.strip().lower(), "")
+        )
+    elif (
+        onboarding
+        and not linked
+        and not (parts and parts[0] in {"help", "dashboard", "serge", "pr", "result"})
+    ):
+        operation = "connect"
+    elif (
         len(parts) == 2
         and parts[0] == "result"
         and re.fullmatch(r"[a-f0-9]{24}", parts[1])
     ):
+        operation = "result"
         with connect() as db:
             row = db.execute(
                 "SELECT result FROM commands WHERE id=? AND owner=?", (parts[1], owner)
@@ -105,7 +119,7 @@ def queue(fields, raw, execute, *, notify=None, fallback=None):
         static_result = fallback(text)
     else:
         return None
-    if static_result is not None and notify is None:
+    if static_result is not None and notify is None and not (onboarding and not linked):
         return static_result
     command_id = hashlib.sha256(raw).hexdigest()[:24]
     lookup = f"Use `/askserge result {command_id}` for the result."
@@ -148,11 +162,34 @@ def queue(fields, raw, execute, *, notify=None, fallback=None):
 
     def work():
         try:
-            result = (
-                static_result
-                if static_result is not None
-                else execute(operation, pr, actor, command_id)
-            )
+            if static_result == "Command limit reached (20 per hour). Try again later.":
+                result = static_result
+            elif operation == "connect":
+                result = slack_accounts.prompt(owner)
+            elif operation == "disconnect":
+                result = slack_accounts.disconnect(owner)
+            elif operation == "link-confirm":
+                result = slack_accounts.confirm(owner, pr)
+            else:
+                current_actor = actor
+                if static_result is None and operation in {
+                    "traceback",
+                    "rerun",
+                    "investigate",
+                    "decision",
+                }:
+                    current_actor = slack_accounts.lookup(owner, refresh=True)
+                    if not current_actor:
+                        raise ValueError(
+                            "Send `connect` to link your GitHub account first."
+                        )
+                result = (
+                    static_result
+                    if static_result is not None
+                    else execute(operation, pr, current_actor, command_id)
+                )
+                if onboarding and not linked and operation != "result":
+                    result += "\n\n" + slack_accounts.prompt(owner)
         except ValueError as error:
             result = str(error)
         except Exception:
@@ -174,6 +211,20 @@ def queue(fields, raw, execute, *, notify=None, fallback=None):
             finally:
                 _SLOTS.release()
 
+    if (
+        notify is None
+        and onboarding
+        and (
+            operation in {"connect", "disconnect"}
+            or (static_result is not None and not linked)
+        )
+    ):
+        work()
+        with connect() as db:
+            return db.execute(
+                "SELECT result FROM commands WHERE id=? AND owner=?",
+                (command_id, owner),
+            ).fetchone()[0]
     _POOL.submit(work)
     return "Command accepted. " + lookup
 
@@ -236,39 +287,6 @@ def pr_status(pr, github, dashboard):
     sha = (pull.get("head") or {}).get("sha", "")
     if not re.fullmatch(r"[a-f0-9]{40}", sha):
         return "GitHub did not return a valid PR head. Check the dashboard."
-    checks = github(f"commits/{sha}/check-runs?per_page=100")
-    statuses = github(f"commits/{sha}/status?per_page=100")
-    counts = {"passed": 0, "failed": 0, "pending": 0, "other": 0}
-    for check in checks.get("check_runs", []):
-        conclusion = check.get("conclusion")
-        key = (
-            "pending"
-            if check.get("status") != "completed"
-            else (
-                "passed"
-                if conclusion == "success"
-                else "failed"
-                if conclusion
-                in {
-                    "failure",
-                    "timed_out",
-                    "cancelled",
-                    "action_required",
-                    "startup_failure",
-                }
-                else "other"
-            )
-        )
-        counts[key] += 1
-    for status in statuses.get("statuses", []):
-        key = {
-            "success": "passed",
-            "failure": "failed",
-            "error": "failed",
-            "pending": "pending",
-        }.get(status.get("state"), "other")
-        counts[key] += 1
-    detail = ", ".join(f"{count} {key}" for key, count in counts.items())
-    if checks.get("total_count", 0) > 100 or statuses.get("total_count", 0) > 100:
-        detail += " (first 100 checks/statuses only; see dashboard for the rest)"
-    return f"<{dashboard}/pr-ci-view?pr={pr}|Transformers PR #{pr}> — {pull.get('state', 'unknown')}, head {sha[:8]}: {detail}."
+    from . import slack_pr
+
+    return slack_pr.summary(pr, pull, sha, github, dashboard)

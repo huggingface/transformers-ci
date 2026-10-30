@@ -222,10 +222,14 @@ reported without claiming the fix was verified.
 
 Other commands work as mentions, DMs or `/askserge` commands:
 
-- `pr 123`: current-head GitHub check/status counts and a dashboard link.
+- `pr 123`: title, author, age, branch and change details, paginated current-head
+  CI results, and a human-readable Relore brief (reviews, people, related issues, competing
+  work, file history, and similar errors). Relore evidence includes its index time;
+  unavailable or oversized briefs and pagination limits are explicitly reported.
 - `rerun 123`: rerun failed CI through the existing permission and rate-limit gates.
   If active runs need cancellation, review and confirm in the dashboard.
 - `investigate 123`: a PR-focused Serge draft review, with a link to its result.
+- `connect`, `disconnect`: link or unlink your GitHub account.
 - `help`, `dashboard`, `serge`, `result <id>`.
 
 Mention/DM results are delivered privately. Slash commands immediately return a
@@ -233,8 +237,15 @@ private receipt; `result <id>` retrieves the saved result. Interactive traceback
 investigations also send their phase updates by DM. Command receipts are retained
 for seven days and deduplicate Slack retries. At most four command handlers run
 concurrently; users can start 20 commands/hour, with Serge additionally limiting
-investigations to five/hour and one running job per GitHub account. The first
-version uses operator-verified account mappings rather than self-service linking.
+investigations to five/hour and one running job per GitHub account.
+
+On first contact, users without a mapping receive a private **Connect GitHub**
+link. Sign in through the dashboard, continue, then confirm the account in Slack
+and retry the original command. Links expire after 15 minutes. Connections persist
+across restarts and use the verified GitHub account ID; existing repository
+permissions still apply. `disconnect` removes a self-service connection. Existing
+operator-managed mappings take precedence and must be removed by an operator.
+Read-only commands remain available without connecting.
 
 ### Deployment
 

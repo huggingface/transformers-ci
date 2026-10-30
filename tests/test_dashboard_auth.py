@@ -381,3 +381,45 @@ def test_github_client_never_follows_token_redirects():
         ),
         "unexpected_github_redirect",
     )
+
+
+def test_slack_link_browser_assets_and_existing_auth_gate(
+    http, configured, monkeypatch, tmp_path
+):
+    from transformersci.otel import slack_accounts, slack_commands
+
+    monkeypatch.setenv("PYTEST_TRACE_EXPORTER_RUN_STORE", str(tmp_path))
+    monkeypatch.setenv("TCI_SLACK_TEAM_IDS", "T1")
+    monkeypatch.setenv("TCI_SLACK_ACTORS", "{}")
+    monkeypatch.setenv("TCI_SLACK_BOT_TOKEN", "fake")
+    monkeypatch.setattr(slack_accounts.slack_api, "open_dm", lambda user: "D1")
+    sent = []
+    monkeypatch.setattr(
+        slack_accounts.slack_api, "message", lambda *args: sent.append(args)
+    )
+    code, body, headers = http("/auth/slack")
+    assert code == 200 and "Continue in Slack" in body
+    assert headers["Referrer-Policy"] == "no-referrer"
+    assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+    assert http("/auth/slack/app.js")[0] == 200
+    prompt = slack_accounts.prompt("T1:U1")
+    token = prompt.split("/auth/slack#")[1].split("|")[0]
+    assert http("/auth/slack/connect", body={"token": token})[0] == 403
+    assert (
+        http(
+            "/auth/slack/connect",
+            body={"token": token},
+            headers={"Origin": "https://dashboard.test", "X-TCI-Action": "1"},
+        )[0]
+        == 401
+    )
+    assert (
+        http("/auth/slack/connect", body={"token": token}, headers=browser(configured))[
+            0
+        ]
+        == 200
+    )
+    assert slack_commands.actor_for("T1", "U1") is None
+    gid = sent[-1][2][1]["elements"][0]["value"]
+    assert "Connected" in slack_accounts.confirm("T1:U1", gid)
+    assert slack_commands.actor_for("T1", "U1") == "octocat"
