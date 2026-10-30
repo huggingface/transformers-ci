@@ -15,7 +15,38 @@ on:
 permissions: {}
 
 jobs:
+  # Skip the gate when someone with write access pushes to the PR: it judges untrusted code and
+  # would block on files maintainers touch (`.gitattributes`). Fails closed. PR CI is not approved:
+  # "Update branch" is also a maintainer push, not a review.
+  check-pusher:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      trusted: ${{ steps.permission.outputs.trusted }}
+    steps:
+      - name: Check whether the pusher has write access
+        id: permission
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ACTION: ${{ github.event.action }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          trusted=false
+          if [ "$ACTION" = "synchronize" ]; then
+            # `.permission` is the legacy level: admin, write, read or none (maintain reports as write)
+            permission=$(gh api "repos/$REPO/collaborators/$SENDER/permission" --jq '.permission') || permission=none
+            echo "$SENDER has $permission permission"
+            case "$permission" in
+              admin|write) trusted=true ;;
+            esac
+          fi
+          echo "trusted=$trusted" >> "$GITHUB_OUTPUT"
+
   get-changed-files:
+    needs: check-pusher
+    if: needs.check-pusher.outputs.trusted != 'true'
     runs-on: ubuntu-22.04
     permissions:
       pull-requests: read
