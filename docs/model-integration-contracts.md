@@ -41,6 +41,12 @@ execution requires the doc-builder revision installed by
 `.github/workflows/pr-ci_contracts.yml`. `--lock PATH` remains available for an
 explicit custom fleet; it cannot be combined with `--fleet` or `--fleet-revision`.
 
+A contract can declare a variant unmeasured (`resources` variant `devices: []`),
+usually because of an open upstream bug; runs report it as a declared skip.
+`--run-declared` runs it anyway, to reproduce the bug or check its fix. On a PR,
+the `mic-run-declared` label (or the workflow's `run_declared` input) adds it;
+push a commit or re-run the job after labelling.
+
 ## Selection and baselines
 
 Model changes select MICs that use that model or its processors. Additive Auto

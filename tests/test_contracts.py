@@ -139,6 +139,19 @@ def test_missing_baseline_is_a_failure(fleet, capsys):
     assert code == 1 and "no reviewed baseline" in rows[0]["failures"][0]
 
 
+def test_declared_unmeasured_variant_runs_only_with_run_declared(fleet, capsys):
+    path = fleet[0].parent / "integration.json"
+    manifest = json.loads(path.read_text())
+    manifest["integrations"]["transformers"]["resources"] = {
+        "fixture": {"variants": {"default": {"devices": []}}}
+    }
+    path.write_text(json.dumps(manifest))
+    _, rows = invoke(fleet, capsys)
+    assert rows[0]["status"] == "unsupported" and rows[0]["skip"] == "declared"
+    code, rows = invoke(fleet, capsys, "--run-declared")
+    assert code == 0 and rows[0]["status"] == "pass"
+
+
 def test_exception_is_an_error(fleet, capsys):
     fleet[1].write_text("raise RuntimeError('broken contract')\n")
     code, rows = invoke(fleet, capsys)
