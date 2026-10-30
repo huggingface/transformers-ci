@@ -36,6 +36,7 @@ settings:
   event_subscriptions:
     request_url: https://transformers-ci.huggingface.cool/slack/events
     bot_events:
+      - app_home_opened
       - app_mention
       - message.im
   interactivity:
