@@ -175,6 +175,16 @@ tempo:
 #------------------------------------------------------------------------------
 traceExporter:
   replicas: 1
+  slack:
+    enabled: false
+    publicUrl: ""
+    teamIds: []
+    # Operator-verified Slack team:user IDs mapped to GitHub logins.
+    actors: {}
+    sergePublicUrl: ""
+    appId: ""
+    botUserId: ""
+    proxy: ""
   micJobs:
     # Requires dashboard auth, the Serge service token and MIC workflow access.
     enabled: false
@@ -704,6 +714,8 @@ secrets:
     githubOauthClientSecret: grafana-github-oauth-client-secret
     # GitHub App client secret for dashboard-owned user login. Separate from
     # both the App private key and Grafana's OAuth App secret.
+    slackBotToken: slack-bot-token
+    slackSigningSecret: slack-signing-secret
     dashboardGithubClientSecret: dashboard-github-client-secret
     # LLM API key for the exporter's WDYT? answers. Optional.
     llmApiKey: llm-api-key

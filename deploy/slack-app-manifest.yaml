@@ -1,0 +1,46 @@
+display_information:
+  name: askserge
+  description: Investigate Transformers CI failures with Serge
+features:
+  app_home:
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  agent_view:
+    agent_description: Investigate Transformers CI failures, prepare verified fixes, and ask before opening a PR.
+    suggested_prompts:
+      - title: How to investigate a failure
+        message: help
+      - title: Open CI dashboard
+        message: dashboard
+      - title: Open Serge
+        message: serge
+  bot_user:
+    display_name: askserge
+    always_online: false
+  slash_commands:
+    - command: /askserge
+      url: https://transformers-ci.huggingface.cool/slack/commands
+      description: Investigate CI failures or check and rerun a PR
+      usage_hint: help
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - assistant:write
+      - chat:write
+      - im:write
+      - im:history
+      - commands
+settings:
+  event_subscriptions:
+    request_url: https://transformers-ci.huggingface.cool/slack/events
+    bot_events:
+      - app_mention
+      - message.im
+  interactivity:
+    is_enabled: true
+    request_url: https://transformers-ci.huggingface.cool/slack/actions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

@@ -108,6 +108,35 @@ spec:
                   name: {{ .Values.secrets.name }}
                   key: {{ .Values.secrets.keys.dashboardGithubClientSecret }}
             {{- end }}
+            {{- if .Values.traceExporter.slack.enabled }}
+            {{- if or (not .Values.traceExporter.runStore.enabled) (ne (int .Values.traceExporter.replicas) 1) }}
+            {{- fail "Slack commands require runStore.enabled and one exporter replica" }}
+            {{- end }}
+            - name: TCI_SLACK_APP_ID
+              value: {{ required "traceExporter.slack.appId is required" .Values.traceExporter.slack.appId | quote }}
+            - name: TCI_SLACK_BOT_USER_ID
+              value: {{ required "traceExporter.slack.botUserId is required" .Values.traceExporter.slack.botUserId | quote }}
+            - name: TCI_SLACK_PROXY
+              value: {{ .Values.traceExporter.slack.proxy | quote }}
+            - name: TCI_SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.slackBotToken }}
+            - name: TCI_SLACK_ACTORS
+              value: {{ .Values.traceExporter.slack.actors | toJson | quote }}
+            - name: TCI_SLACK_PUBLIC_URL
+              value: {{ required "traceExporter.slack.publicUrl is required" .Values.traceExporter.slack.publicUrl | quote }}
+            - name: TCI_SLACK_TEAM_IDS
+              value: {{ join "," (required "traceExporter.slack.teamIds is required" .Values.traceExporter.slack.teamIds) | quote }}
+            - name: TCI_SLACK_SERGE_PUBLIC_URL
+              value: {{ .Values.traceExporter.slack.sergePublicUrl | quote }}
+            - name: TCI_SLACK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.slackSigningSecret }}
+            {{- end }}
             - name: PYTHONPATH
               value: /app/src/src
             - name: PYTEST_TRACE_EXPORTER_RELORE_URL

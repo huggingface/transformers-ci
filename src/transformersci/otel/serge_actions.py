@@ -17,7 +17,12 @@ from collections.abc import Callable
 # (id, label, what Serge will do, wired yet). Rendered with textContent only.
 ACTIONS = (
     ("new-issue", "New issue", "Draft a GitHub issue for this failure.", True),
-    ("fix-it", "Fix it!", "Serge reproduces the failure and opens a fix PR.", False),
+    (
+        "fix-it",
+        "Fix it!",
+        "Investigate and prepare a fix with updates in Slack. Ask before creating a PR.",
+        True,
+    ),
     ("wdyt", "WDYT?", "Serge takes a quick look and tells you what it thinks.", True),
     (
         "who-can-help",
@@ -159,7 +164,7 @@ function render(signedIn){
     if(signedIn){
       b.textContent=label;b.title=help;b.disabled=!enabled;b.classList.remove('locked');
       b.onclick=id==='wdyt'?wdyt:id==='who-can-help'?whoCanHelp:
-        id==='new-issue'?()=>newIssue(false):id==='work-on-it'?()=>newIssue(true):null;
+        id==='fix-it'?()=>fixIt(b):id==='new-issue'?()=>newIssue(false):id==='work-on-it'?()=>newIssue(true):null;
     }else{
       b.insertAdjacentHTML('afterbegin',LOCK);b.append(label);
       b.title='Sign in to use Serge. '+help;b.disabled=false;b.classList.add('locked');
@@ -239,6 +244,27 @@ async function actionResponse(response,progress){
   }
   return result;
 }
+const fixKeys=new Map();
+async function fixIt(button,notice){
+  let note=notice;
+  if(!note){note=document.getElementById('fix-it-status');
+    if(!note){note=document.createElement('p');note.id='fix-it-status';note.setAttribute('role','status');row.after(note);}}
+  const trace=context.get('trace_id')||'',nodeid=context.get('test_nodeid')||'';
+  if(!trace||!nodeid){note.textContent='Open a failing test with its traceback first.';fitFrame();return;}
+  const target=trace+'|'+nodeid;
+  if(!fixKeys.has(target))fixKeys.set(target,crypto.randomUUID());
+  button.disabled=true;note.textContent='Starting investigation…';
+  try{
+    const response=await fetch('/serge-actions/fix-it',{method:'POST',credentials:'same-origin',
+      headers:{'Content-Type':'application/json','X-TCI-Action':'1'},
+      body:JSON.stringify({trace_id:trace,test_nodeid:nodeid,idempotency_key:fixKeys.get(target)})});
+    const data=await response.json();
+    note.textContent=data.detail||(response.ok?'Follow @askserge in your Slack DMs.':'Could not start the investigation.');
+    if(!response.ok)button.disabled=false;
+  }catch(error){note.textContent='Could not confirm the request. Try again; it will reuse the same request.';button.disabled=false;}
+  fitFrame();
+}
+
 let run=null;  // the in-flight question: {view, done}
 async function wdyt(){
   const button=document.getElementById('wdyt');
@@ -823,7 +849,8 @@ function popup(){
     'border:1px solid #657083;border-radius:4px;padding:5px 12px;font:inherit;cursor:'+
     (disabled?'not-allowed':'pointer')+';opacity:'+(disabled?'.55':'1'),label);
     b.type='button';b.title=help;b.disabled=disabled;return b;};
-  const deeper=button('Deeper investigation','Runs a full Serge investigation.',true);
+  const deeper=button('Deeper investigation','Prepare and verify a fix with updates in Slack; ask before creating a PR.',false);
+  deeper.addEventListener('click',()=>fixIt(deeper,foot));
   const close=button('Close','',false);actions.append(deeper,close);box.append(actions);
   overlay.append(box);
   const onKey=event=>{if(event.key==='Escape')hide();};

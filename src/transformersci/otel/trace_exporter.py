@@ -73,6 +73,7 @@ from urllib.request import Request, urlopen
 from transformersci.otel import my_stuff
 from transformersci.otel import dashboard_auth
 from transformersci.otel import mic_jobs
+from transformersci.otel import slack_bot, slack_commands, slack_investigations
 from transformersci.otel.pr_search import SEARCH_HTML
 from transformersci import github_app
 from transformersci.otel import related_issues
@@ -8680,17 +8681,142 @@ def _rerun_source_error(error: Exception) -> tuple[int, dict]:
     return 503, {"status": "source_unavailable"}
 
 
+def _slack_failure(trace_id: str, nodeid: str | None) -> dict | None:
+    trace = get_trace(trace_id)
+    if trace is None or trace_repository(trace) != rerun_failed.REPOSITORY:
+        return None
+    failures = extract_failure_details(trace, nodeid or "")
+    if len(failures) != 1:
+        raise ValueError(
+            "Use a link to one failing test, including test_nodeid, or paste its traceback."
+        )
+    return {**failures[0], "nodeid": failures[0]["test_nodeid"]}
+
+
+def submit_rerun(body: dict, login: str, reply, snapshot=None) -> None:
+    """Shared authorized rerun path; Slack refuses cancellation of active runs."""
+    snapshot = snapshot or (
+        lambda pr, api: MetricsHandler._rerun_snapshot(None, pr, api)
+    )
+    pr = str(body["pr"])
+    version = body.get("version")
+    idempotency_key = body["idempotency_key"]
+    confirmed = body.get("confirm_active") or []
+    try:
+        db = rerun_actions.store()
+        existing = db.by_idempotency_key(idempotency_key)
+        if existing is not None:
+            if existing["actor"] != login or existing["pr"] != pr:
+                reply(409, {"status": "invalid"})
+            else:
+                reply(
+                    200,
+                    {
+                        "status": "accepted",
+                        "action": rerun_actions.public_view(existing),
+                    },
+                )
+            return
+        if not rerun_actions.can_write(rerun_actions.default_serge(), login):
+            reply(403, {"status": "no_write_access"})
+            return
+        hour_ago = time.time() - 3600
+        if (
+            db.count_since("actor", login, hour_ago)
+            >= rerun_actions.MAX_ACTIONS_PER_HOUR
+            or db.count_since("pr", pr, hour_ago) >= rerun_actions.MAX_ACTIONS_PER_HOUR
+        ):
+            reply(429, {"status": "rate_limited"})
+            return
+        snap = snapshot(pr, lambda path: _rerun_github_api(path, fresh=True))
+    except Exception as error:
+        reply(*_rerun_source_error(error))
+        return
+    if snap["pr_state"] != "open":
+        reply(409, {"status": "pr_not_open", "detail": "The PR is not open."})
+        return
+    if version is not None and snap["version"] != version:
+        reply(409, {"status": "stale"})
+        return
+    try:
+        lanes = rerun_failed.plan(snap, body.get("keys"))
+    except rerun_failed.SelectionError as error:
+        reply(422, {"status": error.code, "detail": str(error)})
+        return
+    if "gpu" in lanes and db.live_gpu_actions() >= rerun_actions.MAX_LIVE_GPU_ACTIONS:
+        reply(429, {"status": "gpu_busy"})
+        return
+    # Cancel only what the person saw and confirmed; a run that appeared
+    # since needs a fresh confirmation.
+    active = [
+        {**run, "lane": lane}
+        for lane, data in sorted(lanes.items())
+        for run in data["active_runs"]
+    ]
+    if not {run["run_id"] for run in active} <= set(confirmed):
+        reply(409, {"status": "confirm", "active_runs": active})
+        return
+    record = rerun_actions.new_record(
+        pr=pr,
+        actor=login,
+        idempotency_key=idempotency_key,
+        snap=snap,
+        lanes=lanes,
+    )
+    try:
+        record, _ = db.create(record)
+    except rerun_actions.Busy:
+        latest = db.latest_for_pr(pr)
+        reply(
+            409,
+            {
+                "status": "busy",
+                "action": rerun_actions.public_view(latest) if latest else None,
+            },
+        )
+        return
+    rerun_actions.start(record["id"])
+    reply(202, {"status": "accepted", "action": rerun_actions.public_view(record)})
+
+
 class MetricsHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         self._request_started = time.monotonic()
         self._request_route = "notfound"
         self._request_cache = "none"
+        if slack_bot.handle(
+            self,
+            _latest_pr_run_summary,
+            lambda operation, pr, actor, command_id: slack_commands.execute(
+                operation,
+                pr,
+                actor,
+                command_id,
+                summary=_pr_run_summary_cached,
+                github=_rerun_github_api,
+                submit_rerun=submit_rerun,
+                dashboard=os.getenv("TCI_SLACK_PUBLIC_URL", "").rstrip("/"),
+                serge=os.getenv("TCI_SLACK_SERGE_PUBLIC_URL", "").rstrip("/"),
+            ),
+            investigation=lambda owner, user, actor, command_id, evidence: (
+                slack_investigations.begin(
+                    owner,
+                    user,
+                    actor,
+                    command_id,
+                    evidence,
+                    _slack_failure,
+                )
+            ),
+        ):
+            return
         if dashboard_auth.handle(self, "POST"):
             return
         if mic_jobs.handle(self, "POST"):
             return
         path = urlparse(self.path).path
         if path not in (
+            "/serge-actions/fix-it",
             "/serge-actions/wdyt",
             "/serge-actions/wdyt/cache",
             "/serge-actions/wdyt/cost",
@@ -8709,7 +8835,9 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._send(404, JSON_CONTENT_TYPE, b'{"error":"not found"}')
             return
         self._request_route = path
-        if path == "/rerun-failed":
+        if path == "/serge-actions/fix-it":
+            self._serve_fix_it()
+        elif path == "/rerun-failed":
             self._serve_rerun_failed_action()
         elif path == "/project-health/packets":
             self._serve_packet_keys()
@@ -8742,6 +8870,123 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._serve_slow_wdyt()
         else:
             self._serve_wdyt()
+
+    def _serve_fix_it(self) -> None:
+        if not self._action_allowed():
+            return
+        login = self._action_user()
+        if not login:
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length)) if 0 < length <= 8192 else None
+            if not isinstance(body, dict):
+                raise ValueError
+            trace_id, nodeid, key = (
+                body.get("trace_id"),
+                body.get("test_nodeid"),
+                body.get("idempotency_key"),
+            )
+            if (
+                not isinstance(trace_id, str)
+                or not re.fullmatch(r"[a-fA-F0-9]{32}", trace_id)
+                or not isinstance(nodeid, str)
+                or not 1 <= len(nodeid) <= 2000
+                or not isinstance(key, str)
+                or not re.fullmatch(r"[A-Za-z0-9.-]{8,64}", key)
+            ):
+                raise ValueError
+        except (ValueError, TypeError):
+            self._reply_json(
+                400,
+                {
+                    "status": "invalid",
+                    "detail": "Open a failing test with its trace and test ID first.",
+                },
+            )
+            return
+        if not os.getenv("TCI_SLACK_BOT_TOKEN"):
+            self._reply_json(
+                503,
+                {
+                    "status": "disabled",
+                    "detail": "Slack investigations are not configured yet.",
+                },
+            )
+            return
+        try:
+            mappings = json.loads(os.getenv("TCI_SLACK_ACTORS", "{}"))
+            allowed = os.getenv("TCI_SLACK_TEAM_IDS", "").split(",")
+            owners = [
+                owner
+                for owner, actor in mappings.items()
+                if isinstance(actor, str)
+                and actor.lower() == login.lower()
+                and re.fullmatch(r"T[A-Z0-9]+:[UW][A-Z0-9]+", owner)
+                and owner.split(":")[0] in allowed
+            ]
+            if len(owners) != 1:
+                self._reply_json(
+                    409,
+                    {
+                        "status": "slack_account_not_linked",
+                        "detail": "Ask the dashboard administrator to link your GitHub account to one Slack account.",
+                    },
+                )
+                return
+            owner = owners[0]
+            team, user = owner.split(":")
+            evidence = (
+                os.getenv("TCI_SLACK_PUBLIC_URL", "").rstrip("/")
+                + "/test?"
+                + urlencode({"trace_id": trace_id, "test_nodeid": nodeid})
+            )
+            fields = {
+                "team_id": [team],
+                "user_id": [user],
+                "text": ["look at the traceback: " + evidence],
+            }
+            raw = json.dumps(
+                {
+                    "source": "dashboard",
+                    "owner": owner,
+                    "key": key,
+                    "trace": trace_id,
+                    "nodeid": nodeid,
+                },
+                sort_keys=True,
+            ).encode()
+            reply = slack_commands.queue(
+                fields,
+                raw,
+                lambda operation, argument, actor, command_id: (
+                    slack_investigations.begin(
+                        owner, user, actor, command_id, argument, _slack_failure
+                    )
+                ),
+                notify=lambda message: slack_investigations.reply(
+                    owner, hashlib.sha256(raw).hexdigest()[:24], user, message
+                ),
+            )
+        except Exception:
+            self._reply_json(
+                503,
+                {
+                    "status": "unavailable",
+                    "detail": "Could not queue the investigation. Try again shortly.",
+                },
+            )
+            return
+        if reply == "The bot is busy. Try again shortly.":
+            self._reply_json(429, {"status": "busy", "detail": reply})
+            return
+        self._reply_json(
+            202,
+            {
+                "status": "accepted",
+                "detail": reply + " Follow @askserge in your Slack DMs.",
+            },
+        )
 
     def _reply_json(self, status: int, body: dict) -> None:
         self._send(
@@ -10881,87 +11126,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
         login = self._action_user()
         if not login:
             return
-        try:
-            db = rerun_actions.store()
-            existing = db.by_idempotency_key(idempotency_key)
-            if existing is not None:
-                if existing["actor"] != login or existing["pr"] != pr:
-                    reply(409, {"status": "invalid"})
-                else:
-                    reply(
-                        200,
-                        {
-                            "status": "accepted",
-                            "action": rerun_actions.public_view(existing),
-                        },
-                    )
-                return
-            if not rerun_actions.can_write(rerun_actions.default_serge(), login):
-                reply(403, {"status": "no_write_access"})
-                return
-            hour_ago = time.time() - 3600
-            if (
-                db.count_since("actor", login, hour_ago)
-                >= rerun_actions.MAX_ACTIONS_PER_HOUR
-                or db.count_since("pr", pr, hour_ago)
-                >= rerun_actions.MAX_ACTIONS_PER_HOUR
-            ):
-                reply(429, {"status": "rate_limited"})
-                return
-            snap = self._rerun_snapshot(
-                pr, lambda path: _rerun_github_api(path, fresh=True)
-            )
-        except Exception as error:
-            reply(*_rerun_source_error(error))
-            return
-        if snap["pr_state"] != "open":
-            reply(409, {"status": "pr_not_open", "detail": "The PR is not open."})
-            return
-        if snap["version"] != version:
-            reply(409, {"status": "stale"})
-            return
-        try:
-            lanes = rerun_failed.plan(snap, body.get("keys"))
-        except rerun_failed.SelectionError as error:
-            reply(422, {"status": error.code, "detail": str(error)})
-            return
-        if (
-            "gpu" in lanes
-            and db.live_gpu_actions() >= rerun_actions.MAX_LIVE_GPU_ACTIONS
-        ):
-            reply(429, {"status": "gpu_busy"})
-            return
-        # Cancel only what the person saw and confirmed; a run that appeared
-        # since needs a fresh confirmation.
-        active = [
-            {**run, "lane": lane}
-            for lane, data in sorted(lanes.items())
-            for run in data["active_runs"]
-        ]
-        if not {run["run_id"] for run in active} <= set(confirmed):
-            reply(409, {"status": "confirm", "active_runs": active})
-            return
-        record = rerun_actions.new_record(
-            pr=pr,
-            actor=login,
-            idempotency_key=idempotency_key,
-            snap=snap,
-            lanes=lanes,
-        )
-        try:
-            record, _ = db.create(record)
-        except rerun_actions.Busy:
-            latest = db.latest_for_pr(pr)
-            reply(
-                409,
-                {
-                    "status": "busy",
-                    "action": rerun_actions.public_view(latest) if latest else None,
-                },
-            )
-            return
-        rerun_actions.start(record["id"])
-        reply(202, {"status": "accepted", "action": rerun_actions.public_view(record)})
+        submit_rerun(body, login, reply, self._rerun_snapshot)
 
     def _serve_run(self, params: dict[str, list[str]]) -> None:
         run_id = (params.get("run_id") or [""])[0].strip()
@@ -11092,6 +11257,7 @@ def main() -> None:
     )
     refresher.start()
     rerun_actions.resume_all()
+    slack_investigations.start()
     server = ThreadingHTTPServer(("0.0.0.0", port), MetricsHandler)
     server.serve_forever()
 

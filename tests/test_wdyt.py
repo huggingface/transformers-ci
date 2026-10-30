@@ -468,3 +468,34 @@ def test_cost_route_validates_and_authenticates(server, monkeypatch):
     assert post(url + sid, {}, {"X-TCI-Action": "1"})[0] == 401
     monkeypatch.setattr(dashboard_auth, "browser_login", lambda headers: "octocat")
     assert post(url + sid, {}, {"X-TCI-Action": "1"}) == (200, {"status": "unknown"})
+
+
+def test_fix_it_route_authenticates_and_queues_the_shared_workflow(server, monkeypatch):
+    from transformersci.otel import slack_commands
+
+    monkeypatch.setattr(dashboard_auth, "browser_login", lambda headers: "octocat")
+    monkeypatch.setenv("TCI_SLACK_BOT_TOKEN", "fake")
+    monkeypatch.setenv("TCI_SLACK_TEAM_IDS", "T1")
+    monkeypatch.setenv("TCI_SLACK_PUBLIC_URL", "https://dashboard.example")
+    monkeypatch.setenv("TCI_SLACK_ACTORS", '{"T1:U1":"octocat"}')
+    queued = []
+    monkeypatch.setattr(
+        slack_commands,
+        "queue",
+        lambda fields, raw, execute, **kwargs: (
+            queued.append(fields) or "Command accepted."
+        ),
+    )
+    body = {
+        "trace_id": TRACE,
+        "test_nodeid": NODE,
+        "idempotency_key": "request-12345678",
+    }
+    assert post(server + "/serge-actions/fix-it", body, {})[0] == 403
+    assert queued == []
+    status, response = post(
+        server + "/serge-actions/fix-it", body, {"X-TCI-Action": "1"}
+    )
+    assert status == 202 and response["status"] == "accepted"
+    assert queued[0]["user_id"] == ["U1"]
+    assert "look at the traceback:" in queued[0]["text"][0]

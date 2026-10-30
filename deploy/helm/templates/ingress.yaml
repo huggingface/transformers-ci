@@ -75,6 +75,15 @@ spec:
           # PR status integrations.
           # The 🤗 favicon for every page: exporter pages fall back to
           # /favicon.ico, and Grafana's own icon paths are taken over here.
+          {{- if .Values.traceExporter.slack.enabled }}
+          - path: /slack
+            pathType: Prefix
+            backend:
+              service:
+                name: trace-exporter
+                port:
+                  number: 8000
+          {{- end }}
           - path: /auth
             pathType: Prefix
             backend:

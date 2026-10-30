@@ -197,3 +197,105 @@ MIC execution and baselines: [runner and telemetry](docs/model-integration-contr
 [rollout audit](docs/mic-rollout-audit-2026-10-20.md).
 
 Dashboard GitHub sign-in, user profiles and CLI authorization: [setup and API](docs/dashboard-auth.md).
+
+## @askserge in Slack and on failure pages
+
+See the [infra handoff and rollout guide](docs/askserge-deployment.md) for prerequisites,
+deployment order, acceptance checks, and disablement.
+
+Mention `@askserge look at the traceback: <traceback or dashboard test link>` in a
+channel containing the bot, or send `look at the traceback: ...` directly to it.
+The error page's **Fix it!** and the WDYT dialog's **Deeper investigation** enter
+the same workflow. Both prepare a fix, then ask before creating a PR.
+
+The dashboard resolves linked failures through its own repository-filtered Tempo
+reader; it never fetches a user-supplied hostname. Serge runs its existing task
+pipeline (prior work, reproduction, investigation, normalization and configured
+GPU verification). Each investigation gets a private DM thread and a native Slack
+agent session. Phase updates and the proposed fix stay in that thread. Sessions
+show processing during work, suspended for approval, and closed on completion.
+Processing status is refreshed every 20 minutes and failed status updates retry. **Create PR**
+rechecks repository write access and the candidate commit; **No PR** declines
+publication. You can also reply **yes** or **no** in the investigation’s thread. Verification may create a `serge/slack-*` candidate branch before
+approval. No PR is opened automatically. Approval expires 24 hours after launch;
+candidate branches are retained. Missing test IDs or disabled verification are
+reported without claiming the fix was verified.
+
+Other commands work as mentions, DMs or `/askserge` commands:
+
+- `pr 123`: current-head GitHub check/status counts and a dashboard link.
+- `rerun 123`: rerun failed CI through the existing permission and rate-limit gates.
+  If active runs need cancellation, review and confirm in the dashboard.
+- `investigate 123`: a PR-focused Serge draft review, with a link to its result.
+- `help`, `dashboard`, `serge`, `result <id>`.
+
+Mention/DM results are delivered privately. Slash commands immediately return a
+private receipt; `result <id>` retrieves the saved result. Interactive traceback
+investigations also send their phase updates by DM. Command receipts are retained
+for seven days and deduplicate Slack retries. At most four command handlers run
+concurrently; users can start 20 commands/hour, with Serge additionally limiting
+investigations to five/hour and one running job per GitHub account. The first
+version uses operator-verified account mappings rather than self-service linking.
+
+### Configure the existing Slack app
+
+Use [the app manifest](deploy/slack-app-manifest.yaml) as the settings reference
+for the existing **askserge** app. Preserve its other features. The manifest enables
+`agent_view`, the Messages tab, and suggested prompts. Reinstall the app after
+adding scopes. Slack’s Stop control is deliberately not enabled: backend worker
+cancellation is not implemented for these sessions yet. It adds
+`assistant:write`, `app_mentions:read`, `chat:write`, `im:write`, `im:history`, and `commands`, subscribes
+to `app_mention` and `message.im`, and configures signed requests at:
+
+- `https://transformers-ci.huggingface.cool/slack/events`
+- `https://transformers-ci.huggingface.cool/slack/actions`
+- `https://transformers-ci.huggingface.cool/slack/commands`
+
+Reinstall the app after changing scopes and invite it to the desired channels.
+Put its signing secret and bot token in the existing dashboard secret via the
+normal secret manager, under `slack-signing-secret` and `slack-bot-token`.
+Do not put credentials in Helm values or Git.
+
+```yaml
+traceExporter:
+  replicas: 1
+  runStore:
+    enabled: true
+  slack:
+    enabled: true
+    publicUrl: https://transformers-ci.huggingface.cool
+    sergePublicUrl: https://serge.huggingface.tech
+    appId: A_REPLACE_ME
+    botUserId: U_REPLACE_ME
+    teamIds: [T_REPLACE_ME]
+    actors:
+      "T_REPLACE_ME:U_REQUESTER": verified-github-login
+    proxy: "" # HTTPS CONNECT proxy if outbound access requires one
+```
+
+Verify each mapping with the account holder. Never derive GitHub identity from a
+Slack display name. Keep mappings current when a GitHub login changes. Dashboard
+users need exactly one matching Slack account. Existing GitHub sign-in and CSRF
+checks protect dashboard buttons; Serge independently checks repository access.
+The dashboard needs HTTPS access to `slack.com` (directly or through the configured
+proxy), in addition to its existing Serge connection. The bot token belongs to
+the configured workspace. The Slack routes are disabled unless configured.
+
+Deploy matching Serge web **and task-runner** images containing deferred PR
+support before setting `DASHBOARD_INTERACTIVE_TASKS_ENABLED=1` in Serge's
+`envVars`. An older runner ignores fields it does not recognize and cannot honor
+the approval gate. Retain the existing `TASK_API_ENABLED`, per-repository task
+opt-in, dashboard service token/repository allowlist, and ITF verification
+configuration. Then deploy and enable the dashboard Slack settings. This change
+does not alter production values or install the app.
+
+Active investigation IDs and phase cursors survive exporter restarts. A lost
+Serge dispatch response is reconciled by its deterministic task ID. Queued command
+workers themselves are not resumed after a crash: check the saved receipt and
+Serge before submitting again. Phase delivery can repeat after a crash between
+sending a DM and recording its cursor; PR approval is idempotent across retries.
+
+Validation: `pytest -q tests/test_slack_bot.py tests/test_rerun_failed.py
+ tests/test_wdyt.py` and `helm lint deploy/helm`; see Serge's task tests for the
+publication gate. Smoke-test one real traceback, its DMs, both decision buttons,
+and both dashboard entry points after provisioning the app and deploying.
