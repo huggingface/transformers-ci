@@ -18,6 +18,11 @@ on:
         description: "Revision of huggingface/transformers-ci containing the MIC runner"
         type: string
         required: true
+      run_declared:
+        description: "Also run variants the contracts declare unmeasured (a PR label `mic-run-declared` does the same)"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -77,6 +82,9 @@ jobs:
         id: run
         if: steps.install.outcome == 'success'
         continue-on-error: true
+        env:
+          # A fix for the bug behind a declared skip can show the skipped variant passing.
+          RUN_DECLARED: ${{ inputs.run_declared || contains(github.event.pull_request.labels.*.name, 'mic-run-declared') }}
         run: |
           export PYTHONPATH="$PWD/src"
           python - <<'PY_SOURCE'
@@ -97,6 +105,10 @@ jobs:
           else
             selection=(--run-all)
             echo "Changed files: all"
+          fi
+          if [[ "$RUN_DECLARED" == true ]]; then
+            selection+=(--run-declared)
+            echo "Running variants the contracts declare unmeasured"
           fi
           # Resolve once for both fleets while the framework pin rollout is pending.
           fleet_revision=$(python -c 'from transformersci.contracts.fleet import resolve_revision; print(resolve_revision())')
