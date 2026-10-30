@@ -195,6 +195,27 @@ def test_selection_includes_processor_dependencies():
     assert select_contracts.select(["docs/index.md"], dirs) == {}
 
 
+def test_may_select_matches_select():
+    dirs = {"bert": ["bert"], "llama": ["llama"]}
+    for paths in (
+        ["src/transformers/models/gpt2/modeling_gpt2.py"],
+        ["src/transformers/modeling_utils.py"],
+        ["pyproject.toml"],
+        ["tests/contracts.lock"],
+        ["tests/contracts/fleet/bert.json"],
+        ["tests/contracts/expectations/bert/cpu.json"],
+        ["utils/contracts/run.py"],
+    ):
+        assert select_contracts.may_select(paths)
+    for paths in (
+        [],
+        [".gitattributes", "Makefile", "utils/check_gitattributes.py"],
+        ["docs/source/en/index.md", "tests/models/bert/test_modeling_bert.py"],
+    ):
+        assert not select_contracts.may_select(paths)
+        assert select_contracts.select(paths, dirs) == {}
+
+
 def test_otel_exports_case_failure_with_assertion(fleet, capsys, monkeypatch):
     memory = InMemorySpanExporter()
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")

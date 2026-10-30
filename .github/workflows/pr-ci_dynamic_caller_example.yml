@@ -62,15 +62,19 @@ jobs:
       run_tests_expert_parallel_ci:     ${{ steps.check.outputs.run_tests_expert_parallel_ci }}
       run_tests_fsdp_ci:         ${{ steps.check.outputs.run_tests_fsdp_ci }}
       run_tests_peft_integration:   ${{ steps.check.outputs.run_tests_peft_integration }}
+      # Whether the PR touches anything the model integration contracts select on.
+      run_fast_integration:      ${{ steps.contracts_gate.outputs.run_fast_integration }}
       # Mirrors CircleCIJob.__post_init__: appends ':dev' when the commit
       # message contains "[build-ci-image]" or equals "dev-ci".
       use_dev_image:             ${{ steps.dev_image.outputs.use_dev_image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # full clone - very slow! But we need this to compute the set of files to run.
-          # TODO: Check if CircleCI is doing the same.
-          fetch-depth: 0
+          # tests_fetcher.py diffs HEAD against its merge-base with main. On a PR, HEAD
+          # is the merge commit and that merge-base is HEAD^1, so two commits are
+          # enough; a full clone of every branch and tag costs ~25 s. Other events
+          # diff against the live main and need the full history.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
 
       - name: Resolve PR number for merge_group events
         if: github.event_name == 'merge_group'
@@ -102,10 +106,17 @@ jobs:
             --ping-server || echo "OTEL PING WARNING configure-ci-otel --ping-server is unavailable in this environment"
 
       # tests_fetcher.py computes which tests to run by diffing the current
-      # branch against main, so main must exist locally as a git ref.
+      # branch against main, so main must exist locally as a git ref. On a PR,
+      # point it at the base the merge commit was built on: the shallow clone has
+      # no history to find a merge-base with a newer main.
       - name: Fetch main branch ref
         if: github.ref != 'refs/heads/main'
-        run: git fetch origin main:main
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            git branch -f main HEAD^1
+          else
+            git fetch origin main:main
+          fi
 
 #      # TODO: A better way to handle (some) python scripts
 #      # Discard the entire local utils/ first so that any file a contributor may
@@ -159,6 +170,25 @@ jobs:
               echo "run_${job}=false" >> $GITHUB_OUTPUT
             fi
           done
+
+      # Same rules as `run-model-contracts --changed-files` (select_contracts.may_select),
+      # so fast-integration only starts when it can select a contract. On a PR, HEAD is
+      # the merge commit and HEAD^1 the base it was built on; other events run every
+      # contract. Fails open: this job gates every test suite, and fast-integration
+      # is observational.
+      - name: Check whether fast-integration has contracts to run
+        id: contracts_gate
+        run: |
+          set -o pipefail
+          run=true
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            run=$(git diff --name-only HEAD^1 HEAD | python -c '
+          import sys
+          from transformersci.contracts.select_contracts import may_select
+          print(str(may_select(sys.stdin.read().split())).lower())') \
+              || { echo "::warning::Could not check changed files; running fast-integration"; run=true; }
+          fi
+          echo "run_fast_integration=$run" | tee -a "$GITHUB_OUTPUT"
 
       - name: Debug — print test list file sizes
         run: |
@@ -684,12 +714,14 @@ jobs:
   # ===========================================================================
   # Model integration contracts — observational, does not block the PR.
   # Runs slim fixture contracts (~70s) independently of the test suite.
-  # Depends on quality_gate so it is skipped when quality checks fail.
+  # Depends on quality_gate so it is skipped when quality checks fail, and on
+  # test-preparation so it is skipped when no changed file can select a contract.
   # Not in ci_passed.needs for phase 1 (observational); add it for phase 2.
   # ===========================================================================
   fast-integration:
-    needs: [quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success' }}
+    needs: [test-preparation, quality_gate]
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
+         && needs.test-preparation.outputs.run_fast_integration == 'true' }}
     uses: huggingface/transformers-ci/.github/workflows/pr-ci_contracts.yml@main
     with:
       docker_image: "huggingface/transformers-torch-light"

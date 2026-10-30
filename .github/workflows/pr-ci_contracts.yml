@@ -47,8 +47,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # full clone — needed to compute changed files via git diff on PR events.
-          fetch-depth: 0
+          # On a PR, HEAD is the merge commit and HEAD^1 the base it was built on,
+          # so two commits are enough to diff; a full clone of every branch and
+          # tag costs ~25 s.
+          fetch-depth: 2
 
       - name: Install
         id: install
@@ -73,8 +75,6 @@ jobs:
         id: run
         if: steps.install.outcome == 'success'
         continue-on-error: true
-        env:
-          BASE_REF: ${{ github.base_ref }}
         run: |
           export PYTHONPATH="$PWD/src"
           python - <<'PY_SOURCE'
@@ -89,8 +89,8 @@ jobs:
           print("CPU threads:", torch.get_num_threads())
           PY_SOURCE
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            git diff --name-only "origin/$BASE_REF...HEAD" > /tmp/changed-files.txt
-            selection=(--changed-files /tmp/changed-files.txt --diff-base "origin/$BASE_REF")
+            git diff --name-only HEAD^1 HEAD > /tmp/changed-files.txt
+            selection=(--changed-files /tmp/changed-files.txt --diff-base HEAD^1)
             echo "Changed files: $(wc -l < /tmp/changed-files.txt)"; head -20 /tmp/changed-files.txt
           else
             selection=(--run-all)
