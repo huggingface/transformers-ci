@@ -15,10 +15,12 @@
   };
   let rows = [], generatedAt = 0, claims = {}, me = '', fixIndexAt = 0;
   // Every action drafts with the LLM, which costs money: signed out (or not
-  // known yet), the buttons are locked and disabled, as on the Test page.
+  // known yet), the buttons are locked and go to the dashboard's GitHub
+  // sign-in, as on the Test page. Grafana's own sign-in (top right) is a
+  // separate session and does not unlock them.
   let signedIn = false;
   const LOCK = "<svg viewBox='0 0 16 16' width='10' height='10' fill='currentColor' aria-hidden='true' style='vertical-align:-1px;margin-right:4px'><path d='M4 7V5a4 4 0 0 1 8 0v2h.5A1.5 1.5 0 0 1 14 8.5v5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5v-5A1.5 1.5 0 0 1 3.5 7H4zm2 0h4V5a2 2 0 1 0-4 0v2z'/></svg>";
-  const SIGN_IN = 'Sign in (top right) to work on failures';
+  const SIGN_IN = 'Sign in with GitHub to work on failures';
 
   tci.applyTheme();
 
@@ -157,11 +159,11 @@
     if (row.category === 'slow' && !row.nodeid.startsWith('tests/')) blocked = 'Not a pytest test';
     if (!blocked && claimState(row) === 'open') {
       const claim = claims[row.nodeid];
-      if (!signedIn) return `<button type="button" class="act" disabled title="${SIGN_IN}">${LOCK}Pick up</button>`;
+      if (!signedIn) return `<button type="button" class="act" data-signin title="${SIGN_IN}">${LOCK}Pick up</button>`;
       return `<button type="button" class="act pri" data-pickup="${index}" title="#${claim.number} is open and nobody is on it: take it">Pick up</button>`;
     }
     if (blocked) return `<button type="button" class="act" disabled title="${esc(blocked)}">${label}</button>`;
-    if (!signedIn) return `<button type="button" class="act" disabled title="${SIGN_IN}">${LOCK}${label}</button>`;
+    if (!signedIn) return `<button type="button" class="act" data-signin title="${SIGN_IN}">${LOCK}${label}</button>`;
     return `<button type="button" class="act${k ? '' : ' pri'}" data-act="${id}" data-i="${index}" title="${help}">${label}</button>`;
   }
 
@@ -278,7 +280,7 @@
           const more = free.length > tests.length ? ` (the first ${tests.length} of ${free.length})` : '';
           parts.push(signedIn
             ? `<button type="button" class="act pri" data-packet="${packets.length - 1}" title="One issue for these ${tests.length} unclaimed tests${more}, all failing with ${esc(error)}">${what(free.length)}</button>`
-            : `<button type="button" class="act" disabled title="${SIGN_IN}">${LOCK}${what(free.length)}</button>`);
+            : `<button type="button" class="act" data-signin title="${SIGN_IN}">${LOCK}${what(free.length)}</button>`);
         }
         if (mine.length && signedIn) {
           giveUps.push(mine.map(row => row.nodeid));
@@ -459,7 +461,14 @@
       button.removeAttribute('aria-busy');
     }
   }
+  // The page is an iframe in Grafana: sign in at the top, then come back to it.
+  function signIn() {
+    let back = '/d/pytest-test-health/fix-failures';
+    try { back = top.location.pathname + top.location.search; } catch (_) {}
+    top.location.href = `/auth/github?next=${encodeURIComponent(back)}`;
+  }
   $('rows').addEventListener('click', event => {
+    if (event.target.closest('button[data-signin]')) { signIn(); return; }
     const why = event.target.closest('button[data-why]');
     if (why) { const row = current[Number(why.dataset.why)]; if (row) openSignal(row); return; }
     const button = event.target.closest('button[data-act],button[data-packet]');
