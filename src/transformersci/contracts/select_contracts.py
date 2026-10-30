@@ -19,6 +19,14 @@ import subprocess
 from pathlib import Path
 
 SHARED = ("setup.py", "pyproject.toml")
+LOCK = "tests/contracts.lock"
+INFRASTRUCTURE = (
+    "utils/contracts/",
+    ".github/workflows/contracts",
+    "tests/contracts/fleet",
+    "tests/contracts/prototype-fleet",
+)
+EXPECTATIONS = "tests/contracts/expectations/"
 PROCESSOR_FILES = (
     "tokenizer_config.json",
     "preprocessor_config.json",
@@ -293,22 +301,28 @@ def changed_sources(paths, base):
     return sources
 
 
+def may_select(changed_files):
+    """Whether select() can pick any contract, decided from the paths alone.
+
+    Lets PR CI skip the contracts job without a checkout or fixture downloads.
+    """
+    return any(
+        path == LOCK
+        or path in SHARED
+        or path.startswith((*INFRASTRUCTURE, EXPECTATIONS, "src/transformers/"))
+        for path in changed_files
+    )
+
+
 def select(changed_files, contract_dirs, sources=None, model_type_to_module=None):
     """{contract: reason} for the contracts the changed files can affect."""
     selected = {}
     for path in changed_files:
-        if path == "tests/contracts.lock":
+        if path == LOCK:
             return {name: f"fleet revision ({path})" for name in contract_dirs}
-        if path.startswith(
-            (
-                "utils/contracts/",
-                ".github/workflows/contracts",
-                "tests/contracts/fleet",
-                "tests/contracts/prototype-fleet",
-            )
-        ):
+        if path.startswith(INFRASTRUCTURE):
             return {name: f"contract infrastructure ({path})" for name in contract_dirs}
-        if path.startswith("tests/contracts/expectations/"):
+        if path.startswith(EXPECTATIONS):
             name = path.split("/")[3]
             if name in contract_dirs:
                 selected[name] = f"expectations ({path})"
