@@ -1,12 +1,12 @@
 {
   "format": "mic-coverage-v1",
-  "generated_at": "2026-10-31T09:34:49Z",
+  "generated_at": "2026-10-31T11:01:18Z",
   "fleet": {
     "repo": "huggingface-mic/transformers-fleet",
-    "revision": "495f1c1f20a93769a4fadf06c475e54404fb02d8"
+    "revision": "666d54fcc782e473ff276ec9626df0b0a3f0cafd"
   },
-  "contracts": 190,
-  "fixtures": 192,
+  "contracts": 191,
+  "fixtures": 193,
   "covered": [
     "albert",
     "apertus",
@@ -163,6 +163,7 @@
     "resnet",
     "roberta",
     "rt_detr",
+    "rt_detr_v2",
     "sam2",
     "seamless_m4t_v2",
     "seed_oss",
@@ -199,7 +200,7 @@
   },
   "sweep": {
     "repo": "huggingface/transformers-mic",
-    "revision": "f7ceff5cd479cf7ac002c557f70cd93ce5d1f4b5",
+    "revision": "98a8d1d90b64baf9cbca7197d95f139901ae28f6",
     "transformers": "5.22.0.dev0",
     "shrinkable": [
       "EvollaModel",
@@ -518,6 +519,7 @@
       "roc_bert",
       "roformer",
       "rt_detr",
+      "rt_detr_v2",
       "rwkv",
       "sam_hq_vision_model",
       "sam_vision_model",
