@@ -387,6 +387,11 @@ jobs:
       HF_XET_CACHE: /tmp/hf_xet_cache
       HF_METRICS_CACHE: /tmp/hf_metrics_cache
 
+      # CI dependency recorder — writes deps.json + deps_by_file.json into reports/
+      # so they are captured by the existing "Upload test reports" artifact step.
+      # No-op in transformers unless CI_RECORD_DEPS_OUTPUT is set (see testing_utils.py).
+      CI_RECORD_DEPS_OUTPUT: reports/deps.json
+
     steps:
 
       # ── 0a. Resolve PR number for merge_group events ────────────────────────
