@@ -764,6 +764,7 @@ def _main(argv, telemetry):
     started = time.perf_counter()
     counts = {}
     status = 0
+    gated = 0
 
     selected_by = None
     if args.changed_files:
@@ -831,7 +832,7 @@ def _main(argv, telemetry):
         patches.apply(local_patches)
 
     def emit(record):
-        nonlocal status
+        nonlocal status, gated
         entry = known_entry(
             known, record.get("contract_name", record["contract"]), record["target"]
         )
@@ -864,12 +865,16 @@ def _main(argv, telemetry):
             with args.output.open("a") as f:
                 f.write(json.dumps(record) + "\n")
         counts[record["status"]] = counts.get(record["status"], 0) + 1
+        gated += record.get("skip") == "gated"
         status |= record["status"] in ("fail", "error")
         status |= (
             args.require_all
             and record["status"] == "unsupported"
-            and record["skip"] != "declared"
+            and record["skip"] not in ("declared", "gated")
         )
+
+    from huggingface_hub import get_token
+    from huggingface_hub.errors import GatedRepoError
 
     with tempfile.TemporaryDirectory() as tmp:
         for name, contract in lock["contracts"].items():
@@ -877,9 +882,36 @@ def _main(argv, telemetry):
                 continue
             if selected_by is not None and name not in selected_by and not args.run_all:
                 continue
-            root, contract_revision = contract_folder(
-                lock_dir, contract["integration"], args.local_contracts
-            )
+            try:
+                root, contract_revision = contract_folder(
+                    lock_dir, contract["integration"], args.local_contracts
+                )
+            except GatedRepoError:
+                if get_token():
+                    raise
+                # A MIC repo gated like its source checkpoint (Gemma) needs a token
+                # with access; fork PRs have none, so skip it instead of failing.
+                for repo, pin in contract.get("fixtures", {}).items():
+                    emit(
+                        {
+                            "contract": contract["integration"]["repo"],
+                            "contract_name": name,
+                            "contract_revision": contract["integration"]["revision"],
+                            "framework": args.framework,
+                            "lock": str(lock_path.resolve()),
+                            **fleet_metadata,
+                            "variant": args.variant,
+                            "target": pin.get("target", short(repo)),
+                            "kind": "fixture",
+                            "revision": pin["revision"],
+                            "status": "unsupported",
+                            "skip": "gated",
+                            "failures": [
+                                f"{contract['integration']['repo']} is gated on the Hub: set HF_TOKEN to a token with access to run it"
+                            ],
+                        }
+                    )
+                continue
             manifest = load(root / "integration.json", "integration")
             integration = manifest["integrations"][args.framework]
             if integration["format"] == "script" and contract_revision not in (
@@ -1231,7 +1263,9 @@ def _main(argv, telemetry):
             if not args.contract or name in args.contract
         )
     )
-    if not set(counts) - {"unsupported"} and not selection_empty:
+    # Only gated MIC repos selected and no token (a fork PR): nothing could run, by design.
+    only_gated = counts and counts.get("unsupported") == gated == sum(counts.values())
+    if not set(counts) - {"unsupported"} and not selection_empty and not only_gated:
         # Every requested target was skipped, or none matched: nothing was checked, which is not a pass.
         print(
             f"no target ran: {counts['unsupported']} unsupported"

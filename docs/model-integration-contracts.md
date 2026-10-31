@@ -47,6 +47,12 @@ usually because of an open upstream bug; runs report it as a declared skip.
 the `mic-run-declared` label (or the workflow's `run_declared` input) adds it;
 push a commit or re-run the job after labelling.
 
+A MIC repo built from a gated checkpoint (Gemma) is gated like its source, so it
+needs `HF_TOKEN` set to a token with access. Without one (fork PRs get no
+secrets), its targets are reported as `gated` skips and do not fail the run, even
+under `--require-all`. The caller passes the token as the reusable workflow's
+`hf_read_token` secret.
+
 ## Selection and baselines
 
 Model changes select MICs that use that model or its processors. Additive Auto
