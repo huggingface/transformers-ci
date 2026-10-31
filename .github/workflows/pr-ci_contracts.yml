@@ -23,6 +23,10 @@ on:
         type: boolean
         required: false
         default: false
+    secrets:
+      hf_read_token:
+        description: "Hub read token with access to gated MIC repos (Gemma). Fork PRs get none, and gated contracts are then skipped, not failed."
+        required: false
 
 permissions:
   contents: read
@@ -42,6 +46,7 @@ jobs:
       # Not the shared /mnt/cache: PR jobs mount it read-only.
       HF_HOME: /tmp/hf_home
       HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      HF_TOKEN: ${{ secrets.hf_read_token }}
       PYTHONUNBUFFERED: "1"
       OMP_NUM_THREADS: "4"
 

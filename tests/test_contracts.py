@@ -152,6 +152,28 @@ def test_declared_unmeasured_variant_runs_only_with_run_declared(fleet, capsys):
     assert code == 0 and rows[0]["status"] == "pass"
 
 
+def test_gated_mic_repo_is_skipped_without_a_token(fleet, capsys, monkeypatch):
+    import huggingface_hub
+    from huggingface_hub.errors import GatedRepoError
+
+    def gated(*args):
+        error = GatedRepoError.__new__(GatedRepoError)  # needs no HTTP response
+        Exception.__init__(error, "401 gated")
+        raise error
+
+    monkeypatch.setattr(run, "contract_folder", gated)
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: None)
+    code, rows = invoke(fleet, capsys, "--require-all")
+    assert (
+        code == 0 and rows[0]["status"] == "unsupported" and rows[0]["skip"] == "gated"
+    )
+    assert "gated on the Hub" in rows[0]["failures"][0]
+
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: "hf_x")
+    with pytest.raises(GatedRepoError):
+        invoke(fleet, capsys)
+
+
 def test_exception_is_an_error(fleet, capsys):
     fleet[1].write_text("raise RuntimeError('broken contract')\n")
     code, rows = invoke(fleet, capsys)
