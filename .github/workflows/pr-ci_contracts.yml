@@ -131,6 +131,15 @@ jobs:
               r = json.loads(line)
               print(r["status"].ljust(6), r["target"], r.get("platform", ""), "\n".join(r.get("failures", [])), flush=True)' || status=$?
           echo "$(tail -1 /tmp/run.log); $((SECONDS - start)) s"
+          mic --fixtures-only --fleet control --fleet-revision "$fleet_revision" --variant bfloat16 \
+            "${selection[@]}" --output /tmp/results.jsonl 2>> /tmp/run.log | python -c '
+          import json, sys
+          for line in sys.stdin:
+              if not line.startswith("{"):
+                  print(line.rstrip(), flush=True)
+                  continue
+              r = json.loads(line)
+              print(r["status"].ljust(6), r["target"], r.get("variant", ""), r.get("platform", ""), "\n".join(r.get("failures", [])), flush=True)' || status=$?
           mic --fixtures-only --fleet prototypes --fleet-revision "$fleet_revision" --variant bfloat16 \
             "${selection[@]}" --output /tmp/results.jsonl 2>> /tmp/run.log | python -c '
           import json, sys

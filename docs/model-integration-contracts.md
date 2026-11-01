@@ -15,7 +15,7 @@ Transformers or transformers-ci source trees.
 Transformers keeps one file, `tests/contracts.lock`, containing the immutable
 dataset commit SHA. During the framework pin rollout, CI ignores this file,
 resolves dataset `main` once per job, and passes that immutable commit explicitly
-to both invocations. It works with checkouts that have no pin. The CLI reads the
+to every invocation (control in float32 and bfloat16, prototypes in bfloat16). It works with checkouts that have no pin. The CLI reads the
 local pin by default; outside a checkout, it resolves dataset `main`. Use
 `--fleet-revision` to override the pin for reproduction.
 Results, OTEL spans and reproduction commands carry the dataset revision. A later
@@ -24,6 +24,7 @@ fleet update therefore does not change how an earlier run is reproduced.
 ```bash
 pip install 'transformers-ci[contracts,otel]'
 run-model-contracts --fixtures-only --fleet control
+run-model-contracts --fixtures-only --fleet control --variant bfloat16
 run-model-contracts --fixtures-only --fleet prototypes --variant bfloat16
 # Reproduce a recorded job:
 run-model-contracts --fixtures-only --fleet prototypes --variant bfloat16 \
