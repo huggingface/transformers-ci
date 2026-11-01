@@ -1,12 +1,12 @@
 {
   "format": "mic-coverage-v1",
-  "generated_at": "2026-10-31T11:01:18Z",
+  "generated_at": "2026-11-01T11:19:45Z",
   "fleet": {
     "repo": "huggingface-mic/transformers-fleet",
-    "revision": "666d54fcc782e473ff276ec9626df0b0a3f0cafd"
+    "revision": "6a3579565c5a87650b3212b726a59ebad73880a7"
   },
-  "contracts": 191,
-  "fixtures": 193,
+  "contracts": 186,
+  "fixtures": 188,
   "covered": [
     "albert",
     "apertus",
@@ -22,7 +22,6 @@
     "chinese_clip",
     "clap",
     "clip",
-    "clip_text_model",
     "clip_vision_model",
     "clipseg",
     "cohere",
@@ -195,12 +194,12 @@
     "yolos"
   ],
   "transformers": {
-    "revision": "66f51e76efd8542232b8bdd40ade7d1edbaac46f",
+    "revision": "ca8c871ede62b521a75a2ddfc5e1968ac9c8e097",
     "model_types": 788
   },
   "sweep": {
     "repo": "huggingface/transformers-mic",
-    "revision": "98a8d1d90b64baf9cbca7197d95f139901ae28f6",
+    "revision": "8b57cd895b652af4f75bc8284d59ea7c62146b0e",
     "transformers": "5.22.0.dev0",
     "shrinkable": [
       "EvollaModel",
