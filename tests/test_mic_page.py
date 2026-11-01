@@ -282,6 +282,7 @@ def test_recovers_assertion_and_model_provenance_for_older_rows():
     assert row["weights"] == "overfit"
     assert row["source_model_url"] == "https://huggingface.co/creator/Large-Demo-24B"
     assert row["fixture_repo_url"] == "https://huggingface.co/huggingface-mic/demo-mic"
+    assert row["shrink_url"].endswith("/shrink/demo-mic.html")
 
 
 def test_variant_and_platform_filters_apply_before_row_limit(monkeypatch):

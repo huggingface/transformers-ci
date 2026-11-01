@@ -38,6 +38,8 @@ ROW_FIELDS = tuple(f"mic.{field}" for field in FIELDS) + (
     "mic.commit_sha",
 )
 LIMIT = 200
+# One `tmic shrink` page per huggingface-mic fixture, on the MIC coverage Space.
+SHRINK_PAGES = "https://huggingface-mic-mic-coverage.static.hf.space/shrink"
 # Above this many runs the start-time query reads all runs instead of naming
 # them, keeping the request URL bounded (~15 bytes per run id).
 MAX_RUN_MATCHER = 2000
@@ -729,6 +731,8 @@ def build_rows(
                 if re.fullmatch(r"[\w.-]+/[\w.-]+", value)
                 else ""
             )
+        shrink = re.fullmatch(r"huggingface-mic/([\w.-]+-mic)", row["fixture_repo"])
+        row["shrink_url"] = f"{SHRINK_PAGES}/{shrink[1]}.html" if shrink else ""
         if row["failure"] in {
             "MICAssertionError",
             "MICExecutionError",
