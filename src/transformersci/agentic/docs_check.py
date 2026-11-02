@@ -43,6 +43,7 @@ import logging
 import os
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -60,9 +61,10 @@ MAINTAINER_ASSOCIATIONS = {"MEMBER", "OWNER", "COLLABORATOR"}
 DOCS_TOOLS = {"read_file", "list_dir", "grep"}
 PR_FILE_TOOL = "read_pr_file"
 MAX_TOOL_ROUNDS = 6
-MAX_READ_LINES = 400
-MAX_TOOL_OUTPUT_CHARS = 8_000
 MAX_DIFF_CHARS = 120_000
+SWEEP_GRACE_MINUTES = 30
+MAX_NO_ANSWERS = 3
+NO_ANSWER_STATUS = "Serge couldn't give an answer. The sweep tries again later."
 MAX_BODY_CHARS = 4_000
 MAX_REASON_CHARS = 1_000
 MAX_STATUS_CHARS = 140
@@ -193,7 +195,7 @@ def tool_specs(docs_path: str) -> list[dict]:
     because Serge's say they read the PR head. `read_pr_file` reads a file from
     the PR itself, through the GitHub API.
     """
-    from reviewbot.tools import TOOL_SPECS
+    from reviewbot.tools import MAX_READ_LINES, TOOL_SPECS
 
     where = (
         f"the docs folder (`{docs_path}`) as it is on the base branch, before this PR"
@@ -328,7 +330,12 @@ def read_pr_file(
     This is how Serge sees the PR's code without it being checked out. It reads
     the same blobs the GitHub UI shows, at the commit the maintainer approved.
     Always returns text for Serge, even on failure, so Serge can try something else.
+
+    Uses Serge's own limits for one read, so it returns as much as Serge's
+    `read_file` does on the docs.
     """
+    from reviewbot.tools import MAX_READ_LINES, MAX_TOOL_OUTPUT_CHARS
+
     path = args.get("path")
     if (
         not isinstance(path, str)
@@ -338,13 +345,25 @@ def read_pr_file(
         return "error: path must be a plain path relative to the repository root"
     if not allowed(path):
         return f"error: {path} can't be read with {PR_FILE_TOOL}"
+    # The raw media type returns the file itself, up to 100 MB. The default JSON
+    # response leaves `content` empty for files over 1 MB, which would read as
+    # an empty file.
     try:
-        text = gh.get_file_contents(owner, repo, path, ref=sha)
+        r = gh.session.get(
+            f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+            params={"ref": sha},
+            headers={"Accept": "application/vnd.github.raw"},
+            timeout=60,
+        )
+        if r.status_code == 404:
+            return f"error: {path} doesn't exist in this PR"
+        r.raise_for_status()
     except Exception:
         log.exception("Couldn't read %s at %s.", path, sha)
         return f"error: couldn't read {path}"
-    if text is None:
-        return f"error: {path} doesn't exist in this PR"
+    if "json" in r.headers.get("Content-Type", "") and r.text.lstrip().startswith("["):
+        return f"error: {path} is a folder, not a file"
+    text = r.content.decode("utf-8", errors="replace")
     try:
         start = max(1, int(args.get("start_line") or 1))
         end = int(args.get("end_line") or start + MAX_READ_LINES - 1)
@@ -356,7 +375,14 @@ def read_pr_file(
         return f"{path}: no lines in range {start}-{end}"
     body = "\n".join(f"{i:>6}\t{line}" for i, line in enumerate(lines, start=start))
     out = f"{path} (lines {start}-{start + len(lines) - 1}):\n{body}"
-    return out[:MAX_TOOL_OUTPUT_CHARS]
+    if len(out) <= MAX_TOOL_OUTPUT_CHARS:
+        return out
+    # Same note as Serge's own tools, so Serge knows it didn't see every line.
+    return (
+        out[:MAX_TOOL_OUTPUT_CHARS]
+        + f"\n[... truncated; output exceeded {MAX_TOOL_OUTPUT_CHARS} chars; "
+        "re-call with a narrower line range ...]"
+    )
 
 
 def parse_verdict(content: str, docs_path: str) -> dict | None:
@@ -560,6 +586,203 @@ def ask_for_verdict(
     return parse_verdict(reply, args.docs_path)
 
 
+def commit_files(
+    gh: GitHubClient, owner: str, repo: str, base_sha: str, sha: str
+) -> list[dict]:
+    """List what a PR changed as of `sha`, in the same shape as `get_pr_files`.
+
+    This is the diff GitHub would have shown at that commit: from where the PR
+    branched off `base_sha` up to `sha`. The compare API lists at most 300 files.
+    """
+    r = gh.session.get(
+        f"https://api.github.com/repos/{owner}/{repo}/compare/{base_sha}...{sha}",
+        timeout=60,
+    )
+    r.raise_for_status()
+    return r.json().get("files", [])
+
+
+SWEEP_QUERY = """
+query($owner: String!, $repo: String!, $base: String!, $cursor: String, $context: String!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequests(baseRefName: $base, states: [OPEN, MERGED], first: 50, after: $cursor,
+                 orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number
+        updatedAt
+        headRefOid
+        reviews(states: APPROVED, last: 50) {
+          nodes { authorAssociation submittedAt commit { oid } }
+        }
+        commits(last: 1) {
+          nodes { commit { status { context(name: $context) { state } } } }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def approved_prs(
+    gh: GitHubClient, owner: str, repo: str, base: str, since: str
+) -> list[tuple[dict, list[dict], str | None]]:
+    """List the open or merged PRs into `base` updated since `since` that have an approval.
+
+    Returns `(pr, reviews, state)` for each, newest first. `pr` and `reviews`
+    have the same keys as the REST API's, as far as `sha_to_check` reads them.
+    `state` is the `docs-check` status on the PR's head commit: "success",
+    "failure", "pending", "error", or None if there's none.
+
+    One GraphQL query covers 50 PRs with their approvals and status, so a busy
+    repo doesn't use up its API limit. `since` is an ISO 8601 time, which sorts
+    the same way as GitHub's `updatedAt`.
+    """
+    found = []
+    cursor = None
+    while True:
+        r = gh.session.post(
+            "https://api.github.com/graphql",
+            json={
+                "query": SWEEP_QUERY,
+                "variables": {
+                    "owner": owner,
+                    "repo": repo,
+                    "base": base,
+                    "cursor": cursor,
+                    "context": STATUS_CONTEXT,
+                },
+            },
+            timeout=60,
+        )
+        r.raise_for_status()
+        body = r.json()
+        if body.get("errors"):
+            raise RuntimeError(f"GraphQL query failed: {body['errors']}")
+        page = body["data"]["repository"]["pullRequests"]
+        for node in page["nodes"]:
+            if node["updatedAt"] < since:
+                return found
+            reviews = [
+                {
+                    "state": "APPROVED",
+                    "commit_id": (rv.get("commit") or {}).get("oid"),
+                    "author_association": rv["authorAssociation"],
+                    "submitted_at": rv["submittedAt"],
+                }
+                for rv in node["reviews"]["nodes"]
+            ]
+            if not reviews:
+                continue
+            commits = node["commits"]["nodes"]
+            status = (commits[0]["commit"].get("status") or {}) if commits else {}
+            context = status.get("context") or {}
+            state = context["state"].lower() if context.get("state") else None
+            pr = {"number": node["number"], "head": {"sha": node["headRefOid"]}}
+            found.append((pr, reviews, state))
+        if not page["pageInfo"]["hasNextPage"]:
+            return found
+        cursor = page["pageInfo"]["endCursor"]
+
+
+def no_answer_count(gh: GitHubClient, owner: str, repo: str, sha: str) -> int:
+    """Count how many times Serge was asked about a commit and couldn't answer.
+
+    Reads the commit's status history, newest first, which keeps every
+    `docs-check` status that was set, not only the latest.
+    """
+    r = gh.session.get(
+        f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}/statuses",
+        params={"per_page": 100},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return sum(
+        1
+        for s in r.json()
+        if s["context"] == STATUS_CONTEXT and s.get("description") == NO_ANSWER_STATUS
+    )
+
+
+def sha_to_check(pr: dict, reviews: list[dict], state: str | None) -> str | None:
+    """Decide whether the sweep should run the approval check on this PR, and on which commit.
+
+    `reviews` are the PR's reviews, as GitHub lists them, oldest first.
+    `state` is the `docs-check` status on the PR's head commit (see `approved_prs`).
+
+    Returns the commit to check, or None to leave the PR alone. Approval mode
+    stops unless a maintainer approved that exact commit, so the commit must be
+    one of `approved_shas(reviews)`.
+
+    Green and red are final answers, so those PRs are left alone. Anything else
+    on an approved PR means the approval run never answered: no status (it never
+    ran), "error" (it failed), or "pending" (the push job's placeholder, which
+    only the approval run replaces). The head commit is checked when it was
+    approved, otherwise the most recently approved commit.
+    """
+    if state in ("success", "failure"):
+        return None
+    approved = approved_shas(reviews)
+    if pr["head"]["sha"] in approved:
+        return pr["head"]["sha"]
+    for review in reversed(reviews):
+        if review.get("commit_id") in approved:
+            return review["commit_id"]
+    return None
+
+
+def sweep(gh: GitHubClient, owner: str, repo: str, args) -> int:
+    """Find approved PRs that never got an answer, so the workflow can check them.
+
+    The approval run misses some PRs: it can't run for a fork PR until someone
+    approves the workflow run, and it can fail before Serge is set up. This
+    looks at PRs updated in the last `--since-hours` hours and lists the ones
+    `sha_to_check` picks, as a JSON list of `{"pr": ..., "sha": ...}` in the
+    `prs` output. The workflow then runs approval mode on each.
+
+    Two kinds of PR are left out even when `sha_to_check` picks them:
+    - approved in the last `SWEEP_GRACE_MINUTES`, because their approval run
+      may still be going, and both would ask Serge about the same commit
+    - PRs Serge already failed to answer `MAX_NO_ANSWERS` times, so a PR it
+      can't handle isn't retried every run
+    """
+    now = datetime.now(timezone.utc)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    since = (now - timedelta(hours=args.since_hours)).strftime(fmt)
+    grace = (now - timedelta(minutes=SWEEP_GRACE_MINUTES)).strftime(fmt)
+    todo = []
+    for pr, reviews, state in approved_prs(gh, owner, repo, args.base_branch, since):
+        sha = sha_to_check(pr, reviews, state)
+        if not sha:
+            continue
+        if any(
+            r["submitted_at"] > grace
+            for r in reviews
+            if r["author_association"] in MAINTAINER_ASSOCIATIONS
+        ):
+            log.info(
+                "PR #%d was just approved; leaving it to the approval run.",
+                pr["number"],
+            )
+            continue
+        if no_answer_count(gh, owner, repo, pr["head"]["sha"]) >= MAX_NO_ANSWERS:
+            log.info(
+                "PR #%d: Serge couldn't answer %d times; giving up.",
+                pr["number"],
+                MAX_NO_ANSWERS,
+            )
+            continue
+        todo.append({"pr": str(pr["number"]), "sha": sha})
+        if len(todo) >= args.max_prs:
+            break
+    log.info("Sweep found %d PRs to check: %s", len(todo), todo)
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+            f.write(f"prs={json.dumps(todo)}\n")
+    return 0
+
+
 def main() -> int:
     """Run the docs check on one PR.
 
@@ -572,11 +795,28 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--mode",
-        choices=["approval", "push"],
+        choices=["approval", "push", "sweep"],
         required=True,
-        help="approval: ask Serge. push: reuse the last saved answer.",
+        help=(
+            "approval: ask Serge. push: reuse the last saved answer. "
+            "sweep: list approved PRs that never got an answer."
+        ),
     )
-    parser.add_argument("--pr", type=int, required=True, help="The PR number.")
+    parser.add_argument(
+        "--pr", type=int, help="The PR number. Required in approval and push mode."
+    )
+    parser.add_argument(
+        "--since-hours",
+        type=int,
+        default=24,
+        help="Sweep mode: look at PRs updated in this many hours.",
+    )
+    parser.add_argument(
+        "--max-prs",
+        type=int,
+        default=20,
+        help="Sweep mode: list at most this many PRs, so one run can't ask Serge too often.",
+    )
     parser.add_argument(
         "--head-sha",
         help="Approval mode: the commit that was approved. Stops if no maintainer approved it.",
@@ -622,27 +862,64 @@ def main() -> int:
     owner, repo = args.repo.split("/")
     library_path = args.library_path or f"src/{repo.replace('-', '_')}/"
     gh = GitHubClient(os.environ["GITHUB_TOKEN"])
+
+    if args.mode == "sweep":
+        return sweep(gh, owner, repo, args)
+    if args.pr is None:
+        parser.error("--pr is required in approval and push mode")
     pr = gh.get_pr(owner, repo, args.pr)
 
-    if pr["state"] != "open" or pr["base"]["ref"] != args.base_branch:
+    # Approval mode also checks merged PRs: maintainers often merge seconds after
+    # approving, before this run starts, and the docs gap is still worth flagging.
+    checkable = pr["state"] == "open" or (
+        args.mode == "approval" and pr.get("merged_at")
+    )
+    if not checkable or pr["base"]["ref"] != args.base_branch:
         log.info("PR #%d is not open against %s; skipping.", args.pr, args.base_branch)
         return 0
 
     files = gh.get_pr_files(owner, repo, args.pr)
     verdict = load_verdict(args.verdict_file)
 
+    asked = False
     if args.mode == "approval":
+        # A dry run can leave out --head-sha. Check the PR's current head then,
+        # so Serge doesn't read files from the default branch.
+        args.head_sha = args.head_sha or pr["head"]["sha"]
         reviews = gh.get_pr_reviews(owner, repo, args.pr)
         if not args.dry_run and args.head_sha not in approved_shas(reviews):
             log.info("PR #%d has no maintainer approval on %s.", args.pr, args.head_sha)
             return 0
-        if reason := skip_reason(files, args.docs_path, library_path):
+        # The approved commit can be older than the head, for example when the
+        # sweep checks the last approved commit. Judge that commit's own changes,
+        # so the diff Serge gets matches the files it reads.
+        approved_files = (
+            files
+            if args.head_sha == pr["head"]["sha"]
+            else commit_files(gh, owner, repo, pr["base"]["sha"], args.head_sha)
+        )
+        if reason := skip_reason(approved_files, args.docs_path, library_path):
             log.info("PR #%d doesn't need Serge: %s", args.pr, reason)
         else:
             if problem := missing_setup(args):
                 print(f"::error::docs-check isn't set up: {problem}")
+                # Without this the PR keeps the push job's "Not checked yet"
+                # status, which hides the failure. The sweep retries it later,
+                # cheaply: this stops before Serge is asked.
+                if not args.dry_run:
+                    set_status(
+                        gh,
+                        owner,
+                        repo,
+                        pr["head"]["sha"],
+                        "error",
+                        f"docs-check isn't set up: {problem}",
+                    )
                 return 1
-            verdict = ask_for_verdict(args, gh, owner, repo, pr, files, library_path)
+            asked = True
+            verdict = ask_for_verdict(
+                args, gh, owner, repo, pr, approved_files, library_path
+            )
             log.info("PR #%d verdict: %s", args.pr, verdict)
             if verdict and args.verdict_file:
                 save_verdict(args.verdict_file, verdict)
@@ -661,6 +938,10 @@ def main() -> int:
             pr, files = latest, gh.get_pr_files(owner, repo, args.pr)
 
     state, description = decide_status(files, verdict, args.docs_path, library_path)
+    if state == "pending" and asked:
+        # Serge was asked but its call failed or its answer couldn't be read.
+        # The sweep counts these so it stops retrying after a few tries.
+        state, description = "error", NO_ANSWER_STATUS
     log.info("PR #%d status: %s (%s)", args.pr, state, description)
     if args.dry_run:
         print(f"{STATUS_CONTEXT}: {state} ({description})")

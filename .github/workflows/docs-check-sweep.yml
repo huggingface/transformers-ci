@@ -1,0 +1,142 @@
+name: Docs check sweep
+
+# Catches the PRs the approval run in `docs-check.yml` misses, and runs the
+# approval check on them. Other repos run this workflow on a schedule from their
+# own workflow file. For transformers, that's `.github/workflows/docs-check.yml`.
+#
+# The approval run misses a PR when:
+# - it's from a fork, and nobody approved the workflow run before it expired
+# - it failed, for example because Serge wasn't set up yet
+#
+# The `find` job lists approved PRs updated recently that don't have an answer
+# yet (`docs-check --mode sweep`). The `check` job runs `docs-check.yml` in
+# approval mode on each one. Like the approval run, nothing from the PR is
+# checked out or run.
+on:
+  workflow_call:
+    inputs:
+      since_hours:
+        description: "Look at PRs updated in this many hours"
+        type: string
+        default: "24"
+      max_prs:
+        description: "Check at most this many PRs per run, so one run can't ask Serge too often"
+        type: string
+        default: "20"
+      rules_file:
+        description: "The file with the rules Serge follows, in the repo being checked"
+        type: string
+        default: .ai/docs-check-rules.md
+      docs_path:
+        description: "The docs folder. A PR that edits it turns the status green."
+        type: string
+        default: docs/source/en/
+      library_path:
+        description: "The library code folder. Defaults to src/<repo name>/."
+        type: string
+        default: ""
+      llm_model:
+        description: "The model Serge uses. It must be able to use tools to read files."
+        type: string
+        default: ""
+      llm_api_base:
+        description: "The address of the model service Serge calls. Defaults to the Hugging Face router."
+        type: string
+        default: https://router.huggingface.co/v1
+      llm_bill_to:
+        description: "The Hugging Face organization that pays for Serge's model calls"
+        type: string
+        default: ""
+      python_version:
+        description: "The Python version to run the check with"
+        type: string
+        default: "3.13"
+      transformersci_ref:
+        description: >-
+          The branch, tag, or commit of transformers-ci to install. This only
+          picks the Python package: the `check` job always runs `docs-check.yml`
+          from main, because GitHub doesn't allow a variable ref in `uses:`. So
+          changes to `docs-check.yml` must reach main before a sweep can use them.
+        type: string
+        default: main
+    secrets:
+      llm_api_key:
+        description: "The key for the model service Serge calls"
+        required: false
+
+permissions: {}
+
+jobs:
+  find:
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: read
+    runs-on: ubuntu-22.04
+    outputs:
+      prs: ${{ steps.sweep.outputs.prs }}
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python_version || '3.13' }}
+
+      - name: Install docs check
+        run: |
+          set -euo pipefail
+          if ! echo "$TRANSFORMERSCI_REF" | grep -qE '^[a-zA-Z0-9/_.-]+$'; then
+            echo "::error::Invalid transformersci_ref format" >&2
+            exit 1
+          fi
+          pip install --disable-pip-version-check "transformers-ci[docs-check] @ git+https://github.com/huggingface/transformers-ci@${TRANSFORMERSCI_REF}"
+        env:
+          TRANSFORMERSCI_REF: ${{ inputs.transformersci_ref || 'main' }}
+
+      - name: Find approved PRs without an answer
+        id: sweep
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SINCE_HOURS: ${{ inputs.since_hours }}
+          MAX_PRS: ${{ inputs.max_prs }}
+        run: |
+          set -euo pipefail
+          for value in "$SINCE_HOURS" "$MAX_PRS"; do
+            if ! echo "$value" | grep -qE '^[0-9]+$'; then
+              echo "::error::since_hours and max_prs must be whole numbers, got '$value'" >&2
+              exit 1
+            fi
+          done
+          docs-check --mode sweep --since-hours "$SINCE_HOURS" --max-prs "$MAX_PRS"
+
+  check:
+    needs: find
+    if: needs.find.outputs.prs != '' && needs.find.outputs.prs != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.find.outputs.prs) }}
+    # The sweep and the approval run don't ask Serge about the same commit at
+    # once because `docs-check --mode sweep` leaves out PRs approved in the last
+    # 30 minutes. A concurrency group can't do it: the approval run only learns
+    # which commit it checks after its job starts.
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+      statuses: write
+    uses: huggingface/transformers-ci/.github/workflows/docs-check.yml@main # main
+    with:
+      mode: approval
+      pr_number: ${{ matrix.pr }}
+      head_sha: ${{ matrix.sha }}
+      rules_file: ${{ inputs.rules_file }}
+      docs_path: ${{ inputs.docs_path }}
+      library_path: ${{ inputs.library_path }}
+      llm_model: ${{ inputs.llm_model }}
+      llm_api_base: ${{ inputs.llm_api_base }}
+      llm_bill_to: ${{ inputs.llm_bill_to }}
+      python_version: ${{ inputs.python_version }}
+      transformersci_ref: ${{ inputs.transformersci_ref }}
+    secrets:
+      llm_api_key: ${{ secrets.llm_api_key }}
