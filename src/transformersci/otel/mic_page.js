@@ -156,6 +156,7 @@
       byId('coverage').textContent = share(cover.covered);
       byId('coverage-counts').textContent = `${cover.covered} of ${cover.model_types} model types · reachable ${share(cover.reachable)} (${cover.reachable}) with the generic shrink rule`;
       byId('coverage-counts').title = `Snapshot ${cover.generated_at.slice(0, 10)}`;
+      byId('coverage-counts').append(' · '); link(byId('coverage-counts'), 'per model type and shrink', 'https://huggingface.co/spaces/huggingface-mic/mic-coverage');
     }
     const filter = byId('search').value.toLowerCase();
     const rows = data.rows.filter(r => Object.values(r).join(' ').toLowerCase().includes(filter));
@@ -236,6 +237,7 @@
       td = element('td', '', tr); td.className = 'links';
       link(td, 'Trace', r.trace_url); link(td, 'Run', r.run_url);
       if (r.baseline_url) link(td, 'Baseline', r.baseline_url);
+      if (r.shrink_url) link(td, 'Shrink', r.shrink_url).title = 'How the fixture was shrunk from the real checkpoint';
       if (r.contract_url) {
         const contract = link(td, 'Contract', r.contract_url);
         contract.title = r.contract_revision ? 'Usage pinned to the failed contract revision' : 'Current usage; historical contract revision unavailable';
