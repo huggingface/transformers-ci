@@ -113,7 +113,11 @@ def fixture_problem(folder, pin):
     hint = f"build it with: python example/build_fixtures.py --fixture {short(str(folder))}"
     if not build_file.exists():
         return f"fixture not built ({hint})"
-    build = load(build_file, "fixture-build")
+    try:
+        build = load(build_file, "fixture-build")
+    except SystemExit as exc:
+        # One unreadable build.json fails its own contract, not the whole fleet run.
+        return f"{exc} (written by a newer transformers-mic, or corrupt)"
     if pin.get("files_sha256") and digest(build["sha256"]) != pin["files_sha256"]:
         return f"build.json does not match the fleet lock pin ({hint})"
     actual = file_hashes(folder)

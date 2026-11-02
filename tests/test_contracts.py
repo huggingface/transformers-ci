@@ -860,3 +860,9 @@ def test_fixture_build_schema_accepts_small_sources_kept_whole():
     )
     assert "real" in schema["properties"]["weights"]["enum"]
     assert set(build) <= set(schema["properties"])
+
+
+def test_an_invalid_build_json_fails_its_contract_not_the_run(tmp_path):
+    (tmp_path / "build.json").write_text(json.dumps({"weights": "pretrained"}))
+    problem = run.fixture_problem(tmp_path, {})
+    assert "invalid fixture-build" in problem and "newer transformers-mic" in problem
