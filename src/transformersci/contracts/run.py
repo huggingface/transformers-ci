@@ -623,6 +623,26 @@ def platform_class(device, dtype=None):
     return f"cpu-{arch}"
 
 
+def wrong_hardware(runtime, platform):
+    """Why a missing baseline is really a host problem: a bfloat16 run on an x86 CPU
+    without native bfloat16 lands in cpu-x86_64, where bfloat16 baselines are not kept."""
+    if runtime.get("dtype") != "bfloat16" or platform != "cpu-x86_64":
+        return None
+    try:
+        cpu = next(
+            line.split(":", 1)[1].strip()
+            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines()
+            if line.startswith("model name")
+        )
+    except (OSError, StopIteration):
+        cpu = "this CPU"
+    return (
+        f"wrong hardware: {cpu} has no native bfloat16 (avx512_bf16/amx_bf16), so this "
+        "bfloat16 case was measured as cpu-x86_64; its reviewed baseline is under "
+        "cpu-x86_64-bf16. Rerun on a native-bfloat16 runner."
+    )
+
+
 def rules_for(manifest, platform_dir):
     """The manifest's comparison rules with this platform's tolerance overrides."""
     rules = {name: dict(rule) for name, rule in manifest["outputs"].items()}
@@ -1189,7 +1209,10 @@ def _main(argv, telemetry):
                         )
                         continue
                     if not baseline.exists():
-                        failures = [f"no reviewed baseline at {record['baseline']}"]
+                        failures = [
+                            wrong_hardware(actual["runtime"], platform)
+                            or f"no reviewed baseline at {record['baseline']}"
+                        ]
                     else:
                         reviewed = load(baseline, "baseline")
                         identity = reviewed["recorded_with"]

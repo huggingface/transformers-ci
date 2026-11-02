@@ -70,7 +70,8 @@
   "weights": {
    "enum": [
     "random",
-    "overfit"
+    "overfit",
+    "real"
    ]
   },
   "gate": {
@@ -194,6 +195,25 @@
     "type": "string",
     "pattern": "^[0-9a-f]{64}$"
    }
+  },
+  "builder_revision": {
+   "type": [
+    "string",
+    "null"
+   ],
+   "description": "transformers-mic commit whose shrink rule built the fixture (+dirty if the builder was edited)"
+  },
+  "recipe": {
+   "type": "object",
+   "description": "the manifest build recipe this fixture was built from; a rebuild with the same recipe reuses key_fields"
+  },
+  "shrink": {
+   "enum": [
+    "rule",
+    "recorded",
+    "none"
+   ],
+   "description": "rule: the current shrink rule made the config; recorded: a previous build.json's key_fields did; none: a small source kept whole with its trained weights"
   }
  }
 }
