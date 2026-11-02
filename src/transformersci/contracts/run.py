@@ -113,7 +113,11 @@ def fixture_problem(folder, pin):
     hint = f"build it with: python example/build_fixtures.py --fixture {short(str(folder))}"
     if not build_file.exists():
         return f"fixture not built ({hint})"
-    build = load(build_file, "fixture-build")
+    try:
+        build = load(build_file, "fixture-build")
+    except SystemExit as exc:
+        # One unreadable build.json fails its own contract, not the whole fleet run.
+        return f"{exc} (written by a newer transformers-mic, or corrupt)"
     if pin.get("files_sha256") and digest(build["sha256"]) != pin["files_sha256"]:
         return f"build.json does not match the fleet lock pin ({hint})"
     actual = file_hashes(folder)
@@ -621,6 +625,26 @@ def platform_class(device, dtype=None):
     if arch == "x86_64" and dtype == "bfloat16" and native_bfloat16():
         return "cpu-x86_64-bf16"
     return f"cpu-{arch}"
+
+
+def wrong_hardware(runtime, platform):
+    """Why a missing baseline is really a host problem: a bfloat16 run on an x86 CPU
+    without native bfloat16 lands in cpu-x86_64, where bfloat16 baselines are not kept."""
+    if runtime.get("dtype") != "bfloat16" or platform != "cpu-x86_64":
+        return None
+    try:
+        cpu = next(
+            line.split(":", 1)[1].strip()
+            for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines()
+            if line.startswith("model name")
+        )
+    except (OSError, StopIteration):
+        cpu = "this CPU"
+    return (
+        f"wrong hardware: {cpu} has no native bfloat16 (avx512_bf16/amx_bf16), so this "
+        "bfloat16 case was measured as cpu-x86_64; its reviewed baseline is under "
+        "cpu-x86_64-bf16. Rerun on a native-bfloat16 runner."
+    )
 
 
 def rules_for(manifest, platform_dir):
@@ -1189,7 +1213,10 @@ def _main(argv, telemetry):
                         )
                         continue
                     if not baseline.exists():
-                        failures = [f"no reviewed baseline at {record['baseline']}"]
+                        failures = [
+                            wrong_hardware(actual["runtime"], platform)
+                            or f"no reviewed baseline at {record['baseline']}"
+                        ]
                     else:
                         reviewed = load(baseline, "baseline")
                         identity = reviewed["recorded_with"]

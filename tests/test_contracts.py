@@ -831,3 +831,38 @@ def test_coverage_model_types_reads_mapping_and_updates():
         'OTHER = OrderedDict([("ignored", "X")])\n'
     )
     assert model_types(mappings, auto) == ["bert", "gpt-sw3", "mimi_decoder", "t5"]
+
+
+def test_bfloat16_on_a_non_native_x86_host_is_reported_as_wrong_hardware(
+    tmp_path, monkeypatch
+):
+    real_read = Path.read_text
+
+    def cpuinfo(self, *a, **k):
+        if str(self) == "/proc/cpuinfo":
+            return "model name\t: AMD EPYC 7R13 Processor\nflags\t: avx2 avx512f\n"
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", cpuinfo)
+    message = run.wrong_hardware({"dtype": "bfloat16"}, "cpu-x86_64")
+    assert message.startswith("wrong hardware: AMD EPYC 7R13 Processor")
+    assert "cpu-x86_64-bf16" in message
+    assert run.wrong_hardware({"dtype": "float32"}, "cpu-x86_64") is None
+    assert run.wrong_hardware({"dtype": "bfloat16"}, "cpu-x86_64-bf16") is None
+    assert run.wrong_hardware({"dtype": "bfloat16"}, "cuda") is None
+
+
+def test_fixture_build_schema_accepts_small_sources_kept_whole():
+    # transformers-mic #141 keeps small sources whole: weights "real", shrink "none".
+    build = {"weights": "real", "shrink": "none", "builder_revision": None}
+    schema = json.loads(
+        (Path(run.__file__).parent / "schemas/fixture-build.schema.json").read_text()
+    )
+    assert "real" in schema["properties"]["weights"]["enum"]
+    assert set(build) <= set(schema["properties"])
+
+
+def test_an_invalid_build_json_fails_its_contract_not_the_run(tmp_path):
+    (tmp_path / "build.json").write_text(json.dumps({"weights": "pretrained"}))
+    problem = run.fixture_problem(tmp_path, {})
+    assert "invalid fixture-build" in problem and "newer transformers-mic" in problem

@@ -87,6 +87,14 @@ def failure_kind(status, exception, target, text):
         return "Setup error"
     if status == "error" or exception in {"MICExecutionError", "MICRunnerError"}:
         return "Runtime traceback"
+    # Older runners reported a bfloat16 case on a non-native x86 host as a missing
+    # cpu-x86_64 baseline; those baselines live under cpu-x86_64-bf16.
+    if text.startswith("wrong hardware") or (
+        "no reviewed baseline" in text
+        and "/expectations/cpu-x86_64/" in text
+        and ".bfloat16.json" in text
+    ):
+        return "Wrong hardware"
     if "no reviewed baseline" in text:
         return "Missing baseline"
     if text.startswith("listed in known_failures but passes"):
