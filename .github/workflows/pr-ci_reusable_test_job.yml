@@ -394,6 +394,10 @@ jobs:
       HF_XET_LOG_DEST: /tmp/xet_logs/
       HF_XET_CACHE: /tmp/hf_xet_cache
       HF_METRICS_CACHE: /tmp/hf_metrics_cache
+      # CI dependency recorder — writes deps_by_file.json into reports/
+      # captured by the existing "Upload test reports" artifact step.
+      # No-op unless CI_RECORD_DEPS_OUTPUT is set (see testing_utils.py).
+      CI_RECORD_DEPS_OUTPUT: reports/deps.json
 
     steps:
 
