@@ -139,6 +139,25 @@ def test_missing_baseline_is_a_failure(fleet, capsys):
     assert code == 1 and "no reviewed baseline" in rows[0]["failures"][0]
 
 
+def test_bfloat16_on_a_non_native_host_is_never_compared(fleet, capsys, monkeypatch):
+    # An old cpu-x86_64 bfloat16 baseline exists and the values match it, but a
+    # non-native host is the wrong hardware: never compare across hardware.
+    actual = {**fleet[3], "runtime": {"device": "cpu", "dtype": "bfloat16"}}
+    fleet[1].write_text(f"import json\nprint(json.dumps({actual!r}))\n")
+    baseline = json.loads(fleet[2].read_text())
+    baseline["outputs"] = actual
+    moved = fleet[2].parent.parent / "cpu-x86_64" / fleet[2].name
+    moved.parent.mkdir()
+    moved.write_text(json.dumps(baseline))
+    monkeypatch.setattr(run, "platform_class", lambda *a: "cpu-x86_64")
+    code, rows = invoke(fleet, capsys)
+    assert code == 1 and rows[0]["status"] == "fail"
+    assert rows[0]["failures"][0].startswith("wrong hardware:")
+    code, rows = invoke(fleet, capsys, "--record")
+    assert rows[0]["failures"][0].startswith("wrong hardware:")
+    assert not list(moved.parent.glob("*.candidate.json"))
+
+
 def test_declared_unmeasured_variant_runs_only_with_run_declared(fleet, capsys):
     path = fleet[0].parent / "integration.json"
     manifest = json.loads(path.read_text())

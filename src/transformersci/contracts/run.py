@@ -628,8 +628,9 @@ def platform_class(device, dtype=None):
 
 
 def wrong_hardware(runtime, platform):
-    """Why a missing baseline is really a host problem: a bfloat16 run on an x86 CPU
-    without native bfloat16 lands in cpu-x86_64, where bfloat16 baselines are not kept."""
+    """Why a case cannot be checked on this host: a bfloat16 run on an x86 CPU without
+    native bfloat16 lands in cpu-x86_64, where bfloat16 values are neither compared
+    nor recorded, even if an old baseline sits there."""
     if runtime.get("dtype") != "bfloat16" or platform != "cpu-x86_64":
         return None
     try:
@@ -1148,6 +1149,12 @@ def _main(argv, telemetry):
                             }
                         )
                         continue
+                    wrong = wrong_hardware(actual["runtime"], platform)
+                    if wrong:
+                        # Never compare or record across hardware: a bfloat16 value
+                        # from a non-native CPU says nothing about the reviewed one.
+                        emit({**record, "status": "fail", "failures": [wrong]})
+                        continue
                     broken = (
                         missing(checked, actual)
                         + non_finite(outputs, actual)
@@ -1213,10 +1220,7 @@ def _main(argv, telemetry):
                         )
                         continue
                     if not baseline.exists():
-                        failures = [
-                            wrong_hardware(actual["runtime"], platform)
-                            or f"no reviewed baseline at {record['baseline']}"
-                        ]
+                        failures = [f"no reviewed baseline at {record['baseline']}"]
                     else:
                         reviewed = load(baseline, "baseline")
                         identity = reviewed["recorded_with"]
