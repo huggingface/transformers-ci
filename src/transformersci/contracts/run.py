@@ -40,6 +40,8 @@ import traceback
 from functools import cache
 from pathlib import Path
 
+from . import template_date
+
 
 HERE = Path(__file__).parent
 SCHEMAS = HERE / "schemas"
@@ -324,10 +326,17 @@ def execute_inline(code, filename, env):
 
 
 def patch_prelude(names):
-    """Code that applies the fleet lock's local patches in a contract's own process."""
-    if not names:
-        return ""
-    return f"import sys  # mic: local patches\nsys.path.insert(0, {str(HERE)!r})\nimport patches\npatches.apply({sorted(names)!r})\n\n"
+    """Code run first in a contract's own process: freeze the chat-template date
+    (MIC_TEMPLATE_DATE) and apply the fleet lock's local patches."""
+    code = (
+        "import os, sys  # mic: template date and local patches\n"
+        f"sys.path.insert(0, {str(HERE.parent.parent)!r})\n"
+        "from transformersci.contracts import template_date\n"
+        "template_date.freeze(os.environ.get('MIC_TEMPLATE_DATE'))\n"
+    )
+    if names:
+        code += f"sys.path.insert(0, {str(HERE)!r})\nimport patches\npatches.apply({sorted(names)!r})\n"
+    return code + "\n"
 
 
 class Executor:
@@ -849,6 +858,10 @@ def _main(argv, telemetry):
             flush=True,
         )
     known = lock.get("known_failures", {})
+    # Chat templates see a fixed date, not today's (template_date.py): a template
+    # that calls strftime_now would otherwise change the prompt every day.
+    if args.framework == "transformers":
+        template_date.freeze(template_date.TEMPLATE_DATE)
     local_patches = sorted(lock.get("local_patches", {}))
     if local_patches and args.framework == "transformers":
         import patches
@@ -1039,6 +1052,7 @@ def _main(argv, telemetry):
                         "MIC_MODEL": model,
                         "MIC_MODEL_REVISION": "" if os.path.isdir(model) else revision,
                         "MIC_MODEL_KWARGS": json.dumps(variant),
+                        "MIC_TEMPLATE_DATE": template_date.TEMPLATE_DATE,
                     }
                     ok, stdout, stderr = executor.run(env)
                     environment = (
@@ -1200,6 +1214,8 @@ def _main(argv, telemetry):
                         )
                         candidate.parent.mkdir(parents=True, exist_ok=True)
                         recorded = {k: v for k, v in record.items() if k != "baseline"}
+                        if args.framework == "transformers":
+                            recorded["template_date"] = template_date.TEMPLATE_DATE
                         candidate.write_text(
                             json.dumps(
                                 validate(
@@ -1233,6 +1249,14 @@ def _main(argv, telemetry):
                             )
                             if identity.get(k) != record[k]
                         ]
+                        # Baselines recorded before the freeze carry no date and compare as
+                        # usual; one whose template put the date into a checked output
+                        # failed every day but its recording day anyway. Re-record it.
+                        if (
+                            identity.get("template_date", template_date.TEMPLATE_DATE)
+                            != template_date.TEMPLATE_DATE
+                        ):
+                            mismatch.append("template_date")
                         if identity.get("platform", platform) != platform:
                             mismatch.append("platform")
                         failures = (

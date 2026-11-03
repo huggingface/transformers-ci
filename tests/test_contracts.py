@@ -158,6 +158,27 @@ def test_bfloat16_on_a_non_native_host_is_never_compared(fleet, capsys, monkeypa
     assert not list(moved.parent.glob("*.candidate.json"))
 
 
+def test_a_baseline_recorded_with_another_template_date_fails(fleet, capsys):
+    baseline = json.loads(fleet[2].read_text())
+    baseline["recorded_with"]["template_date"] = "2025-06-01"
+    fleet[2].write_text(json.dumps(baseline))
+    code, rows = invoke(fleet, capsys)
+    assert code == 1 and "template_date" in rows[0]["failures"][0]
+    baseline["recorded_with"]["template_date"] = run.template_date.TEMPLATE_DATE
+    fleet[2].write_text(json.dumps(baseline))
+    code, rows = invoke(fleet, capsys)
+    assert code == 0 and rows[0]["status"] == "pass"
+
+
+def test_record_stores_the_template_date(fleet, capsys):
+    code, rows = invoke(fleet, capsys, "--record")
+    assert rows[0]["status"] == "recorded", rows[0]["failures"]
+    candidate = json.loads(fleet[2].with_name("demo-slim.candidate.json").read_text())
+    assert (
+        candidate["recorded_with"]["template_date"] == run.template_date.TEMPLATE_DATE
+    )
+
+
 def test_declared_unmeasured_variant_runs_only_with_run_declared(fleet, capsys):
     path = fleet[0].parent / "integration.json"
     manifest = json.loads(path.read_text())
