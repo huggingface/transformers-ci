@@ -722,11 +722,11 @@ jobs:
     needs: [test-preparation, quality_gate]
     if: ${{ !cancelled() && needs.quality_gate.result == 'success'
          && needs.test-preparation.outputs.run_fast_integration == 'true' }}
-    uses: huggingface/transformers-ci/.github/workflows/pr-ci_contracts.yml@mic-as-pytest
+    uses: huggingface/transformers-ci/.github/workflows/pr-ci_contracts.yml@ci-mic-as-pytest
     with:
       docker_image: "huggingface/transformers-torch-light"
       runner:       "aws-m8i-l-cache"
-      ci_sha:       "mic-as-pytest"
+      ci_sha:       "ci-mic-as-pytest"
 
   # ---------------------------------------------------------------------------
   # ===========================================================================
