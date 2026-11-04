@@ -483,10 +483,21 @@ jobs:
       # For transformers-ci[otel], since any problem in transformers-ci highly impacts the CI flow and we might need to
       # quickly fix it, let's repeat the installation here.
         run: |
-          uv pip install 'torch==2.15.0' 'torchaudio' 'torchvision' 'torchcodec==0.17.0' --index-url https://download.pytorch.org/whl/cpu
+          # Upgrade torch to 2.15 based on what each docker image provides.
+          # - torch-light / pipeline-torch: torch + torchaudio + torchvision + torchcodec
+          # - exotic-models / consistency:  torch + torchaudio + torchvision (no torchcodec)
+          # - custom-tokenizers:            torch only
+          if [[ "$DOCKER_IMAGE" == *"torch-light"* ]] || [[ "$DOCKER_IMAGE" == *"pipeline-torch"* ]]; then
+            uv pip install 'torch==2.15.0' 'torchaudio' 'torchvision' 'torchcodec==0.17.0' --index-url https://download.pytorch.org/whl/cpu
+          elif [[ "$DOCKER_IMAGE" == *"exotic-models"* ]] || [[ "$DOCKER_IMAGE" == *"consistency"* ]]; then
+            uv pip install 'torch==2.15.0' 'torchaudio' 'torchvision' --index-url https://download.pytorch.org/whl/cpu
+          elif [[ "$DOCKER_IMAGE" == *"custom-tokenizers"* ]]; then
+            uv pip install 'torch==2.15.0' --index-url https://download.pytorch.org/whl/cpu
+          fi
           eval "$INSTALL_STEPS"
           uv pip install 'transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@main'
         env:
+          DOCKER_IMAGE: ${{ inputs.docker_image }}
           INSTALL_STEPS: ${{ inputs.install_steps }}
 
       # ── 6. NLTK data (examples jobs only) ───────────────────────────────────
