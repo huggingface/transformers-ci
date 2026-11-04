@@ -483,7 +483,8 @@ jobs:
       # For transformers-ci[otel], since any problem in transformers-ci highly impacts the CI flow and we might need to
       # quickly fix it, let's repeat the installation here.
         run: |
-          # Upgrade torch to 2.15 based on what each docker image provides.
+          eval "$INSTALL_STEPS"
+          # Upgrade torch to 2.15 AFTER install_steps to prevent downgrade during dependency resolution.
           # - torch-light / pipeline-torch: torch + torchaudio + torchvision + torchcodec
           # - exotic-models / consistency:  torch + torchaudio + torchvision (no torchcodec)
           # - custom-tokenizers:            torch only
@@ -494,7 +495,6 @@ jobs:
           elif [[ "$DOCKER_IMAGE" == *"custom-tokenizers"* ]]; then
             uv pip install 'torch==2.15.0' --index-url https://download.pytorch.org/whl/cpu
           fi
-          eval "$INSTALL_STEPS"
           uv pip install 'transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@main'
         env:
           DOCKER_IMAGE: ${{ inputs.docker_image }}
