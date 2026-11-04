@@ -52,9 +52,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # On a PR, HEAD is the merge commit and HEAD^1 the base it was built on,
-          # so two commits are enough to diff; a full clone of every branch and
-          # tag costs ~25 s.
           fetch-depth: 2
 
       - name: Install
@@ -82,80 +79,21 @@ jobs:
       - name: Show installed library versions
         run: pip list --format=freeze | tee installed.txt
 
-      - name: Run the contracts
-        id: run
+      - name: Generate test file
+        id: generate
         if: steps.install.outcome == 'success'
         continue-on-error: true
-        env:
-          # A fix for the bug behind a declared skip can show the skipped variant passing.
-          RUN_DECLARED: ${{ inputs.run_declared || contains(github.event.pull_request.labels.*.name, 'mic-run-declared') }}
         run: |
           export PYTHONPATH="$PWD/src"
-          python - <<'PY_SOURCE'
-          from pathlib import Path
-          import transformers
-          expected = Path.cwd() / "src/transformers/__init__.py"
-          actual = Path(transformers.__file__).resolve()
-          assert actual == expected.resolve(), (actual, expected)
-          print("Framework under test:", actual)
-          import torch
-          assert torch.get_num_threads() == 4, torch.get_num_threads()
-          print("CPU threads:", torch.get_num_threads())
-          PY_SOURCE
-          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            git diff --name-only HEAD^1 HEAD > /tmp/changed-files.txt
-            selection=(--changed-files /tmp/changed-files.txt --diff-base HEAD^1)
-            echo "Changed files: $(wc -l < /tmp/changed-files.txt)"; head -20 /tmp/changed-files.txt
-          else
-            selection=(--run-all)
-            echo "Changed files: all"
-          fi
-          if [[ "$RUN_DECLARED" == true ]]; then
-            selection+=(--run-declared)
-            echo "Running variants the contracts declare unmeasured"
-          fi
-          # Resolve once for both fleets while the framework pin rollout is pending.
-          fleet_revision=$(python -c 'from transformersci.contracts.fleet import resolve_revision; print(resolve_revision())')
-          echo "MIC fleet: huggingface-mic/transformers-fleet@$fleet_revision"
-          # Use the normal OTEL resource setup so cases appear in the PR dashboard.
-          mic() {
-            configure-ci-otel --suite fast-integration --service-name pytest-observability \
-              --protocol http --otlp-endpoint "$OTEL_EXPORTER_OTLP_ENDPOINT" \
-              --token "$OTEL_TOKEN" --staging-endpoint 10.90.52.50:5317 \
-              --staging-protocol grpc -- run-model-contracts "$@"
-          }
-          start=$SECONDS
-          mic --fixtures-only --fleet control --fleet-revision "$fleet_revision" --variant default \
-            "${selection[@]}" --output /tmp/results.jsonl 2> /tmp/run.log | python -c '
-          import json, sys
-          for line in sys.stdin:
-              if not line.startswith("{"):
-                  print(line.rstrip(), flush=True)
-                  continue
-              r = json.loads(line)
-              print(r["status"].ljust(6), r["target"], r.get("platform", ""), "\n".join(r.get("failures", [])), flush=True)' || status=$?
-          echo "$(tail -1 /tmp/run.log); $((SECONDS - start)) s"
-          mic --fixtures-only --fleet control --fleet-revision "$fleet_revision" --variant bfloat16 \
-            "${selection[@]}" --output /tmp/results.jsonl 2>> /tmp/run.log | python -c '
-          import json, sys
-          for line in sys.stdin:
-              if not line.startswith("{"):
-                  print(line.rstrip(), flush=True)
-                  continue
-              r = json.loads(line)
-              print(r["status"].ljust(6), r["target"], r.get("variant", ""), r.get("platform", ""), "\n".join(r.get("failures", [])), flush=True)' || status=$?
-          mic --fixtures-only --fleet prototypes --fleet-revision "$fleet_revision" --variant bfloat16 \
-            "${selection[@]}" --output /tmp/results.jsonl 2>> /tmp/run.log | python -c '
-          import json, sys
-          for line in sys.stdin:
-              if not line.startswith("{"):
-                  print(line.rstrip(), flush=True)
-                  continue
-              r = json.loads(line)
-              print(r["status"].ljust(6), r["target"], r.get("variant", ""), r.get("platform", ""), "\n".join(r.get("failures", [])), flush=True)' || status=$?
-          # Preserve full runner diagnostics in the visible job log as well as artifacts.
-          cat /tmp/run.log
-          exit "${status:-0}"
+          python utils/generate_fast_integration_tests.py
+
+      - name: Run contracts as pytest
+        id: run
+        if: steps.generate.outcome == 'success'
+        continue-on-error: true
+        run: |
+          export PYTHONPATH="$PWD/src"
+          pytest tests/test_fast_integration.py -v 2>&1 | tee /tmp/run.log
 
       - name: Summary
         id: summary
@@ -223,12 +161,8 @@ jobs:
             /tmp/results.jsonl
             /tmp/run.log
             /tmp/contracts-observation.json
+            tests/test_fast_integration.py
 
-      # A PR's cache is only visible to that PR, so saving there buys little. When the
-      # restore fails (e.g. "Egress is over the account limit") every fixture is
-      # downloaded, and tarring the whole hub cache ran the job into its timeout,
-      # which marks the PR CI run cancelled. Save from push runs only, after the
-      # results are uploaded, and bound it.
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: >-
           !cancelled() && github.event_name != 'pull_request'
@@ -240,6 +174,6 @@ jobs:
           key: contracts-hf-${{ runner.arch }}-${{ inputs.ci_sha }}
 
       - name: Flag contract failures for review
-        if: always() && (steps.install.outcome == 'failure' || steps.run.outcome == 'failure' || steps.summary.outcome == 'failure')
+        if: always() && (steps.install.outcome == 'failure' || steps.generate.outcome == 'failure' || steps.run.outcome == 'failure' || steps.summary.outcome == 'failure')
         run: |
           echo "::warning::A model integration contract failed or could not run; see the job summary and artifact for details. This observation does not block the PR."
