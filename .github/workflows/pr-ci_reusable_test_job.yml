@@ -488,13 +488,17 @@ jobs:
           # - torch-light / pipeline-torch: torch + torchaudio + torchvision + torchcodec
           # - exotic-models / consistency:  torch + torchaudio + torchvision (no torchcodec)
           # - custom-tokenizers:            torch only
-          if [[ "$DOCKER_IMAGE" == *"torch-light"* ]] || [[ "$DOCKER_IMAGE" == *"pipeline-torch"* ]]; then
-            uv pip install 'torch==2.15.0' 'torchaudio' 'torchvision' 'torchcodec==0.17.0' --index-url https://download.pytorch.org/whl/cpu
-          elif [[ "$DOCKER_IMAGE" == *"exotic-models"* ]] || [[ "$DOCKER_IMAGE" == *"consistency"* ]]; then
-            uv pip install 'torch==2.15.0' 'torchaudio' 'torchvision' --index-url https://download.pytorch.org/whl/cpu
-          elif [[ "$DOCKER_IMAGE" == *"custom-tokenizers"* ]]; then
-            uv pip install 'torch==2.15.0' --index-url https://download.pytorch.org/whl/cpu
-          fi
+          case "$DOCKER_IMAGE" in
+            *torch-light*|*pipeline-torch*)
+              uv pip install 'torch==2.15.0' 'torchaudio' 'torchvision' 'torchcodec==0.17.0' --index-url https://download.pytorch.org/whl/cpu
+              ;;
+            *exotic-models*|*consistency*)
+              uv pip install 'torch==2.15.0' 'torchaudio' 'torchvision' --index-url https://download.pytorch.org/whl/cpu
+              ;;
+            *custom-tokenizers*)
+              uv pip install 'torch==2.15.0' --index-url https://download.pytorch.org/whl/cpu
+              ;;
+          esac
           uv pip install 'transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@main'
         env:
           DOCKER_IMAGE: ${{ inputs.docker_image }}
