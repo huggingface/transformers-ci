@@ -86,6 +86,7 @@ jobs:
 
       - name: Debug
         run: |
+          uv pip install 'torch==2.15.0' 'torchaudio' 'torchvision' 'torchcodec==0.17.0' --index-url https://download.pytorch.org/whl/cpu
           uv pip install -U -e .
           uv pip install 'transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@main'
           echo $(pwd)
