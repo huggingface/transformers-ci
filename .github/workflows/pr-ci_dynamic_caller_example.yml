@@ -394,9 +394,6 @@ jobs:
       - name: Install observability wrapper
         run: uv pip install 'transformers-ci[otel] @ git+https://github.com/huggingface/transformers-ci@main'
 
-      - name: Upgrade torch to 2.15
-        run: uv pip install 'torch==2.15.0' 'torchaudio' 'torchvision' --index-url https://download.pytorch.org/whl/cpu
-
       - name: Show installed libraries and their versions
         run: pip freeze | tee installed.txt
 
@@ -725,11 +722,11 @@ jobs:
     needs: [test-preparation, quality_gate]
     if: ${{ !cancelled() && needs.quality_gate.result == 'success'
          && needs.test-preparation.outputs.run_fast_integration == 'true' }}
-    uses: huggingface/transformers-ci/.github/workflows/pr-ci_contracts.yml@pr_ci_torch_215
+    uses: huggingface/transformers-ci/.github/workflows/pr-ci_contracts.yml@mic-as-pytest
     with:
       docker_image: "huggingface/transformers-torch-light"
       runner:       "aws-m8i-l-cache"
-      ci_sha:       "pr_ci_torch_215"
+      ci_sha:       "mic-as-pytest"
 
   # ---------------------------------------------------------------------------
   # ===========================================================================
