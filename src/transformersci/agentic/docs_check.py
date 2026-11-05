@@ -12,27 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Checks whether a PR needs docs and shows the answer as a `docs-check` status on
-the PR. Other repos run this workflow from their own workflow file. For
-transformers, that's `.github/workflows/docs-check.yml`.
+"""Checks whether a PR needs docs, and shows the answer as a `docs-check` status on the PR.
 
-The code that does the checking is the `docs-check` command in this package, so
-this workflow installs the package. The rules Serge follows come from the repo
-that runs this workflow, because each repo decides what needs docs.
+This is the `docs-check` command. The `docs-check.yml` workflow in this repo runs
+it, and other repos call that workflow from their own. For transformers, that's
+`.github/workflows/docs-check.yml`.
 
 It runs in one of two modes:
-- `approval`: runs after a maintainer approves a PR. It asks Serge
-  whether the PR needs docs, saves the answer, leaves a comment
-  if docs are needed, and sets the status. Serge can read the PR's code, but
-  none of it is run.
-- `push`: runs when a PR is opened or updated. It doesn't ask Serge
-  and doesn't download the PR's code. It reuses the last saved answer to set the
-  status on the new commit.
+- `approval`: runs after a maintainer approves a PR. It asks Serge whether the PR
+  needs docs, saves the answer, comments if docs are needed, and sets the status.
+  Serge reads the PR's files through the GitHub API, so the PR's code is never
+  checked out or run.
+- `push`: runs when a PR is opened or updated. It doesn't ask Serge. It reuses
+  the last saved answer to set the status on the new commit.
 
-The status doesn't block merging unless the calling repo makes it a required check.
+Each repo decides what needs docs in its own rules file. For transformers, that's
+`.ai/docs-check-rules.md`.
 
-The rules Serge follows live in the repo being checked. For transformers,
-that's `.ai/docs-check-rules.md`.
+The status doesn't block merging unless the repo makes it a required check.
 """
 
 from __future__ import annotations
@@ -46,9 +43,10 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from reviewbot.github_client import GitHubClient
     from reviewbot.llm_client import ChatCompletionClient, ToolCall
-    from reviewbot.tools import ToolEnv
 
 
 log = logging.getLogger(__name__)
@@ -56,9 +54,13 @@ log = logging.getLogger(__name__)
 STATUS_CONTEXT = "docs-check"
 MARKER = "<!-- docs-check -->"
 MAINTAINER_ASSOCIATIONS = {"MEMBER", "OWNER", "COLLABORATOR"}
-BROWSE_TOOLS = {"read_file", "list_dir", "grep"}
+DOCS_TOOLS = {"read_file", "list_dir", "grep"}
+PR_FILE_TOOL = "read_pr_file"
 MAX_TOOL_ROUNDS = 6
 MAX_DIFF_CHARS = 120_000
+NO_ANSWER_STATUS = (
+    "Serge couldn't give an answer. Re-run the approval run to try again."
+)
 MAX_BODY_CHARS = 4_000
 MAX_REASON_CHARS = 1_000
 MAX_STATUS_CHARS = 140
@@ -116,9 +118,9 @@ def decide_status(
     `verdict` is Serge's last saved answer for this PR. It's None if Serge
     hasn't been asked yet, or couldn't give an answer.
 
-    Checks the PR's own files first (with `skip_reason`), because they settle the
-    answer whatever Serge said: docs edits turn it green, even after Serge said
-    docs are needed.
+    Checks the PR's own files first (with `skip_reason`), because they decide the
+    answer no matter what Serge said. For example, editing the docs turns the
+    status green, even after Serge said docs are needed.
     """
     if reason := skip_reason(files, docs_path, library_path):
         return "success", f"No docs needed: {reason}."
@@ -135,7 +137,7 @@ def format_diff(files: list[dict], budget: int = MAX_DIFF_CHARS) -> str:
     The text is capped at `budget` characters so it doesn't overwhelm Serge.
     When a file's changes don't fit, only its name is listed. When even the
     name doesn't fit, the text ends with a note saying how many files were left
-    out. Serge can still open any file itself.
+    out. Serge can still open any of them with `read_pr_file`.
     """
     parts = []
     used = 0
@@ -145,7 +147,7 @@ def format_diff(files: list[dict], budget: int = MAX_DIFF_CHARS) -> str:
         )
         patch = f.get("patch") or "(no patch: binary or too large)"
         if used + len(header) + len(patch) > budget:
-            patch = "(patch omitted: diff budget exhausted, use read_file if needed)"
+            patch = "(patch omitted: diff budget exhausted, use read_pr_file if needed)"
         if used + len(header) + len(patch) > budget:
             parts.append(f"(... {len(files) - i} more changed files not shown)")
             break
@@ -166,7 +168,7 @@ def build_messages(rules: str, pr: dict, files: list[dict]) -> list[dict]:
 
 
 def tool_call_dict(tc: ToolCall) -> dict:
-    """Record Serge's request to read a file in the format the model service expects.
+    """Write one of Serge's tool requests back into the conversation, in the format the model service expects.
 
     Copied from Serge's private `_assistant_tool_call_dict`, because Serge could
     rename that function at any time and break this script.
@@ -181,22 +183,84 @@ def tool_call_dict(tc: ToolCall) -> dict:
     return call
 
 
+def tool_specs(docs_path: str) -> list[dict]:
+    """List the tools Serge can use to look around before answering.
+
+    `read_file`, `list_dir`, and `grep` are Serge's own tools. Here they run on a
+    checkout of the docs folder from the base branch. Their descriptions are
+    replaced, because Serge's own say they read the PR. `read_pr_file` reads a
+    file from the PR itself, through the GitHub API.
+    """
+    from reviewbot.tools import MAX_READ_LINES, TOOL_SPECS
+
+    where = (
+        f"the docs folder (`{docs_path}`) as it is on the base branch, before this PR"
+    )
+    descriptions = {
+        "read_file": f"Read a slice of a file in {where}. Lines are 1-indexed.",
+        "list_dir": f"List the files and subfolders of a folder in {where}.",
+        "grep": (
+            f"Search {where} for a regex (git grep -E). Use this to find pages "
+            "that mention the code the PR changes. Returns `path:line:text`."
+        ),
+    }
+    specs = []
+    for spec in TOOL_SPECS:
+        name = spec["function"]["name"]
+        if name in DOCS_TOOLS:
+            specs.append(
+                {
+                    **spec,
+                    "function": {**spec["function"], "description": descriptions[name]},
+                }
+            )
+    specs.append(
+        {
+            "type": "function",
+            "function": {
+                "name": PR_FILE_TOOL,
+                "description": (
+                    "Read a slice of a file as it is in this PR. Use this when the "
+                    "diff doesn't show enough, for example the rest of a changed "
+                    "class. Lines are 1-indexed."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path relative to the repository root.",
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "description": "First line to return. Defaults to 1.",
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "description": f"Last line to return. At most {MAX_READ_LINES} lines per call.",
+                        },
+                    },
+                    "required": ["path"],
+                },
+            },
+        }
+    )
+    return specs
+
+
 def ask_llm(
-    llm: ChatCompletionClient, messages: list[dict], tool_env: ToolEnv | None
+    llm: ChatCompletionClient,
+    messages: list[dict],
+    tools: list[dict] | None,
+    run_tool: Callable[[str, dict], str],
 ) -> str:
     """Ask Serge whether the PR needs docs, and return its answer.
 
-    Before answering, Serge can look around the PR's code: read a file, list a
-    folder, or search for text. After `MAX_TOOL_ROUNDS` rounds of looking, it's
-    told to stop and answer.
+    Before answering, Serge can look around with `tools`: the docs on the base
+    branch, and the PR's own files. `run_tool` runs each tool Serge asks for.
+    After `MAX_TOOL_ROUNDS` rounds of looking, it's told to stop and answer.
     """
-    from reviewbot.tools import TOOL_SPECS, run_tool
-
-    tools = (
-        [spec for spec in TOOL_SPECS if spec["function"]["name"] in BROWSE_TOOLS]
-        if tool_env
-        else None
-    )
     for _ in range(MAX_TOOL_ROUNDS):
         chat = llm.complete(messages, tools=tools, temperature=0.0, max_tokens=4096)
         if not chat.tool_calls:
@@ -213,11 +277,7 @@ def ask_llm(
                 args = json.loads(tc.arguments or "{}")
             except ValueError:
                 args = {}
-            result = (
-                run_tool(tool_env, tc.name, args)
-                if tc.name in BROWSE_TOOLS
-                else f"error: unknown tool {tc.name!r}"
-            )
+            result = run_tool(tc.name, args)
             messages.append(
                 {
                     "role": "tool",
@@ -235,6 +295,94 @@ def ask_llm(
         temperature=0.0,
         max_tokens=1024,
     ).content
+
+
+# A plain relative path: folders and file names made of letters, digits, `_`,
+# `.`, and `-`. The path goes into an API address, so anything else is refused.
+SAFE_PATH_RE = re.compile(r"[\w.-]+(?:/[\w.-]+)*")
+
+
+def allowed_pr_path(path: str, files: list[dict], library_path: str) -> bool:
+    """Decide which of the PR's files Serge may read with `read_pr_file`.
+
+    Serge may read any file the PR changes, wherever it is, and any file in the
+    library code, changed or not, so it can check whether something is public
+    (for example in an unchanged `__init__.py`).
+
+    `path` is already known to be a plain relative path (no `..`, no leading `/`).
+    `files` are the PR's changed files, as GitHub lists them.
+    """
+    return path.startswith(library_path) or path in {f["filename"] for f in files}
+
+
+def read_pr_file(
+    gh: GitHubClient,
+    owner: str,
+    repo: str,
+    sha: str,
+    args: dict,
+    allowed: Callable[[str], bool],
+) -> str:
+    """Read some lines of a file from the PR, through the GitHub API.
+
+    This is how Serge sees the PR's code without it being checked out. It reads
+    the file as it is at `sha`, the commit the maintainer approved. It always
+    returns text for Serge, even when something goes wrong, so Serge can try
+    something else.
+
+    It uses the same limits as Serge's own `read_file`, so one call returns as
+    much as a `read_file` call on the docs does.
+    """
+    from reviewbot.tools import MAX_READ_LINES, MAX_TOOL_OUTPUT_CHARS
+
+    path = args.get("path")
+    if (
+        not isinstance(path, str)
+        or not SAFE_PATH_RE.fullmatch(path)
+        or ".." in path.split("/")
+    ):
+        return "error: path must be a plain path relative to the repository root"
+    if not allowed(path):
+        return f"error: {path} can't be read with {PR_FILE_TOOL}"
+    # Ask for the raw file. The default JSON reply leaves the content empty for
+    # files over 1 MB, which Serge would read as an empty file. The raw reply
+    # works up to 100 MB.
+    try:
+        r = gh.session.get(
+            f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
+            params={"ref": sha},
+            headers={"Accept": "application/vnd.github.raw"},
+            timeout=60,
+        )
+        if r.status_code == 404:
+            return f"error: {path} doesn't exist in this PR"
+        r.raise_for_status()
+    except Exception:
+        log.exception("Couldn't read %s at %s.", path, sha)
+        return f"error: couldn't read {path}"
+    # For a folder, GitHub returns a JSON list of its files instead of a file.
+    if "json" in r.headers.get("Content-Type", "") and r.text.lstrip().startswith("["):
+        return f"error: {path} is a folder, not a file"
+    text = r.content.decode("utf-8", errors="replace")
+    try:
+        start = max(1, int(args.get("start_line") or 1))
+        end = int(args.get("end_line") or start + MAX_READ_LINES - 1)
+    except (TypeError, ValueError):
+        return "error: start_line and end_line must be integers"
+    end = min(end, start + MAX_READ_LINES - 1)
+    lines = text.splitlines()[start - 1 : end]
+    if not lines:
+        return f"{path}: no lines in range {start}-{end}"
+    body = "\n".join(f"{i:>6}\t{line}" for i, line in enumerate(lines, start=start))
+    out = f"{path} (lines {start}-{start + len(lines) - 1}):\n{body}"
+    if len(out) <= MAX_TOOL_OUTPUT_CHARS:
+        return out
+    # Same note as Serge's own tools, so Serge knows it didn't see every line.
+    return (
+        out[:MAX_TOOL_OUTPUT_CHARS]
+        + f"\n[... truncated; output exceeded {MAX_TOOL_OUTPUT_CHARS} chars; "
+        "re-call with a narrower line range ...]"
+    )
 
 
 def parse_verdict(content: str, docs_path: str) -> dict | None:
@@ -272,7 +420,7 @@ def neutralize(text: str) -> str:
     """Clean up Serge's text so it's safe to post on the PR.
 
     Anyone can write a PR, and Serge might repeat what they wrote. So this
-    removes links, stops @mentions from notifying anyone, turns HTML into plain
+    removes links, stops @mentions from notifying anyone, shows HTML as plain
     text, and shortens the text to `MAX_REASON_CHARS` characters.
     """
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -381,10 +529,18 @@ def missing_setup(args) -> str | None:
     return None
 
 
-def ask_for_verdict(args, pr: dict, files: list[dict]) -> dict | None:
+def ask_for_verdict(
+    args,
+    gh: GitHubClient,
+    owner: str,
+    repo: str,
+    pr: dict,
+    files: list[dict],
+    library_path: str,
+) -> dict | None:
     """Ask Serge about the PR. Returns None if the call fails or the answer can't be read."""
+    from reviewbot import tools as serge_tools
     from reviewbot.llm_client import ChatCompletionClient
-    from reviewbot.tools import ToolEnv
 
     with open(args.rules, encoding="utf-8") as f:
         rules = f.read()
@@ -394,13 +550,59 @@ def ask_for_verdict(args, pr: dict, files: list[dict]) -> dict | None:
         model=os.environ.get("LLM_MODEL") or None,
         bill_to=os.environ.get("LLM_BILL_TO") or None,
     )
-    tool_env = ToolEnv(repo_root=args.checkout) if args.checkout else None
+    # Serge can only search the docs when the checkout has them. Without a
+    # checkout, it can still read the PR's files.
+    docs_root = (
+        os.path.join(args.base_checkout, args.docs_path) if args.base_checkout else None
+    )
+    if not docs_root or not os.path.isdir(docs_root):
+        docs_root = None
+    tool_env = serge_tools.ToolEnv(repo_root=args.base_checkout) if docs_root else None
+
+    def run_tool(name: str, tool_args: dict) -> str:
+        if name == PR_FILE_TOOL:
+            return read_pr_file(
+                gh,
+                owner,
+                repo,
+                args.head_sha,
+                tool_args,
+                lambda p: allowed_pr_path(p, files, library_path),
+            )
+        if name in DOCS_TOOLS and tool_env:
+            if name == "grep" and not tool_args.get("path"):
+                tool_args = {**tool_args, "path": args.docs_path}
+            return serge_tools.run_tool(tool_env, name, tool_args)
+        return f"error: unknown tool {name!r}"
+
+    tools = [
+        spec
+        for spec in tool_specs(args.docs_path)
+        if tool_env or spec["function"]["name"] == PR_FILE_TOOL
+    ]
     try:
-        reply = ask_llm(llm, build_messages(rules, pr, files), tool_env)
+        reply = ask_llm(llm, build_messages(rules, pr, files), tools, run_tool)
     except Exception:
         log.exception("LLM call failed.")
         return None
     return parse_verdict(reply, args.docs_path)
+
+
+def commit_files(
+    gh: GitHubClient, owner: str, repo: str, base_sha: str, sha: str
+) -> list[dict]:
+    """List the files a PR changed up to commit `sha`, in the same shape as `get_pr_files`.
+
+    This is the diff GitHub would have shown on the PR at that commit: from where
+    the PR's branch split off `base_sha`, up to `sha`. GitHub lists at most 300
+    files here.
+    """
+    r = gh.session.get(
+        f"https://api.github.com/repos/{owner}/{repo}/compare/{base_sha}...{sha}",
+        timeout=60,
+    )
+    r.raise_for_status()
+    return r.json().get("files", [])
 
 
 def main() -> int:
@@ -427,9 +629,18 @@ def main() -> int:
     parser.add_argument(
         "--rules", help="Approval mode: the file with the rules Serge follows."
     )
+    # `--checkout` is the old name. An older docs-check.yml passes it with a
+    # checkout of the PR. Serge then searches the PR's docs instead of the base
+    # branch's, which still works.
     parser.add_argument(
+        "--base-checkout",
         "--checkout",
-        help="Approval mode: the folder with the PR's code, for Serge to read.",
+        dest="base_checkout",
+        help=(
+            "Approval mode: a checkout of the base branch with the docs folder, "
+            "for Serge to search. The PR's own files are read through the GitHub API. "
+            "`--checkout` is the old name and still works."
+        ),
     )
     parser.add_argument(
         "--verdict-file",
@@ -464,25 +675,57 @@ def main() -> int:
     gh = GitHubClient(os.environ["GITHUB_TOKEN"])
     pr = gh.get_pr(owner, repo, args.pr)
 
-    if pr["state"] != "open" or pr["base"]["ref"] != args.base_branch:
+    # Approval mode also checks merged PRs. Maintainers often merge a few seconds
+    # after approving, before this run starts, and missing docs are still worth
+    # pointing out.
+    checkable = pr["state"] == "open" or (
+        args.mode == "approval" and pr.get("merged_at")
+    )
+    if not checkable or pr["base"]["ref"] != args.base_branch:
         log.info("PR #%d is not open against %s; skipping.", args.pr, args.base_branch)
         return 0
 
     files = gh.get_pr_files(owner, repo, args.pr)
     verdict = load_verdict(args.verdict_file)
 
+    asked = False
     if args.mode == "approval":
+        # A dry run can leave out --head-sha. Check the PR's current head then,
+        # so Serge doesn't read files from the default branch.
+        args.head_sha = args.head_sha or pr["head"]["sha"]
         reviews = gh.get_pr_reviews(owner, repo, args.pr)
         if not args.dry_run and args.head_sha not in approved_shas(reviews):
             log.info("PR #%d has no maintainer approval on %s.", args.pr, args.head_sha)
             return 0
-        if reason := skip_reason(files, args.docs_path, library_path):
+        # The approved commit can be older than the head, for example when a
+        # commit is pushed right after the approval. Judge that commit's own
+        # changes, so the diff Serge gets matches the files it reads.
+        approved_files = (
+            files
+            if args.head_sha == pr["head"]["sha"]
+            else commit_files(gh, owner, repo, pr["base"]["sha"], args.head_sha)
+        )
+        if reason := skip_reason(approved_files, args.docs_path, library_path):
             log.info("PR #%d doesn't need Serge: %s", args.pr, reason)
         else:
             if problem := missing_setup(args):
                 print(f"::error::docs-check isn't set up: {problem}")
+                # Without this the PR keeps the push job's "Not checked yet"
+                # status, which hides the failure.
+                if not args.dry_run:
+                    set_status(
+                        gh,
+                        owner,
+                        repo,
+                        pr["head"]["sha"],
+                        "error",
+                        f"docs-check isn't set up: {problem}",
+                    )
                 return 1
-            verdict = ask_for_verdict(args, pr, files)
+            asked = True
+            verdict = ask_for_verdict(
+                args, gh, owner, repo, pr, approved_files, library_path
+            )
             log.info("PR #%d verdict: %s", args.pr, verdict)
             if verdict and args.verdict_file:
                 save_verdict(args.verdict_file, verdict)
@@ -501,6 +744,10 @@ def main() -> int:
             pr, files = latest, gh.get_pr_files(owner, repo, args.pr)
 
     state, description = decide_status(files, verdict, args.docs_path, library_path)
+    if state == "pending" and asked:
+        # Serge was asked but its call failed or its answer couldn't be read.
+        # Without this the PR would look like it was never checked.
+        state, description = "error", NO_ANSWER_STATUS
     log.info("PR #%d status: %s (%s)", args.pr, state, description)
     if args.dry_run:
         print(f"{STATUS_CONTEXT}: {state} ({description})")
