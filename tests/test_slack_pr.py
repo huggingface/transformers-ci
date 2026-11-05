@@ -90,6 +90,7 @@ class Response(io.BytesIO):
 
 def test_full_relore_brief_and_supported_version_retry(monkeypatch):
     monkeypatch.setenv("PYTEST_TRACE_EXPORTER_RELORE_URL", "http://relore")
+    monkeypatch.setattr(slack_pr.related_issues, "WIRE_VERSION", "0.3.18")
     calls = []
 
     def open_(request, timeout):
@@ -146,7 +147,11 @@ def test_relore_rejects_wrong_pr_and_marks_truncation(monkeypatch):
         "people": {},
         "same_error": {"error": "x" * 30000, "threads": []},
     }
-    monkeypatch.setattr(slack_pr, "urlopen", lambda *a, **k: Response(data, "0.3.18"))
+    monkeypatch.setattr(
+        slack_pr,
+        "urlopen",
+        lambda *a, **k: Response(data, slack_pr.related_issues.WIRE_VERSION),
+    )
     assert "unavailable" in slack_pr.brief("42")
     data["thread"]["number"] = 42
     assert "truncated for Slack" in slack_pr.brief("42")
