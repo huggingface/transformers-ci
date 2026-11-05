@@ -23,8 +23,8 @@ that runs this workflow, because each repo decides what needs docs.
 It runs in one of two modes:
 - `approval`: runs after a maintainer approves a PR. It asks Serge
   whether the PR needs docs, saves the answer, leaves a comment
-  if docs are needed, and sets the status. Serge can read the PR's code, but
-  none of it is run.
+  if docs are needed, and sets the status. Serge reads the PR's files through
+  the GitHub API, so the PR's code is never checked out, let alone run.
 - `push`: runs when a PR is opened or updated. It doesn't ask Serge
   and doesn't download the PR's code. It reuses the last saved answer to set the
   status on the new commit.
@@ -46,9 +46,10 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from reviewbot.github_client import GitHubClient
     from reviewbot.llm_client import ChatCompletionClient, ToolCall
-    from reviewbot.tools import ToolEnv
 
 
 log = logging.getLogger(__name__)
@@ -56,8 +57,11 @@ log = logging.getLogger(__name__)
 STATUS_CONTEXT = "docs-check"
 MARKER = "<!-- docs-check -->"
 MAINTAINER_ASSOCIATIONS = {"MEMBER", "OWNER", "COLLABORATOR"}
-BROWSE_TOOLS = {"read_file", "list_dir", "grep"}
+DOCS_TOOLS = {"read_file", "list_dir", "grep"}
+PR_FILE_TOOL = "read_pr_file"
 MAX_TOOL_ROUNDS = 6
+MAX_READ_LINES = 400
+MAX_TOOL_OUTPUT_CHARS = 8_000
 MAX_DIFF_CHARS = 120_000
 MAX_BODY_CHARS = 4_000
 MAX_REASON_CHARS = 1_000
@@ -181,22 +185,84 @@ def tool_call_dict(tc: ToolCall) -> dict:
     return call
 
 
+def tool_specs(docs_path: str) -> list[dict]:
+    """List the tools Serge can use to look around before answering.
+
+    `read_file`, `list_dir`, and `grep` are Serge's own tools, run on a checkout
+    of the docs folder from the base branch. Their descriptions are rewritten
+    because Serge's say they read the PR head. `read_pr_file` reads a file from
+    the PR itself, through the GitHub API.
+    """
+    from reviewbot.tools import TOOL_SPECS
+
+    where = (
+        f"the docs folder (`{docs_path}`) as it is on the base branch, before this PR"
+    )
+    descriptions = {
+        "read_file": f"Read a slice of a file in {where}. Lines are 1-indexed.",
+        "list_dir": f"List the files and subfolders of a folder in {where}.",
+        "grep": (
+            f"Search {where} for a regex (git grep -E). Use this to find pages "
+            "that mention the code the PR changes. Returns `path:line:text`."
+        ),
+    }
+    specs = []
+    for spec in TOOL_SPECS:
+        name = spec["function"]["name"]
+        if name in DOCS_TOOLS:
+            specs.append(
+                {
+                    **spec,
+                    "function": {**spec["function"], "description": descriptions[name]},
+                }
+            )
+    specs.append(
+        {
+            "type": "function",
+            "function": {
+                "name": PR_FILE_TOOL,
+                "description": (
+                    "Read a slice of a file as it is in this PR. Use this when the "
+                    "diff doesn't show enough, for example the rest of a changed "
+                    "class. Lines are 1-indexed."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path relative to the repository root.",
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "description": "First line to return. Defaults to 1.",
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "description": f"Last line to return. At most {MAX_READ_LINES} lines per call.",
+                        },
+                    },
+                    "required": ["path"],
+                },
+            },
+        }
+    )
+    return specs
+
+
 def ask_llm(
-    llm: ChatCompletionClient, messages: list[dict], tool_env: ToolEnv | None
+    llm: ChatCompletionClient,
+    messages: list[dict],
+    tools: list[dict] | None,
+    run_tool: Callable[[str, dict], str],
 ) -> str:
     """Ask Serge whether the PR needs docs, and return its answer.
 
-    Before answering, Serge can look around the PR's code: read a file, list a
-    folder, or search for text. After `MAX_TOOL_ROUNDS` rounds of looking, it's
-    told to stop and answer.
+    Before answering, Serge can look around with `tools`: the docs on the base
+    branch, and the PR's own files. `run_tool` runs each tool Serge asks for.
+    After `MAX_TOOL_ROUNDS` rounds of looking, it's told to stop and answer.
     """
-    from reviewbot.tools import TOOL_SPECS, run_tool
-
-    tools = (
-        [spec for spec in TOOL_SPECS if spec["function"]["name"] in BROWSE_TOOLS]
-        if tool_env
-        else None
-    )
     for _ in range(MAX_TOOL_ROUNDS):
         chat = llm.complete(messages, tools=tools, temperature=0.0, max_tokens=4096)
         if not chat.tool_calls:
@@ -213,11 +279,7 @@ def ask_llm(
                 args = json.loads(tc.arguments or "{}")
             except ValueError:
                 args = {}
-            result = (
-                run_tool(tool_env, tc.name, args)
-                if tc.name in BROWSE_TOOLS
-                else f"error: unknown tool {tc.name!r}"
-            )
+            result = run_tool(tc.name, args)
             messages.append(
                 {
                     "role": "tool",
@@ -235,6 +297,66 @@ def ask_llm(
         temperature=0.0,
         max_tokens=1024,
     ).content
+
+
+SAFE_PATH_RE = re.compile(r"[\w.-]+(?:/[\w.-]+)*")
+
+
+def allowed_pr_path(path: str, files: list[dict], library_path: str) -> bool:
+    """Decide which of the PR's files Serge may read with `read_pr_file`.
+
+    Serge may read any file the PR changes, wherever it is, and any file in the
+    library code, changed or not, so it can check whether something is public
+    (for example in an unchanged `__init__.py`).
+
+    `path` is already known to be a plain relative path (no `..`, no leading `/`).
+    `files` are the PR's changed files, as GitHub lists them.
+    """
+    return path.startswith(library_path) or path in {f["filename"] for f in files}
+
+
+def read_pr_file(
+    gh: GitHubClient,
+    owner: str,
+    repo: str,
+    sha: str,
+    args: dict,
+    allowed: Callable[[str], bool],
+) -> str:
+    """Read a slice of a file at the PR's head commit, through the GitHub API.
+
+    This is how Serge sees the PR's code without it being checked out. It reads
+    the same blobs the GitHub UI shows, at the commit the maintainer approved.
+    Always returns text for Serge, even on failure, so Serge can try something else.
+    """
+    path = args.get("path")
+    if (
+        not isinstance(path, str)
+        or not SAFE_PATH_RE.fullmatch(path)
+        or ".." in path.split("/")
+    ):
+        return "error: path must be a plain path relative to the repository root"
+    if not allowed(path):
+        return f"error: {path} can't be read with {PR_FILE_TOOL}"
+    try:
+        text = gh.get_file_contents(owner, repo, path, ref=sha)
+    except Exception:
+        log.exception("Couldn't read %s at %s.", path, sha)
+        return f"error: couldn't read {path}"
+    if text is None:
+        return f"error: {path} doesn't exist in this PR"
+    try:
+        start = max(1, int(args.get("start_line") or 1))
+        end = int(args.get("end_line") or start + MAX_READ_LINES - 1)
+    except (TypeError, ValueError):
+        return "error: start_line and end_line must be integers"
+    end = min(end, start + MAX_READ_LINES - 1)
+    lines = text.splitlines()[start - 1 : end]
+    if not lines:
+        return f"{path}: no lines in range {start}-{end}"
+    body = "\n".join(f"{i:>6}\t{line}" for i, line in enumerate(lines, start=start))
+    out = f"{path} (lines {start}-{start + len(lines) - 1}):\n{body}"
+    return out[:MAX_TOOL_OUTPUT_CHARS]
 
 
 def parse_verdict(content: str, docs_path: str) -> dict | None:
@@ -381,10 +503,18 @@ def missing_setup(args) -> str | None:
     return None
 
 
-def ask_for_verdict(args, pr: dict, files: list[dict]) -> dict | None:
+def ask_for_verdict(
+    args,
+    gh: GitHubClient,
+    owner: str,
+    repo: str,
+    pr: dict,
+    files: list[dict],
+    library_path: str,
+) -> dict | None:
     """Ask Serge about the PR. Returns None if the call fails or the answer can't be read."""
+    from reviewbot import tools as serge_tools
     from reviewbot.llm_client import ChatCompletionClient
-    from reviewbot.tools import ToolEnv
 
     with open(args.rules, encoding="utf-8") as f:
         rules = f.read()
@@ -394,9 +524,36 @@ def ask_for_verdict(args, pr: dict, files: list[dict]) -> dict | None:
         model=os.environ.get("LLM_MODEL") or None,
         bill_to=os.environ.get("LLM_BILL_TO") or None,
     )
-    tool_env = ToolEnv(repo_root=args.checkout) if args.checkout else None
+    docs_root = (
+        os.path.join(args.base_checkout, args.docs_path) if args.base_checkout else None
+    )
+    if not docs_root or not os.path.isdir(docs_root):
+        docs_root = None
+    tool_env = serge_tools.ToolEnv(repo_root=args.base_checkout) if docs_root else None
+
+    def run_tool(name: str, tool_args: dict) -> str:
+        if name == PR_FILE_TOOL:
+            return read_pr_file(
+                gh,
+                owner,
+                repo,
+                args.head_sha,
+                tool_args,
+                lambda p: allowed_pr_path(p, files, library_path),
+            )
+        if name in DOCS_TOOLS and tool_env:
+            if name == "grep" and not tool_args.get("path"):
+                tool_args = {**tool_args, "path": args.docs_path}
+            return serge_tools.run_tool(tool_env, name, tool_args)
+        return f"error: unknown tool {name!r}"
+
+    tools = [
+        spec
+        for spec in tool_specs(args.docs_path)
+        if tool_env or spec["function"]["name"] == PR_FILE_TOOL
+    ]
     try:
-        reply = ask_llm(llm, build_messages(rules, pr, files), tool_env)
+        reply = ask_llm(llm, build_messages(rules, pr, files), tools, run_tool)
     except Exception:
         log.exception("LLM call failed.")
         return None
@@ -428,8 +585,11 @@ def main() -> int:
         "--rules", help="Approval mode: the file with the rules Serge follows."
     )
     parser.add_argument(
-        "--checkout",
-        help="Approval mode: the folder with the PR's code, for Serge to read.",
+        "--base-checkout",
+        help=(
+            "Approval mode: a checkout of the base branch with the docs folder, "
+            "for Serge to search. The PR's own files are read through the GitHub API."
+        ),
     )
     parser.add_argument(
         "--verdict-file",
@@ -482,7 +642,7 @@ def main() -> int:
             if problem := missing_setup(args):
                 print(f"::error::docs-check isn't set up: {problem}")
                 return 1
-            verdict = ask_for_verdict(args, pr, files)
+            verdict = ask_for_verdict(args, gh, owner, repo, pr, files, library_path)
             log.info("PR #%d verdict: %s", args.pr, verdict)
             if verdict and args.verdict_file:
                 save_verdict(args.verdict_file, verdict)
