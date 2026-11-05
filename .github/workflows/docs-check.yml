@@ -1,26 +1,23 @@
 name: Docs check
 
-# Checks whether a PR needs docs and shows the answer as a `docs-check` status on
+# Checks whether a PR needs docs, and shows the answer as a `docs-check` status on
 # the PR. Other repos run this workflow from their own workflow file. For
 # transformers, that's `.github/workflows/docs-check.yml`.
 #
-# The code that does the checking is the `docs-check` command in this package, so
-# this workflow installs the package. The rules Serge follows come from the repo
-# that runs this workflow, because each repo decides what needs docs.
+# The checking is done by the `docs-check` command in this repo's Python package,
+# so this workflow installs the package. Each repo decides what needs docs, so the
+# rules Serge follows come from the repo that runs this workflow.
 #
 # It runs in one of two modes:
-# - `approval`: runs after a maintainer approves a PR. It asks Serge
-#   whether the PR needs docs, saves the answer, leaves a comment
-#   if docs are needed, and sets the status. Serge reads the PR's files through
-#   the GitHub API at the approved commit, so the PR's code is never checked out
-#   (the same approach as `pr-ci-security-gate.yml`). The only checkout is of the
-#   base branch: the rules file and the docs folder.
-# - `push`: runs when a PR is opened or updated. It doesn't ask Serge
-#   and doesn't download the PR's code. It reuses the last saved answer to set the
-#   status on the new commit.
-#
-# `docs-check-sweep.yml` also runs approval mode, on a schedule, for approved PRs
-# whose approval run never ran or failed.
+# - `approval`: runs after a maintainer approves a PR. It asks Serge whether the
+#   PR needs docs, saves the answer, comments if docs are needed, and sets the
+#   status. Serge reads the PR's files through the GitHub API at the approved
+#   commit, so the PR's code is never checked out. `pr-ci-security-gate.yml`
+#   does the same. The only checkout is of the base branch: the rules file and
+#   the docs folder.
+# - `push`: runs when a PR is opened or updated. It doesn't ask Serge or download
+#   the PR's code. It reuses the last saved answer to set the status on the new
+#   commit.
 #
 # The status doesn't block merging unless the calling repo makes it a required check.
 on:
@@ -31,13 +28,7 @@ on:
         type: string
         required: true
       pr_number:
-        description: >-
-          The PR number. Required in push mode. In approval mode, leave it empty to
-          read it from the approval trigger, or set it with `head_sha` (the sweep does).
-        type: string
-        default: ""
-      head_sha:
-        description: "Approval mode with pr_number only: the approved commit to check."
+        description: "Push mode only: the PR number. Approval mode gets it from the approval trigger."
         type: string
         default: ""
       rules_file:
@@ -90,7 +81,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Download PR number (approval)
-        if: inputs.mode == 'approval' && inputs.pr_number == ''
+        if: inputs.mode == 'approval'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: docs-check-pr
@@ -103,20 +94,17 @@ jobs:
         env:
           MODE: ${{ inputs.mode }}
           INPUT_PR: ${{ inputs.pr_number }}
-          INPUT_SHA: ${{ inputs.head_sha }}
           PR_FILE: ${{ runner.temp }}/docs-check-pr/number
           SHA_FILE: ${{ runner.temp }}/docs-check-pr/sha
           APPROVAL_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
-          if [ "$MODE" = "approval" ] && [ -n "$INPUT_PR" ]; then
-            number="$INPUT_PR"
-            sha="$INPUT_SHA"
-          elif [ "$MODE" = "approval" ]; then
+          if [ "$MODE" = "approval" ]; then
             number="$(head -c 20 "$PR_FILE" | tr -d '[:space:]')"
-            # The commit the maintainer reviewed. `workflow_run.head_sha` can be the
-            # commit before it when the approval lands seconds after a push. Older
-            # triggers don't write this file, so fall back to it.
+            # Use the commit the maintainer approved, which the trigger saves. The
+            # run's own commit can be the one before it, when the approval comes a
+            # few seconds after a push. Older triggers don't save it, so use the
+            # run's commit then.
             sha="$(head -c 64 "$SHA_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
             sha="${sha:-$APPROVAL_SHA}"
           elif [ "$MODE" = "push" ]; then
@@ -130,8 +118,9 @@ jobs:
             echo "::error::Invalid PR number" >&2
             exit 1
           fi
-          # A fork PR can change the trigger workflow, so treat the artifact as
-          # untrusted. docs-check also confirms a maintainer approved this commit.
+          # A fork PR can change the trigger workflow, so don't trust what it saved:
+          # check that it's a real commit ID. docs-check then checks that a
+          # maintainer approved that commit.
           if [ "$MODE" = "approval" ] && ! echo "$sha" | grep -qE '^[0-9a-f]{40}$'; then
             echo "::error::Invalid commit SHA" >&2
             exit 1
