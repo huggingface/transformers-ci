@@ -4,7 +4,7 @@ extensions:
     endpoint: 0.0.0.0:13133
   bearertokenauth:
     token: ${TRACE_API_KEY}
-  # Disk-backed buffer for the otlp/tempo sending_queue so an undelivered backlog
+  # Disk-backed buffer for the otlp_grpc/tempo sending_queue so an undelivered backlog
   # survives a collector container restart (its dominant failure is its own OOM,
   # after which the same pod's emptyDir is still there). Full durability across a
   # pod reschedule/redeploy would need a PVC (StatefulSet) — tracked as a follow-up.
@@ -103,7 +103,7 @@ connectors:
   # count of the test spans this replica received. Not the `count` connector: in
   # 0.96 its deltas are replaced, not summed, by the prometheus exporter, which
   # undercounted a 196k-test run by a third.
-  spanmetrics:
+  span_metrics:
     namespace: ci_live
     histogram:
       disable: true
@@ -119,7 +119,7 @@ connectors:
 {{- end }}
 
 exporters:
-  otlp/tempo:
+  otlp_grpc/tempo:
     endpoint: tempo:4317
     tls:
       insecure: true
@@ -155,14 +155,23 @@ exporters:
     # Evicted runs stop being updated; drop them from /metrics after this.
     metric_expiration: {{ .Values.otelcol.liveCounts.metricExpiration }}
     # run_id lives on the resource (see transform/live_keys): make it a label.
-    resource_to_telemetry_conversion:
-      enabled: true
+    resource_constant_labels:
+      included: ["*"]
 {{- end }}
 
 service:
   telemetry:
     metrics:
-      address: 0.0.0.0:8889
+      # detailed: the HTTP server metrics (http_server_request_duration_*, with
+      # the status code) that the trace-ingest 401 alert reads are only emitted
+      # at this level.
+      level: detailed
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8889
   extensions: [health_check, bearertokenauth, file_storage/queue]
   pipelines:
     traces:
@@ -172,14 +181,14 @@ service:
       # between them: after the limiter (so shedding still happens first) and
       # before the batcher (so rejected spans never occupy queue or disk).
       processors: [memory_limiter, {{ if .Values.otelcol.repositoryFilter.internalOwners }}filter/repository_privacy, {{ end }}batch]
-      exporters: [otlp/tempo{{ if .Values.otelcol.liveCounts.enabled }}, forward/live{{ end }}]
+      exporters: [otlp_grpc/tempo{{ if .Values.otelcol.liveCounts.enabled }}, forward/live{{ end }}]
 {{- if .Values.otelcol.liveCounts.enabled }}
     traces/live:
       receivers: [forward/live]
       processors: [filter/live_test_spans, transform/live_keys]
-      exporters: [spanmetrics]
+      exporters: [span_metrics]
     metrics/live:
-      receivers: [spanmetrics]
+      receivers: [span_metrics]
       exporters: [prometheus/live]
 {{- end }}
 {{- end }}
