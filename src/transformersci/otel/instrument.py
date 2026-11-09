@@ -161,9 +161,17 @@ class _Run:
         return False
 
     @contextmanager
-    def step(self, nodeid: str, attributes: Mapping[str, object] | None = None):
-        """Open a child span for one step, tagged so the exporter ingests it."""
-        with self._tracer.start_as_current_span(nodeid) as span:
+    def step(
+        self,
+        nodeid: str,
+        attributes: Mapping[str, object] | None = None,
+        start_time: int | None = None,
+    ):
+        """Open a child span for one step, tagged so the exporter ingests it.
+
+        ``start_time`` (ns since the epoch) backdates the span, for a step that
+        another process ran and reported only when it finished."""
+        with self._tracer.start_as_current_span(nodeid, start_time=start_time) as span:
             span.set_attribute(_NODEID_TAG, nodeid)
             span.set_attribute(_SPAN_TYPE_TAG, _TEST_SPAN_TYPE)
             for key, value in (attributes or {}).items():
@@ -230,7 +238,12 @@ class _NoRun:
         return False
 
     @contextmanager
-    def step(self, nodeid: str, attributes: Mapping[str, object] | None = None):
+    def step(
+        self,
+        nodeid: str,
+        attributes: Mapping[str, object] | None = None,
+        start_time: int | None = None,
+    ):
         yield _NoStep()
 
 

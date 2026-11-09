@@ -1,8 +1,14 @@
 # Model integration contracts in PR CI
 
 MICs run small model fixtures through executable usage examples and compare their
-outputs with reviewed expectations. The runner, dependency selector, schemas and
-summary renderer live in `transformersci.contracts`.
+outputs with reviewed expectations. The runner, dependency selector and schemas
+are [transformers-mic](https://github.com/huggingface/transformers-mic)'s: `run-model-contracts`
+is `tmic check`, pinned to one commit in the `contracts` extra, plus the CI part — it
+pins the fleet to an immutable dataset revision, adds it to every result record,
+emits one OTEL test span per case and appends the records to `--output`. The PR gate
+(`select_contracts.may_select`) and the summary renderer (`report-model-contracts`)
+live in `transformersci.contracts`. A runner fix goes to transformers-mic first; adopt
+it by moving the pin. transformers-mic needs Python 3.11 or newer.
 
 ## Shared fleet
 
@@ -62,15 +68,16 @@ weights, `integration.json`, usage, and reviewed expectations under
 `integrations/<framework>/expectations/<platform>/<target>[.<variant>].json`.
 Contract and fixture hashes verify executable code and weights independently.
 
+Selection, checks, known failures and recording are transformers-mic's
+(`example/run.py`, `example/select_contracts.py`); this section summarizes them.
 Checks cover exact outputs, numeric shapes and tolerances, required outputs,
 finite values, named gradient checks and boolean assertions. Missing references
 and identity mismatches fail. Known failures and excluded outputs remain scoped
 in the fleet files. Runtime version differences are recorded in the results.
-`--record` writes candidate files after fresh-process reproduction; it never
-approves them. Review measured changes before updating model expectations and
+`tmic record` in a MIC workspace writes candidate files after fresh-process
+reproduction; it never approves them. `run-model-contracts` only checks. Review measured changes before updating model expectations and
 fleet pins in the dataset using `tmic export --execute`, then adopt the resulting
-dataset SHA with `tmic pin --transformers-checkout PATH --revision SHA`. `--expectations PATH` can override baseline lookup for
-local review.
+dataset SHA with `tmic pin --transformers-checkout PATH --revision SHA`.
 
 ## Observational behavior and telemetry
 
