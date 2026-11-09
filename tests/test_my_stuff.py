@@ -121,7 +121,9 @@ def test_endpoint_requires_session_and_ignores_supplied_identity(monkeypatch):
     monkeypatch.setattr(
         trace_exporter.dashboard_auth,
         "browser_login",
-        lambda headers: "alice" if headers.get("Cookie") == "tci-session=valid" else None,
+        lambda headers: "alice"
+        if headers.get("Cookie") == "tci-session=valid"
+        else None,
     )
     monkeypatch.setattr(trace_exporter, "public_repositories", lambda: ("org/repo",))
     calls = []
