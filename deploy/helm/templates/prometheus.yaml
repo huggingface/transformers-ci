@@ -212,6 +212,11 @@ data:
             action: drop
 
       - job_name: 'otelcol-metrics'
+        # Collector >= 0.1xx serves OTel names (http.server.request.duration,
+        # otelcol_processor_filter_spans.filtered) unescaped when Prometheus 3
+        # negotiates UTF-8 names. legacy makes this scrape ask for underscores,
+        # which the trace-ingest 401 alert and the stack-health panels query.
+        metric_name_validation_scheme: legacy
         kubernetes_sd_configs:
           - role: pod
             namespaces:
