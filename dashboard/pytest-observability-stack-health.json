@@ -319,7 +319,7 @@
    "targets": [
     {
      "editorMode": "code",
-     "expr": "sum(increase(otelcol_receiver_accepted_spans[24h])) - (sum(increase(otelcol_processor_filter_spans_filtered[24h])) or vector(0)) - sum(increase(otelcol_exporter_sent_spans[24h]))",
+     "expr": "sum(increase(otelcol_receiver_accepted_spans[24h])) - (sum(increase({\"otelcol_processor_filter_spans.filtered\"}[24h])) or vector(0)) - sum(increase(otelcol_exporter_sent_spans[24h]))",
      "instant": true,
      "range": false,
      "legendFormat": "Spans accepted \u2212 filtered \u2212 sent (24h)",
@@ -588,7 +588,7 @@
     },
     {
      "editorMode": "code",
-     "expr": "sum(rate(otelcol_processor_filter_spans_filtered[5m]))",
+     "expr": "sum(rate({\"otelcol_processor_filter_spans.filtered\"}[5m]))",
      "legendFormat": "filtered/s (internal repos)",
      "refId": "C"
     }
