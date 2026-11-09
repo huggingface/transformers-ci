@@ -1,8 +1,10 @@
-"""Exercise MIC execution, strict assertions, selection, and real OTEL export."""
+"""run-model-contracts: tmic check plus CI telemetry, the PR gate, fleets and the report."""
 
 import json
-import subprocess
+import sys
+import textwrap
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -11,245 +13,221 @@ from transformersci.contracts import fleet as fleet_api
 from transformersci.contracts import report, run, select_contracts
 from transformersci.otel import instrument
 
+REVISION = "d" * 40
+RECORD = {
+    "contract": "huggingface-mic/mic-demo",
+    "contract_name": "demo",
+    "contract_revision": "a" * 40,
+    "framework": "transformers",
+    "variant": "default",
+    "target": "demo-mic",
+    "kind": "fixture",
+    "revision": "b" * 40,
+    "platform": "cpu-x86_64",
+    "seconds": 2.5,
+}
+
 
 @pytest.fixture
-def fleet(tmp_path, monkeypatch):
-    contract = {
-        "integration": {"repo": "test/demo-integration", "revision": "a" * 40},
-        "fixtures": {"test/demo-slim": {"revision": "b" * 40}},
-        "checkpoints": {},
-    }
-    lock = {
-        "framework": "transformers",
-        "contracts": {"demo": contract},
-        "environment": {},
-    }
-    lock_path = tmp_path / "fleet.lock"
-    lock_path.write_text(json.dumps(lock))
-    rules = {
-        "runtime": {"compare": "exact"},
-        "tokens": {"compare": "exact"},
-        "logits": {"compare": "allclose", "atol": 0.001, "rtol": 0.001},
-        "checks": {"compare": "all_true"},
-        "updated": {"compare": "true"},
-    }
-    manifest = {
-        "mic": "0.2",
-        "name": "Demo",
-        "usage": "Regression test",
-        "checkpoints": {"test/checkpoint": {"fixture": "test/demo-slim"}},
-        "fixtures": {
-            "test/demo-slim": {
-                "built_from": "test/checkpoint",
-                "covers": ["test/checkpoint"],
-            }
-        },
-        "integrations": {
-            "transformers": {
-                "entry_point": "usage.py",
-                "format": "runnable-markdown",
-                "requires": [],
-                "targets": ["fixtures"],
-                "variants": {"default": {}},
-                "training": False,
-            }
-        },
-        "outputs": rules,
-    }
-    (tmp_path / "integration.json").write_text(json.dumps(manifest))
-    actual = {
-        "runtime": {"device": "cpu"},
-        "tokens": [1, 2],
-        "logits": [0.1, 0.2],
-        "checks": {"finite": True},
-        "updated": True,
-    }
-    entry = tmp_path / "usage.py"
-    entry.write_text(f"import json\nprint(json.dumps({actual!r}))\n")
-    baseline = tmp_path / "expectations/demo/cpu-test/demo-slim.json"
-    baseline.parent.mkdir(parents=True)
-    identity = {
-        "contract": "test/demo-integration",
-        "contract_revision": "a" * 40,
-        "target": "demo-slim",
-        "revision": "b" * 40,
-        "framework": "transformers",
-        "variant": "default",
-        "environment": {},
-    }
-    baseline.write_text(json.dumps({"recorded_with": identity, "outputs": actual}))
-    monkeypatch.setattr(run, "contract_folder", lambda *a: (tmp_path, "a" * 40))
-    monkeypatch.setattr(run, "fixture_folder", lambda *a: tmp_path)
-    monkeypatch.setattr(run, "fixture_problem", lambda *a: None)
-    monkeypatch.setattr(run, "contract_code", lambda p: p.read_text())
-    monkeypatch.setattr(run, "platform_class", lambda *a: "cpu-test")
-    monkeypatch.setattr(run.Executor, "environment", lambda *a: {})
+def tmic(monkeypatch):
+    """A stand-in transformers_mic: fleet resolution, and a `tmic check` that prints given lines."""
+    module = ModuleType("transformers_mic")
+    fleet = ModuleType("transformers_mic.fleet")
+    fleet.REPOSITORY = "huggingface-mic/transformers-fleet"
+    fleet.resolve = lambda revision: REVISION if revision == "main" else revision
+    fleet.read_pin = lambda path: Path(path).read_text().strip()
+    module.fleet = fleet
+    monkeypatch.setitem(sys.modules, "transformers_mic", module)
+    monkeypatch.setitem(sys.modules, "transformers_mic.fleet", fleet)
+    commands = []
+    real = run.check_command
+
+    def runs(stdout=(), stderr="", code=0):
+        script = textwrap.dedent(
+            f"""
+            import sys
+            for line in {list(stdout)!r}:
+                print(line, flush=True)
+            sys.stderr.write({stderr!r})
+            sys.exit({code})
+            """
+        )
+
+        def command(args, options):
+            commands.append(real(args, options))
+            return [sys.executable, "-c", script]
+
+        monkeypatch.setattr(run, "check_command", command)
+        return commands
+
     for key in ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"):
         monkeypatch.delenv(key, raising=False)
-    return lock_path, entry, baseline, actual
+    return runs
 
 
-def invoke(fleet, capsys, *args):
-    code = run.main(["--lock", str(fleet[0]), "--fixtures-only", *args])
-    lines = capsys.readouterr().out.splitlines()
-    return code, [json.loads(line) for line in lines]
+@pytest.fixture
+def spans(monkeypatch):
+    memory = InMemorySpanExporter()
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    monkeypatch.setattr(instrument, "build_primary_exporter", lambda env: memory)
+    monkeypatch.setattr(instrument, "build_staging_exporter", lambda env: None)
+    return memory
 
 
-def test_baseline_execution_passes(fleet, capsys):
-    code, rows = invoke(fleet, capsys)
-    assert code == 0 and rows[0]["status"] == "pass"
-
-
-def test_fixture_provenance_is_in_results(fleet, capsys):
-    build = {"built_from": {"repo": "creator/Large-Demo"}, "weights": "random"}
-    (fleet[0].parent / "build.json").write_text(json.dumps(build))
-    code, rows = invoke(fleet, capsys)
-    assert code == 0
-    assert rows[0]["source_model"] == "creator/Large-Demo"
-    assert rows[0]["fixture_repo"] == "test/demo-slim"
-    assert rows[0]["weights"] == "random"
-
-
-@pytest.mark.parametrize(
-    "change,expected",
-    [
-        ({"tokens": [9]}, "tokens:"),
-        ({"logits": [1.0, 2.0]}, "over tolerance"),
-        ({"logits": [[0.1, 0.2]]}, "shape"),
-        ({"logits": [float("nan")]}, "non-finite"),
-        ({"checks": {"finite": False}}, "false"),
-        ({"checks": {}}, "no named checks"),
-        ({"updated": False}, "updated:"),
-        ({"tokens": None}, "tokens: missing"),
-    ],
-)
-def test_regressions_fail(fleet, capsys, change, expected):
-    actual = {**fleet[3], **change}
-    fleet[1].write_text(
-        "import json\nprint(json.loads(" + repr(json.dumps(json.dumps(actual))) + "))\n"
+def test_check_command_forwards_the_selection_to_tmic():
+    args = run.parser().parse_args(
+        [
+            "--fixtures-only",
+            "--variant",
+            "bfloat16",
+            "--changed-files",
+            "changed.txt",
+            "--diff-base",
+            "HEAD^1",
+            "--run-declared",
+            "--contract",
+            "demo",
+            "--target",
+            "demo-mic",
+        ]
     )
-    code, rows = invoke(fleet, capsys)
-    assert code == 1 and rows[0]["status"] == "fail"
-    assert any(expected in failure for failure in rows[0]["failures"])
-
-
-def test_missing_baseline_is_a_failure(fleet, capsys):
-    fleet[2].unlink()
-    code, rows = invoke(fleet, capsys)
-    assert code == 1 and "no reviewed baseline" in rows[0]["failures"][0]
-
-
-def test_bfloat16_on_a_non_native_host_is_never_compared(fleet, capsys, monkeypatch):
-    # An old cpu-x86_64 bfloat16 baseline exists and the values match it, but a
-    # non-native host is the wrong hardware: never compare across hardware.
-    actual = {**fleet[3], "runtime": {"device": "cpu", "dtype": "bfloat16"}}
-    fleet[1].write_text(f"import json\nprint(json.dumps({actual!r}))\n")
-    baseline = json.loads(fleet[2].read_text())
-    baseline["outputs"] = actual
-    moved = fleet[2].parent.parent / "cpu-x86_64" / fleet[2].name
-    moved.parent.mkdir()
-    moved.write_text(json.dumps(baseline))
-    monkeypatch.setattr(run, "platform_class", lambda *a: "cpu-x86_64")
-    code, rows = invoke(fleet, capsys)
-    assert code == 1 and rows[0]["status"] == "fail"
-    assert rows[0]["failures"][0].startswith("wrong hardware:")
-    code, rows = invoke(fleet, capsys, "--record")
-    assert rows[0]["failures"][0].startswith("wrong hardware:")
-    assert not list(moved.parent.glob("*.candidate.json"))
-
-
-def test_a_baseline_recorded_with_another_template_date_fails(fleet, capsys):
-    baseline = json.loads(fleet[2].read_text())
-    baseline["recorded_with"]["template_date"] = "2025-06-01"
-    fleet[2].write_text(json.dumps(baseline))
-    code, rows = invoke(fleet, capsys)
-    assert code == 1 and "template_date" in rows[0]["failures"][0]
-    baseline["recorded_with"]["template_date"] = run.template_date.TEMPLATE_DATE
-    fleet[2].write_text(json.dumps(baseline))
-    code, rows = invoke(fleet, capsys)
-    assert code == 0 and rows[0]["status"] == "pass"
-
-
-def test_record_stores_the_template_date(fleet, capsys):
-    code, rows = invoke(fleet, capsys, "--record")
-    assert rows[0]["status"] == "recorded", rows[0]["failures"]
-    candidate = json.loads(fleet[2].with_name("demo-slim.candidate.json").read_text())
-    assert (
-        candidate["recorded_with"]["template_date"] == run.template_date.TEMPLATE_DATE
+    command = run.check_command(
+        args, ["--fleet", "control", "--fleet-revision", REVISION]
     )
+    assert command[:4] == [sys.executable, "-m", "transformers_mic.cli", "check"]
+    options = command[4:]
+    assert options[:4] == ["--fleet", "control", "--fleet-revision", REVISION]
+    for flag in ("--fixtures-only", "--run-declared"):
+        assert flag in options
+    for flag, value in (
+        ("--integration", "transformers"),
+        ("--variant", "bfloat16"),
+        ("--diff-base", "HEAD^1"),
+        ("--contract", "demo"),
+        ("--target", "demo-mic"),
+    ):
+        assert options[options.index(flag) + 1] == value
+    assert Path(options[options.index("--changed-files") + 1]).is_absolute()
+    assert "--run-all" not in options and "--isolate" not in options
+    # --diff-base means nothing without the changed files it compares.
+    alone = run.parser().parse_args(["--diff-base", "HEAD^1", "--run-all"])
+    options = run.check_command(alone, [])
+    assert "--diff-base" not in options and "--run-all" in options
 
 
-def test_declared_unmeasured_variant_runs_only_with_run_declared(fleet, capsys):
-    path = fleet[0].parent / "integration.json"
-    manifest = json.loads(path.read_text())
-    manifest["integrations"]["transformers"]["resources"] = {
-        "fixture": {"variants": {"default": {"devices": []}}}
-    }
-    path.write_text(json.dumps(manifest))
-    _, rows = invoke(fleet, capsys)
-    assert rows[0]["status"] == "unsupported" and rows[0]["skip"] == "declared"
-    code, rows = invoke(fleet, capsys, "--run-declared")
-    assert code == 0 and rows[0]["status"] == "pass"
-
-
-def test_exception_is_an_error(fleet, capsys):
-    fleet[1].write_text("raise RuntimeError('broken contract')\n")
-    code, rows = invoke(fleet, capsys)
-    assert code == 1 and rows[0]["status"] == "error"
-    assert "broken contract" in rows[0]["failures"][0]
-
-
-def test_wrong_baseline_target_fails(fleet, capsys):
-    baseline = json.loads(fleet[2].read_text())
-    baseline["recorded_with"]["target"] = "another-target"
-    fleet[2].write_text(json.dumps(baseline))
-    code, rows = invoke(fleet, capsys)
-    assert code == 1 and "baseline identity differs" in rows[0]["failures"][0]
-
-
-def test_no_selection_is_success_even_with_explicit_target(fleet, capsys, monkeypatch):
-    changed = fleet[0].parent / "changed.txt"
-    changed.write_text("docs/index.md\n")
-    monkeypatch.setattr(
-        run, "fixture_folder", lambda *a: pytest.fail("unnecessary Hub download")
+def test_records_carry_the_pinned_fleet_into_stdout_output_spans_and_report(
+    tmic, spans, capsys, tmp_path
+):
+    failed = {**RECORD, "status": "fail", "failures": ["tokens: [9] != [1, 2]"]}
+    commands = tmic(
+        stdout=["contract chatter", json.dumps(failed)],
+        stderr='{"selection": {}}\n',
+        code=1,
     )
-    code, rows = invoke(
-        fleet,
-        capsys,
-        "--changed-files",
-        str(changed),
-        "--contract",
-        "demo",
-        "--target",
-        "demo-slim",
+    output = tmp_path / "results.jsonl"
+    code = run.main(
+        ["--fleet", "prototypes", "--fixtures-only", "--output", str(output)]
     )
-    assert code == 0 and rows == []
+    assert code == 1
+    assert commands[0][4:8] == ["--fleet", "prototypes", "--fleet-revision", REVISION]
+    out = capsys.readouterr()
+    assert "contract chatter" in out.out and '"selection"' in out.err
+    record = json.loads(out.out.splitlines()[-1])
+    assert record["fleet"] == "prototypes"
+    assert record["fleet_repository"] == "huggingface-mic/transformers-fleet"
+    assert record["fleet_revision"] == REVISION
+    assert [json.loads(line) for line in output.read_text().splitlines()] == [record]
+
+    finished = {s.name: s for s in spans.get_finished_spans()}
+    case = finished["tests/contracts::demo::demo-mic[default]"]
+    assert case.attributes["pytest.span_type"] == "test"
+    assert case.attributes["pytest.nodeid"] == case.name
+    assert case.attributes["mic.status"] == "fail"
+    assert case.attributes["mic.fleet_revision"] == REVISION
+    assert case.status.status_code.name == "ERROR"
+    # Backdated by the record's seconds: the case ran in tmic's process.
+    assert (case.end_time - case.start_time) / 1e9 == pytest.approx(2.5, abs=0.5)
+    error = next(e for e in case.events if e.name == "exception")
+    assert error.attributes["exception.type"] == "MICAssertionError"
+    assert "tokens:" in error.attributes["exception.stacktrace"]
+    assert "pytest.span_type" not in finished["fast-integration"].attributes
+    assert "tests/contracts::runner" not in finished
+
+    report.main([str(output)])
+    summary = capsys.readouterr().out
+    assert f"--fleet prototypes --fleet-revision {REVISION}" in summary
+    assert "--contract demo --target demo-mic" in summary
 
 
-def test_unknown_target_fails(fleet, capsys):
-    code, rows = invoke(fleet, capsys, "--target", "unknown")
-    assert code == 1 and rows == []
+def test_passing_and_skipped_cases_are_ok_spans(tmic, spans, capsys):
+    tmic(
+        stdout=[
+            json.dumps({**RECORD, "status": "pass", "failures": []}),
+            json.dumps(
+                {
+                    **RECORD,
+                    "target": "other-mic",
+                    "status": "unsupported",
+                    "skip": "declared",
+                    "failures": ["not measured"],
+                    "seconds": None,
+                }
+            ),
+        ]
+    )
+    assert run.main(["--fleet-revision", "e" * 40]) == 0
+    cases = [
+        s
+        for s in spans.get_finished_spans()
+        if s.attributes.get("pytest.span_type") == "test"
+    ]
+    assert [c.attributes["mic.status"] for c in cases] == ["pass", "unsupported"]
+    assert all(c.status.status_code.name != "ERROR" for c in cases)
+    assert {c.attributes["mic.fleet_revision"] for c in cases} == {"e" * 40}
 
 
-def test_selection_includes_processor_dependencies():
-    dirs = {
-        "llama": ["llama", "gpt2"],
-        "smolvlm": ["smolvlm", "llama", "gpt2"],
-        "bert": ["bert"],
-    }
-    assert set(
-        select_contracts.select(
-            ["src/transformers/models/gpt2/tokenization_gpt2.py"], dirs
-        )
-    ) == {"llama", "smolvlm"}
-    assert set(
-        select_contracts.select(["src/transformers/modeling_utils.py"], dirs)
-    ) == set(dirs)
-    assert select_contracts.select(["docs/index.md"], dirs) == {}
+def test_a_run_that_dies_before_any_case_gets_a_runner_span(tmic, spans, capsys):
+    tmic(stderr="Traceback ...\nOSError: no space left\n", code=2)
+    assert run.main([]) == 2
+    finished = {s.name: s for s in spans.get_finished_spans()}
+    runner = finished["tests/contracts::runner"]
+    assert runner.status.status_code.name == "ERROR"
+    error = next(e for e in runner.events if e.name == "exception")
+    assert error.attributes["exception.type"] == "MICRunnerError"
+    assert "no space left" in error.attributes["exception.stacktrace"]
 
 
-def test_may_select_matches_select():
-    dirs = {"bert": ["bert"], "llama": ["llama"]}
+def test_the_framework_pin_is_the_default_fleet_revision(
+    tmic, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/contracts.lock").write_text("f" * 40 + "\n")
+    commands = tmic()
+    run.main(["--fixtures-only"])
+    assert commands[0][4:8] == ["--fleet", "control", "--fleet-revision", "f" * 40]
+
+
+def test_a_custom_lock_is_passed_through_and_recorded(tmic, tmp_path, capsys):
+    lock = tmp_path / "fleet.lock"
+    commands = tmic(stdout=[json.dumps({**RECORD, "status": "pass", "failures": []})])
+    assert run.main(["--lock", str(lock)]) == 0
+    assert commands[0][4:6] == ["--lock", str(lock.resolve())]
+    record = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert record["lock"] == str(lock.resolve()) and "fleet_revision" not in record
+
+
+def test_a_custom_lock_cannot_silently_ignore_a_dataset_revision(tmp_path):
+    for argv in (
+        ["--lock", str(tmp_path / "fleet.lock"), "--fleet-revision", "main"],
+        ["--lock", str(tmp_path / "fleet.lock"), "--fleet", "control"],
+    ):
+        with pytest.raises(SystemExit) as error:
+            run.main(argv)
+        assert error.value.code == 2
+
+
+def test_may_select_gates_on_paths_alone():
     for paths in (
         ["src/transformers/models/gpt2/modeling_gpt2.py"],
         ["src/transformers/modeling_utils.py"],
@@ -266,357 +244,6 @@ def test_may_select_matches_select():
         ["docs/source/en/index.md", "tests/models/bert/test_modeling_bert.py"],
     ):
         assert not select_contracts.may_select(paths)
-        assert select_contracts.select(paths, dirs) == {}
-
-
-def test_otel_exports_case_failure_with_assertion(fleet, capsys, monkeypatch):
-    memory = InMemorySpanExporter()
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-    monkeypatch.setattr(instrument, "build_primary_exporter", lambda env: memory)
-    monkeypatch.setattr(instrument, "build_staging_exporter", lambda env: None)
-    fleet[1].write_text(
-        "import json\nprint(json.dumps(" + repr({**fleet[3], "tokens": [9]}) + "))\n"
-    )
-    code, _ = invoke(fleet, capsys)
-    assert code == 1
-    spans = {s.name: s for s in memory.get_finished_spans()}
-    case = spans["tests/contracts::demo::demo-slim[default]"]
-    assert case.attributes["pytest.span_type"] == "test"
-    assert case.attributes["pytest.nodeid"] == case.name
-    assert case.attributes["mic.status"] == "fail"
-    assert case.attributes["mic.variant"] == "default"
-    assert case.status.status_code.name == "ERROR"
-    assert case.end_time > case.start_time
-    error = next(e for e in case.events if e.name == "exception")
-    assert error.attributes["exception.type"] == "MICAssertionError"
-    assert "tokens:" in error.attributes["exception.stacktrace"]
-    assert "pytest.span_type" not in spans["fast-integration"].attributes
-
-
-def test_legacy_fixture_download_uses_new_org(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        "huggingface_hub.snapshot_download",
-        lambda repo, **kwargs: calls.append((repo, kwargs)) or "/tmp/snapshot",
-    )
-    run.fixture_folder(
-        Path("."), "hf-internal-testing/mic-bert-slim", {"revision": "immutable"}, False
-    )
-    assert calls == [("huggingface-mic/mic-bert-slim", {"revision": "immutable"})]
-
-
-def test_umbrella_loads_expectations_alongside_usage(fleet, capsys):
-    root = fleet[0].parent
-    lock = json.loads(fleet[0].read_text())
-    pin = lock["contracts"]["demo"]["fixtures"].pop("test/demo-slim")
-    pin["target"] = "demo-slim"
-    lock["contracts"]["demo"]["fixtures"]["test/demo-mic"] = pin
-    fleet[0].write_text(json.dumps(lock))
-    destination = (
-        root / "integrations/transformers/expectations/cpu-test/demo-slim.json"
-    )
-    destination.parent.mkdir(parents=True)
-    fleet[2].rename(destination)
-    (root / ".mic-repo.json").write_text(
-        json.dumps(
-            {
-                "format": "mic-umbrella-v1",
-                "contract_files": ["integration.json", "usage.py"],
-            }
-        )
-    )
-    code, rows = invoke(fleet, capsys, "--target", "demo-slim")
-    assert code == 0 and rows[0]["status"] == "pass"
-    assert rows[0]["target"] == "demo-slim"
-    assert "integrations/transformers/expectations" in rows[0]["baseline"]
-
-
-def test_umbrella_hashes_keep_usage_weights_and_expectations_separate(tmp_path):
-    (tmp_path / "config.json").write_text("{}")
-    (tmp_path / "model.safetensors").write_bytes(b"weights")
-    (tmp_path / "integration.json").write_text("{}")
-    usage = tmp_path / "integrations/transformers/usage.md"
-    usage.parent.mkdir(parents=True)
-    usage.write_text("usage")
-    (tmp_path / ".mic-repo.json").write_text(
-        json.dumps(
-            {
-                "format": "mic-umbrella-v1",
-                "contract_files": [
-                    "integration.json",
-                    "integrations/transformers/usage.md",
-                ],
-            }
-        )
-    )
-    before = run.contract_files(tmp_path)
-    assert set(before) == {"integration.json", "integrations/transformers/usage.md"}
-    assert set(run.file_hashes(tmp_path)) == {"config.json", "model.safetensors"}
-    expectations = usage.parent / "expectations/cpu-test/target.json"
-    expectations.parent.mkdir(parents=True)
-    expectations.write_text("{}")
-    assert run.contract_files(tmp_path) == before
-    usage.write_text("changed usage")
-    assert run.contract_files(tmp_path) != before
-
-
-def test_selection_tracks_nested_model_configs(tmp_path, monkeypatch):
-    import sys
-    from types import ModuleType, SimpleNamespace
-
-    auto = ModuleType("transformers.models.auto")
-    auto.configuration_auto = SimpleNamespace(
-        CONFIG_MAPPING_NAMES={
-            "musicgen_melody": "MusicgenMelodyConfig",
-            "t5": "T5Config",
-            "encodec": "EncodecConfig",
-        }
-    )
-    auto.tokenization_auto = SimpleNamespace(TOKENIZER_MAPPING_NAMES={})
-    auto.feature_extraction_auto = SimpleNamespace(FEATURE_EXTRACTOR_MAPPING_NAMES={})
-    auto.image_processing_auto = SimpleNamespace(IMAGE_PROCESSOR_MAPPING_NAMES={})
-    auto.processing_auto = SimpleNamespace(PROCESSOR_MAPPING_NAMES={})
-    monkeypatch.setitem(sys.modules, "transformers.models.auto", auto)
-    directories = {
-        "MusicgenMelodyConfig": "musicgen_melody",
-        "T5Config": "t5",
-        "EncodecConfig": "encodec",
-    }
-    monkeypatch.setattr(select_contracts, "module_dir", directories.get)
-    (tmp_path / "config.json").write_text(
-        json.dumps(
-            {
-                "model_type": "musicgen_melody",
-                "text_encoder": {"model_type": "t5"},
-                "audio_encoder": {"model_type": "encodec"},
-            }
-        )
-    )
-    assert select_contracts.code_dirs(tmp_path) == ["encodec", "musicgen_melody", "t5"]
-
-
-def test_fleet_pin_changes_select_every_contract():
-    cases = {"mic-bert": ["bert"], "mic-vit": ["vit"]}
-    assert set(
-        select_contracts.select(["tests/contracts/prototype-fleet.lock"], cases)
-    ) == set(cases)
-
-
-@pytest.mark.parametrize("explicit_target", [None, "mic-demo-slim"])
-@pytest.mark.parametrize("unsupported", [False, True])
-def test_fixture_target_identity(tmp_path, monkeypatch, explicit_target, unsupported):
-    pin = {"revision": "b" * 40}
-    if explicit_target:
-        pin["target"] = explicit_target
-    contract = {"fixtures": {"test/demo-mic": pin}}
-    integration = {"targets": ["fixtures"]}
-    if unsupported:
-        integration = {"targets": [], "unsupported": {"fixtures": "unavailable"}}
-    manifest = {
-        "fixtures": {"test/demo-mic": {}},
-        "integrations": {"transformers": integration},
-    }
-    monkeypatch.setattr(run, "fixture_folder", lambda *args: tmp_path)
-    monkeypatch.setattr(run, "fixture_problem", lambda *args: None)
-    rows = list(
-        run.targets(tmp_path, contract, manifest, "transformers", fixtures_only=True)
-    )
-    assert len(rows) == 1
-    assert rows[0][0] == (explicit_target or "demo-mic")
-    assert rows[0][4] == ("unavailable" if unsupported else None)
-
-
-def test_published_fixture_build_options_are_validated(fleet):
-    manifest_path = fleet[0].parent / "integration.json"
-    manifest = json.loads(manifest_path.read_text())
-    manifest["fixtures"]["test/demo-slim"]["build"] = {
-        "seed": 0,
-        "config_overrides": {
-            "fields": {"num_local_experts": 0},
-            "reason": "Dense fixture",
-        },
-        "copy_assets": ["attention_mask.safetensors"],
-        "preserve_frozen_prefixes": ["model.geometry."],
-    }
-    run.validate(manifest, "integration", manifest_path)
-    del manifest["fixtures"]["test/demo-slim"]["build"]["config_overrides"]["reason"]
-    with pytest.raises(SystemExit, match="reason"):
-        run.validate(manifest, "integration", manifest_path)
-
-
-@pytest.mark.parametrize("container", ["dict", "ordered"])
-def test_registry_only_addition_selects_affected_models(container):
-    path = "src/transformers/models/auto/configuration_auto.py"
-    if container == "dict":
-        before = 'CONFIG_MAPPING_NAMES = {"bert": "BertConfig"}\n'
-        after = (
-            'CONFIG_MAPPING_NAMES = {"new_model": "NewConfig", "bert": "BertConfig"}\n'
-        )
-    else:
-        before = 'CONFIG_MAPPING_NAMES = OrderedDict([("bert", "BertConfig")])\n'
-        after = 'CONFIG_MAPPING_NAMES = OrderedDict([("new_model", "NewConfig"), ("bert", "BertConfig")])\n'
-    dirs = {"New": ["new_model"], "BERT": ["bert"], "Whisper": ["whisper"]}
-    selected = select_contracts.select([path], dirs, {path: (before, after)})
-    assert set(selected) == {"New"}
-    assert (
-        select_contracts.select([path], {"BERT": ["bert"]}, {path: (before, after)})
-        == {}
-    )
-
-
-@pytest.mark.parametrize(
-    "after",
-    [
-        'CONFIG_MAPPING_NAMES = {"bert": "ChangedConfig", "new": "NewConfig"}',
-        'CONFIG_MAPPING_NAMES = {"new": "NewConfig"}',
-        'CONFIG_MAPPING_NAMES = {"bert": "BertConfig", "new": "NewConfig"}\ndef shared(): return 2',
-        'import new_dependency\nCONFIG_MAPPING_NAMES = {"bert": "BertConfig", "new": "NewConfig"}\ndef shared(): return 1',
-        'CONFIG_MAPPING_NAMES = {"bert": "BertConfig", "new": "NewConfig", "new": "OtherConfig"}\ndef shared(): return 1',
-        "not valid Python!",
-    ],
-)
-def test_registry_changes_with_runtime_edits_remain_full_fleet(after):
-    path = "src/transformers/models/auto/configuration_auto.py"
-    before = 'CONFIG_MAPPING_NAMES = {"bert": "BertConfig"}\ndef shared(): return 1'
-    dirs = {"BERT": ["bert"], "Whisper": ["whisper"]}
-    assert set(select_contracts.select([path], dirs, {path: (before, after)})) == set(
-        dirs
-    )
-
-
-@pytest.mark.parametrize(
-    "path,module",
-    [
-        ("src/transformers/models/__init__.py", "new_model"),
-        ("src/transformers/__init__.py", "models.new_model"),
-    ],
-)
-def test_type_checking_model_registration_is_selective(path, module):
-    before = "if TYPE_CHECKING:\n    from .models.bert import BertModel\n"
-    after = before + f"    from .{module} import NewModel\n"
-    dirs = {"New": ["new_model"], "BERT": ["bert"]}
-    assert set(select_contracts.select([path], dirs, {path: (before, after)})) == {
-        "New"
-    }
-
-
-def test_unrelated_shared_lists_and_missing_diff_keep_full_fleet():
-    dirs = {"BERT": ["bert"], "Whisper": ["whisper"]}
-    path = "src/transformers/generation/utils.py"
-    assert set(
-        select_contracts.select(
-            [path],
-            dirs,
-            {
-                path: (
-                    'INPUTS = ["input_ids"]',
-                    'INPUTS = ["input_ids", "padding_mask"]',
-                )
-            },
-        )
-    ) == set(dirs)
-    assert set(
-        select_contracts.select(["src/transformers/models/auto/modeling_auto.py"], dirs)
-    ) == set(dirs)
-
-
-@pytest.mark.parametrize(
-    "value", ["register_and_mutate()", "(x := 1)", "[do_something() for _ in things]"]
-)
-def test_registry_entry_with_executable_side_effects_keeps_full_fleet(value):
-    path = "src/transformers/models/auto/configuration_auto.py"
-    before = 'CONFIG_MAPPING_NAMES = {"bert": "BertConfig"}'
-    after = f'CONFIG_MAPPING_NAMES = {{"bert": "BertConfig", "new": {value}}}'
-    dirs = {"BERT": ["bert"], "Whisper": ["whisper"]}
-    assert set(select_contracts.select([path], dirs, {path: (before, after)})) == set(
-        dirs
-    )
-
-
-def test_registry_model_alias_and_backend_guard_select_dependencies():
-    path = "src/transformers/models/auto/tokenization_auto.py"
-    before = 'TOKENIZER_MAPPING_NAMES = {"bert": "BertTokenizer"}'
-    after = 'TOKENIZER_MAPPING_NAMES = {"bert": "BertTokenizer", "new_alias": "NewTokenizer" if is_tokenizers_available() else None}'
-    dirs = {"New": ["shared_tokenizer"], "BERT": ["bert"]}
-    assert set(
-        select_contracts.select(
-            [path],
-            dirs,
-            {path: (before, after)},
-            model_type_to_module=lambda name: "shared_tokenizer",
-        )
-    ) == {"New"}
-
-
-def test_changed_sources_uses_merge_base_and_falls_back_when_missing(
-    tmp_path, monkeypatch
-):
-    monkeypatch.chdir(tmp_path)
-
-    def git(*args):
-        return subprocess.check_output(
-            ["git", *args], text=True, stderr=subprocess.DEVNULL
-        ).strip()
-
-    git("init")
-    git("config", "user.email", "mic-test@example.com")
-    git("config", "user.name", "MIC test")
-    path = "src/transformers/models/auto/configuration_auto.py"
-    file = tmp_path / path
-    file.parent.mkdir(parents=True)
-    original = 'CONFIG_MAPPING_NAMES = {"bert": "BertConfig"}\n'
-    file.write_text(original)
-    git("add", ".")
-    git("commit", "-m", "base")
-    base = git("rev-parse", "HEAD")
-    file.write_text(original.replace('"bert":', '"new": "NewConfig", "bert":'))
-    git("add", ".")
-    git("commit", "-m", "PR registration")
-    head = git("rev-parse", "HEAD")
-    git("checkout", "--detach", base)
-    file.write_text(original + "# base branch advanced\n")
-    git("add", ".")
-    git("commit", "-m", "base advanced")
-    advanced = git("rev-parse", "HEAD")
-    git("checkout", "--detach", head)
-    assert select_contracts.changed_sources([path], advanced) == {
-        path: (original, file.read_text())
-    }
-    assert select_contracts.changed_sources([path], "missing-ref") == {}
-
-
-@pytest.mark.parametrize("constructor", ["OrderedDict", "OrderedDict[str, str | None]"])
-def test_registry_preserves_existing_duplicates_and_typed_constructor(constructor):
-    path = "src/transformers/models/auto/modeling_auto.py"
-    before = f'{constructor}([("sam3_tracker", "Sam3Tracker"), ("sam3_tracker", "Sam3Tracker")])'
-    before = "MODEL_MAPPING_NAMES = " + before
-    after = before.replace(
-        '[("sam3_tracker"', '[("new", "NewModel"), ("sam3_tracker"', 1
-    )
-    dirs = {"New": ["new"], "SAM": ["sam3_tracker"]}
-    assert set(select_contracts.select([path], dirs, {path: (before, after)})) == {
-        "New"
-    }
-    changed = after.replace(
-        '("sam3_tracker", "Sam3Tracker")', '("sam3_tracker", "Changed")', 1
-    )
-    assert set(select_contracts.select([path], dirs, {path: (before, changed)})) == set(
-        dirs
-    )
-
-
-def test_registry_additions_preserve_composed_mapping_splices():
-    path = "src/transformers/models/auto/modeling_auto.py"
-    before = "MODEL_MAPPING_NAMES = OrderedDict([*list(BASE_MAPPING_NAMES.items())])"
-    after = before.replace("])", ', ("new", "NewModel")])')
-    dirs = {"New": ["new"], "BERT": ["bert"]}
-    assert set(select_contracts.select([path], dirs, {path: (before, after)})) == {
-        "New"
-    }
-    changed = after.replace("BASE_MAPPING_NAMES", "OTHER_MAPPING_NAMES")
-    assert set(select_contracts.select([path], dirs, {path: (before, changed)})) == set(
-        dirs
-    )
 
 
 def test_hub_fleet_resolves_and_downloads_an_immutable_dataset(monkeypatch, tmp_path):
@@ -658,52 +285,7 @@ def test_hub_fleet_resolves_and_downloads_an_immutable_dataset(monkeypatch, tmp_
     assert fleet_api.lock_path("control", revision)[1] == revision
 
 
-def test_hub_fleet_metadata_is_in_results_traces_and_reproduction(
-    fleet, capsys, monkeypatch, tmp_path
-):
-    revision = "d" * 40
-
-    def lock_path(name, ref):
-        assert (name, ref) == ("prototypes", revision)
-        return fleet[0], revision
-
-    monkeypatch.setattr(fleet_api, "lock_path", lock_path)
-    memory = InMemorySpanExporter()
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-    monkeypatch.setattr(instrument, "build_primary_exporter", lambda env: memory)
-    monkeypatch.setattr(instrument, "build_staging_exporter", lambda env: None)
-    assert (
-        run.main(
-            ["--fleet", "prototypes", "--fleet-revision", revision, "--fixtures-only"]
-        )
-        == 0
-    )
-    result = json.loads(capsys.readouterr().out.splitlines()[0])
-    assert result["fleet_repository"] == fleet_api.REPOSITORY
-    assert result["fleet_revision"] == revision
-    spans = [
-        span
-        for span in memory.get_finished_spans()
-        if span.attributes.get("pytest.span_type") == "test"
-    ]
-    assert spans[0].attributes["mic.fleet_repository"] == fleet_api.REPOSITORY
-    assert spans[0].attributes["mic.fleet_revision"] == revision
-    result.update(status="fail", failures=["tokens differ"])
-    path = tmp_path / "results.jsonl"
-    path.write_text(json.dumps(result) + "\n")
-    report.main([str(path)])
-    summary = capsys.readouterr().out
-    assert f"--fleet prototypes --fleet-revision {revision}" in summary
-    assert "--lock " not in summary
-
-
-def test_custom_lock_cannot_silently_ignore_a_dataset_revision(fleet):
-    with pytest.raises(SystemExit) as error:
-        run.main(["--lock", str(fleet[0]), "--fleet-revision", "main"])
-    assert error.value.code == 2
-
-
-def test_framework_dataset_pin_is_strict_and_selects_the_entire_fleet(tmp_path):
+def test_framework_dataset_pin_is_strict(tmp_path):
     path = tmp_path / "contracts.lock"
     path.write_text("e" * 40 + "\n")
     assert fleet_api.read_revision(path) == "e" * 40
@@ -711,24 +293,6 @@ def test_framework_dataset_pin_is_strict_and_selects_the_entire_fleet(tmp_path):
         path.write_text(value)
         with pytest.raises(ValueError, match="immutable dataset"):
             fleet_api.read_revision(path)
-    dirs = {"BERT": ["bert"], "Whisper": ["whisper"]}
-    assert set(select_contracts.select(["tests/contracts.lock"], dirs)) == set(dirs)
-
-
-def test_runner_reads_framework_pin_by_default(fleet, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    path = tmp_path / "tests/contracts.lock"
-    path.parent.mkdir()
-    path.write_text("f" * 40 + "\n")
-    calls = []
-
-    def lock_path(name, revision):
-        calls.append((name, revision))
-        return fleet[0], revision
-
-    monkeypatch.setattr(fleet_api, "lock_path", lock_path)
-    assert run.main(["--fixtures-only"]) == 0
-    assert calls == [("control", "f" * 40)]
 
 
 FLEET_TABLES = {
@@ -830,7 +394,7 @@ def test_hub_fleet_reads_the_tables_into_a_valid_lock(hub_fleet):
     hub_fleet[revision] = tables("prototypes")
     path, resolved = fleet_api.lock_path("prototypes", revision)
     assert resolved == revision and path.name == "prototype-fleet.lock"
-    assert run.load(path, "fleet-lock") == FLEET_LOCK
+    assert json.loads(path.read_text()) == FLEET_LOCK
 
 
 def test_hub_fleet_tables_must_agree_with_the_transition_json(hub_fleet):
@@ -871,38 +435,3 @@ def test_coverage_model_types_reads_mapping_and_updates():
         'OTHER = OrderedDict([("ignored", "X")])\n'
     )
     assert model_types(mappings, auto) == ["bert", "gpt-sw3", "mimi_decoder", "t5"]
-
-
-def test_bfloat16_on_a_non_native_x86_host_is_reported_as_wrong_hardware(
-    tmp_path, monkeypatch
-):
-    real_read = Path.read_text
-
-    def cpuinfo(self, *a, **k):
-        if str(self) == "/proc/cpuinfo":
-            return "model name\t: AMD EPYC 7R13 Processor\nflags\t: avx2 avx512f\n"
-        return real_read(self, *a, **k)
-
-    monkeypatch.setattr(Path, "read_text", cpuinfo)
-    message = run.wrong_hardware({"dtype": "bfloat16"}, "cpu-x86_64")
-    assert message.startswith("wrong hardware: AMD EPYC 7R13 Processor")
-    assert "cpu-x86_64-bf16" in message
-    assert run.wrong_hardware({"dtype": "float32"}, "cpu-x86_64") is None
-    assert run.wrong_hardware({"dtype": "bfloat16"}, "cpu-x86_64-bf16") is None
-    assert run.wrong_hardware({"dtype": "bfloat16"}, "cuda") is None
-
-
-def test_fixture_build_schema_accepts_small_sources_kept_whole():
-    # transformers-mic #141 keeps small sources whole: weights "real", shrink "none".
-    build = {"weights": "real", "shrink": "none", "builder_revision": None}
-    schema = json.loads(
-        (Path(run.__file__).parent / "schemas/fixture-build.schema.json").read_text()
-    )
-    assert "real" in schema["properties"]["weights"]["enum"]
-    assert set(build) <= set(schema["properties"])
-
-
-def test_an_invalid_build_json_fails_its_contract_not_the_run(tmp_path):
-    (tmp_path / "build.json").write_text(json.dumps({"weights": "pretrained"}))
-    problem = run.fixture_problem(tmp_path, {})
-    assert "invalid fixture-build" in problem and "newer transformers-mic" in problem

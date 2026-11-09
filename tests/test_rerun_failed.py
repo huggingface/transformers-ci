@@ -885,11 +885,13 @@ def test_revision_validation_rejects_bad_provenance(problem):
         commit["sha"] = "d" * 40
     with pytest.raises(ValueError):
         rerun_revision.validate(
-            lambda path: pull
-            if path.startswith("pulls/")
-            else run
-            if path.startswith("actions/")
-            else commit,
+            lambda path: (
+                pull
+                if path.startswith("pulls/")
+                else run
+                if path.startswith("actions/")
+                else commit
+            ),
             pr="42",
             lane="cpu",
             head_sha=HEAD,
@@ -915,8 +917,8 @@ def test_invalid_source_stops_before_cancellation(repo, tmp_path):
     record = _record(repo, db)
     github = FakeGitHub()
     original = github.get
-    github.get = (
-        lambda path: {"state": "open", "head": {"sha": "d" * 40}}
+    github.get = lambda path: (
+        {"state": "open", "head": {"sha": "d" * 40}}
         if path == "pulls/42"
         else original(path)
     )
@@ -930,8 +932,8 @@ def test_pr_moving_during_cancellation_prevents_dispatch(repo, tmp_path):
     record = _record(repo, db)
     github = FakeGitHub()
     original = github.get
-    github.get = (
-        lambda path: {"state": "open", "head": {"sha": "d" * 40}}
+    github.get = lambda path: (
+        {"state": "open", "head": {"sha": "d" * 40}}
         if path == "pulls/42" and github.calls
         else original(path)
     )

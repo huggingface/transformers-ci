@@ -171,7 +171,7 @@ jobs:
             fi
           done
 
-      # Same rules as `run-model-contracts --changed-files` (select_contracts.may_select),
+      # A path-only superset of `tmic check --changed-files` selection (select_contracts.may_select),
       # so fast-integration only starts when it can select a contract. On a PR, HEAD is
       # the merge commit and HEAD^1 the base it was built on; other events run every
       # contract. Fails open: this job gates every test suite, and fast-integration

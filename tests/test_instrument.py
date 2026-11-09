@@ -128,7 +128,8 @@ def test_model_rng_seeding_does_not_repeat_span_ids(captured_spans) -> None:
     state = random.getstate()
     try:
         with instrument.run(
-            "fast-integration", env={"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318"}
+            "fast-integration",
+            env={"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318"},
         ) as run:
             for index in range(8):
                 random.seed(0)

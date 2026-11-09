@@ -73,7 +73,12 @@ from urllib.request import Request, urlopen
 from transformersci.otel import my_stuff
 from transformersci.otel import dashboard_auth
 from transformersci.otel import mic_jobs
-from transformersci.otel import slack_accounts, slack_bot, slack_commands, slack_investigations
+from transformersci.otel import (
+    slack_accounts,
+    slack_bot,
+    slack_commands,
+    slack_investigations,
+)
 from transformersci.otel.pr_search import SEARCH_HTML
 from transformersci import github_app
 from transformersci.otel import related_issues
@@ -8918,7 +8923,9 @@ class MetricsHandler(BaseHTTPRequestHandler):
             return
         try:
             identity = dashboard_auth.identity(self.headers)
-            owners = slack_accounts.owners_for(login, identity["user_id"] if identity else None)
+            owners = slack_accounts.owners_for(
+                login, identity["user_id"] if identity else None
+            )
             if len(owners) != 1:
                 self._reply_json(
                     409,
