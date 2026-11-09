@@ -201,10 +201,12 @@ trace-ingest.yaml: |
                 refId: A
                 instant: true
                 editorMode: code
+                # Quoted UTF-8 names: Prometheus 3 scrapes otelcol >= 0.164 with its OTel
+                # names unescaped (http.server.request.duration, http.response.status_code).
                 expr: |-
-                  sum(increase(http_server_request_duration_count{job="otelcol-metrics",http_response_status_code="401",http_request_method="POST"}[15m]))
+                  sum(increase({"http.server.request.duration_count",job="otelcol-metrics","http.response.status_code"="401","http.request.method"="POST"}[15m]))
                   /
-                  sum(increase(http_server_request_duration_count{job="otelcol-metrics",http_request_method="POST"}[15m]))
+                  sum(increase({"http.server.request.duration_count",job="otelcol-metrics","http.request.method"="POST"}[15m]))
             - refId: B
               datasourceUid: __expr__
               model:
