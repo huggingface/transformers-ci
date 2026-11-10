@@ -340,8 +340,11 @@ data:
     # Grafana 12+ background-installs decoupled core plugins (jaeger, zipkin,
     # elasticsearch, ...) from grafana.com. Egress blocks that, so it only logs
     # timeouts; the stack uses prometheus + tempo only.
+    # jaeger and stackdriver (cloudmonitoring) are unused bundled plugins that
+    # still ship Go brotli < 1.2.7 (GO-2026-6888).
     [plugins]
     preinstall_disabled = true
+    disable_plugins = jaeger,stackdriver
 
     [dashboards]
     default_home_dashboard_path = /var/lib/grafana/dashboards/pytest-observability-dashboard.json

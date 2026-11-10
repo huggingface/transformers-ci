@@ -64,7 +64,7 @@ otelcol:
   replicas: 3
   image:
     repository: otel/opentelemetry-collector-contrib
-    tag: "0.164.0"
+    tag: "0.165.0"
     pullPolicy: IfNotPresent
 
   # Headroom for the burst: a 512Mi/1Gi collector under a multi-million-span flush
