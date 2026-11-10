@@ -511,7 +511,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_passed_tests{ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
+          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_outcome_tests{outcome=\"passed\",ci_event=\"daily\",run_id=~\"$latest_run_id\"}[90d])))"
         },
         {
           "refId": "Fail",
@@ -901,7 +901,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))",
+          "expr": "(max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) ((last_over_time(pytest_run_executed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]) and (last_over_time(pytest_run_total_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]) == on (service_name, provider, pr, run_id, ci_event) group_left() max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_total_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))) and (last_over_time(pytest_run_failed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]) == on (service_name, provider, pr, run_id, ci_event) group_left() max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_failed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))) >= 0)",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -937,7 +937,7 @@
         },
         {
           "editorMode": "code",
-          "expr": "floor((100 * (1 - max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))) / max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_total_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_total_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))))) * 100) / 100",
+          "expr": "floor((100 * (1 - max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))) or sum by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_failed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))) / (max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) (max without (instance) ((last_over_time(pytest_run_executed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]) and (last_over_time(pytest_run_total_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]) == on (service_name, provider, pr, run_id, ci_event) group_left() max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_total_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))) and (last_over_time(pytest_run_failed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]) == on (service_name, provider, pr, run_id, ci_event) group_left() max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_failed_tests{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d]))))))) * on (service_name, provider, pr, run_id) group_left() max by (service_name, provider, pr, run_id) (max without (instance) (last_over_time(pytest_run_job_member_info{ci_event=\"daily\",run_id!~\"$latest_run_id\"}[90d])))) > 0))) * 100) / 100",
           "format": "table",
           "instant": true,
           "legendFormat": "__auto",
@@ -1001,7 +1001,7 @@
             "renameByName": {
               "commit_message": "Commit",
               "Value #Jobs": "Job Count",
-              "Value #Total": "Tests",
+              "Value #Total": "Executed",
               "Value #Start": "Started",
               "Value #Duration": "Test Time",
               "Value #Result": "Result",

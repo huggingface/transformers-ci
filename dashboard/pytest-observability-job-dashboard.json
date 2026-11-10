@@ -71,7 +71,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(max(label_replace(sum(max without (instance) (last_over_time(pytest_run_job_total_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[1d])) and on () (count(count by (run_id) (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\"}[1d]))) == 1), \"src\", \"live\", \"\", \"\"))) - max(max(label_replace(sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range]))), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\",hardware=~\"$hardware\",status_code=\"STATUS_CODE_ERROR\"}[1d])) and on () (count(count by (run_id) (last_over_time(ci_live_calls_total{test_job=~\"$job\",run_id=~\"$run_id\"}[1d]))) == 1), \"src\", \"live\", \"\", \"\")) or vector(0))",
+          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_outcome_tests{outcome=\"passed\",service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])))",
           "instant": true,
           "range": false,
           "legendFormat": "Passed"
@@ -86,6 +86,17 @@
           "instant": true,
           "range": false,
           "legendFormat": "Failed"
+        },
+        {
+          "refId": "SKIPPED",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_outcome_tests{outcome=\"skipped\",service_name=~\"$service\",test_job=~\"$job\",pr=~\"$pr\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[$__range])))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Skipped"
         }
       ],
       "options": {
@@ -146,6 +157,21 @@
                 "value": {
                   "mode": "fixed",
                   "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Skipped"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "gray"
                 }
               }
             ]

@@ -982,7 +982,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_passed_tests[6h])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "expr": "max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_outcome_tests{outcome=\"passed\"}[6h])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
           "format": "table",
           "instant": true,
           "range": false,
