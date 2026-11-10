@@ -52,6 +52,7 @@ on:
         type: string
 
 env:
+  # Default cache: EFS (NFS) at /mnt/cache. To test with Xet FUSE bucket cache instead, change to: HF_HOME: /mnt/xet_cache
   HF_HOME: /mnt/cache
   TRANSFORMERS_IS_CI: yes
   OMP_NUM_THREADS: 8
