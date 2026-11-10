@@ -65,7 +65,7 @@ jobs:
           start=$SECONDS
           uv pip install -e .
           uv pip install "transformers-ci[contracts,otel] @ git+https://github.com/huggingface/transformers-ci@${INPUTS_CI_SHA}"
-          uv pip install timm jsonschema "git+https://github.com/huggingface/doc-builder@$DOC_BUILDER_SHA"
+          uv pip install timm jsonschema fugashi unidic-lite "git+https://github.com/huggingface/doc-builder@$DOC_BUILDER_SHA"
           echo "Installed in $((SECONDS - start)) s on $(lscpu | sed -n 's/^Model name: *//p'), $(nproc) cores"
         env:
           INPUTS_CI_SHA: ${{ inputs.ci_sha }}
