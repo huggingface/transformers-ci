@@ -61,6 +61,11 @@ MAX_DIFF_CHARS = 120_000
 NO_ANSWER_STATUS = (
     "Serge couldn't give an answer. Re-run the approval run to try again."
 )
+COMPARE_MAX_FILES = 300
+TOO_MANY_FILES_STATUS = (
+    "Too many changed files to check the approved commit. "
+    "Approve the latest commit to check it."
+)
 MAX_BODY_CHARS = 4_000
 MAX_REASON_CHARS = 1_000
 MAX_STATUS_CHARS = 140
@@ -594,8 +599,8 @@ def commit_files(
     """List the files a PR changed up to commit `sha`, in the same shape as `get_pr_files`.
 
     This is the diff GitHub would have shown on the PR at that commit: from where
-    the PR's branch split off `base_sha`, up to `sha`. GitHub lists at most 300
-    files here.
+    the PR's branch split off `base_sha`, up to `sha`. GitHub lists at most
+    `COMPARE_MAX_FILES` files here, so a list that long may be missing some.
     """
     r = gh.session.get(
         f"https://api.github.com/repos/{owner}/{repo}/compare/{base_sha}...{sha}",
@@ -609,8 +614,9 @@ def main() -> int:
     """Run the docs check on one PR.
 
     Returns 0 whether or not it comments, so a quiet run isn't marked as failed.
-    The run only fails if GitHub can't be reached, an option is wrong, or Serge
-    isn't set up (no model, no key, or no rules file).
+    The run only fails if GitHub can't be reached, an option is wrong, Serge
+    isn't set up (no model, no key, or no rules file), or the approved commit
+    changes too many files to list.
     """
     from reviewbot.github_client import GitHubClient
 
@@ -705,6 +711,19 @@ def main() -> int:
             if args.head_sha == pr["head"]["sha"]
             else commit_files(gh, owner, repo, pr["base"]["sha"], args.head_sha)
         )
+        if approved_files is not files and len(approved_files) >= COMPARE_MAX_FILES:
+            # The list may be cut off, and the files left out could be library
+            # changes. Then `skip_reason` could wrongly say there are none, so
+            # report an error instead of guessing.
+            print(
+                f"::error::The approved commit changes {COMPARE_MAX_FILES} or more "
+                "files, more than GitHub lists, so docs-check can't tell what changed."
+            )
+            if not args.dry_run:
+                set_status(
+                    gh, owner, repo, pr["head"]["sha"], "error", TOO_MANY_FILES_STATUS
+                )
+            return 1
         if reason := skip_reason(approved_files, args.docs_path, library_path):
             log.info("PR #%d doesn't need Serge: %s", args.pr, reason)
         else:
