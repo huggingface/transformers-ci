@@ -1,21 +1,23 @@
 name: Docs check
 
-# Checks whether a PR needs docs and shows the answer as a `docs-check` status on
+# Checks whether a PR needs docs, and shows the answer as a `docs-check` status on
 # the PR. Other repos run this workflow from their own workflow file. For
 # transformers, that's `.github/workflows/docs-check.yml`.
 #
-# The code that does the checking is the `docs-check` command in this package, so
-# this workflow installs the package. The rules Serge follows come from the repo
-# that runs this workflow, because each repo decides what needs docs.
+# The checking is done by the `docs-check` command in this repo's Python package,
+# so this workflow installs the package. Each repo decides what needs docs, so the
+# rules Serge follows come from the repo that runs this workflow.
 #
 # It runs in one of two modes:
-# - `approval`: runs after a maintainer approves a PR. It asks Serge
-#   whether the PR needs docs, saves the answer, leaves a comment
-#   if docs are needed, and sets the status. Serge can read the PR's code, but
-#   none of it is run.
-# - `push`: runs when a PR is opened or updated. It doesn't ask Serge
-#   and doesn't download the PR's code. It reuses the last saved answer to set the
-#   status on the new commit.
+# - `approval`: runs after a maintainer approves a PR. It asks Serge whether the
+#   PR needs docs, saves the answer, comments if docs are needed, and sets the
+#   status. Serge reads the PR's files through the GitHub API at the approved
+#   commit, so the PR's code is never checked out. `pr-ci-security-gate.yml`
+#   does the same. The only checkout is of the base branch: the rules file and
+#   the docs folder.
+# - `push`: runs when a PR is opened or updated. It doesn't ask Serge or download
+#   the PR's code. It reuses the last saved answer to set the status on the new
+#   commit.
 #
 # The status doesn't block merging unless the calling repo makes it a required check.
 on:
@@ -93,12 +95,18 @@ jobs:
           MODE: ${{ inputs.mode }}
           INPUT_PR: ${{ inputs.pr_number }}
           PR_FILE: ${{ runner.temp }}/docs-check-pr/number
+          SHA_FILE: ${{ runner.temp }}/docs-check-pr/sha
           APPROVAL_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           if [ "$MODE" = "approval" ]; then
             number="$(head -c 20 "$PR_FILE" | tr -d '[:space:]')"
-            sha="$APPROVAL_SHA"
+            # Use the commit the maintainer approved, which the trigger saves. The
+            # run's own commit can be the one before it, when the approval comes a
+            # few seconds after a push. Older triggers don't save it, so use the
+            # run's commit then.
+            sha="$(head -c 64 "$SHA_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
+            sha="${sha:-$APPROVAL_SHA}"
           elif [ "$MODE" = "push" ]; then
             number="$INPUT_PR"
             sha=""
@@ -108,6 +116,13 @@ jobs:
           fi
           if ! echo "$number" | grep -qE '^[0-9]+$'; then
             echo "::error::Invalid PR number" >&2
+            exit 1
+          fi
+          # A fork PR can change the trigger workflow, so don't trust what it saved:
+          # check that it's a real commit ID. docs-check then checks that a
+          # maintainer approved that commit.
+          if [ "$MODE" = "approval" ] && ! echo "$sha" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::Invalid commit SHA" >&2
             exit 1
           fi
           echo "number=$number" >> "$GITHUB_OUTPUT"
@@ -134,22 +149,16 @@ jobs:
             echo "go=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout rules
+      - name: Checkout rules and docs from the base branch
         if: steps.run.outputs.go == 'true' && inputs.mode == 'approval'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: base
           persist-credentials: false
-          sparse-checkout: ${{ inputs.rules_file }}
+          sparse-checkout: |
+            ${{ inputs.rules_file }}
+            ${{ inputs.docs_path }}
           sparse-checkout-cone-mode: false
-
-      - name: Checkout PR head (read by Serge, never executed)
-        if: steps.run.outputs.go == 'true' && inputs.mode == 'approval'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: pr-head
-          ref: ${{ steps.pr.outputs.sha }}
-          persist-credentials: false
 
       - name: Set up Python
         if: steps.run.outputs.go == 'true'
@@ -190,7 +199,7 @@ jobs:
                 --docs-path "$DOCS_PATH")
           if [ -n "$LIBRARY_PATH" ]; then args+=(--library-path "$LIBRARY_PATH"); fi
           if [ "$MODE" = "approval" ]; then
-            args+=(--head-sha "$HEAD_SHA" --rules "$RULES_FILE" --checkout pr-head)
+            args+=(--head-sha "$HEAD_SHA" --rules "$RULES_FILE" --base-checkout base)
           fi
           docs-check "${args[@]}"
 
