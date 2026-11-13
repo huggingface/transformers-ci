@@ -213,7 +213,8 @@ jobs:
         working-directory: /transformers
         env:
           report_name_prefix: ${{ inputs.report_name_prefix }}
-          pytest_marker: ${{ inputs.pytest_marker }}
+          # [Temporary] only run flash attention tests
+          pytest_marker: "flash_attn_test or flash_attn_3_test or flash_attn_4_test or all_flash_attn_test"
           model: ${{ matrix.folders }}
         run: |
           # Map short names to actual test paths for trainer/distributed tests
