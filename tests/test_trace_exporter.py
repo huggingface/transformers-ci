@@ -4324,13 +4324,40 @@ def test_rollup_run_span_floor_keeps_truncated_failed_job_red(monkeypatch) -> No
     assert metric_lines(rollup, "pytest_run_failed_tests")[0].endswith(" 1")
     # The old OK rows do not tell us which tests passed or were skipped.
     assert metric_lines(rollup, "pytest_run_job_total_tests")[0].endswith(" 3")
-    assert metric_lines(rollup, "pytest_run_job_passed_tests")[0].endswith(" 0")
+    assert metric_lines(rollup, "pytest_run_job_passed_tests")[0].endswith(" 2")
     assert metric_lines(rollup, "pytest_run_job_executed_tests")[0].endswith(" NaN")
     assert metric_lines(rollup, "pytest_run_executed_tests")[0].endswith(" NaN")
     assert any(
         'outcome="unknown"' in line and line.endswith(" 3")
         for line in metric_lines(rollup, "pytest_run_job_outcome_tests")
     )
+
+
+def test_rollup_keeps_legacy_passed_count_when_outcomes_are_missing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
+    )
+    extracted = _run_failed_extract(
+        [
+            {"status_code": "OK", "duration_seconds": 1.0, "outcome": "passed"},
+            {"status_code": "OK", "duration_seconds": 1.0, "outcome": "skipped"},
+            {"status_code": "OK", "duration_seconds": 1.0},
+            {"status_code": "ERROR", "duration_seconds": 1.0},
+        ]
+    )
+    rollup = trace_exporter.extract_run_rollup_metrics(_extracted=extracted)
+    assert metric_lines(rollup, "pytest_run_job_total_tests")[0].endswith(" 4")
+    assert metric_lines(rollup, "pytest_run_job_failed_tests")[0].endswith(" 1")
+    assert metric_lines(rollup, "pytest_run_job_passed_tests")[0].endswith(" 3")
+    assert metric_lines(rollup, "pytest_run_job_executed_tests")[0].endswith(" NaN")
+    explicit_passed = [
+        line
+        for line in metric_lines(rollup, "pytest_run_job_outcome_tests")
+        if 'outcome="passed"' in line
+    ]
+    assert len(explicit_passed) == 1 and explicit_passed[0].endswith(" 1")
 
 
 def test_rollup_run_span_floor_does_not_double_count(monkeypatch) -> None:

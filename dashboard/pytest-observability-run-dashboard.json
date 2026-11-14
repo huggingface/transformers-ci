@@ -63,7 +63,7 @@
         "x": 12,
         "y": 0
       },
-      "description": "Passed and failed tests of this run; the legend shows each count and share. Counts stream in live before the run's totals are final.",
+      "description": "Live counts use span status. Final counts use explicit outcomes where available. Other recorded includes rows without an outcome breakdown after subtracting failures.",
       "targets": [
         {
           "refId": "PASSED",
@@ -71,7 +71,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_outcome_tests{outcome=\"passed\",run_id=~\"$run_id\"}[90d])))",
+          "expr": "sum(max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_outcome_tests{outcome=\"passed\",run_id=~\"$run_id\"}[90d]) and ignoring (outcome) ((last_over_time(pytest_run_executed_tests{run_id=~\"$run_id\"}[90d]) >= 0) and (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]) == on (service_name, provider, pr, run_id, ci_event) group_left() max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))) and (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]) == on (service_name, provider, pr, run_id, ci_event) group_left() max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d])))))) or (sum(((sum by (run_id) (last_over_time(ci_live_calls_total{run_id=~\"$run_id\",status_code!=\"STATUS_CODE_ERROR\"}[1d])) or 0 * sum by (run_id) (last_over_time(ci_live_calls_total{run_id=~\"$run_id\"}[1d]))))) unless sum(max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))))",
           "instant": true,
           "range": false,
           "legendFormat": "Passed"
@@ -82,7 +82,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(max(label_replace((sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d]))) or sum(max without (instance) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]))) or vector(0)), \"src\", \"final\", \"\", \"\") or label_replace(sum (last_over_time(ci_live_calls_total{run_id=~\"$run_id\",status_code=\"STATUS_CODE_ERROR\"}[1d])), \"src\", \"live\", \"\", \"\")))",
+          "expr": "sum(max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]))) or sum(((sum by (run_id) (last_over_time(ci_live_calls_total{run_id=~\"$run_id\",status_code=\"STATUS_CODE_ERROR\"}[1d])) or 0 * sum by (run_id) (last_over_time(ci_live_calls_total{run_id=~\"$run_id\"}[1d]))))) or sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d])))",
           "instant": true,
           "range": false,
           "legendFormat": "Failed"
@@ -93,10 +93,21 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(max without (instance) (last_over_time(pytest_run_job_outcome_tests{outcome=\"skipped\",run_id=~\"$run_id\"}[90d])))",
+          "expr": "sum(max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_outcome_tests{outcome=\"skipped\",run_id=~\"$run_id\"}[90d]) and ignoring (outcome) ((last_over_time(pytest_run_executed_tests{run_id=~\"$run_id\"}[90d]) >= 0) and (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]) == on (service_name, provider, pr, run_id, ci_event) group_left() max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))) and (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]) == on (service_name, provider, pr, run_id, ci_event) group_left() max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]))))))",
           "instant": true,
           "range": false,
           "legendFormat": "Skipped"
+        },
+        {
+          "refId": "RECORDED",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(clamp_min((max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d])) unless max by (service_name, provider, pr, run_id, ci_event) (((last_over_time(pytest_run_executed_tests{run_id=~\"$run_id\"}[90d]) >= 0) and (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]) == on (service_name, provider, pr, run_id, ci_event) group_left() max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))) and (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d]) == on (service_name, provider, pr, run_id, ci_event) group_left() max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d])))))) - max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_failed_tests{run_id=~\"$run_id\"}[90d])), 0)) or (clamp_min(sum(max without (instance) (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\"}[90d]))) - (sum(max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\"}[90d]))) or vector(0)), 0) unless (sum(max by (service_name, provider, pr, run_id, ci_event) (last_over_time(pytest_run_total_tests{run_id=~\"$run_id\"}[90d]))) or sum(last_over_time(ci_live_calls_total{run_id=~\"$run_id\"}[1d]))))",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Other recorded"
         }
       ],
       "options": {
@@ -627,7 +638,16 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_outcome_tests{outcome=\"passed\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])))"
+          "expr": "max by (test_job, hardware) (max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (last_over_time(pytest_run_job_outcome_tests{outcome=\"passed\",run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]) and ignoring (outcome) ((last_over_time(pytest_run_job_executed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]) >= 0) and (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]) == on (service_name, provider, pr, run_id, ci_event, test_job, hardware) group_left() max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]))) and (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]) == on (service_name, provider, pr, run_id, ci_event, test_job, hardware) group_left() max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]))))))"
+        },
+        {
+          "refId": "Recorded",
+          "editorMode": "code",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto",
+          "expr": "max by (test_job, hardware) ((max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])) unless max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (((last_over_time(pytest_run_job_executed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]) >= 0) and (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]) == on (service_name, provider, pr, run_id, ci_event, test_job, hardware) group_left() max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (last_over_time(pytest_run_job_total_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]))) and (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]) == on (service_name, provider, pr, run_id, ci_event, test_job, hardware) group_left() max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d])))))))"
         },
         {
           "refId": "Fail",
@@ -636,7 +656,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "__auto",
-          "expr": "max by (test_job, hardware) (label_replace(max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]))), \"src\", \"final\", \"\", \"\") or label_replace(sum by (test_job, hardware) (last_over_time(ci_live_calls_total{run_id=~\"$run_id\",hardware=~\"$hardware\",status_code=\"STATUS_CODE_ERROR\"}[1d])), \"src\", \"live\", \"\", \"\"))"
+          "expr": "max by (test_job, hardware) (max without (instance) (last_over_time(pytest_run_job_failed_tests{run_id=~\"$run_id\",hardware=~\"$hardware\"}[90d]))) or sum by (test_job, hardware) (last_over_time(ci_live_calls_total{run_id=~\"$run_id\",hardware=~\"$hardware\",status_code=\"STATUS_CODE_ERROR\"}[1d]))"
         },
         {
           "refId": "Wall",
@@ -695,11 +715,12 @@
               "Value #Status": 0,
               "test_job": 1,
               "Value #Pass": 2,
-              "Value #Fail": 3,
-              "hardware": 4,
-              "Value #Started": 5,
-              "Value #Duration": 6,
-              "Value #Wall": 7
+              "Value #Fail": 4,
+              "hardware": 5,
+              "Value #Started": 6,
+              "Value #Duration": 7,
+              "Value #Wall": 8,
+              "Value #Recorded": 3
             },
             "renameByName": {
               "test_job": "Job",
@@ -709,7 +730,8 @@
               "Value #Fail": "Fail",
               "Value #Wall": "Wall",
               "hardware": "Hardware",
-              "Value #Status": "Status"
+              "Value #Status": "Status",
+              "Value #Recorded": "Recorded"
             }
           }
         }

@@ -4335,23 +4335,24 @@ def extract_ci_runner_execution_metrics(
     return lines
 
 
-def _rollup_outcome_lines(
-    prefix: str, labels: dict[str, str], outcomes: Counter[str], failed: int
-) -> list[str]:
+def _executed_test_count(outcomes: Counter[str], failed: int) -> int | None:
     # A failed session without its ERROR row is evidence of a failed job, not
-    # an extra executed test. NaN replaces any earlier denominator when late
-    # rows make it incomplete; omitting the sample would leave last_over_time
-    # returning a stale number.
-    executed: int | str = "NaN"
-    complete = not outcomes["unknown"] and failed <= outcomes["failed"]
+    # an extra executed test. Unknown outcomes also make the count incomplete.
+    if outcomes["unknown"] or failed > outcomes["failed"]:
+        return None
+    return sum(outcomes[name] for name in ("passed", "failed", "xfailed", "xpassed"))
+
+
+def _rollup_outcome_lines(
+    prefix: str, labels: dict[str, str], outcomes: Counter[str], executed: int | None
+) -> list[str]:
     counts = dict(outcomes)
-    if complete:
-        executed = sum(
-            outcomes[name] for name in ("passed", "failed", "xfailed", "xpassed")
-        )
+    if executed is not None:
         counts.setdefault("passed", 0)
         counts.setdefault("skipped", 0)
-    lines = [f"{prefix}_executed_tests{metric_labels(labels)} {executed}"]
+    # Replace any earlier denominator so last_over_time does not see it as current.
+    value = "NaN" if executed is None else str(executed)
+    lines = [f"{prefix}_executed_tests{metric_labels(labels)} {value}"]
     for name, count in sorted(counts.items()):
         lines.append(
             f"{prefix}_outcome_tests{metric_labels({**labels, 'outcome': name})} {count}"
@@ -4407,7 +4408,7 @@ def extract_run_rollup_metrics(
         "# TYPE pytest_run_job_member_info gauge",
         "# HELP pytest_run_job_total_tests Number of tests recorded in one job of a pytest run.",
         "# TYPE pytest_run_job_total_tests gauge",
-        "# HELP pytest_run_job_passed_tests Number of known passing tests recorded in one job of a pytest run.",
+        "# HELP pytest_run_job_passed_tests Passing tests, or recorded tests minus failures if outcomes are incomplete.",
         "# TYPE pytest_run_job_passed_tests gauge",
         "# HELP pytest_run_job_failed_tests Number of failing tests recorded in one job of a pytest run.",
         "# TYPE pytest_run_job_failed_tests gauge",
@@ -4640,12 +4641,13 @@ def extract_run_rollup_metrics(
         )
         lines.append(f"pytest_run_total_tests{metric_labels(run_labels)} {total}")
         lines.append(f"pytest_run_failed_tests{metric_labels(run_labels)} {failed}")
+        outcomes = run_outcomes[(service_name, provider, pr, run_id)]
         lines.extend(
             _rollup_outcome_lines(
                 "pytest_run",
                 run_labels,
-                run_outcomes[(service_name, provider, pr, run_id)],
-                failed,
+                outcomes,
+                _executed_test_count(outcomes, failed),
             )
         )
         lines.append(
@@ -4691,12 +4693,12 @@ def extract_run_rollup_metrics(
         }
         lines.append(f"pytest_run_job_total_tests{metric_labels(job_labels)} {total}")
         outcomes = aggregate["outcomes"]
-        lines.append(
-            f"pytest_run_job_passed_tests{metric_labels(job_labels)} {outcomes['passed']}"
-        )
+        executed = _executed_test_count(outcomes, failed)
+        passed = max(0, total - failed) if executed is None else outcomes["passed"]
+        lines.append(f"pytest_run_job_passed_tests{metric_labels(job_labels)} {passed}")
         lines.append(f"pytest_run_job_failed_tests{metric_labels(job_labels)} {failed}")
         lines.extend(
-            _rollup_outcome_lines("pytest_run_job", job_labels, outcomes, failed)
+            _rollup_outcome_lines("pytest_run_job", job_labels, outcomes, executed)
         )
         lines.append(
             f"pytest_run_job_duration_seconds{metric_labels(job_labels)} {job_duration:.6f}"
