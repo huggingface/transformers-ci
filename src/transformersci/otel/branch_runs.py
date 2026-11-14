@@ -1,12 +1,10 @@
 """Branch Runs: the most recent runs on branches without a PR, such as main.
 
 ``GET /branch-runs`` is the page the Overview dashboard iframes and
-``/branch-runs/rows`` its data. The queries are the Grafana table's, moved
-here unchanged so the rows did not change with the move (the defaults below
-reproduce them exactly); only the lane column reads the raw ``hardware``
-labels instead of a bitmask, so the page can draw them with the shared lane
-icons (``common.js``). The page picks the window, the row count and whether
-to show ``main`` only.
+``/branch-runs/rows`` its data. Counts and rates use executed tests when the
+run has outcome data and fall back to recorded tests. The lane column uses
+the raw ``hardware`` labels for the shared icons (``common.js``). The page
+picks the window, the row count and whether to show ``main`` only.
 """
 
 from __future__ import annotations
@@ -38,6 +36,24 @@ def parse_params(params: dict[str, list[str]]) -> tuple[int, int, bool]:
     )
 
 
+def executed_samples(selector: str, window: str) -> str:
+    """Select denominators from snapshots with the full observed run counts.
+
+    A replaced exporter pod can leave samples inside the lookback. Require
+    each denominator's recorded and failed counts to match the run's maxima
+    before dropping instance labels.
+    """
+    identity = "service_name, provider, pr, run_id, ci_event"
+    selected = f"last_over_time(pytest_run_executed_tests{{{selector}}}{window})"
+    for kind in ("total", "failed"):
+        counts = f"last_over_time(pytest_run_{kind}_tests{{{selector}}}{window})"
+        selected += (
+            f" and ({counts} == on ({identity}) group_left()"
+            f" max by ({identity}) ({counts}))"
+        )
+    return f"({selected})"
+
+
 def queries(days: int = 7, limit: int = 10, main_only: bool = False) -> dict[str, str]:
     # Traces label a branch run's pr with the branch; GitHub's metrics leave it
     # empty-or-branch, hence the two spellings of "not a PR number".
@@ -49,27 +65,27 @@ def queries(days: int = 7, limit: int = 10, main_only: bool = False) -> dict[str
         f'(last_over_time(pytest_run_job_member_info{{test_job=~".*",{no_pr}}}{window})))'
     )
 
-    def per_run(metric: str) -> str:
+    def last(metric: str) -> str:
+        return f"last_over_time({metric}{{{no_pr}}}{window})"
+
+    def per_run(samples: str) -> str:
         """A run-level metric, kept only for runs that have job members."""
         return (
-            f"max by (run_id, pr) (max without (instance) "
-            f"(last_over_time({metric}{{{no_pr}}}{window})) "
+            f"max by (run_id, pr) (max without (instance) ({samples}) "
             f"* on (service_name, provider, pr, run_id) group_left() {member})"
         )
 
-    def job_sum(metric_job: str, metric_run: str) -> str:
-        return (
-            f"max by (run_id, pr) ((sum by (service_name, provider, pr, run_id) "
-            f"(max without (instance) (last_over_time({metric_job}{{{no_pr}}}{window}))) "
-            f"or sum by (service_name, provider, pr, run_id) (max without (instance) "
-            f"(last_over_time({metric_run}{{{no_pr}}}{window})))) "
-            f"* on (service_name, provider, pr, run_id) group_left() {member})"
+    def run_or_jobs(metric_run: str, metric_job: str) -> str:
+        jobs = (
+            f"sum by (service_name, provider, pr, run_id) "
+            f"(max without (instance) ({last(metric_job)}))"
         )
+        return f"({per_run(last(metric_run))} or {per_run(jobs)})"
 
     # The newest runs: from traces, else from GitHub for runs that have not
     # exported a span yet.
     newest = (
-        f"topk({limit}, {per_run('pytest_run_start_time_seconds')} "
+        f"topk({limit}, {per_run(last('pytest_run_start_time_seconds'))} "
         "or max by (run_id, pr) ((ci_github_run_started_timestamp_seconds "
         "or ci_github_run_created_timestamp_seconds) * on (repository, run_id) "
         f"group_left(pr) max by (repository, run_id, pr) (ci_github_run_info{{{github}}})))"
@@ -78,8 +94,10 @@ def queries(days: int = 7, limit: int = 10, main_only: bool = False) -> dict[str
     def among_newest(expr: str) -> str:
         return f"({expr}) and on (run_id, pr) ({newest} * 1000)"
 
-    total = job_sum("pytest_run_job_total_tests", "pytest_run_total_tests")
-    failed = job_sum("pytest_run_job_failed_tests", "pytest_run_failed_tests")
+    executed = f"({per_run(executed_samples(no_pr, window))} >= 0)"
+    recorded = run_or_jobs("pytest_run_total_tests", "pytest_run_job_total_tests")
+    failed = run_or_jobs("pytest_run_failed_tests", "pytest_run_job_failed_tests")
+    total = f"({executed} or {recorded})"
     return {
         "active": (
             "(max by (run_id, pr) ((max by (repository, run_id) (ci_github_run_status) < 3) "
@@ -96,7 +114,8 @@ def queries(days: int = 7, limit: int = 10, main_only: bool = False) -> dict[str
             "count by (run_id, pr) (max without (instance) "
             f"(last_over_time(pytest_run_job_member_info{{{no_pr}}}{window})))"
         ),
-        "total": among_newest(total),
+        "total": among_newest(executed),
+        "recorded": among_newest(f"{recorded} unless {executed}"),
         "commit": among_newest(
             "(max by (run_id, pr, commit_message, html_url) (max without (instance) "
             f"(last_over_time(pytest_run_info{{{no_pr}}}{window})) "
@@ -104,9 +123,9 @@ def queries(days: int = 7, limit: int = 10, main_only: bool = False) -> dict[str
             "or on (run_id, pr) max by (run_id, pr, commit_message, html_url) "
             f"(ci_github_run_commit_info{{{github}}})"
         ),
-        "duration": among_newest(per_run("pytest_run_duration_seconds")),
-        "rate": among_newest(f"100 * {failed} / {total}"),
-        "wall": among_newest(per_run("pytest_run_wall_seconds")),
+        "duration": among_newest(per_run(last("pytest_run_duration_seconds"))),
+        "rate": among_newest(f"clamp_max(100 * {failed} / {total}, 100) >= 0"),
+        "wall": among_newest(per_run(last("pytest_run_wall_seconds"))),
         "lanes": among_newest(
             "group by (run_id, pr, hardware) "
             f"(last_over_time(pytest_run_job_member_info{{{no_pr}}}{window}))"
@@ -137,7 +156,8 @@ def branch_rows(
 
     starts = by_run("start")
     values = {
-        name: by_run(name) for name in ("jobs", "total", "duration", "rate", "wall")
+        name: by_run(name)
+        for name in ("jobs", "total", "recorded", "duration", "rate", "wall")
     }
     active = by_run("active")
     commits = {

@@ -982,7 +982,20 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_passed_tests[6h])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "expr": "max by (test_job, run_id) (max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (last_over_time(pytest_run_job_outcome_tests{outcome=\"passed\"}[6h]) and ignoring (outcome) ((last_over_time(pytest_run_job_executed_tests[6h]) >= 0) and (last_over_time(pytest_run_job_total_tests[6h]) == on (service_name, provider, pr, run_id, ci_event, test_job, hardware) group_left() max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (last_over_time(pytest_run_job_total_tests[6h]))) and (last_over_time(pytest_run_job_failed_tests[6h]) == on (service_name, provider, pr, run_id, ci_event, test_job, hardware) group_left() max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (last_over_time(pytest_run_job_failed_tests[6h]))))) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "legendFormat": "__auto"
+        },
+        {
+          "refId": "Recorded",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (test_job, run_id) ((max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (last_over_time(pytest_run_job_total_tests[6h])) unless max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (((last_over_time(pytest_run_job_executed_tests[6h]) >= 0) and (last_over_time(pytest_run_job_total_tests[6h]) == on (service_name, provider, pr, run_id, ci_event, test_job, hardware) group_left() max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (last_over_time(pytest_run_job_total_tests[6h]))) and (last_over_time(pytest_run_job_failed_tests[6h]) == on (service_name, provider, pr, run_id, ci_event, test_job, hardware) group_left() max by (service_name, provider, pr, run_id, ci_event, test_job, hardware) (last_over_time(pytest_run_job_failed_tests[6h])))))) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
           "format": "table",
           "instant": true,
           "range": false,
@@ -995,7 +1008,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (test_job, run_id) (label_replace(max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests[6h])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"})))), \"src\", \"final\", \"\", \"\") or label_replace(sum by (test_job, run_id) (last_over_time(ci_live_calls_total{status_code=\"STATUS_CODE_ERROR\"}[6h]) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"})))), \"src\", \"live\", \"\", \"\"))",
+          "expr": "max by (test_job, run_id) (max without (instance) (last_over_time(pytest_run_job_failed_tests[6h])) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"})))) or sum by (test_job, run_id) (last_over_time(ci_live_calls_total{status_code=\"STATUS_CODE_ERROR\"}[6h]) and on (run_id) topk(1, max by (repository, run_id) ((ci_github_run_started_timestamp_seconds{run_id=~\"$run\"} or ci_github_run_created_timestamp_seconds{run_id=~\"$run\"}) * on (repository, run_id) group_left() max by (repository, run_id) (ci_github_run_info{workflow=~\"$workflow\",pr=~\"$pr\"}))))",
           "format": "table",
           "instant": true,
           "range": false,
@@ -1054,7 +1067,8 @@
               "Value #Cancelled": "Cancelled",
               "Value #Pass": "Tests passed",
               "Value #Fail": "Tests failed",
-              "Value #Details": "Test details"
+              "Value #Details": "Test details",
+              "Value #Recorded": "Recorded"
             },
             "indexByName": {
               "test_job": 0,
@@ -1065,8 +1079,9 @@
               "Value #Failed": 5,
               "Value #Cancelled": 6,
               "Value #Pass": 8,
-              "Value #Fail": 9,
-              "Value #Details": 7
+              "Value #Fail": 10,
+              "Value #Details": 7,
+              "Value #Recorded": 9
             }
           }
         }

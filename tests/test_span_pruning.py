@@ -156,7 +156,10 @@ class _FileExporter:
 
         with open(self._path, "a") as fh:
             for s in spans:
-                fh.write(f"{s.attributes.get('pytest.span_type')}\\t{s.name}\\n")
+                fh.write(
+                    f"{s.attributes.get('pytest.span_type')}\\t{s.name}"
+                    f"\\t{s.attributes.get('pytest.outcome', '')}\\n"
+                )
         return SpanExportResult.SUCCESS
 
     def shutdown(self):
@@ -179,8 +182,7 @@ def pytest_configure(config):
     provider.add_span_processor(SimpleSpanProcessor(_FileExporter(out)))
 """
 
-# 6 passing tests (each pulling a fixture, so setup/call/teardown + fixture spans
-# all fire) + 1 failing test — every span type pytest-opentelemetry emits.
+# Exercise outcomes in setup, call and teardown while keeping one span per test.
 _PROBE_TESTS = """
 import pytest
 
@@ -197,14 +199,62 @@ def test_ok(i, client):
 
 def test_fail(client):
     assert client == "WRONG"
+
+
+@pytest.mark.skip
+def test_setup_skip():
+    pass
+
+
+def test_call_skip():
+    pytest.skip()
+
+
+@pytest.mark.xfail
+def test_expected_failure():
+    assert False
+
+
+@pytest.mark.xfail(run=False)
+def test_not_run():
+    assert False
+
+
+@pytest.mark.xfail
+def test_unexpected_pass():
+    pass
+
+
+@pytest.mark.xfail(strict=True)
+def test_strict_unexpected_pass():
+    pass
+
+
+@pytest.fixture
+def broken_setup():
+    pytest.fail("setup failed")
+
+
+def test_setup_failure(broken_setup):
+    pass
+
+
+@pytest.fixture
+def broken_teardown():
+    yield
+    pytest.fail("teardown failed")
+
+
+def test_teardown_failure(broken_teardown):
+    pass
 """
 
-_N_TESTS = 7  # 6 parametrized + 1 failing
+_N_TESTS = 15
 
 
 def _run_and_collect_spans(tmp_path, extra_args):
     """Run a real, isolated pytest session with the installed plugin and return
-    the (span_type, name) rows it actually exported. Uses a subprocess (not the
+    the (span_type, name, outcome) rows it exported. Uses a subprocess (not the
     pytester fixture) so xdist workers are genuine processes and the transformersci
     plugin loads via its installed pytest11 entry point exactly as in CI (we do
     NOT pass -p for it — that would double-register it and abort the run)."""
@@ -238,22 +288,35 @@ def _run_and_collect_spans(tmp_path, extra_args):
     for f in sorted(tmp_path.glob("spans-*.tsv")):
         for line in f.read_text().splitlines():
             if line:
-                span_type, _, name = line.partition("\t")
-                rows.append((span_type, name))
+                rows.append(tuple(line.split("\t")))
     return rows
 
 
 def _assert_only_run_and_protocol(rows):
     assert rows, "no spans were exported — the probe conftest did not attach"
     # No phase or fixture spans leaked through the wrap.
-    for span_type, name in rows:
+    for span_type, name, _ in rows:
         assert span_type in ("run", "test"), (span_type, name)
         assert "::setup" not in name, name
         assert "::call" not in name, name
         assert "::teardown" not in name, name
-    test_spans = [n for t, n in rows if t == "test"]
+    test_spans = [
+        (n.rsplit("::", 1)[-1], outcome) for t, n, outcome in rows if t == "test"
+    ]
     assert len(test_spans) == _N_TESTS, rows
-    assert any(t == "run" for t, _ in rows), rows
+    assert any(t == "run" for t, _, _ in rows), rows
+    assert dict(test_spans) == {
+        **{f"test_ok[{i}]": "passed" for i in range(6)},
+        "test_fail": "failed",
+        "test_setup_skip": "skipped",
+        "test_call_skip": "skipped",
+        "test_expected_failure": "xfailed",
+        "test_not_run": "xfailed_not_run",
+        "test_unexpected_pass": "xpassed",
+        "test_strict_unexpected_pass": "failed",
+        "test_setup_failure": "failed",
+        "test_teardown_failure": "failed",
+    }
 
 
 def test_real_run_prunes_to_run_and_protocol_only(tmp_path):
@@ -269,5 +332,5 @@ def test_real_run_prunes_under_xdist_workers(tmp_path):
     # The wrap must survive into each worker process: still no phase/fixture spans,
     # still exactly one protocol span per test (run spans: 1 controller + workers).
     _assert_only_run_and_protocol(rows)
-    run_spans = [n for t, n in rows if t == "run"]
+    run_spans = [n for t, n, _ in rows if t == "run"]
     assert len(run_spans) >= 2, rows  # controller + at least one worker session span

@@ -619,8 +619,24 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> Any:
         report.user_properties.append((CUDA_DELTA_AFTER_GC_PROPERTY, after_gc - start))
 
 
+def _test_report_outcome(report: pytest.TestReport) -> str | None:
+    outcome = report.outcome
+    if outcome == "failed":
+        # A setup or teardown failure and a strict XPASS are pytest failures.
+        return "failed"
+    if report.when == "teardown":
+        return None
+    if outcome == "skipped":
+        if hasattr(report, "wasxfail"):
+            return "xfailed" if report.when == "call" else "xfailed_not_run"
+        return "skipped"
+    if report.when == "call" and outcome == "passed":
+        return "xpassed" if hasattr(report, "wasxfail") else "passed"
+    return None  # Successful setup and interim reruns do not decide the outcome.
+
+
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """Stamp the open test span with the real worker-measured execution time.
+    """Stamp the test's outcome and worker-measured execution time.
 
     Under pytest-xdist the per-test span is opened/closed on the *controller*
     by pytest-opentelemetry's ``pytest_runtest_protocol`` hookwrapper, but its
@@ -639,10 +655,12 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
         _worker_durations.get(report.nodeid, 0.0) + report.duration
     )
 
-    if report.when != "teardown":
+    outcome = _test_report_outcome(report)
+    total = (
+        _worker_durations.pop(report.nodeid, 0.0) if report.when == "teardown" else None
+    )
+    if outcome is None and total is None:
         return
-
-    total = _worker_durations.pop(report.nodeid, 0.0)
 
     try:
         from opentelemetry import trace
@@ -653,6 +671,10 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if not span.is_recording():
         return
 
+    if outcome is not None:
+        span.set_attribute("pytest.outcome", outcome)
+    if total is None:
+        return
     span.set_attribute("pytest.worker_duration_seconds", total)
 
     # Device memory this test leaves behind for the next test in its process,
