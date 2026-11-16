@@ -83,15 +83,13 @@ def test_runner_comes_from_the_job_name() -> None:
     rows = rows_for(
         [
             failure(CPU_TEST, "tests_torch", "r1"),
-            failure(CPU_TEST, "tests_fsdp_ci", "r1"),
-            failure(CPU_TEST, "tests_tensor_parallel_ci", "r1"),
+            failure(CPU_TEST, "tests_distributed_ci", "r1"),
         ],
         [run("r1", 99 * DAY)],
     )
     assert {row["job"]: row["runner"] for row in rows} == {
         "tests_torch": "CPU",
-        "tests_fsdp_ci": "GPU",
-        "tests_tensor_parallel_ci": "GPU",
+        "tests_distributed_ci": "GPU",
     }
     assert rows[0]["model"] == "utils"
 
