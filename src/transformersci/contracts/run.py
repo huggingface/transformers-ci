@@ -4,7 +4,7 @@
     run-model-contracts --fixtures-only --fleet prototypes --variant bfloat16 \\
         --changed-files changed.txt --diff-base HEAD^1 --output results.jsonl
     run-model-contracts --lock /path/to/custom-fleet.json --fixtures-only
-    run-model-contracts --framework vllm --fixtures-only     # the bundled vLLM fleet (data/vllm-fleet.json)
+    run-model-contracts --framework vllm --fixtures-only --all-variants  # the bundled vLLM fleet (data/vllm-fleet.json)
 
 This is `tmic check` (transformers-mic, pinned in the `contracts` extra) plus the CI
 telemetry: selection, execution, baseline comparison, known failures and result
@@ -62,6 +62,11 @@ def parser():
         "--fixtures-only", action="store_true", help="skip real checkpoints"
     )
     parser.add_argument("--variant", default="default")
+    parser.add_argument(
+        "--all-variants",
+        action="store_true",
+        help="run every variant each contract declares instead of --variant (vLLM contracts declare different ones)",
+    )
     parser.add_argument(
         "--isolate", action="store_true", help="run each target in its own process"
     )
@@ -149,7 +154,7 @@ def check_command(args, fleet_options):
         "--variant",
         args.variant,
     ]
-    for flag in ("fixtures_only", "isolate", "run_all", "run_declared"):
+    for flag in ("fixtures_only", "isolate", "run_all", "run_declared", "all_variants"):
         if getattr(args, flag):
             command.append("--" + flag.replace("_", "-"))
     for name in args.contract or ():

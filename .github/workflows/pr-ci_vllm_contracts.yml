@@ -106,15 +106,15 @@ jobs:
           print("vLLM", vllm.__version__, "| torch", torch.__version__)
           PY_SOURCE
           start=$SECONDS
-          # Three slim contracts take well under a minute: run them all on every event.
-          run-model-contracts --framework vllm --fixtures-only --output /tmp/results.jsonl 2> /tmp/run.log | python -c '
+          # Every contract with every variant it declares (default, plus e.g. an `images` / `audio` variant), on every event.
+          run-model-contracts --framework vllm --fixtures-only --all-variants --output /tmp/results.jsonl 2> /tmp/run.log | python -c '
           import json, sys
           for line in sys.stdin:
               if not line.startswith("{"):
                   print(line.rstrip(), flush=True)
                   continue
               r = json.loads(line)
-              print(r["status"].ljust(6), r["target"], r.get("platform", ""), "\n".join(r.get("failures", [])), flush=True)' || status=$?
+              print(r["status"].ljust(6), r["target"], r.get("variant", ""), r.get("platform", ""), "\n".join(r.get("failures", [])), flush=True)' || status=$?
           echo "$(tail -1 /tmp/run.log); $((SECONDS - start)) s"
           cat /tmp/run.log
           exit "${status:-0}"
