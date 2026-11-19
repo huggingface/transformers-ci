@@ -207,6 +207,134 @@
       "integrations": [
         "vllm"
       ]
+    },
+    "llava-onevision-qwen2-vllm": {
+      "integration": {
+        "repo": "huggingface-mic/llava-onevision-qwen2-vllm-mic",
+        "revision": "3c90cc6c311a829de1c0f07732803f12c5062955",
+        "files_sha256": "300f91880fd86f85403069af6e437b84c7dcf60fb279ef21533b01cdf959712d"
+      },
+      "fixtures": {
+        "huggingface-mic/llava-onevision-qwen2-vllm-mic": {
+          "revision": "3c90cc6c311a829de1c0f07732803f12c5062955",
+          "files_sha256": "604a152c47f4a3f5be09b14f54257296ed404ad7e834577453654892ca6caa2b"
+        }
+      },
+      "checkpoints": {
+        "llava-hf/llava-onevision-qwen2-0.5b-ov-hf": "74dd0bf867a4cda7950c17663794267c60cf4b40"
+      },
+      "integrations": [
+        "vllm"
+      ]
+    },
+    "llava-next-mistral-vllm": {
+      "integration": {
+        "repo": "huggingface-mic/llava-next-mistral-vllm-mic",
+        "revision": "4a2e8334f180866a8ca94e1db235a7c7021c1961",
+        "files_sha256": "27156a16d26388632304c4a38b8f815fbc27d77378d6014a08c10500fb2c67da"
+      },
+      "fixtures": {
+        "huggingface-mic/llava-next-mistral-vllm-mic": {
+          "revision": "4a2e8334f180866a8ca94e1db235a7c7021c1961",
+          "files_sha256": "b0559c5aaf2fe714751b3fcfec4c2ad4e8f0d149110ae5359ce13d0f4c419444"
+        }
+      },
+      "checkpoints": {
+        "llava-hf/llava-v1.6-mistral-7b-hf": "2424fdd47412fccc66d91719126b420e9fbd7065"
+      },
+      "integrations": [
+        "vllm"
+      ]
+    },
+    "mistral3-vllm": {
+      "integration": {
+        "repo": "huggingface-mic/mistral3-vllm-mic",
+        "revision": "fce59ded251faf017951c124f5fd5a6b6dd19385",
+        "files_sha256": "0a895f3377a2b32292b5083f499fea691471acc6ce419669daa5460605f34cb2"
+      },
+      "fixtures": {
+        "huggingface-mic/mistral3-vllm-mic": {
+          "revision": "fce59ded251faf017951c124f5fd5a6b6dd19385",
+          "files_sha256": "50528a962400b2ade3ba2967f44d50d1fbbb02320e8c40cd03fd129df5ce4208"
+        }
+      },
+      "checkpoints": {
+        "mistralai/Mistral-Small-3.1-24B-Instruct-2503": "68faf511d618ef198fef186659617cfd2eb8e33a"
+      },
+      "integrations": [
+        "vllm"
+      ]
+    },
+    "ministral3-vllm": {
+      "integration": {
+        "repo": "huggingface-mic/ministral3-vllm-mic",
+        "revision": "9a23499fee0347cc924fb18d9393e40d1a0d551d",
+        "files_sha256": "a4a4a93ac19513622c3b4de5c07235eb1b986e9acfe5548b78e808b02df4c813"
+      },
+      "fixtures": {
+        "huggingface-mic/ministral3-vllm-mic": {
+          "revision": "9a23499fee0347cc924fb18d9393e40d1a0d551d",
+          "files_sha256": "49dd92d65a9c09983036a3a81d8d89a4302a96bf8bff63c6db2566548bd7e0d6"
+        }
+      },
+      "checkpoints": {
+        "mistralai/Ministral-3-3B-Instruct-2512": "b35d4dfe56c142746f54dbd64f579faab2744308"
+      },
+      "integrations": [
+        "vllm"
+      ]
+    },
+    "gemma3-vllm": {
+      "integration": {
+        "repo": "huggingface-mic/gemma3-vllm-mic",
+        "revision": "cbe5e5f20dfcaa1d5219c2cb40c59567bc62f3cc",
+        "files_sha256": "46c528c3856e643fd396b58399fbf38c2d243374db251747cbb952c4912f5ca0"
+      },
+      "fixtures": {
+        "huggingface-mic/gemma3-vllm-mic": {
+          "revision": "cbe5e5f20dfcaa1d5219c2cb40c59567bc62f3cc",
+          "files_sha256": "ee2bb81e8ae1618be29c01690a53701788175781cb9db351985a18bfc9728b0b"
+        }
+      },
+      "checkpoints": {
+        "google/gemma-3-4b-it": "093f9f388b31de276ce2de164bdc2081324b9767"
+      },
+      "integrations": [
+        "vllm"
+      ]
+    },
+    "qwen2-audio-vllm": {
+      "integration": {
+        "repo": "huggingface-mic/qwen2-audio-vllm-mic",
+        "revision": "69d5adbdf967302e50dbfe3f4d1f7c5027281ab6",
+        "files_sha256": "4e6f4d4a13e9320a378ad6d0623b0206cea7ef97ea5777039ea41da68b1fdab9"
+      },
+      "fixtures": {
+        "huggingface-mic/qwen2-audio-vllm-mic": {
+          "revision": "69d5adbdf967302e50dbfe3f4d1f7c5027281ab6",
+          "files_sha256": "9f0e4cc72062a8cad3ff82d8da620bf3183ff488310a3efa97a8c71ee2173710"
+        }
+      },
+      "checkpoints": {
+        "Qwen/Qwen2-Audio-7B": "dd84470756e6277a71d4d7188773a43cde92696e"
+      },
+      "integrations": [
+        "vllm"
+      ]
+    }
+  },
+  "known_failures": {
+    "gemma3-vllm/gemma3-vllm-mic": {
+      "issue": "vLLM CPU backend ignores Gemma 3's bidirectional attention over image tokens: image prompts differ from Transformers",
+      "variants": [
+        "images"
+      ]
+    },
+    "qwen2-audio-vllm/qwen2-audio-vllm-mic": {
+      "issue": "vLLM Transformers backend needs get_audio_features, which transformers Qwen2AudioModel does not define (AttributeError at vLLM load)",
+      "variants": [
+        "audio"
+      ]
     }
   }
 }
