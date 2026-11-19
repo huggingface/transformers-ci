@@ -728,6 +728,22 @@ jobs:
       runner:       "aws-m8i-l-cache"
       ci_sha:       "main"
 
+  # ===========================================================================
+  # vLLM model integration contracts — observational, does not block the PR.
+  # vLLM's Transformers backend (default for Qwen2/Llama in vLLM) vs Transformers on
+  # slim MIC fixtures (~1 min + vLLM install). Runs on every PR that passes the
+  # quality gate: three contracts, no changed-file selection yet.
+  # TODO(vllm-mic): switch both refs to main when merged.
+  # ===========================================================================
+  vllm-integration:
+    needs: [quality_gate]
+    if: ${{ !cancelled() && needs.quality_gate.result == 'success' }}
+    uses: huggingface/transformers-ci/.github/workflows/pr-ci_vllm_contracts.yml@vllm-mic
+    with:
+      docker_image: "huggingface/transformers-torch-light"
+      runner:       "aws-m8i-l-cache"
+      ci_sha:       "vllm-mic"
+
   # ---------------------------------------------------------------------------
   # ===========================================================================
   # Stage 3 — Collection (equivalent of EmptyJob with job_name="collection_job")
