@@ -20,13 +20,13 @@
   "contracts": {
     "qwen2-vllm": {
       "integration": {
-        "repo": "huggingface-mic-temp/qwen2-vllm-mic",
-        "revision": "99b0cb9360d365315bd0d94d3210cb223d3f5097",
-        "files_sha256": "1b13da49b85cf3572c2343d29f4c967047dd166b98ea3df543f636b496d99fbd"
+        "repo": "huggingface-mic/qwen2-vllm-mic",
+        "revision": "59965c0f8498f52b87ed04de9a631864be37ffdc",
+        "files_sha256": "32eba39830be96cc21e852344f46ee19d00f742339b11d04405aae196395967d"
       },
       "fixtures": {
-        "huggingface-mic-temp/qwen2-vllm-mic": {
-          "revision": "99b0cb9360d365315bd0d94d3210cb223d3f5097",
+        "huggingface-mic/qwen2-vllm-mic": {
+          "revision": "59965c0f8498f52b87ed04de9a631864be37ffdc",
           "files_sha256": "32c1f18e0a6d40cf944a8f530f85f96c55ec9075c4cd85ba69bd4d346ffdf03b"
         }
       },
@@ -39,13 +39,13 @@
     },
     "llama-vllm": {
       "integration": {
-        "repo": "huggingface-mic-temp/llama-vllm-mic",
-        "revision": "ef72e5d9f07ced61d48ddd793a4e7d2516de9937",
-        "files_sha256": "d4bfa35d0c963ab55cd2acd32b7560b24765f95df5c4453a3284ace96259a93c"
+        "repo": "huggingface-mic/llama-vllm-mic",
+        "revision": "58449dd535e8d04cb5ac8553db924f6e4b148b1a",
+        "files_sha256": "41f83a30f0f118737db10700872da06e048a9ea8e2d956716f034c84f8115623"
       },
       "fixtures": {
-        "huggingface-mic-temp/llama-vllm-mic": {
-          "revision": "ef72e5d9f07ced61d48ddd793a4e7d2516de9937",
+        "huggingface-mic/llama-vllm-mic": {
+          "revision": "58449dd535e8d04cb5ac8553db924f6e4b148b1a",
           "files_sha256": "e53550fed0d39d0f95f90e792b6d4c90be9d3cb308802284bb44e044ab677e45"
         }
       },
@@ -58,13 +58,13 @@
     },
     "qwen3-vllm": {
       "integration": {
-        "repo": "huggingface-mic-temp/qwen3-vllm-mic",
-        "revision": "7f8bf20638a8c69ae2f6b733d2aa4880b1de800d",
-        "files_sha256": "0361074d247c2853a68db4e730e3bfa5c56f5ee945d209bf31e97f771ed05fdf"
+        "repo": "huggingface-mic/qwen3-vllm-mic",
+        "revision": "8a3894b19fae708e3315f7d4797a2d5638ddee30",
+        "files_sha256": "a508278035a877c164c5eecc8c6dea2530f3df0e51ba6db856213c44cb7b09f5"
       },
       "fixtures": {
-        "huggingface-mic-temp/qwen3-vllm-mic": {
-          "revision": "7f8bf20638a8c69ae2f6b733d2aa4880b1de800d",
+        "huggingface-mic/qwen3-vllm-mic": {
+          "revision": "8a3894b19fae708e3315f7d4797a2d5638ddee30",
           "files_sha256": "413f9d988a5cf3759d4b8d253546fe5c2c7fee267fc6e8565547305070ce3cbe"
         }
       },
