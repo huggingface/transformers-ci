@@ -94,7 +94,7 @@ jobs:
           # Copied from pr-ci_dynamic_caller_example.yml; keep in step with it.
           LIGHT = "huggingface/transformers-torch-light"
           ENVIRONMENTS = {
-              "tests_torch": {"image": LIGHT, "marker": "not (generate or is_training_test or is_tensor_parallel_test or is_fsdp_test)"},
+              "tests_torch": {"image": LIGHT, "marker": "not (generate or is_training_test or is_tensor_parallel_test or is_expert_parallel_test or is_context_parallel_test or is_fsdp_test)"},
               "tests_generate": {"image": LIGHT, "marker": "generate"},
               "tests_tokenization": {"image": LIGHT},
               "tests_processors": {"image": LIGHT},
@@ -104,9 +104,7 @@ jobs:
               "tests_repo_utils": {"image": "huggingface/transformers-consistency", "workers": 4},
               "tests_non_model": {"image": LIGHT, "install": "serving", "marker": "not generate"},
               "tests_training_ci": {"image": LIGHT, "marker": "is_training_test", "env": {"RUN_TRAINING_TESTS": "true"}},
-              "tests_tensor_parallel_ci": {"image": LIGHT, "install": "torchao", "marker": "is_tensor_parallel_test", "env": {"RUN_TENSOR_PARALLEL_TESTS": "true"}},
-              "tests_expert_parallel_ci": {"image": LIGHT, "marker": "is_expert_parallel_test", "env": {"RUN_EXPERT_PARALLEL_TESTS": "true"}},
-              "tests_fsdp_ci": {"image": LIGHT, "marker": "is_fsdp_test", "env": {"RUN_FSDP_TESTS": "true"}},
+              "tests_distributed_ci": {"image": LIGHT, "install": "torchao", "marker": "is_tensor_parallel_test or is_expert_parallel_test or is_context_parallel_test or is_fsdp_test", "env": {"RUN_TENSOR_PARALLEL_TESTS": "true", "RUN_EXPERT_PARALLEL_TESTS": "true", "RUN_CONTEXT_PARALLEL_TESTS": "true", "RUN_FSDP_TESTS": "true"}},
               "tests_peft_integration": {"image": LIGHT, "install": "peft"},
           }
           NODEID = re.compile(r"^(?:tests|examples)/[^\s\x00-\x1f]+\.py::[^\x00-\x1f]+$")

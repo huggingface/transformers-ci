@@ -58,9 +58,7 @@ jobs:
       run_tests_repo_utils:      ${{ steps.check.outputs.run_tests_repo_utils }}
       run_tests_non_model:       ${{ steps.check.outputs.run_tests_non_model }}
       run_tests_training_ci:     ${{ steps.check.outputs.run_tests_training_ci }}
-      run_tests_tensor_parallel_ci:     ${{ steps.check.outputs.run_tests_tensor_parallel_ci }}
-      run_tests_expert_parallel_ci:     ${{ steps.check.outputs.run_tests_expert_parallel_ci }}
-      run_tests_fsdp_ci:         ${{ steps.check.outputs.run_tests_fsdp_ci }}
+      run_tests_distributed_ci:  ${{ steps.check.outputs.run_tests_distributed_ci }}
       run_tests_peft_integration:   ${{ steps.check.outputs.run_tests_peft_integration }}
       # Whether the PR touches anything the model integration contracts select on.
       run_fast_integration:      ${{ steps.contracts_gate.outputs.run_fast_integration }}
@@ -161,8 +159,7 @@ jobs:
           for job in tests_torch tests_generate tests_tokenization tests_processors \
                      pipelines_torch tests_custom_tokenizers \
                      tests_exotic_models tests_repo_utils tests_non_model \
-                     tests_training_ci tests_tensor_parallel_ci tests_expert_parallel_ci tests_fsdp_ci \
-                     tests_peft_integration; do
+                     tests_training_ci tests_distributed_ci tests_peft_integration; do
             FILE="test_preparation/${job}_test_list.txt"
             if [ -f "$FILE" ] && [ -s "$FILE" ]; then
               echo "run_${job}=true" >> $GITHUB_OUTPUT
@@ -195,8 +192,7 @@ jobs:
           for job in tests_torch tests_generate tests_tokenization tests_processors \
                      pipelines_torch tests_custom_tokenizers \
                      tests_exotic_models tests_repo_utils tests_non_model \
-                     tests_training_ci tests_tensor_parallel_ci tests_expert_parallel_ci tests_fsdp_ci \
-                     tests_peft_integration; do
+                     tests_training_ci tests_distributed_ci tests_peft_integration; do
             FILE="test_preparation/${job}_test_list.txt"
             if [ -f "$FILE" ]; then
               echo "$FILE: $(grep -c '' "$FILE") lines"
@@ -497,7 +493,7 @@ jobs:
   # only quality dependency, `quality_gate`, had succeeded. `always()` on
   # `quality_gate` lets that job run past the failure; it does not clear the
   # failure for anything downstream of it. Run 33674711072 on transformers#48473
-  # is the case: gate green ("Test matrix may run"), all 15 test jobs skipped one
+  # is the case: gate green ("Test matrix may run"), all 13 test jobs skipped one
   # second later. `needs.quality_gate.result == 'success'` then restores the
   # gating that the dropped implicit check used to do.
   # ===========================================================================
@@ -512,7 +508,7 @@ jobs:
       job_name:          "tests_torch"
       docker_image:      "huggingface/transformers-torch-light"
       parallelism:       8
-      marker:            "not (generate or is_training_test or is_tensor_parallel_test or is_expert_parallel_test or is_fsdp_test)"
+      marker:            "not (generate or is_training_test or is_tensor_parallel_test or is_expert_parallel_test or is_context_parallel_test or is_fsdp_test)"
       use_dev_image:     ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
     secrets: inherit
       # install_steps, pytest_num_workers, etc. → all defaults
@@ -647,52 +643,19 @@ jobs:
       use_dev_image:       ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
     secrets: inherit
 
-  # Origin: tensor_parallel_ci_job in .circleci/create_circleci_config.py
-  tests_tensor_parallel_ci:
+  # Origin: distributed_ci_job in .circleci/create_circleci_config.py
+  tests_distributed_ci:
     needs: [test-preparation, quality_gate]
     if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_tensor_parallel_ci == 'true' }}
+         && needs.test-preparation.outputs.run_tests_distributed_ci == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
-      job_name:            "tests_tensor_parallel_ci"
+      job_name:            "tests_distributed_ci"
       docker_image:        "huggingface/transformers-torch-light"
       parallelism:         8
-      pytest_num_workers:  8
       install_steps:       "uv pip install -e . && uv pip install torchao"
-      marker:              "is_tensor_parallel_test"
-      run_tensor_parallel_tests:  true
-      use_dev_image:       ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
-    secrets: inherit
-
-  # Origin: expert_parallel_ci_job in .circleci/create_circleci_config.py
-  tests_expert_parallel_ci:
-    needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_expert_parallel_ci == 'true' }}
-    uses: ./.github/workflows/pr-ci_reusable_test_job.yml
-    with:
-      job_name:            "tests_expert_parallel_ci"
-      docker_image:        "huggingface/transformers-torch-light"
-      parallelism:         8
-      install_steps:       "uv pip install -e ."
-      marker:              "is_expert_parallel_test"
-      run_expert_parallel_tests: true
-      use_dev_image:       ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
-    secrets: inherit
-
-  # Origin: fsdp_ci_job in .circleci/create_circleci_config.py
-  tests_fsdp_ci:
-    needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_fsdp_ci == 'true' }}
-    uses: ./.github/workflows/pr-ci_reusable_test_job.yml
-    with:
-      job_name:            "tests_fsdp_ci"
-      docker_image:        "huggingface/transformers-torch-light"
-      parallelism:         8
-      install_steps:       "uv pip install -e ."
-      marker:              "is_fsdp_test"
-      run_fsdp_tests:      true
+      marker:              "is_tensor_parallel_test or is_expert_parallel_test or is_context_parallel_test or is_fsdp_test"
+      run_distributed_tests: true
       use_dev_image:       ${{ needs.test-preparation.outputs.use_dev_image == 'true' }}
     secrets: inherit
 
@@ -751,9 +714,7 @@ jobs:
       - tests_repo_utils
       - tests_non_model
       - tests_training_ci
-      - tests_tensor_parallel_ci
-      - tests_expert_parallel_ci
-      - tests_fsdp_ci
+      - tests_distributed_ci
       - tests_peft_integration
     if: always()
     steps:
@@ -802,7 +763,7 @@ jobs:
   # Coverage:
   #   - test-preparation, check_code_quality, check_repository_consistency,
   #     quality_gate                                                        (Stage 1)
-  #   - all 15 conditional test jobs                                         (Stage 2)
+  #   - all 13 conditional test jobs                                         (Stage 2)
   #   - collection                                                            (Stage 3)
   # ===========================================================================
   ci_passed:
@@ -826,9 +787,7 @@ jobs:
       - tests_repo_utils
       - tests_non_model
       - tests_training_ci
-      - tests_tensor_parallel_ci
-      - tests_expert_parallel_ci
-      - tests_fsdp_ci
+      - tests_distributed_ci
       - tests_peft_integration
       # Stage 3
       - collection
