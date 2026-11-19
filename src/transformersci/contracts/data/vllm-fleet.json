@@ -74,6 +74,82 @@
       "integrations": [
         "vllm"
       ]
+    },
+    "mistral-7b-instruct-v0.2-vllm": {
+      "integration": {
+        "repo": "huggingface-mic/mistral-7b-instruct-v0.2-vllm-mic",
+        "revision": "4be1a4c06b7d756e8ad7128877155e85d70fcecb",
+        "files_sha256": "44ac0971a04f987045ab5704bc5fe7ef8f8d523a3880731a3c28c25c25a455ca"
+      },
+      "fixtures": {
+        "huggingface-mic/mistral-7b-instruct-v0.2-vllm-mic": {
+          "revision": "4be1a4c06b7d756e8ad7128877155e85d70fcecb",
+          "files_sha256": "741a86de6553ca6b02ec579ed5020fa20e0b929dd9f8de68033d827026393d07"
+        }
+      },
+      "checkpoints": {
+        "mistralai/Mistral-7B-Instruct-v0.2": "63a8b081895390a26e140280378bc85ec8bce07a"
+      },
+      "integrations": [
+        "vllm"
+      ]
+    },
+    "gemma-vllm": {
+      "integration": {
+        "repo": "huggingface-mic/gemma-vllm-mic",
+        "revision": "47ef39bb1df74db7629b0efad87cbebda8f19ea7",
+        "files_sha256": "96080a8e0299b45b9ebabd74ea05400382a8b1e87e1dfdd751b138babb56ca4d"
+      },
+      "fixtures": {
+        "huggingface-mic/gemma-vllm-mic": {
+          "revision": "47ef39bb1df74db7629b0efad87cbebda8f19ea7",
+          "files_sha256": "fb0743e10edea78e7a1f12a53330a61523b8b87961e0545854633ac00c6b7c37"
+        }
+      },
+      "checkpoints": {
+        "google/gemma-2b": "9cf48e52b224239de00d483ec8eb84fb8d0f3a3a"
+      },
+      "integrations": [
+        "vllm"
+      ]
+    },
+    "gemma2-vllm": {
+      "integration": {
+        "repo": "huggingface-mic/gemma2-vllm-mic",
+        "revision": "96ad06c0120df0054a132091b49ce5a0260fab02",
+        "files_sha256": "a354380f8bf8f9a4684b01b2c88d3e67f78784d4b4f4a37330b17b51fdab9e99"
+      },
+      "fixtures": {
+        "huggingface-mic/gemma2-vllm-mic": {
+          "revision": "96ad06c0120df0054a132091b49ce5a0260fab02",
+          "files_sha256": "f53c28896e4c1f460b81fcbb97ce22ddc6f09b6199255453ef5b0e8be692f134"
+        }
+      },
+      "checkpoints": {
+        "google/gemma-2-2b-it": "299a8560bedf22ed1c72a8a11e7dce4a7f9f51f8"
+      },
+      "integrations": [
+        "vllm"
+      ]
+    },
+    "vaultgemma-vllm": {
+      "integration": {
+        "repo": "huggingface-mic/vaultgemma-vllm-mic",
+        "revision": "a3a1a601540d57cefb4f2c0db9079fe375858afd",
+        "files_sha256": "5f4e9542aaac5ecd37ae280a9ed2901ea991db8d541a78fcc2c80c9da639b833"
+      },
+      "fixtures": {
+        "huggingface-mic/vaultgemma-vllm-mic": {
+          "revision": "a3a1a601540d57cefb4f2c0db9079fe375858afd",
+          "files_sha256": "abca65b4768493f7fb6cc69dd47fc347039047f9672ff58fce6d7ecac19c0318"
+        }
+      },
+      "checkpoints": {
+        "google/vaultgemma-1b": "f9624dafc1760cb2f6039e86e12055d6559d7abb"
+      },
+      "integrations": [
+        "vllm"
+      ]
     }
   }
 }
