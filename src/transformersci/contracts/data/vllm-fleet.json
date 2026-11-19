@@ -150,6 +150,63 @@
       "integrations": [
         "vllm"
       ]
+    },
+    "qwen2-vl-vllm": {
+      "integration": {
+        "repo": "huggingface-mic/qwen2-vl-vllm-mic",
+        "revision": "7e5a8bf20a778ec9f6fc46ef7642c76abba64b24",
+        "files_sha256": "3d0dd1058de3c1bf924b0cba0bbcd11d4d1c7124cfe112e57f0e466f6b808b74"
+      },
+      "fixtures": {
+        "huggingface-mic/qwen2-vl-vllm-mic": {
+          "revision": "7e5a8bf20a778ec9f6fc46ef7642c76abba64b24",
+          "files_sha256": "aa8f08782d4b735360104f6073a974359ff2f8e55affe4ecd325356a5e8623be"
+        }
+      },
+      "checkpoints": {
+        "Qwen/Qwen2-VL-2B-Instruct": "895c3a49bc3fa70a340399125c650a463535e71c"
+      },
+      "integrations": [
+        "vllm"
+      ]
+    },
+    "qwen2.5-vl-vllm": {
+      "integration": {
+        "repo": "huggingface-mic/qwen2.5-vl-vllm-mic",
+        "revision": "b700ed7c8d07662a2392b3eca63a9133811c3d5a",
+        "files_sha256": "8fe70334d0e24f30bc57dabf1339ffe39470e89253582d3a5c031194cd36f8c5"
+      },
+      "fixtures": {
+        "huggingface-mic/qwen2.5-vl-vllm-mic": {
+          "revision": "b700ed7c8d07662a2392b3eca63a9133811c3d5a",
+          "files_sha256": "219a4cd0119e0b04b9d2878b2fb9f37127f364fc6b71362c8b4dac70daf59a7a"
+        }
+      },
+      "checkpoints": {
+        "Qwen/Qwen2.5-VL-3B-Instruct": "66285546d2b821cf421d4f5eb2576359d3770cd3"
+      },
+      "integrations": [
+        "vllm"
+      ]
+    },
+    "qwen3-vl-vllm": {
+      "integration": {
+        "repo": "huggingface-mic/qwen3-vl-vllm-mic",
+        "revision": "e0f7688cb7f89a101cda71a67be8a504fcbee1e2",
+        "files_sha256": "7cc96f0060ce89d2d7274580ec31cd6a8871614d6782a81cde22497c0d095eeb"
+      },
+      "fixtures": {
+        "huggingface-mic/qwen3-vl-vllm-mic": {
+          "revision": "e0f7688cb7f89a101cda71a67be8a504fcbee1e2",
+          "files_sha256": "0f79970c16236f27e1558d22d059a5f15d40f82473c3eabddc17d9018b22d60d"
+        }
+      },
+      "checkpoints": {
+        "Qwen/Qwen3-VL-2B-Instruct": "89644892e4d85e24eaac8bacfd4f463576704203"
+      },
+      "integrations": [
+        "vllm"
+      ]
     }
   }
 }
