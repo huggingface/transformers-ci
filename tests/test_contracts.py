@@ -224,7 +224,7 @@ def test_vllm_runs_the_vllm_fleet_dataset(tmic, tmp_path, monkeypatch, capsys):
         asked.append(revision)
         return lock, "e" * 40
 
-    monkeypatch.setattr(run, "vllm_lock", fleet)
+    monkeypatch.setattr(run, "_vllm_lock", fleet)
     commands = tmic(stdout=[json.dumps({**RECORD, "status": "pass", "failures": []})])
     assert run.main(["--framework", "vllm", "--fixtures-only"]) == 0
     assert asked == ["main"]

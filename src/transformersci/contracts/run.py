@@ -105,7 +105,9 @@ def parser():
     return parser
 
 
-def vllm_lock(revision):
+# TODO: extend the functionality in transformers-mic (a fleet name -> dataset registry, so that
+# `tmic check --fleet vllm` works like `--fleet control`), and remove this.
+def _vllm_lock(revision):
     """(local JSON lock, immutable revision) of the vLLM fleet dataset, as tmic reads the Sentence Transformers one."""
     from huggingface_hub import hf_hub_download
     from transformers_mic import fleet
@@ -133,7 +135,7 @@ def resolve_fleet(args):
     if args.framework == "vllm" and not args.lock:
         if args.fleet:
             raise SystemExit("--framework vllm reads the vLLM fleet dataset (or a --lock), not --fleet")
-        path, revision = vllm_lock(args.fleet_revision or "main")
+        path, revision = _vllm_lock(args.fleet_revision or "main")
         metadata = {"fleet": VLLM_FLEET, "fleet_repository": VLLM_REPOSITORY, "fleet_revision": revision}
         print(json.dumps({"fleet": metadata}), file=sys.stderr, flush=True)
         return ["--lock", str(path)], metadata
