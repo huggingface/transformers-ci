@@ -276,13 +276,13 @@ jobs:
           # tag costs ~25 s.
           fetch-depth: 2
 
+      # TODO: consider installing vLLM (and its torch pin) in a (potentially new) Docker image.
       - name: Install
         id: install
         continue-on-error: true
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           start=$SECONDS
-          # TODO: consider installing vLLM (and its torch pin) in a (potentially new) Docker image.
           # The latest vLLM nightly CPU wheel, and the torch version its requirements pin. Installed first,
           # so `-e .` below (the Transformers checkout under test) wins over vLLM's transformers requirement.
           path=$(curl -fsSL https://wheels.vllm.ai/nightly/cpu/vllm/metadata.json | python3 -c "
