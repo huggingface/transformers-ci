@@ -134,9 +134,15 @@ def resolve_fleet(args):
     """(tmic options, metadata added to each record) for the fleet this run checks."""
     if args.framework == "vllm" and not args.lock:
         if args.fleet:
-            raise SystemExit("--framework vllm reads the vLLM fleet dataset (or a --lock), not --fleet")
+            raise SystemExit(
+                "--framework vllm reads the vLLM fleet dataset (or a --lock), not --fleet"
+            )
         path, revision = _vllm_lock(args.fleet_revision or "main")
-        metadata = {"fleet": VLLM_FLEET, "fleet_repository": VLLM_REPOSITORY, "fleet_revision": revision}
+        metadata = {
+            "fleet": VLLM_FLEET,
+            "fleet_repository": VLLM_REPOSITORY,
+            "fleet_revision": revision,
+        }
         print(json.dumps({"fleet": metadata}), file=sys.stderr, flush=True)
         return ["--lock", str(path)], metadata
     if args.lock:

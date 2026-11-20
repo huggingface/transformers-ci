@@ -231,7 +231,11 @@ def test_vllm_runs_the_vllm_fleet_dataset(tmic, tmp_path, monkeypatch, capsys):
     assert commands[0][4:6] == ["--lock", str(lock)]
     assert commands[0][commands[0].index("--integration") + 1] == "vllm"
     record = json.loads(capsys.readouterr().out.splitlines()[-1])
-    assert (record["fleet"], record["fleet_repository"], record["fleet_revision"]) == ("vllm", run.VLLM_REPOSITORY, "e" * 40)
+    assert (record["fleet"], record["fleet_repository"], record["fleet_revision"]) == (
+        "vllm",
+        run.VLLM_REPOSITORY,
+        "e" * 40,
+    )
     assert run.main(["--framework", "vllm", "--fleet-revision", "f" * 40]) == 0
     assert asked[-1] == "f" * 40
     with pytest.raises(SystemExit):
