@@ -217,6 +217,31 @@ def test_a_custom_lock_is_passed_through_and_recorded(tmic, tmp_path, capsys):
     assert record["lock"] == str(lock.resolve()) and "fleet_revision" not in record
 
 
+def test_vllm_runs_the_vllm_fleet_dataset(tmic, tmp_path, monkeypatch, capsys):
+    lock, asked = tmp_path / "vllm.lock", []
+
+    def fleet(revision):
+        asked.append(revision)
+        return lock, "e" * 40
+
+    monkeypatch.setattr(run, "_vllm_lock", fleet)
+    commands = tmic(stdout=[json.dumps({**RECORD, "status": "pass", "failures": []})])
+    assert run.main(["--framework", "vllm", "--fixtures-only"]) == 0
+    assert asked == ["main"]
+    assert commands[0][4:6] == ["--lock", str(lock)]
+    assert commands[0][commands[0].index("--integration") + 1] == "vllm"
+    record = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert (record["fleet"], record["fleet_repository"], record["fleet_revision"]) == (
+        "vllm",
+        run.VLLM_REPOSITORY,
+        "e" * 40,
+    )
+    assert run.main(["--framework", "vllm", "--fleet-revision", "f" * 40]) == 0
+    assert asked[-1] == "f" * 40
+    with pytest.raises(SystemExit):
+        run.main(["--framework", "vllm", "--fleet", "control"])
+
+
 def test_a_custom_lock_cannot_silently_ignore_a_dataset_revision(tmp_path):
     for argv in (
         ["--lock", str(tmp_path / "fleet.lock"), "--fleet-revision", "main"],

@@ -4,6 +4,7 @@
     run-model-contracts --fixtures-only --fleet prototypes --variant bfloat16 \\
         --changed-files changed.txt --diff-base HEAD^1 --output results.jsonl
     run-model-contracts --lock /path/to/custom-fleet.json --fixtures-only
+    run-model-contracts --framework vllm --fixtures-only     # the vLLM fleet dataset (huggingface-mic/vllm-fleet)
 
 This is `tmic check` (transformers-mic, pinned in the `contracts` extra) plus the CI
 telemetry: selection, execution, baseline comparison, known failures and result
@@ -30,10 +31,15 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
 PIN = Path("tests/contracts.lock")
+# vLLM contracts have their own fleet dataset, with the same tables as the Transformers and
+# Sentence Transformers fleets (transformers_mic.fleet), under vllm/.
+VLLM_REPOSITORY = "huggingface-mic/vllm-fleet"
+VLLM_FLEET = "vllm"
 STDERR_TAIL = 4000
 
 
@@ -43,7 +49,7 @@ def parser():
     )
     parser.add_argument(
         "--framework",
-        choices=("transformers", "sentence_transformers"),
+        choices=("transformers", "sentence_transformers", "vllm"),
         default="transformers",
         help="integration to run (tmic check --integration)",
     )
@@ -99,8 +105,46 @@ def parser():
     return parser
 
 
+# TODO: extend the functionality in transformers-mic (a fleet name -> dataset registry, so that
+# `tmic check --fleet vllm` works like `--fleet control`), and remove this.
+def _vllm_lock(revision):
+    """(local JSON lock, immutable revision) of the vLLM fleet dataset, as tmic reads the Sentence Transformers one."""
+    from huggingface_hub import hf_hub_download
+    from transformers_mic import fleet
+
+    revision = fleet.resolve(revision, VLLM_REPOSITORY)
+    tables = {
+        table: Path(
+            hf_hub_download(
+                VLLM_REPOSITORY,
+                fleet.table_path(VLLM_FLEET, table),
+                repo_type="dataset",
+                revision=revision,
+            )
+        ).read_text()
+        for table in (*fleet.COLUMNS, "integrations")
+    }
+    path = Path(tempfile.gettempdir()) / "vllm-fleet" / revision / f"{VLLM_FLEET}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(fleet.from_tables(tables, VLLM_FLEET), indent=2) + "\n")
+    return path, revision
+
+
 def resolve_fleet(args):
     """(tmic options, metadata added to each record) for the fleet this run checks."""
+    if args.framework == "vllm" and not args.lock:
+        if args.fleet:
+            raise SystemExit(
+                "--framework vllm reads the vLLM fleet dataset (or a --lock), not --fleet"
+            )
+        path, revision = _vllm_lock(args.fleet_revision or "main")
+        metadata = {
+            "fleet": VLLM_FLEET,
+            "fleet_repository": VLLM_REPOSITORY,
+            "fleet_revision": revision,
+        }
+        print(json.dumps({"fleet": metadata}), file=sys.stderr, flush=True)
+        return ["--lock", str(path)], metadata
     if args.lock:
         lock = str(args.lock.resolve())
         return ["--lock", lock], {"lock": lock}

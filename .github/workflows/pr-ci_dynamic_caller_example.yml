@@ -713,7 +713,8 @@ jobs:
   # ---------------------------------------------------------------------------
   # ===========================================================================
   # Model integration contracts — observational, does not block the PR.
-  # Runs slim fixture contracts (~70s) independently of the test suite.
+  # Runs slim fixture contracts (~70s), and in a parallel job the vLLM contracts (~5 min incl. the vLLM
+  # install, same changed-file selection), independently of the test suite.
   # Depends on quality_gate so it is skipped when quality checks fail, and on
   # test-preparation so it is skipped when no changed file can select a contract.
   # Not in ci_passed.needs for phase 1 (observational); add it for phase 2.

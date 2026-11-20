@@ -1,6 +1,7 @@
 name: "[Reusable] Model integration contracts"
 
-# Runs slim fixture contracts against the Transformers checkout.
+# Runs slim fixture contracts against the Transformers checkout: `transformers` (the Transformers contracts of
+# the Hub fleets) and `vllm` (vLLM Transformers-backend contracts, fleet: huggingface-mic/vllm-fleet).
 # Phase 1 — observational: failures are reported but do not block the PR.
 
 on:
@@ -28,7 +29,7 @@ permissions:
   contents: read
 
 jobs:
-  run:
+  transformers:
     # Infrastructure failures must not block PRs during the observational rollout.
     continue-on-error: true
     runs-on:
@@ -234,6 +235,230 @@ jobs:
         with:
           path: /tmp/hf_home/hub
           key: contracts-hf-${{ runner.arch }}-${{ inputs.ci_sha }}
+
+      - name: Flag contract failures for review
+        if: always() && (steps.install.outcome == 'failure' || steps.run.outcome == 'failure' || steps.summary.outcome == 'failure')
+        run: |
+          echo "::warning::A model integration contract failed or could not run; see the job summary and artifact for details. This observation does not block the PR."
+
+  # vLLM contracts: each slim MIC fixture served by vLLM's Transformers modeling backend
+  # (`model_impl="transformers"`) and compared with Transformers in the same process (backend
+  # picked, greedy tokens, logits at every step). Same steps as `transformers`; the differences are only
+  # what vLLM needs: its install, its fleet (the huggingface-mic/vllm-fleet dataset), and names.
+  vllm:
+    # Infrastructure failures must not block PRs during the observational rollout.
+    continue-on-error: true
+    runs-on:
+      group: ${{ inputs.runner }}
+    timeout-minutes: 15
+    container:
+      image: ${{ inputs.docker_image }}
+      options: "--shm-size=16gb"
+    env:
+      DOC_BUILDER_SHA: c69e96c087165ba49b1788e0c3464654dd60253c
+      # Not the shared /mnt/cache: PR jobs mount it read-only.
+      HF_HOME: /tmp/hf_home
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      PYTHONUNBUFFERED: "1"
+      OMP_NUM_THREADS: "4"
+      # vLLM CPU backend: the KV cache it reserves (GiB); the slim fixtures need almost none.
+      VLLM_CPU_KVCACHE_SPACE: "1"
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # On a PR, HEAD is the merge commit and HEAD^1 the base it was built on,
+          # so two commits are enough to diff; a full clone of every branch and
+          # tag costs ~25 s.
+          fetch-depth: 2
+
+      # TODO: consider installing vLLM (and its torch pin) in a (potentially new) Docker image.
+      - name: Install
+        id: install
+        continue-on-error: true
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          start=$SECONDS
+          # The latest vLLM nightly CPU wheel, and the torch version its requirements pin. Installed first,
+          # so `-e .` below (the Transformers checkout under test) wins over vLLM's transformers requirement.
+          path=$(curl -fsSL https://wheels.vllm.ai/nightly/cpu/vllm/metadata.json | python3 -c "
+          import json, sys
+          print(next(w for w in json.load(sys.stdin) if 'x86_64' in w['platform_tag'])['path'])")
+          vllm_commit=$(echo "$path" | cut -d/ -f4)
+          if [[ ! "$vllm_commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not find the vLLM commit of the latest CPU wheel: $path"
+            exit 1
+          fi
+          wheel=$(basename "$path")
+          if [[ ! "$wheel" =~ ^vllm-[A-Za-z0-9._%+-]+\.whl$ ]]; then
+            echo "::error::Unexpected vLLM wheel name: $wheel"
+            exit 1
+          fi
+          torch_version=$(curl -fsSL "https://raw.githubusercontent.com/vllm-project/vllm/$vllm_commit/requirements/cpu.txt" \
+            | sed -nE 's/^torch==([0-9.]+)\+cpu.*/\1/p' | head -n 1)
+          if [[ -z "$torch_version" ]]; then
+            echo "::error::Could not find the torch==<version>+cpu pin in vLLM's requirements/cpu.txt at $vllm_commit"
+            exit 1
+          fi
+          echo "vLLM $vllm_commit ($wheel), torch $torch_version"
+          uv pip install "torch==$torch_version" torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+          uv pip install "https://wheels.vllm.ai/$vllm_commit/$wheel" "torch==$torch_version" \
+            --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
+          uv pip install -e .
+          uv pip install "transformers-ci[contracts,otel] @ git+https://github.com/huggingface/transformers-ci@${INPUTS_CI_SHA}"
+          uv pip install timm jsonschema fugashi unidic-lite "git+https://github.com/huggingface/doc-builder@$DOC_BUILDER_SHA"
+          echo "Installed in $((SECONDS - start)) s on $(lscpu | sed -n 's/^Model name: *//p'), $(nproc) cores"
+        env:
+          INPUTS_CI_SHA: ${{ inputs.ci_sha }}
+
+      # Restore only: saving is a separate step that skips PRs (see the end of the job).
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: hf_cache
+        continue-on-error: true
+        with:
+          path: /tmp/hf_home/hub
+          key: contracts-vllm-hf-${{ runner.arch }}-${{ inputs.ci_sha }}
+
+      - name: Run the vLLM contracts
+        id: run
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        env:
+          # A fix for the bug behind a declared skip can show the skipped variant passing.
+          RUN_DECLARED: ${{ inputs.run_declared || contains(github.event.pull_request.labels.*.name, 'mic-run-declared') }}
+        run: |
+          export PYTHONPATH="$PWD/src"
+          python - <<'PY_SOURCE'
+          from pathlib import Path
+          import transformers
+          expected = Path.cwd() / "src/transformers/__init__.py"
+          actual = Path(transformers.__file__).resolve()
+          assert actual == expected.resolve(), (actual, expected)
+          print("Framework under test:", actual)
+          import torch
+          assert torch.get_num_threads() == 4, torch.get_num_threads()
+          print("CPU threads:", torch.get_num_threads())
+          PY_SOURCE
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            git diff --name-only HEAD^1 HEAD > /tmp/changed-files.txt
+            selection=(--changed-files /tmp/changed-files.txt --diff-base HEAD^1)
+            echo "Changed files: $(wc -l < /tmp/changed-files.txt)"; head -20 /tmp/changed-files.txt
+          else
+            selection=(--run-all)
+            echo "Changed files: all"
+          fi
+          if [[ "$RUN_DECLARED" == true ]]; then
+            selection+=(--run-declared)
+            echo "Running variants the contracts declare unmeasured"
+          fi
+          # Use the normal OTEL resource setup so cases appear in the PR dashboard.
+          mic() {
+            configure-ci-otel --suite fast-integration --service-name pytest-observability \
+              --protocol http --otlp-endpoint "$OTEL_EXPORTER_OTLP_ENDPOINT" \
+              --token "$OTEL_TOKEN" --staging-endpoint 10.90.52.50:5317 \
+              --staging-protocol grpc -- run-model-contracts "$@"
+          }
+          start=$SECONDS
+          # The vLLM fleet (huggingface-mic/vllm-fleet, main resolved to a commit), `default` variants.
+          mic --framework vllm --fixtures-only --variant default \
+            "${selection[@]}" --output /tmp/results.jsonl 2> /tmp/run.log | python -c '
+          import json, sys
+          for line in sys.stdin:
+              if not line.startswith("{"):
+                  print(line.rstrip(), flush=True)
+                  continue
+              r = json.loads(line)
+              print(r["status"].ljust(6), r["target"], r.get("variant", ""), r.get("platform", ""), "\n".join(r.get("failures", [])), flush=True)' || status=$?
+          echo "$(tail -1 /tmp/run.log); $((SECONDS - start)) s"
+          # Preserve full runner diagnostics in the visible job log as well as artifacts.
+          cat /tmp/run.log
+          exit "${status:-0}"
+
+      - name: Summary
+        id: summary
+        if: always()
+        continue-on-error: true
+        env:
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          RUN_OUTCOME: ${{ steps.run.outcome }}
+        run: |
+          touch /tmp/results.jsonl
+          {
+            echo "**Observational run:** failures do not block this PR."
+            echo
+            echo "Source: \`$GITHUB_SHA\`; event: \`$GITHUB_EVENT_NAME\`."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          if command -v report-model-contracts >/dev/null 2>&1; then
+            report-model-contracts /tmp/results.jsonl --log /tmp/run.log \
+              >> "$GITHUB_STEP_SUMMARY" || \
+              echo "Could not render the contract report; see the artifact and job log." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Contract runner was not installed; see the job log." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          python - <<'PY_RESULT'
+          import json
+          import os
+          from collections import Counter
+          from importlib.metadata import PackageNotFoundError, version
+          from pathlib import Path
+          from platform import python_version
+
+          results = Path('/tmp/results.jsonl')
+          rows = [json.loads(line) for line in results.read_text().splitlines() if line.strip()]
+          log = Path('/tmp/run.log')
+          selections = [json.loads(line) for line in log.read_text().splitlines() if line.startswith('{"selection"')] if log.exists() else []
+          packages = ['torch', 'torchvision', 'torchaudio', 'numpy', 'tokenizers', 'transformers', 'transformers-ci', 'vllm']
+          versions = {'python': python_version()}
+          for package in packages:
+              try:
+                  versions[package] = version(package)
+              except PackageNotFoundError:
+                  versions[package] = None
+          report = {
+              'event': os.environ['GITHUB_EVENT_NAME'],
+              'sha': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'pr': json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text()).get('pull_request', {}).get('number'),
+              'install_outcome': os.environ['INSTALL_OUTCOME'],
+              'run_outcome': os.environ['RUN_OUTCOME'],
+              'versions': versions,
+              'counts': dict(Counter(row['status'] for row in rows)),
+              'selections': [item['selection'] for item in selections],
+              'results': len(rows),
+          }
+          Path('/tmp/contracts-observation.json').write_text(json.dumps(report, indent=2) + '\n')
+          print('Observation:', json.dumps(report))
+          PY_RESULT
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        continue-on-error: true
+        with:
+          name: vllm-contracts
+          path: |
+            /tmp/results.jsonl
+            /tmp/run.log
+            /tmp/contracts-observation.json
+
+      # A PR's cache is only visible to that PR, so saving there buys little. When the
+      # restore fails (e.g. "Egress is over the account limit") every fixture is
+      # downloaded, and tarring the whole hub cache ran the job into its timeout,
+      # which marks the PR CI run cancelled. Save from push runs only, after the
+      # results are uploaded, and bound it.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: >-
+          !cancelled() && github.event_name != 'pull_request'
+          && steps.install.outcome == 'success' && steps.hf_cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        with:
+          path: /tmp/hf_home/hub
+          key: contracts-vllm-hf-${{ runner.arch }}-${{ inputs.ci_sha }}
 
       - name: Flag contract failures for review
         if: always() && (steps.install.outcome == 'failure' || steps.run.outcome == 'failure' || steps.summary.outcome == 'failure')
