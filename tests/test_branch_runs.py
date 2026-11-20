@@ -22,7 +22,8 @@ def test_rows_join_per_run_newest_first_with_every_lane() -> None:
         "start": vector((run("a"), 100.0), (run("b"), 300.0)),
         "jobs": vector((run("a"), 3), (run("b"), 4)),
         "total": vector((run("b"), 358903)),
-        "rate": vector((run("b"), 0.2)),
+        "recorded": vector((run("a"), 400)),
+        "rate": vector((run("a"), 1), (run("b"), 0.2)),
         "commit": vector((run("b", commit_message="MoE", html_url="u"), 1)),
         "lanes": vector(
             (run("b", hardware="single-gpu"), 1),
@@ -35,8 +36,10 @@ def test_rows_join_per_run_newest_first_with_every_lane() -> None:
     assert [row["run_id"] for row in rows] == ["b", "a"]
     assert rows[0]["lanes"] == ["multi-gpu", "single-gpu"]
     assert rows[0]["commit_message"] == "MoE" and rows[0]["total"] == 358903
+    assert rows[0]["recorded"] is None
     assert rows[0]["live"] is False and rows[1]["live"] is True
     assert rows[1]["lanes"] == ["cpu"] and rows[1]["total"] is None
+    assert (rows[1]["recorded"], rows[1]["rate"]) == (400, 1)
 
 
 def test_rows_keep_the_ten_newest() -> None:

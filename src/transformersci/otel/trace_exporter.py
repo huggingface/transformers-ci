@@ -56,7 +56,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from contextlib import contextmanager
 from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -65,7 +65,7 @@ from itertools import islice
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from math import fsum
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, TypedDict
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -2562,6 +2562,28 @@ def hardware_display(raw: str) -> str:
 _FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
+_TEST_OUTCOMES = frozenset(
+    {"passed", "failed", "skipped", "xfailed", "xpassed", "xfailed_not_run"}
+)
+_MIC_OUTCOMES = {
+    "pass": "passed",
+    "fail": "failed",
+    "error": "failed",
+    "xfail": "xfailed",
+    "unsupported": "skipped",
+}
+
+
+def _test_outcome(row: dict) -> str:
+    outcome = row.get("outcome")
+    if isinstance(outcome, str) and outcome in _TEST_OUTCOMES:
+        return outcome
+    if row.get("mic.status") in _MIC_OUTCOMES:
+        return _MIC_OUTCOMES[row["mic.status"]]
+    # Old pytest spans gave OK to some skips, xfails and xpasses.
+    return "failed" if row.get("status_code") == "ERROR" else "unknown"
+
+
 def extract_trace_rows(
     trace: dict,
 ) -> tuple[dict[str, str | int], list[dict[str, str | float]]]:
@@ -2727,6 +2749,25 @@ def extract_trace_rows(
             "test_nodeid": nodeid,
             "trace_id": _intern(trace_id),
         }
+        outcome = span_tags.get("pytest.outcome") or _MIC_OUTCOMES.get(
+            span_tags.get("mic.status")
+        )
+        if (
+            outcome not in _TEST_OUTCOMES
+            and "transformers.check.exit_code" in span_tags
+        ):
+            try:
+                outcome = (
+                    "failed"
+                    if int(span_tags["transformers.check.exit_code"])
+                    else "passed"
+                )
+            except ValueError:
+                pass
+        if outcome in _TEST_OUTCOMES:
+            row["outcome"] = _intern(outcome)
+            if outcome == "failed":
+                row["status_code"] = "ERROR"
         # Failing rows only: passing rows keep exactly the keys they had.
         if row["status_code"] == "ERROR":
             message = exception_message_line(span)
@@ -4294,6 +4335,31 @@ def extract_ci_runner_execution_metrics(
     return lines
 
 
+def _executed_test_count(outcomes: Counter[str], failed: int) -> int | None:
+    # A failed session without its ERROR row is evidence of a failed job, not
+    # an extra executed test. Unknown outcomes also make the count incomplete.
+    if outcomes["unknown"] or failed > outcomes["failed"]:
+        return None
+    return sum(outcomes[name] for name in ("passed", "failed", "xfailed", "xpassed"))
+
+
+def _rollup_outcome_lines(
+    prefix: str, labels: dict[str, str], outcomes: Counter[str], executed: int | None
+) -> list[str]:
+    counts = dict(outcomes)
+    if executed is not None:
+        counts.setdefault("passed", 0)
+        counts.setdefault("skipped", 0)
+    # Replace any earlier denominator so last_over_time does not see it as current.
+    value = "NaN" if executed is None else str(executed)
+    lines = [f"{prefix}_executed_tests{metric_labels(labels)} {value}"]
+    for name, count in sorted(counts.items()):
+        lines.append(
+            f"{prefix}_outcome_tests{metric_labels({**labels, 'outcome': name})} {count}"
+        )
+    return lines
+
+
 def extract_run_rollup_metrics(
     traces: list[dict] | None = None,
     *,
@@ -4328,6 +4394,10 @@ def extract_run_rollup_metrics(
         "# TYPE pytest_run_total_tests gauge",
         "# HELP pytest_run_failed_tests Number of failing tests in a pytest run.",
         "# TYPE pytest_run_failed_tests gauge",
+        "# HELP pytest_run_executed_tests Number of executed tests in a run, or NaN when incomplete.",
+        "# TYPE pytest_run_executed_tests gauge",
+        "# HELP pytest_run_outcome_tests Number of recorded tests per outcome in a pytest run.",
+        "# TYPE pytest_run_outcome_tests gauge",
         "# HELP pytest_run_duration_seconds Total duration (sum of test span durations) of a pytest run.",
         "# TYPE pytest_run_duration_seconds gauge",
         "# HELP pytest_run_wall_seconds Wall-clock elapsed time (max end - min start across the run's traces) of a pytest run.",
@@ -4338,10 +4408,14 @@ def extract_run_rollup_metrics(
         "# TYPE pytest_run_job_member_info gauge",
         "# HELP pytest_run_job_total_tests Number of tests recorded in one job of a pytest run.",
         "# TYPE pytest_run_job_total_tests gauge",
-        "# HELP pytest_run_job_passed_tests Number of passing tests recorded in one job of a pytest run.",
+        "# HELP pytest_run_job_passed_tests Passing tests, or recorded tests minus failures if outcomes are incomplete.",
         "# TYPE pytest_run_job_passed_tests gauge",
         "# HELP pytest_run_job_failed_tests Number of failing tests recorded in one job of a pytest run.",
         "# TYPE pytest_run_job_failed_tests gauge",
+        "# HELP pytest_run_job_executed_tests Number of executed tests in a job, or NaN when incomplete.",
+        "# TYPE pytest_run_job_executed_tests gauge",
+        "# HELP pytest_run_job_outcome_tests Number of recorded tests per outcome in a pytest job.",
+        "# TYPE pytest_run_job_outcome_tests gauge",
         "# HELP pytest_run_job_duration_seconds Total duration (sum of test span durations) for one job of a pytest run.",
         "# TYPE pytest_run_job_duration_seconds gauge",
         "# HELP pytest_run_job_wall_seconds Wall-clock elapsed time (max end - min start across the job's traces) for one job of a pytest run.",
@@ -4364,9 +4438,8 @@ def extract_run_rollup_metrics(
         # ERROR *test* span (making a red run look green) but still carries the
         # ERROR run span, so max(...) keeps the job red. See
         # docs/trace-completeness.md.
-        failed = max(
-            sum(1 for r in rows if str(r["status_code"]) == "ERROR"), run_failed
-        )
+        outcomes = Counter(_test_outcome(row) for row in rows)
+        failed = max(outcomes["failed"], run_failed)
         total_duration = fsum(float(r["duration_seconds"]) for r in rows)
         run_key = (
             str(trace_info.get("service_name", "unknown")),
@@ -4422,12 +4495,14 @@ def extract_run_rollup_metrics(
                 "failed": 0,
                 "total": 0,
                 "total_duration": 0.0,
+                "outcomes": Counter(),
                 "start_time": 0,
                 "end_time": 0,
             }
         job_aggregate = job_aggregates[job_key]
         job_aggregate["failed"] = int(job_aggregate["failed"]) + failed
         job_aggregate["total"] = int(job_aggregate["total"]) + total
+        job_aggregate["outcomes"].update(outcomes)
         job_aggregate["total_duration"] = (
             float(job_aggregate["total_duration"]) + total_duration
         )
@@ -4472,6 +4547,7 @@ def extract_run_rollup_metrics(
                 "total": int(stored["total"]),
                 "failed": int(stored["failed"]),
                 "total_duration": float(stored["duration"]),
+                "outcomes": stored["outcomes"],
                 # The store keeps no timestamps (see _RUN_STORE_FIELDS), so this
                 # job's own start/end are genuinely unknown. Left at 0, and the
                 # wall metric is skipped below rather than published as a zero.
@@ -4487,6 +4563,7 @@ def extract_run_rollup_metrics(
         tuple[str, str, str, str, str, str], tuple[int, int, float]
     ] = {}
     reconciled_runs: dict[tuple[str, str, str, str], tuple[int, int, float]] = {}
+    run_outcomes: dict[tuple[str, str, str, str], Counter[str]] = {}
     for job_key, job_aggregate in job_aggregates.items():
         total = int(job_aggregate["total"])
         failed = int(job_aggregate["failed"])
@@ -4495,10 +4572,21 @@ def extract_run_rollup_metrics(
         # more than one hardware reconciles each variant against its own totals.
         stored = store_counts.get(job_key[3], {}).get((job_key[4], job_key[5]))
         if stored is not None:
-            total = max(total, int(stored["total"]))
+            stored_total = int(stored["total"])
+            if stored_total > total or (
+                stored_total == total
+                and stored["outcomes"]["unknown"] < job_aggregate["outcomes"]["unknown"]
+            ):
+                # The persisted union includes shards outside the window.
+                # Choose its complete outcome vector together with its total.
+                job_aggregate["outcomes"] = stored["outcomes"]
+            total = max(total, stored_total)
             failed = max(failed, int(stored["failed"]))
             duration = max(duration, float(stored["duration"]))
         reconciled_jobs[job_key] = (total, failed, duration)
+        run_outcomes.setdefault(job_key[:4], Counter()).update(
+            job_aggregate["outcomes"]
+        )
         run_total, run_failed, run_duration = reconciled_runs.get(
             job_key[:4], (0, 0, 0.0)
         )
@@ -4553,6 +4641,15 @@ def extract_run_rollup_metrics(
         )
         lines.append(f"pytest_run_total_tests{metric_labels(run_labels)} {total}")
         lines.append(f"pytest_run_failed_tests{metric_labels(run_labels)} {failed}")
+        outcomes = run_outcomes[(service_name, provider, pr, run_id)]
+        lines.extend(
+            _rollup_outcome_lines(
+                "pytest_run",
+                run_labels,
+                outcomes,
+                _executed_test_count(outcomes, failed),
+            )
+        )
         lines.append(
             f"pytest_run_duration_seconds{metric_labels(run_labels)} {total_duration:.6f}"
         )
@@ -4595,13 +4692,14 @@ def extract_run_rollup_metrics(
             "test_job": test_job,
         }
         lines.append(f"pytest_run_job_total_tests{metric_labels(job_labels)} {total}")
-        # Clamp: the run-span failure floor can push `failed` above the number of
-        # test rows actually read for a heavily-truncated trace, which would make
-        # a naive `total - failed` go negative.
-        lines.append(
-            f"pytest_run_job_passed_tests{metric_labels(job_labels)} {max(0, total - failed)}"
-        )
+        outcomes = aggregate["outcomes"]
+        executed = _executed_test_count(outcomes, failed)
+        passed = max(0, total - failed) if executed is None else outcomes["passed"]
+        lines.append(f"pytest_run_job_passed_tests{metric_labels(job_labels)} {passed}")
         lines.append(f"pytest_run_job_failed_tests{metric_labels(job_labels)} {failed}")
+        lines.extend(
+            _rollup_outcome_lines("pytest_run_job", job_labels, outcomes, executed)
+        )
         lines.append(
             f"pytest_run_job_duration_seconds{metric_labels(job_labels)} {job_duration:.6f}"
         )
@@ -4663,6 +4761,7 @@ _run_last_growth: dict[str, float] = {}
 # Drop membership for runs untouched for this long, to bound memory.
 RUN_MEMBERSHIP_TTL_SECONDS = 86400.0
 
+
 # Authoritative per-(run, job) test counts derived from the run-store UNION.
 # The run store accumulates a run's COMPLETE, deduplicated rows across renders
 # (see :func:`persist_run_rows`), so it captures late/out-of-order ERROR spans
@@ -4671,8 +4770,16 @@ RUN_MEMBERSHIP_TTL_SECONDS = 86400.0
 # into Prometheus. :func:`persist_run_rows` already loads+merges the store for
 # each changed run every render, so deriving these counts there is ~free; the
 # rollup then reconciles against this in-memory cache with NO extra file I/O, so
-# render time is unchanged. run_id -> {test_job -> {total, failed, duration}}.
-_run_store_counts: "OrderedDict[str, dict[str, dict[str, float]]]" = OrderedDict()
+# render time is unchanged. The count cache is keyed by run and job/hardware.
+class _StoredJobCounts(TypedDict):
+    total: int
+    failed: int
+    duration: float
+    outcomes: Counter[str]
+
+
+_JobCounts = dict[tuple[str, str], _StoredJobCounts]
+_run_store_counts: OrderedDict[str, _JobCounts] = OrderedDict()
 _run_store_counts_lock = threading.Lock()
 # Bound memory: evict least-recently-written runs beyond this many entries.
 _RUN_STORE_COUNTS_MAX = 20000
@@ -4695,7 +4802,7 @@ def _update_run_store_counts(
     aged-out counterpart of the rollup's run-span floor — still reconciles to a
     non-zero failure count instead of decaying to a misleading "0 failed".
     """
-    counts: dict[tuple[str, str], dict[str, float]] = {}
+    counts: _JobCounts = {}
     for r in rows:
         job = str(r.get("test_job", "") or "")
         # Key by (test_job, hardware) to match the rollup's job_key. Use the same
@@ -4705,9 +4812,16 @@ def _update_run_store_counts(
         key = (job, hardware)
         entry = counts.get(key)
         if entry is None:
-            entry = counts[key] = {"total": 0.0, "failed": 0.0, "duration": 0.0}
+            entry = counts[key] = {
+                "total": 0,
+                "failed": 0,
+                "duration": 0.0,
+                "outcomes": Counter(),
+            }
         entry["total"] += 1
-        if str(r.get("status_code")) == "ERROR":
+        outcome = _test_outcome(r)
+        entry["outcomes"][outcome] += 1
+        if outcome == "failed":
             entry["failed"] += 1
         try:
             entry["duration"] += float(r.get("duration_seconds") or 0.0)
@@ -4723,8 +4837,13 @@ def _update_run_store_counts(
         for key, n in floor.items():
             entry = counts.get(key)
             if entry is None:
-                entry = counts[key] = {"total": 0.0, "failed": 0.0, "duration": 0.0}
-            entry["failed"] = max(entry["failed"], float(n))
+                entry = counts[key] = {
+                    "total": 0,
+                    "failed": 0,
+                    "duration": 0.0,
+                    "outcomes": Counter(),
+                }
+            entry["failed"] = max(entry["failed"], n)
     with _run_store_counts_lock:
         _run_store_counts[run_id] = counts
         _run_store_counts.move_to_end(run_id)
@@ -4732,7 +4851,7 @@ def _update_run_store_counts(
             _run_store_counts.popitem(last=False)
 
 
-def _run_store_counts_snapshot() -> dict[str, dict[str, dict[str, float]]]:
+def _run_store_counts_snapshot() -> dict[str, _JobCounts]:
     """Shallow copy of the count cache for lock-free reads during a render.
 
     Inner dicts are replaced wholesale by :func:`_update_run_store_counts` (never
@@ -7388,6 +7507,7 @@ _RUN_STORE_FIELDS = (
 _RUN_STORE_OPTIONAL_FIELDS = (
     "exception_type",
     "exception_message",
+    "outcome",
 ) + mic_page.ROW_FIELDS
 
 
@@ -7569,7 +7689,10 @@ def persist_run_rows(
             slim_row = {k: r.get(k) for k in _RUN_STORE_FIELDS}
             slim_row.update({k: r[k] for k in _RUN_STORE_OPTIONAL_FIELDS if r.get(k)})
             key = (str(r.get("trace_id", "")), str(r.get("test_nodeid", "")))
-            if merged.get(key) != slim_row:
+            previous = merged.get(key)
+            if previous and previous.get("outcome") and not slim_row.get("outcome"):
+                slim_row["outcome"] = previous["outcome"]
+            if previous != slim_row:
                 merged[key] = slim_row
                 changed = True
         merged_failed: dict[str, dict[str, str]] = {}
