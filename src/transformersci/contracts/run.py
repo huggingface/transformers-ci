@@ -66,11 +66,6 @@ def parser():
     )
     parser.add_argument("--variant", default="default")
     parser.add_argument(
-        "--all-variants",
-        action="store_true",
-        help="run every variant each contract declares instead of --variant (vLLM contracts declare different ones)",
-    )
-    parser.add_argument(
         "--isolate", action="store_true", help="run each target in its own process"
     )
     fleet = parser.add_mutually_exclusive_group()
@@ -183,7 +178,7 @@ def check_command(args, fleet_options):
         "--variant",
         args.variant,
     ]
-    for flag in ("fixtures_only", "isolate", "run_all", "run_declared", "all_variants"):
+    for flag in ("fixtures_only", "isolate", "run_all", "run_declared"):
         if getattr(args, flag):
             command.append("--" + flag.replace("_", "-"))
     for name in args.contract or ():

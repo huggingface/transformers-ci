@@ -238,13 +238,6 @@ def test_vllm_runs_the_vllm_fleet_dataset(tmic, tmp_path, monkeypatch, capsys):
         run.main(["--framework", "vllm", "--fleet", "control"])
 
 
-def test_all_variants_is_passed_to_tmic(tmic, tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(run, "vllm_lock", lambda revision: (tmp_path / "vllm.lock", "e" * 40))
-    commands = tmic(stdout=[json.dumps({**RECORD, "status": "pass", "failures": []})])
-    assert run.main(["--framework", "vllm", "--fixtures-only", "--all-variants"]) == 0
-    assert "--all-variants" in commands[0]
-
-
 def test_a_custom_lock_cannot_silently_ignore_a_dataset_revision(tmp_path):
     for argv in (
         ["--lock", str(tmp_path / "fleet.lock"), "--fleet-revision", "main"],

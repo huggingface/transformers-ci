@@ -363,8 +363,7 @@ jobs:
               --staging-protocol grpc -- run-model-contracts "$@"
           }
           start=$SECONDS
-          # The vLLM fleet (huggingface-mic/vllm-fleet, main resolved to a commit), `default` variants (--all-variants would also run the `images` / `audio`
-          # variants some contracts declare, which are known to fail on vLLM CPU today).
+          # The vLLM fleet (huggingface-mic/vllm-fleet, main resolved to a commit), `default` variants.
           mic --framework vllm --fixtures-only --variant default \
             "${selection[@]}" --output /tmp/results.jsonl 2> /tmp/run.log | python -c '
           import json, sys
