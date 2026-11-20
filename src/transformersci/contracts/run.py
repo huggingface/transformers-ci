@@ -129,8 +129,7 @@ def vllm_lock(revision):
     }
     path = Path(tempfile.gettempdir()) / "vllm-fleet" / revision / f"{VLLM_FLEET}.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(fleet.from_tables(tables, VLLM_FLEET), indent=2) + "
-")
+    path.write_text(json.dumps(fleet.from_tables(tables, VLLM_FLEET), indent=2) + "\n")
     return path, revision
 
 
