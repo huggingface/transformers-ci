@@ -1,7 +1,7 @@
 name: "[Reusable] Model integration contracts"
 
 # Runs slim fixture contracts against the Transformers checkout: `transformers` (the Transformers contracts of
-# the Hub fleets) and `vllm` (vLLM Transformers-backend contracts, pins in contracts/data/vllm-fleet.json).
+# the Hub fleets) and `vllm` (vLLM Transformers-backend contracts, fleet: huggingface-mic/vllm-fleet).
 # Phase 1 — observational: failures are reported but do not block the PR.
 
 on:
@@ -244,7 +244,7 @@ jobs:
   # vLLM contracts: each slim MIC fixture served by vLLM's Transformers modeling backend
   # (`model_impl="transformers"`) and compared with Transformers in the same process (backend
   # picked, greedy tokens, logits at every step). Same steps as `transformers`; the differences are only
-  # what vLLM needs: its install, the bundled fleet (contracts/data/vllm-fleet.json), and names.
+  # what vLLM needs: its install, its fleet (the huggingface-mic/vllm-fleet dataset), and names.
   vllm:
     # Infrastructure failures must not block PRs during the observational rollout.
     continue-on-error: true
@@ -363,7 +363,7 @@ jobs:
               --staging-protocol grpc -- run-model-contracts "$@"
           }
           start=$SECONDS
-          # The bundled vLLM fleet, `default` variants (--all-variants would also run the `images` / `audio`
+          # The vLLM fleet (huggingface-mic/vllm-fleet, main resolved to a commit), `default` variants (--all-variants would also run the `images` / `audio`
           # variants some contracts declare, which are known to fail on vLLM CPU today).
           mic --framework vllm --fixtures-only --variant default \
             "${selection[@]}" --output /tmp/results.jsonl 2> /tmp/run.log | python -c '
