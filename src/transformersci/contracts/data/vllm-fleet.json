@@ -322,19 +322,5 @@
         "vllm"
       ]
     }
-  },
-  "known_failures": {
-    "gemma3-vllm/gemma3-vllm-mic": {
-      "issue": "vLLM CPU backend ignores Gemma 3's bidirectional attention over image tokens: image prompts differ from Transformers",
-      "variants": [
-        "images"
-      ]
-    },
-    "qwen2-audio-vllm/qwen2-audio-vllm-mic": {
-      "issue": "vLLM Transformers backend needs get_audio_features, which transformers Qwen2AudioModel does not define (AttributeError at vLLM load)",
-      "variants": [
-        "audio"
-      ]
-    }
   }
 }
