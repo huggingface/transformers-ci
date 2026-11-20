@@ -713,7 +713,8 @@ jobs:
   # ---------------------------------------------------------------------------
   # ===========================================================================
   # Model integration contracts — observational, does not block the PR.
-  # Runs slim fixture contracts (~70s) independently of the test suite.
+  # Runs slim fixture contracts (~70s), and in a parallel job the vLLM contracts (~5 min incl. the vLLM
+  # install, same changed-file selection), independently of the test suite.
   # Depends on quality_gate so it is skipped when quality checks fail, and on
   # test-preparation so it is skipped when no changed file can select a contract.
   # Not in ci_passed.needs for phase 1 (observational); add it for phase 2.
@@ -722,23 +723,8 @@ jobs:
     needs: [test-preparation, quality_gate]
     if: ${{ !cancelled() && needs.quality_gate.result == 'success'
          && needs.test-preparation.outputs.run_fast_integration == 'true' }}
-    uses: huggingface/transformers-ci/.github/workflows/pr-ci_contracts.yml@main
-    with:
-      docker_image: "huggingface/transformers-torch-light"
-      runner:       "aws-m8i-l-cache"
-      ci_sha:       "main"
-
-  # ===========================================================================
-  # vLLM model integration contracts — observational, does not block the PR.
-  # vLLM's Transformers backend (default for Qwen2/Llama in vLLM) vs Transformers on
-  # slim MIC fixtures (~1 min + vLLM install). Runs on every PR that passes the
-  # quality gate: three contracts, no changed-file selection yet.
-  # TODO(vllm-mic): switch both refs to main when merged.
-  # ===========================================================================
-  vllm-integration:
-    needs: [quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success' }}
-    uses: huggingface/transformers-ci/.github/workflows/pr-ci_vllm_contracts.yml@vllm-mic
+    # TODO(vllm-mic): switch both refs back to main when merged (verification of the vllm job).
+    uses: huggingface/transformers-ci/.github/workflows/pr-ci_contracts.yml@vllm-mic
     with:
       docker_image: "huggingface/transformers-torch-light"
       runner:       "aws-m8i-l-cache"
