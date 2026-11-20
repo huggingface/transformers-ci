@@ -205,6 +205,35 @@ jobs:
           echo "dummy" > "/transformers/reports/${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports/dummy.txt"
           ls -la "/transformers/reports/${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports"
 
+      # Record which files under the HF cache (/mnt/cache) are opened by the tests, to find unused cache entries.
+      # Best effort: if strace can't be installed or can't trace in this container, the tests run untraced.
+      - name: Set up HF cache usage tracing
+        continue-on-error: true
+        shell: bash
+        run: |
+          command -v strace || (apt-get update && apt-get install -y --no-install-recommends strace)
+          cat > /usr/local/bin/hf-cache-trace <<'EOF'
+          #!/bin/sh
+          # Only `open*` syscalls stop the traced processes (`--seccomp-bpf`); keep successful opens under /mnt/cache.
+          exec strace -f -z -qq --seccomp-bpf -e trace=open,openat,openat2 -e signal=none -o '|grep -aF /mnt/cache/ > /tmp/hf_cache_trace.log' "$@"
+          EOF
+          cat > /usr/local/bin/hf-cache-usage <<'EOF'
+          #!/usr/bin/env python3
+          # Write `<size>\t<path>` for each regular file under /mnt/cache opened during the traced run.
+          import os, re, sys
+          output_file = sys.argv[1]
+          # Don't create the report directory: an artifact without the pytest reports would break the Slack report.
+          if os.path.isfile("/tmp/hf_cache_trace.log") and os.path.isdir(os.path.dirname(output_file)):
+              with open("/tmp/hf_cache_trace.log", encoding="utf-8", errors="replace") as fp:
+                  paths = sorted(set(re.findall(r'"(/mnt/cache/[^"]+)"', fp.read())))
+              paths = [path for path in paths if os.path.isfile(path)]
+              with open(output_file, "w", encoding="utf-8") as fp:
+                  fp.writelines(f"{os.path.getsize(path)}\t{path}\n" for path in paths)
+              print(f"{len(paths)} files under /mnt/cache were opened: see {output_file}")
+          EOF
+          chmod +x /usr/local/bin/hf-cache-trace /usr/local/bin/hf-cache-usage
+          hf-cache-trace true && echo "HF_CACHE_TRACE=hf-cache-trace" >> "$GITHUB_ENV"
+
       - name: Run all tests on GPU
         working-directory: /transformers
         env:
@@ -277,7 +306,7 @@ jobs:
             OTEL_WRAP="configure-ci-otel --suite $TRANSFORMERS_TEST_OTEL_SUITE --service-name pytest-observability --protocol http --otlp-endpoint $OTEL_EXPORTER_OTLP_ENDPOINT --token $OTEL_TOKEN --staging-endpoint 10.90.52.50:5317 --staging-protocol grpc --"
           fi
 
-          script -q -c "PATCH_TESTING_METHODS_TO_COLLECT_OUTPUTS=yes _PATCHED_TESTING_METHODS_OUTPUT_DIR=/transformers/reports/${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports $OTEL_WRAP python3 -m pytest -rsfE -v -m '${pytest_marker}' --make-reports=${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports ${test_path}" test_outputs.txt
+          script -q -c "PATCH_TESTING_METHODS_TO_COLLECT_OUTPUTS=yes _PATCHED_TESTING_METHODS_OUTPUT_DIR=/transformers/reports/${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports $OTEL_WRAP $HF_CACHE_TRACE python3 -m pytest -rsfE -v -m '${pytest_marker}' --make-reports=${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports ${test_path}" test_outputs.txt
           ls -la
           # Extract the exit code from the output file
           EXIT_CODE=$(tail -1 test_outputs.txt | grep -o 'COMMAND_EXIT_CODE="[0-9]*"' | cut -d'"' -f2)
@@ -307,6 +336,13 @@ jobs:
           report_name_prefix: ${{ inputs.report_name_prefix }}
         run: |
           cp /transformers/test_outputs.txt "/transformers/reports/${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports"
+
+      - name: Collect HF cache usage
+        if: ${{ always() && env.HF_CACHE_TRACE != '' }}
+        continue-on-error: true
+        env:
+          report_name_prefix: ${{ inputs.report_name_prefix }}
+        run: hf-cache-usage "/transformers/reports/${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports/hf_cache_usage.txt"
 
       - name: "Test suite reports artifacts: ${{ env.machine_type }}_${{ inputs.report_name_prefix }}_${{ env.matrix_folders }}_test_reports"
         if: ${{ always() }}
