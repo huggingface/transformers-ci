@@ -723,12 +723,11 @@ jobs:
     needs: [test-preparation, quality_gate]
     if: ${{ !cancelled() && needs.quality_gate.result == 'success'
          && needs.test-preparation.outputs.run_fast_integration == 'true' }}
-    # TODO(vllm-mic): switch both refs back to main when merged (verification of the vllm job).
-    uses: huggingface/transformers-ci/.github/workflows/pr-ci_contracts.yml@vllm-mic
+    uses: huggingface/transformers-ci/.github/workflows/pr-ci_contracts.yml@main
     with:
       docker_image: "huggingface/transformers-torch-light"
       runner:       "aws-m8i-l-cache"
-      ci_sha:       "vllm-mic"
+      ci_sha:       "main"
 
   # ---------------------------------------------------------------------------
   # ===========================================================================
