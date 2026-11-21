@@ -326,23 +326,6 @@ jobs:
           EXIT_CODE=$(tail -1 test_outputs.txt | grep -o 'COMMAND_EXIT_CODE="[0-9]*"' | cut -d'"' -f2)
           exit ${EXIT_CODE:-1}
 
-      # [Temporary] verify_xet_cache: after the tests, show where the cache entries
-      # touched during the run were written (Xet mount vs EFS vs container-local).
-      - name: "[verify_xet_cache] Where did the tests write cache entries (after tests)"
-        if: ${{ always() }}
-        continue-on-error: true
-        shell: bash
-        run: |
-          for d in /mnt/xet_cache/hub /mnt/cache/hub "$HOME/.cache/huggingface/hub" /root/.cache/huggingface/hub; do
-            echo "=== entries newer than the pre-test marker under $d"
-            if [ -d "$d" ]; then
-              timeout 300 find "$d" -mindepth 1 -maxdepth 3 -newer /tmp/xet_verify_marker 2>/dev/null | head -100
-              echo "(count: $(timeout 300 find "$d" -mindepth 1 -maxdepth 3 -newer /tmp/xet_verify_marker 2>/dev/null | wc -l))"
-            else
-              echo "(does not exist)"
-            fi
-          done
-
       - name: Failure short reports
         if: ${{ failure() }}
         # This step is only to show information on Github Actions log.
