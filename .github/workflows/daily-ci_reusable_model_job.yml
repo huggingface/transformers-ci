@@ -52,7 +52,7 @@ on:
         type: string
 
 env:
-  HF_HOME: /mnt/cache
+  HF_HOME: /mnt/xet_cache
   TRANSFORMERS_IS_CI: yes
   OMP_NUM_THREADS: 8
   MKL_NUM_THREADS: 8
@@ -205,6 +205,49 @@ jobs:
           echo "dummy" > "/transformers/reports/${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports/dummy.txt"
           ls -la "/transformers/reports/${machine_type}_${report_name_prefix}_${matrix_folders}_test_reports"
 
+      # [Temporary] verify_xet_cache: check that the HF cache really resolves to
+      # the Xet mount (/mnt/xet_cache), not only that HF_HOME has that name.
+      - name: "[verify_xet_cache] Check HF cache is on the Xet mount (before tests)"
+        shell: bash
+        run: |
+          set -x
+          echo "HF_HOME=${HF_HOME}"
+          touch /tmp/xet_verify_marker
+          # Mounts as seen from inside the job container
+          grep -E '/mnt/' /proc/mounts || true
+          findmnt -T /mnt/xet_cache || true
+          findmnt -T /mnt/cache || true
+          stat -f -c 'fs type of %n: %T' /mnt/xet_cache /mnt/cache || true
+          ls -la /mnt/xet_cache | head -20 || true
+          ls -la /mnt/xet_cache/hub 2>/dev/null | head -20 || true
+
+          # What huggingface_hub itself resolves from the env
+          python3 -c "from huggingface_hub import constants as c; print('HF_HOME', c.HF_HOME); print('HF_HUB_CACHE', c.HF_HUB_CACHE); print('HF_XET_CACHE', getattr(c, 'HF_XET_CACHE', None))"
+          hub_cache=$(python3 -c "from huggingface_hub import constants as c; print(c.HF_HUB_CACHE)")
+
+          # Download a real (small) file and check where it physically lands
+          file_path=$(python3 -c "from huggingface_hub import hf_hub_download; print(hf_hub_download('hf-internal-testing/tiny-random-LlamaForCausalLM', 'config.json'))")
+          real_path=$(readlink -f "$file_path")
+          echo "downloaded: $file_path -> $real_path"
+
+          xet_target=$(findmnt -n -o TARGET -T /mnt/xet_cache)
+          hub_target=$(findmnt -n -o TARGET -T "$hub_cache")
+          file_target=$(findmnt -n -o TARGET -T "$real_path")
+          echo "mount of /mnt/xet_cache : $xet_target ($(findmnt -n -o FSTYPE,SOURCE -T /mnt/xet_cache))"
+          echo "mount of HF_HUB_CACHE  : $hub_target ($(findmnt -n -o FSTYPE,SOURCE -T "$hub_cache"))"
+          echo "mount of downloaded file: $file_target ($(findmnt -n -o FSTYPE,SOURCE -T "$real_path"))"
+          echo "mount of /mnt/cache     : $(findmnt -n -o TARGET,FSTYPE,SOURCE -T /mnt/cache)"
+
+          if [ "$xet_target" != "/mnt/xet_cache" ]; then
+            echo "::error::/mnt/xet_cache is not a mount point in the container (resolves to '$xet_target')"
+            exit 1
+          fi
+          if [ "$hub_target" != "$xet_target" ] || [ "$file_target" != "$xet_target" ]; then
+            echo "::error::HF cache is NOT on the Xet mount (hub cache on '$hub_target', file on '$file_target')"
+            exit 1
+          fi
+          echo "OK: HF hub cache and downloaded file are on the Xet mount ($xet_target)"
+
       - name: Run all tests on GPU
         working-directory: /transformers
         env:
@@ -282,6 +325,23 @@ jobs:
           # Extract the exit code from the output file
           EXIT_CODE=$(tail -1 test_outputs.txt | grep -o 'COMMAND_EXIT_CODE="[0-9]*"' | cut -d'"' -f2)
           exit ${EXIT_CODE:-1}
+
+      # [Temporary] verify_xet_cache: after the tests, show where the cache entries
+      # touched during the run were written (Xet mount vs EFS vs container-local).
+      - name: "[verify_xet_cache] Where did the tests write cache entries (after tests)"
+        if: ${{ always() }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          for d in /mnt/xet_cache/hub /mnt/cache/hub "$HOME/.cache/huggingface/hub" /root/.cache/huggingface/hub; do
+            echo "=== entries newer than the pre-test marker under $d"
+            if [ -d "$d" ]; then
+              timeout 300 find "$d" -mindepth 1 -maxdepth 3 -newer /tmp/xet_verify_marker 2>/dev/null | head -100
+              echo "(count: $(timeout 300 find "$d" -mindepth 1 -maxdepth 3 -newer /tmp/xet_verify_marker 2>/dev/null | wc -l))"
+            else
+              echo "(does not exist)"
+            fi
+          done
 
       - name: Failure short reports
         if: ${{ failure() }}
