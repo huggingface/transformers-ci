@@ -12,7 +12,7 @@ from . import related_issues, slack_brief
 
 MAX_PAGES = 10
 MAX_BYTES = 512 * 1024
-SUPPORTED_BRIEF_VERSIONS = {"0.3.18", "0.3.19"}
+SUPPORTED_BRIEF_VERSIONS = {"0.3.18", "0.3.19", "0.3.20"}
 
 
 def brief(pr):

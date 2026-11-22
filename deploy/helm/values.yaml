@@ -201,7 +201,7 @@ traceExporter:
     # Optional CONNECT proxy for github.com and api.github.com.
     githubProxy: ""
   # Read-only related-issue search. Empty disables lookups; the panel reports
-  # unavailable. Adapter targets Relore 0.3.18; verify compatibility on upgrades.
+  # unavailable. Adapter targets Relore 0.3.20; verify compatibility on upgrades.
   relore:
     url: http://ghlore.ghlore.svc.cluster.local
   # WDYT? on the Test page: one direct LLM call per (trace, test), for signed-in
