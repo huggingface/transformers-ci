@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections import defaultdict
 from pathlib import Path
 
@@ -306,6 +307,7 @@ def main(argv=None):
     records = read(args.results)
     cases = to_replay(records)
     log = args.log.open("a") if args.log else sys.stderr
+    started = time.monotonic()
     try:
         base = replay(
             cases, args.base, args.repo, args.runner.split(), args.run_declared, log
@@ -313,8 +315,11 @@ def main(argv=None):
     finally:
         if args.log:
             log.close()
+    replay_seconds = round(time.monotonic() - started, 1)
     decisions = decide(records, base, labels, cases)
     text = summary(decisions, args.enforce, args.base, labels)
+    if cases:
+        text += f"\nBase replay: {len(cases)} red case(s) in {replay_seconds} s.\n"
     print(text)
     if args.summary:
         with args.summary.open("a") as f:
@@ -326,6 +331,8 @@ def main(argv=None):
                 {
                     "enforced": args.enforce,
                     "blocks": len(blocks),
+                    "replayed": len(cases),
+                    "replay_seconds": replay_seconds,
                     "decisions": decisions,
                 },
                 indent=2,

@@ -186,3 +186,14 @@ def test_main_replays_red_cases_on_the_base_tree(tmp_path):
         )
         == 0
     )
+
+
+def test_gate_json_reports_the_replay_cost(tmp_path, monkeypatch):
+    monkeypatch.setattr(gate, "replay", lambda cases, *a, **k: [rec("x")])
+    results = tmp_path / "results.jsonl"
+    results.write_text(json.dumps(rec("x", "fail", ["d"])) + "\n")
+    out = tmp_path / "gate.json"
+    assert gate.main([str(results), "--output", str(out)]) == 0
+    report = json.loads(out.read_text())
+    assert report["replayed"] == 1 and isinstance(report["replay_seconds"], float)
+    assert report["blocks"] == 1  # green on the base: would block, not enforced

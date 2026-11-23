@@ -163,7 +163,7 @@ jobs:
 
       - name: Summary
         id: summary
-        if: always()
+        if: ${{ !cancelled() }}
         continue-on-error: true
         env:
           INSTALL_OUTCOME: ${{ steps.install.outcome }}
@@ -224,7 +224,7 @@ jobs:
       # passes, a setup error, or the `mic-intended-change` label: a warning, never a block.
       - name: Gate
         id: gate
-        if: always() && github.event_name == 'pull_request' && steps.install.outcome == 'success'
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.install.outcome == 'success' }}
         continue-on-error: ${{ !inputs.enforce }}
         timeout-minutes: 8
         env:
@@ -239,7 +239,7 @@ jobs:
           gate-model-contracts "${args[@]}"
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        if: always()
+        if: ${{ !cancelled() }}
         continue-on-error: true
         with:
           name: contracts
@@ -266,7 +266,7 @@ jobs:
           key: contracts-hf-${{ runner.arch }}-${{ inputs.ci_sha }}
 
       - name: Flag contract failures for review
-        if: always() && (steps.install.outcome == 'failure' || steps.run.outcome == 'failure' || steps.summary.outcome == 'failure')
+        if: ${{ !cancelled() && (steps.install.outcome == 'failure' || steps.run.outcome == 'failure' || steps.summary.outcome == 'failure') }}
         run: |
           echo "::warning::A model integration contract failed or could not run; see the job summary and artifact for details. This observation does not block the PR."
 
@@ -409,7 +409,7 @@ jobs:
 
       - name: Summary
         id: summary
-        if: always()
+        if: ${{ !cancelled() }}
         continue-on-error: true
         env:
           INSTALL_OUTCOME: ${{ steps.install.outcome }}
@@ -465,7 +465,7 @@ jobs:
           PY_RESULT
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        if: always()
+        if: ${{ !cancelled() }}
         continue-on-error: true
         with:
           name: vllm-contracts
@@ -490,6 +490,6 @@ jobs:
           key: contracts-vllm-hf-${{ runner.arch }}-${{ inputs.ci_sha }}
 
       - name: Flag contract failures for review
-        if: always() && (steps.install.outcome == 'failure' || steps.run.outcome == 'failure' || steps.summary.outcome == 'failure')
+        if: ${{ !cancelled() && (steps.install.outcome == 'failure' || steps.run.outcome == 'failure' || steps.summary.outcome == 'failure') }}
         run: |
           echo "::warning::A model integration contract failed or could not run; see the job summary and artifact for details. This observation does not block the PR."
