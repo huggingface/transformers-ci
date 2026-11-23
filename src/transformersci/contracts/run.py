@@ -80,6 +80,11 @@ def parser():
         help="dataset revision for --fleet (default: tests/contracts.lock, otherwise main)",
     )
     parser.add_argument(
+        "--fleet-pr",
+        type=int,
+        help="with --fleet: also apply this Transformers PR's re-recorded expected values (record-mic)",
+    )
+    parser.add_argument(
         "--output", type=Path, help="append result records to this JSON lines file"
     )
     parser.add_argument(
@@ -167,11 +172,16 @@ def resolve_fleet(args):
         file=sys.stderr,
         flush=True,
     )
-    return ["--fleet", name, "--fleet-revision", revision], {
+    options = ["--fleet", name, "--fleet-revision", revision]
+    metadata = {
         "fleet": name,
         "fleet_repository": fleet.REPOSITORY,
         "fleet_revision": revision,
     }
+    if args.fleet_pr is not None:
+        options += ["--fleet-pr", str(args.fleet_pr)]
+        metadata["fleet_pr"] = args.fleet_pr
+    return options, metadata
 
 
 def check_command(args, fleet_options):

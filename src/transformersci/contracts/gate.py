@@ -12,8 +12,14 @@ A red case (fail or error) blocks only when the PR caused it. Everything else wa
   this is a re-run of an old merge commit against newer baselines. The base replay runs the same
   cases, fleet revision and environment on HEAD^1, the commit the merge was built on, so both
   cases compare like with like;
-- the `mic-intended-change` label: a maintainer reviewed the change as intended; the expected
-  values are re-recorded for review in transformers-mic after the merge.
+- the `mic-intended-change` label: a maintainer reviewed the change as intended but could not
+  re-record it (a fallback for when record-mic is unavailable).
+
+The usual path for an intended change is record-mic: someone with write access comments
+`record-mic: <model>` on the PR (or runs `make record-mic`), which re-records the expected
+values on the PR's code for this PR only (a fleet overlay, applied with --fleet-pr). The case
+then passes; the base replay applies the same overlay, so the base is checked against the PR's
+values and its red warns.
 
 A case the replay could not measure (the replay failed, or more red cases than REPLAY_LIMIT)
 warns: infrastructure must not block a PR. Without --enforce the exit status is always 0 and
@@ -161,7 +167,7 @@ def replay_env(base_src):
     return env
 
 
-def replay(cases, base, repo, runner, run_declared, log):
+def replay(cases, base, repo, runner, run_declared, log, fleet_pr=None):
     """Run `cases` on the `base` revision of `repo`; the records it reports (empty on failure)."""
     if not cases:
         return []
@@ -209,6 +215,8 @@ def replay(cases, base, repo, runner, run_declared, log):
                 command += ["--fleet-revision", group["revision"]]
             if run_declared:
                 command.append("--run-declared")
+            if fleet_pr is not None:
+                command += ["--fleet-pr", str(fleet_pr)]
             for target in sorted(group["targets"]):
                 command += ["--target", target]
             print("base replay:", " ".join(command), file=log, flush=True)
@@ -263,8 +271,9 @@ def summary(decisions, enforce, base, labels):
         lines += [
             "",
             "A blocked case is green on the base and red here. If it is a bug, fix it in this PR. If the change "
-            f"is intended, a maintainer adds the `{LABEL}` label and re-runs this job; the expected values are then "
-            f"re-recorded and reviewed in transformers-mic ([how]({RERECORD})).",
+            "is intended, someone with write access comments `record-mic: <model>` on this PR: the expected "
+            "values are re-recorded on this PR's code, posted here for review, and apply to this PR only until "
+            f"it merges ([details]({RERECORD})).",
         ]
     return "\n".join(lines) + "\n"
 
@@ -292,6 +301,11 @@ def main(argv=None):
         "--run-declared", action="store_true", help="the run included declared variants"
     )
     parser.add_argument(
+        "--fleet-pr",
+        type=int,
+        help="the PR whose record-mic overlay the run applied; the replay applies it too",
+    )
+    parser.add_argument(
         "--summary", type=Path, help="append the markdown summary to this file"
     )
     parser.add_argument("--output", type=Path, help="write the decisions as JSON")
@@ -310,7 +324,13 @@ def main(argv=None):
     started = time.monotonic()
     try:
         base = replay(
-            cases, args.base, args.repo, args.runner.split(), args.run_declared, log
+            cases,
+            args.base,
+            args.repo,
+            args.runner.split(),
+            args.run_declared,
+            log,
+            args.fleet_pr,
         )
     finally:
         if args.log:

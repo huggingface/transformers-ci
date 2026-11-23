@@ -1,0 +1,207 @@
+name: "[Reusable] record-mic"
+
+# Re-record the expected values of named model integration contracts on a Transformers PR's
+# code, for that PR only. Requested by someone with write access to the caller repository, with a
+# `record-mic: <model> ...` PR comment or `make record-mic` (workflow_dispatch).
+#
+#   authorize  the requester has write access; the model list is plain names
+#   record     PR code, NO secrets, read-only token: the PR's merge commit, on the PR CI runner and
+#              image (same platform classes as the contracts job); uploads the candidates
+#   publish    the Hub write token, NO PR code: validates the candidates (expected-value JSON for the
+#              named contracts only), commits them to `transformers-pr-<N>` branches of the mic repos,
+#              writes the fleet overlay `overlays/transformers-pr-<N>.json`, and posts the diff on the PR
+#
+# The PR's next contracts run applies the overlay (run-model-contracts --fleet-pr). When the PR
+# merges, pr-ci_record_mic_close.yml writes the overlay into the fleet; a closed PR's is dropped.
+
+on:
+  workflow_call:
+    inputs:
+      pr:
+        description: "Transformers PR number"
+        type: string
+        required: true
+      models:
+        description: "Model types, contract or target names (space or comma separated)"
+        type: string
+        required: true
+      requested_by:
+        description: "GitHub login that asked for the re-record"
+        type: string
+        required: true
+      merge_sha:
+        description: "The PR merge commit the requester approved (older than their request); the record runs exactly it"
+        type: string
+        required: true
+      docker_image:
+        type: string
+        required: false
+        default: "huggingface/transformers-torch-light"
+      runner:
+        type: string
+        required: false
+        default: "aws-m8i-l-cache"
+      ci_sha:
+        description: "Revision of huggingface/transformers-ci containing the MIC runner"
+        type: string
+        required: false
+        default: "main"
+    secrets:
+      mic_write_token:
+        description: "Hub token with write access to the huggingface-mic contract repos and fleet dataset"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      models: ${{ steps.check.outputs.models }}
+    steps:
+      - name: Requester has write access; models are plain names
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          USER_LOGIN: ${{ inputs.requested_by }}
+          MODELS: ${{ inputs.models }}
+          PR: ${{ inputs.pr }}
+        run: |
+          [[ "$PR" =~ ^[0-9]+$ ]] || { echo "::error::not a PR number: $PR"; exit 1; }
+          models=$(echo "$MODELS" | tr ',' ' ' | xargs)
+          [[ -n "$models" && "$models" =~ ^[A-Za-z0-9_.\ -]+$ ]] || { echo "::error::models must be plain names: $MODELS"; exit 1; }
+          permission=$(gh api "repos/$REPO/collaborators/$USER_LOGIN/permission" --jq .permission)
+          case "$permission" in
+            admin|maintain|write) ;;
+            *) echo "::error::$USER_LOGIN has '$permission' access to $REPO; record-mic needs write"; exit 1 ;;
+          esac
+          state=$(gh pr view "$PR" --repo "$REPO" --json state --jq .state)
+          [[ "$state" == OPEN ]] || { echo "::error::PR #$PR is $state"; exit 1; }
+          echo "models=$models" >> "$GITHUB_OUTPUT"
+
+  record:
+    needs: authorize
+    runs-on:
+      group: ${{ inputs.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    container:
+      image: ${{ inputs.docker_image }}
+      options: "--shm-size=16gb"
+    env:
+      DOC_BUILDER_SHA: c69e96c087165ba49b1788e0c3464654dd60253c
+      HF_HOME: /tmp/hf_home
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      PYTHONUNBUFFERED: "1"
+      OMP_NUM_THREADS: "4"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The merge commit, as the contracts job tests it. persist-credentials: false keeps the
+      # (read-only) token out of the PR code's reach.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/pull/${{ inputs.pr }}/merge
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Verify the approved merge commit
+        env:
+          APPROVED: ${{ inputs.merge_sha }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          actual=$(git rev-parse HEAD)
+          if [[ "$actual" != "$APPROVED" ]]; then
+            echo "::error::refs/pull/<pr>/merge is $actual, not the approved $APPROVED: the PR changed after the request; ask again"
+            exit 1
+          fi
+
+      - name: Install
+        run: |
+          uv pip install -e .
+          uv pip install "transformers-ci[contracts] @ git+https://github.com/huggingface/transformers-ci@${INPUTS_CI_SHA}"
+          uv pip install timm jsonschema fugashi unidic-lite "git+https://github.com/huggingface/doc-builder@$DOC_BUILDER_SHA"
+        env:
+          INPUTS_CI_SHA: ${{ inputs.ci_sha }}
+
+      - name: Record
+        id: record
+        env:
+          PR: ${{ inputs.pr }}
+          MODELS: ${{ needs.authorize.outputs.models }}
+        run: |
+          export PYTHONPATH="$PWD/src"
+          python -m transformers_mic.pr_record measure --pr "$PR" --models "$MODELS" \
+            --transformers-sha "$(git rev-parse HEAD)" --out /tmp/record-mic \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: ${{ !cancelled() }}
+        with:
+          name: record-mic
+          path: /tmp/record-mic
+          if-no-files-found: ignore
+
+  publish:
+    needs: [authorize, record]
+    # Also after a failed record: the PR gets a comment saying why nothing was published.
+    if: ${{ !cancelled() && needs.authorize.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      # transformers-mic as transformers-ci pins it; no Transformers checkout, no PR code.
+      - name: Install
+        env:
+          INPUTS_CI_SHA: ${{ inputs.ci_sha }}
+        run: pip install "transformers-ci[contracts] @ git+https://github.com/huggingface/transformers-ci@${INPUTS_CI_SHA}"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: record-mic
+          path: record-mic
+
+      - name: Publish
+        id: publish
+        if: needs.record.result == 'success'
+        env:
+          HF_TOKEN: ${{ secrets.mic_write_token }}
+          PR: ${{ inputs.pr }}
+          BY: ${{ inputs.requested_by }}
+        run: |
+          python -I -m transformers_mic.pr_record publish --pr "$PR" --record record-mic --by "$BY" --execute
+
+      - name: Comment on the PR
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr }}
+          BY: ${{ inputs.requested_by }}
+          OUTCOME: ${{ steps.publish.outcome }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            if [[ "$OUTCOME" == success ]]; then
+              echo "**record-mic** (asked by @$BY): re-recorded for this PR only. Re-run the contracts job to apply them."
+            else
+              echo "**record-mic** (asked by @$BY): nothing was published ([run]($RUN))."
+            fi
+            echo
+            python -I -c "import json, sys; from transformers_mic import pr_record; print(pr_record.summary(json.load(open('record-mic/record.json'))))" 2>/dev/null \
+              || echo "No record was produced; see the [run]($RUN)."
+          } > comment.md
+          gh pr comment "$PR" --repo "$REPO" --body-file comment.md

@@ -1,0 +1,77 @@
+name: "[Reusable] record-mic: close"
+
+# A PR closed: if record-mic re-recorded expected values for it, a merged PR's overlay is written
+# into the fleet (its values go live with its code) and a closed PR's is dropped. Runs no PR code.
+# Overlay entries whose contract moved on main since the record are stale: they are reported on
+# the PR and not applied (main is then red on those cases, which warns, until re-recorded).
+
+on:
+  workflow_call:
+    inputs:
+      pr:
+        type: string
+        required: true
+      merged:
+        type: boolean
+        required: true
+      ci_sha:
+        type: string
+        required: false
+        default: "main"
+    secrets:
+      mic_write_token:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        env:
+          INPUTS_CI_SHA: ${{ inputs.ci_sha }}
+        run: pip install "transformers-ci[contracts] @ git+https://github.com/huggingface/transformers-ci@${INPUTS_CI_SHA}"
+
+      - name: Merge or discard the overlay
+        id: close
+        env:
+          HF_TOKEN: ${{ secrets.mic_write_token }}
+          PR: ${{ inputs.pr }}
+          MERGED: ${{ inputs.merged }}
+        run: |
+          [[ "$PR" =~ ^[0-9]+$ ]] || exit 1
+          command=discard
+          [[ "$MERGED" == true ]] && command=merge
+          status=0
+          python -I -m transformers_mic.pr_record "$command" --pr "$PR" --execute > close.json || status=$?
+          cat close.json
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Report stale entries on the PR
+        if: failure() && steps.close.outputs.status == '1' && inputs.merged
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr }}
+        run: |
+          python -I - <<'PY' > comment.md
+          import json
+          result = json.load(open("close.json"))
+          stale = [entry for name in ("control", "prototypes") for entry in result.get(name, {}).get("stale", [])]
+          print("**record-mic**: these re-recorded contracts changed on the fleet's main before this PR merged, "
+                "so their values were not applied; main is red on them until someone re-records:")
+          print()
+          print("\n".join(f"- `{entry}`" for entry in stale))
+          PY
+          gh pr comment "$PR" --repo "$REPO" --body-file comment.md
