@@ -197,3 +197,54 @@ def test_gate_json_reports_the_replay_cost(tmp_path, monkeypatch):
     report = json.loads(out.read_text())
     assert report["replayed"] == 1 and isinstance(report["replay_seconds"], float)
     assert report["blocks"] == 1  # green on the base: would block, not enforced
+
+
+def test_replay_applies_the_prs_overlay_on_the_base(tmp_path, monkeypatch):
+    """With --fleet-pr the base is checked against the PR's re-recorded values too."""
+    commands = []
+
+    def fake_run(command, env=None, **kwargs):
+        commands.append(command)
+        # `import transformers` resolves under the base tree the replay put first on PYTHONPATH
+        where = (
+            env["PYTHONPATH"].split(":")[0] + "/transformers/__init__.py" if env else ""
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=where, stderr="")
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    gate.replay(
+        [rec("x", "fail", ["d"])],
+        "HEAD^1",
+        ".",
+        ["runner"],
+        False,
+        sys.stderr,
+        fleet_pr=42,
+    )
+    runner = next(c for c in commands if c[0] == "runner")
+    assert runner[runner.index("--fleet-pr") + 1] == "42"
+
+
+def test_run_model_contracts_forwards_fleet_pr(monkeypatch):
+    from types import ModuleType
+
+    from transformersci.contracts import run
+
+    fake = ModuleType("transformers_mic.fleet")
+    fake.REPOSITORY = "huggingface-mic/transformers-fleet"
+    fake.resolve = lambda revision: revision
+    fake.read_pin = lambda path: "main"
+    package = ModuleType("transformers_mic")
+    package.fleet = fake
+    monkeypatch.setitem(sys.modules, "transformers_mic", package)
+    monkeypatch.setitem(sys.modules, "transformers_mic.fleet", fake)
+
+    args = run.parser().parse_args(
+        ["--fleet", "prototypes", "--fleet-revision", "f" * 40, "--fleet-pr", "7"]
+    )
+    options, metadata = run.resolve_fleet(args)
+    assert options[-2:] == ["--fleet-pr", "7"] and metadata["fleet_pr"] == 7
+    args = run.parser().parse_args(
+        ["--fleet", "prototypes", "--fleet-revision", "f" * 40]
+    )
+    assert "--fleet-pr" not in run.resolve_fleet(args)[0]
