@@ -161,6 +161,19 @@ a.row.sel,a.row:hover{background:var(--hover)}
     {title: 'Benchmarks', url: '/benchmarks', uids: []},
     {title: 'Profile', url: '/profile', uids: []},
   ];
+  // These pages are served by the exporter, outside Grafana's SPA router.
+  // Capture in the parent document before React turns the click into a 404.
+  if (!parent.tciStandaloneNav) {
+    parent.tciStandaloneNav = true;
+    pd.addEventListener('click', new parent.Function('event', `
+      var a = event.target.closest && event.target.closest('a');
+      if (!a || event.button || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      if (a.origin !== location.origin || !(a.pathname === '/profile' || a.pathname === '/benchmarks' || a.pathname.indexOf('/benchmarks/') === 0)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      location.assign(a.href);
+    `), true);
+  }
   function current(item) {
     var path = parent.location.pathname;
     if (item.url === '/' && path === '/') return true;
@@ -225,6 +238,10 @@ a.row.sel,a.row:hover{background:var(--hover)}
       MENU.forEach(function (item) {
         var link = pd.createElement('a');
         link.href = item.url;
+        if (item.url === '/benchmarks' && (/light/.test(pd.body.className) ||
+            (parent.grafanaBootData && parent.grafanaBootData.user && parent.grafanaBootData.user.lightTheme))) {
+          link.href += '?theme=light';
+        }
         link.textContent = item.title;
         link.title = item.tooltip || item.title;
         if (item.lock) {

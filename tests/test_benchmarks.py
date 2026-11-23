@@ -217,3 +217,17 @@ def test_unbounded_intervals_are_valid_json(snapshot):
     comparison = data["pages"]["pr-123.html"]
     comparison["abs"][0]["scenarios"][0]["metrics"][0]["ci"] = [None, None]
     assert "Unbounded (insufficient rounds)" in page.comparisons(comparison)
+
+
+def test_theme_defaults_to_grafana_dark_and_preserves_explicit_light(snapshot):
+    _, html = page.render("/benchmarks", {})
+    assert 'data-theme="dark"' in html
+    assert "prefers-color-scheme" not in html
+    _, html = page.render("/benchmarks", {"theme": ["light"]})
+    assert 'data-theme="light"' in html
+    assert "/benchmarks/main?theme=light" in html
+    assert "/benchmarks/pr-123?theme=light" in html
+    _, html = page.render("/benchmarks/main", {"theme": ["light"]})
+    assert 'name="theme" value="light"' in html
+    _, html = page.render("/benchmarks", {"theme": ["<script>"]})
+    assert 'data-theme="dark"' in html
