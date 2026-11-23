@@ -73,10 +73,10 @@ The refresher installs the `benchmarks` extra at startup, following the existing
 publisher's dependency-install pattern. Its network path must permit PyPI,
 GitHub/codeload (the pinned package archive and PR titles), huggingface.co and
 Hub file-download hosts. With a proxy, its allowlist must cover these hosts;
-setting the proxy URL alone does not grant access. The existing configured
-`secrets.keys.hfToken` is mounted only in the refresher; the browser receives
-neither the token nor the raw dataset. Xet is disabled in this container to use
-ordinary HTTPS downloads through that proxy.
+setting the proxy URL alone does not grant access. The production refresher reads this public dataset anonymously, without the
+publisher’s `hf-token` secret. Implicit Hub authentication is disabled so an
+unrelated expired credential cannot break reads. Xet is disabled in this
+container to use ordinary HTTPS downloads through that proxy.
 
 The Helm change adds `/benchmarks` routing to the exporter and a refresh sidecar;
 the exporter rolls once. Use the normal dashboard deploy plan, preflight and
