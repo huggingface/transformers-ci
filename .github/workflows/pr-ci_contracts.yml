@@ -24,17 +24,24 @@ on:
         type: boolean
         required: false
         default: false
+      enforce:
+        description: "Fail the job when a red contract is caused by the PR (gate-model-contracts); off: report only"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   transformers:
-    # Infrastructure failures must not block PRs during the observational rollout.
-    continue-on-error: true
+    # Only the Gate step can fail the job, and only when enforced: install, run and
+    # report failures are infrastructure and never block a PR.
+    continue-on-error: ${{ !inputs.enforce }}
     runs-on:
       group: ${{ inputs.runner }}
-    timeout-minutes: 15
+    # The gate's base replay (red cases only, capped) runs after the ~6 min contracts run.
+    timeout-minutes: 25
     container:
       image: ${{ inputs.docker_image }}
       options: "--shm-size=16gb"
@@ -211,6 +218,26 @@ jobs:
           print('Observation:', json.dumps(report))
           PY_RESULT
 
+      # Which red cases this PR caused: each red case is replayed on HEAD^1 (the base the
+      # merge commit was built on) with the same fleet revision and environment. Red on the
+      # base too (main is red, or a re-run of an old merge commit), a known failure that now
+      # passes, a setup error, or the `mic-intended-change` label: a warning, never a block.
+      - name: Gate
+        id: gate
+        if: always() && github.event_name == 'pull_request' && steps.install.outcome == 'success'
+        continue-on-error: ${{ !inputs.enforce }}
+        timeout-minutes: 8
+        env:
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          RUN_DECLARED: ${{ inputs.run_declared || contains(github.event.pull_request.labels.*.name, 'mic-run-declared') }}
+          ENFORCE: ${{ inputs.enforce }}
+        run: |
+          args=(/tmp/results.jsonl --base HEAD^1 --labels "$LABELS" --summary "$GITHUB_STEP_SUMMARY"
+                --output /tmp/contracts-gate.json --log /tmp/gate.log)
+          [[ "$RUN_DECLARED" == true ]] && args+=(--run-declared)
+          [[ "$ENFORCE" == true ]] && args+=(--enforce)
+          gate-model-contracts "${args[@]}"
+
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         continue-on-error: true
@@ -220,6 +247,8 @@ jobs:
             /tmp/results.jsonl
             /tmp/run.log
             /tmp/contracts-observation.json
+            /tmp/contracts-gate.json
+            /tmp/gate.log
 
       # A PR's cache is only visible to that PR, so saving there buys little. When the
       # restore fails (e.g. "Egress is over the account limit") every fixture is
