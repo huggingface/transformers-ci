@@ -116,6 +116,7 @@ def test_main_replays_red_cases_on_the_base_tree(tmp_path):
             p = argparse.ArgumentParser()
             p.add_argument("--fleet"); p.add_argument("--variant"); p.add_argument("--output")
             p.add_argument("--fleet-revision"); p.add_argument("--target", action="append")
+            p.add_argument("--code-revision")
             p.add_argument("--fixtures-only", action="store_true")
             a = p.parse_args()
             with open(a.output, "a") as f:
@@ -205,6 +206,10 @@ def test_replay_applies_the_prs_overlay_on_the_base(tmp_path, monkeypatch):
 
     def fake_run(command, env=None, **kwargs):
         commands.append(command)
+        if "rev-parse" in command:
+            return subprocess.CompletedProcess(
+                command, 0, stdout="b" * 40 + "\n", stderr=""
+            )
         # `import transformers` resolves under the base tree the replay put first on PYTHONPATH
         where = (
             env["PYTHONPATH"].split(":")[0] + "/transformers/__init__.py" if env else ""
@@ -223,6 +228,9 @@ def test_replay_applies_the_prs_overlay_on_the_base(tmp_path, monkeypatch):
     )
     runner = next(c for c in commands if c[0] == "runner")
     assert runner[runner.index("--fleet-pr") + 1] == "42"
+    assert (
+        runner[runner.index("--code-revision") + 1] == "b" * 40
+    )  # the base meets its own values
 
 
 def test_run_model_contracts_forwards_fleet_pr(monkeypatch):
@@ -244,6 +252,21 @@ def test_run_model_contracts_forwards_fleet_pr(monkeypatch):
     )
     options, metadata = run.resolve_fleet(args)
     assert options[-2:] == ["--fleet-pr", "7"] and metadata["fleet_pr"] == 7
+    args = run.parser().parse_args(
+        [
+            "--fleet",
+            "control",
+            "--fleet-revision",
+            "f" * 40,
+            "--code-revision",
+            "c" * 40,
+        ]
+    )
+    options, metadata = run.resolve_fleet(args)
+    assert (
+        options[-2:] == ["--code-revision", "c" * 40]
+        and metadata["code_revision"] == "c" * 40
+    )
     args = run.parser().parse_args(
         ["--fleet", "prototypes", "--fleet-revision", "f" * 40]
     )

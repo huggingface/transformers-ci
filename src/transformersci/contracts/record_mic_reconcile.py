@@ -39,7 +39,7 @@ def overlays():
 
 
 def pr_state(pr, repository=REPOSITORY):
-    """open, merged or closed."""
+    """(open | merged | closed, the PR's commit on the base branch once merged, else None)."""
     request = urllib.request.Request(
         f"https://api.github.com/repos/{repository}/pulls/{pr}",
         headers={"Accept": "application/vnd.github+json"},
@@ -49,11 +49,11 @@ def pr_state(pr, repository=REPOSITORY):
     with urllib.request.urlopen(request, timeout=30) as response:
         data = json.load(response)
     if data.get("merged_at"):
-        return "merged"
-    return "open" if data["state"] == "open" else "closed"
+        return "merged", data.get("merge_commit_sha")
+    return ("open" if data["state"] == "open" else "closed"), None
 
 
-def settle(pr, state, execute):
+def settle(pr, state, execute, since=None):
     """Run pr_record for a PR that is no longer open; (exit code, its JSON output or None)."""
     command = "merge" if state == "merged" else "discard"
     args = [
@@ -66,6 +66,9 @@ def settle(pr, state, execute):
     ]
     if execute:
         args.append("--execute")
+    if state == "merged" and since:
+        # Runs of code without this commit keep meeting the values before it (fleet history).
+        args += ["--since", since]
     done = subprocess.run(args, capture_output=True, text=True)
     lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
     return done.returncode, json.loads(lines[-1]) if lines else None, done.stderr
@@ -96,11 +99,11 @@ def main(argv=None):
     if not prs:
         lines.append("No overlay.")
     for pr in prs:
-        state = pr_state(pr)
+        state, since = pr_state(pr)
         if state == "open":
             lines.append(f"- #{pr}: open, kept")
             continue
-        code, result, stderr = settle(pr, state, args.execute)
+        code, result, stderr = settle(pr, state, args.execute, since)
         verb = "merged into the fleet" if state == "merged" else "dropped (PR closed)"
         if not args.execute:
             verb = f"would be {verb}"

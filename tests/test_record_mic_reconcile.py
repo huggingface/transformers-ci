@@ -8,7 +8,11 @@ from transformersci.contracts import record_mic_reconcile as rec
 
 def run_with(monkeypatch, tmp_path, states, outputs, execute=True):
     monkeypatch.setattr(rec, "overlays", lambda: sorted(states))
-    monkeypatch.setattr(rec, "pr_state", lambda pr: states[pr])
+    monkeypatch.setattr(
+        rec,
+        "pr_state",
+        lambda pr: (states[pr], f"sha{pr}" if states[pr] == "merged" else None),
+    )
     calls = []
 
     def fake_run(args, **kwargs):
@@ -41,7 +45,12 @@ def test_merged_closed_and_open(monkeypatch, tmp_path):
     )
     assert code == 0
     assert [c[3:5] for c in calls] == [["merge", "--pr"], ["discard", "--pr"]]
-    assert all(c[-1] == "--execute" for c in calls)
+    assert calls[0][-3:] == [
+        "--execute",
+        "--since",
+        "sha1",
+    ]  # history: the PR's commit on main
+    assert calls[1][-1] == "--execute" and "--since" not in calls[1]
     assert "#1: merged, merged into the fleet" in text
     assert "#2: closed, dropped (PR closed)" in text
     assert "#3: open, kept" in text

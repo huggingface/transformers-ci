@@ -181,6 +181,12 @@ def replay(cases, base, repo, runner, run_declared, log, fleet_pr=None):
             stderr=log,
         )
         env = replay_env(tree / "src")
+        # The base meets the values of its own time (fleet history), not the PR's.
+        base_sha = subprocess.run(
+            ["git", "-C", str(tree), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
         where = subprocess.run(
             [sys.executable, "-c", "import transformers; print(transformers.__file__)"],
             env=env,
@@ -217,6 +223,8 @@ def replay(cases, base, repo, runner, run_declared, log, fleet_pr=None):
                 command.append("--run-declared")
             if fleet_pr is not None:
                 command += ["--fleet-pr", str(fleet_pr)]
+            if base_sha:
+                command += ["--code-revision", base_sha]
             for target in sorted(group["targets"]):
                 command += ["--target", target]
             print("base replay:", " ".join(command), file=log, flush=True)
