@@ -29,6 +29,10 @@ on:
         description: "GitHub login that asked for the re-record"
         type: string
         required: true
+      merge_sha:
+        description: "The PR merge commit the requester approved (older than their request); the record runs exactly it"
+        type: string
+        required: true
       docker_image:
         type: string
         required: false
@@ -107,9 +111,19 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      - name: Install
+      - name: Verify the approved merge commit
+        env:
+          APPROVED: ${{ inputs.merge_sha }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          actual=$(git rev-parse HEAD)
+          if [[ "$actual" != "$APPROVED" ]]; then
+            echo "::error::refs/pull/<pr>/merge is $actual, not the approved $APPROVED: the PR changed after the request; ask again"
+            exit 1
+          fi
+
+      - name: Install
+        run: |
           uv pip install -e .
           uv pip install "transformers-ci[contracts] @ git+https://github.com/huggingface/transformers-ci@${INPUTS_CI_SHA}"
           uv pip install timm jsonschema fugashi unidic-lite "git+https://github.com/huggingface/doc-builder@$DOC_BUILDER_SHA"
