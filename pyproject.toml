@@ -16,7 +16,7 @@ contracts = [
   # PINNED: run-model-contracts is `tmic check` plus telemetry, so this commit IS
   # the contracts runner PR CI uses (selection, comparison, known failures).
   # transformers-mic needs Python >=3.11; the Transformers CI image is 3.11.
-  "transformers-mic @ git+https://github.com/huggingface/transformers-mic@11ce11de7e50b5435d1b226878e55ac967be7a3c ; python_version >= '3.11'",
+  "transformers-mic @ git+https://github.com/huggingface/transformers-mic@7489bdd74f1fbb5592b5b49b23d92c5c69d211b1 ; python_version >= '3.11'",
 ]
 
 agentic = [

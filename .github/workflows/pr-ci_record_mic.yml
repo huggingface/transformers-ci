@@ -1,18 +1,21 @@
 name: "[Reusable] record-mic"
 
-# Re-record the expected values of named model integration contracts on a Transformers PR's
-# code, for that PR only. Requested by someone with write access to the caller repository, with a
-# `record-mic: <model> ...` PR comment or `make record-mic` (workflow_dispatch). The caller only
-# forwards the request; everything that decides whether to act on it happens here.
+# Publish the expected values a Transformers PR's contracts job recorded for the cases its gate
+# would block, for that PR only. Requested by someone with write access to the caller repository,
+# with a `record-mic: <model> ...` PR comment or `make record-mic` (workflow_dispatch). The caller
+# only forwards the request (as self-comment-ci.yml does for run-slow); everything that decides
+# whether to act on it happens here. No job here runs the PR's code.
 #
-#   authorize  parse the request (models are plain names); the requester has write access; the PR
-#              is open; its merge commit is older than the request (the `run-slow` timestamp check:
-#              code pushed after the request was not approved)
-#   record     PR code, NO secrets, read-only token: exactly that merge commit, on the PR CI runner
-#              and image (same platform classes as the contracts job); uploads the candidates
-#   publish    the Hub write token, NO PR code: validates the candidates (expected-value JSON for the
-#              named contracts only), commits them to `transformers-pr-<N>` branches of the mic repos,
-#              writes the fleet overlay `overlays/transformers-pr-<N>.json`, and posts the diff on the PR
+#   get-pr-info  the caller repository's own get-pr-info.yml: the one source of PR facts
+#   authorize    parse the request (models are plain names); the requester has write access; the
+#                PR is open; its merge commit is older than the request (the run-slow timestamp
+#                check: code pushed after the request was not approved)
+#   publish      the Hub write token: take the latest PR CI run that completed before the request
+#                and tested exactly that merge commit, validate the record its contracts job left
+#                in the `contracts` artifact (verified expected-value JSON for the requested
+#                contracts only), commit it to `transformers-pr-<N>` branches of the mic repos,
+#                write the fleet overlay `overlays/transformers-pr-<N>.json`, and post the diff
+#   report       any failure: say why on the PR
 #
 # The PR's next contracts run applies the overlay (run-model-contracts --fleet-pr). Once the PR is
 # merged or closed, mic-record-reconcile.yml (hourly) writes its overlay into the fleet or drops it.
@@ -25,7 +28,7 @@ on:
         type: string
         required: true
       request:
-        description: "The request as written: a comment whose first line is `record-mic: <models>`, or `record-mic: <models>`"
+        description: "The request as written: a comment whose first line is `record-mic: <models>`"
         type: string
         required: true
       requested_by:
@@ -37,16 +40,13 @@ on:
         type: string
         required: false
         default: ""
-      docker_image:
+      ci_workflow:
+        description: "Name of the caller's PR CI workflow, whose contracts job recorded the blocked cases"
         type: string
         required: false
-        default: "huggingface/transformers-torch-light"
-      runner:
-        type: string
-        required: false
-        default: "aws-m8i-l-cache"
+        default: "PR CI"
       ci_sha:
-        description: "Revision of huggingface/transformers-ci containing the MIC runner"
+        description: "Revision of huggingface/transformers-ci containing the MIC tools"
         type: string
         required: false
         default: "main"
@@ -59,14 +59,21 @@ permissions:
   contents: read
 
 jobs:
+  get-pr-info:
+    permissions:
+      contents: read
+    uses: huggingface/transformers/.github/workflows/get-pr-info.yml@main
+    with:
+      pr_number: ${{ inputs.pr }}
+
   authorize:
+    needs: get-pr-info
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       models: ${{ steps.check.outputs.models }}
-      merge_sha: ${{ steps.check.outputs.merge_sha }}
+      requested_at: ${{ steps.check.outputs.requested_at }}
     steps:
       # Inputs reach the script only as environment variables, never interpolated into it.
       - name: Parse and authorize the request
@@ -78,6 +85,9 @@ jobs:
           REQUEST: ${{ inputs.request }}
           USER_LOGIN: ${{ inputs.requested_by }}
           REQUESTED_AT: ${{ inputs.requested_at }}
+          PR_STATE: ${{ fromJSON(needs.get-pr-info.outputs.PR).state }}
+          MERGE_SHA: ${{ needs.get-pr-info.outputs.PR_MERGE_COMMIT_SHA }}
+          MERGE_TIMESTAMP: ${{ needs.get-pr-info.outputs.PR_MERGE_COMMIT_TIMESTAMP }}
         run: |
           [[ "$PR" =~ ^[0-9]+$ ]] || { echo "::error::not a PR number: $PR"; exit 1; }
           line=$(printf '%s\n' "$REQUEST" | head -1 | tr -d '\r')
@@ -89,136 +99,114 @@ jobs:
             admin|maintain|write) ;;
             *) echo "::error::$USER_LOGIN has '$permission' access to $REPO; record-mic needs write"; exit 1 ;;
           esac
-          read -r state merge_sha < <(gh api "repos/$REPO/pulls/$PR" --jq '"\(.state) \(.merge_commit_sha // "")"')
-          [[ "$state" == open ]] || { echo "::error::PR #$PR is $state"; exit 1; }
-          [[ "$merge_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::GitHub has no merge commit for #$PR yet (conflicts?); ask again"; exit 1; }
-          merged_at=$(gh api "repos/$REPO/commits/$merge_sha" --jq .commit.committer.date)
+          [[ "$PR_STATE" == open ]] || { echo "::error::PR #$PR is $PR_STATE"; exit 1; }
+          [[ "$MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::GitHub has no merge commit for #$PR (conflicts?); ask again"; exit 1; }
           requested=${REQUESTED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
-          if [ "$(date -d "$requested" +%s)" -le "$(date -d "$merged_at" +%s)" ]; then
-            echo "::error::#$PR changed after the request ($merged_at >= $requested): code pushed later was not approved; ask again"
+          if [ "$(date -d "$requested" +%s)" -le "$MERGE_TIMESTAMP" ]; then
+            echo "::error::#$PR changed after the request: code pushed later was not approved; ask again"
             exit 1
           fi
-          { echo "models=$models"; echo "merge_sha=$merge_sha"; } >> "$GITHUB_OUTPUT"
-
-  record:
-    needs: authorize
-    runs-on:
-      group: ${{ inputs.runner }}
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    container:
-      image: ${{ inputs.docker_image }}
-      options: "--shm-size=16gb"
-    env:
-      DOC_BUILDER_SHA: c69e96c087165ba49b1788e0c3464654dd60253c
-      HF_HOME: /tmp/hf_home
-      HF_HUB_DISABLE_PROGRESS_BARS: "1"
-      PYTHONUNBUFFERED: "1"
-      OMP_NUM_THREADS: "4"
-    defaults:
-      run:
-        shell: bash
-    steps:
-      # The merge commit, as the contracts job tests it. persist-credentials: false keeps the
-      # (read-only) token out of the PR code's reach.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: refs/pull/${{ inputs.pr }}/merge
-          fetch-depth: 2
-          persist-credentials: false
-
-      - name: Verify the approved merge commit
-        env:
-          APPROVED: ${{ needs.authorize.outputs.merge_sha }}
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          actual=$(git rev-parse HEAD)
-          if [[ "$actual" != "$APPROVED" ]]; then
-            echo "::error::refs/pull/<pr>/merge is $actual, not the authorized $APPROVED: the PR changed during the request; ask again"
-            exit 1
-          fi
-
-      - name: Install
-        run: |
-          uv pip install -e .
-          uv pip install "transformers-ci[contracts] @ git+https://github.com/huggingface/transformers-ci@${INPUTS_CI_SHA}"
-          uv pip install timm jsonschema fugashi unidic-lite "git+https://github.com/huggingface/doc-builder@$DOC_BUILDER_SHA"
-        env:
-          INPUTS_CI_SHA: ${{ inputs.ci_sha }}
-
-      - name: Record
-        id: record
-        env:
-          PR: ${{ inputs.pr }}
-          MODELS: ${{ needs.authorize.outputs.models }}
-        run: |
-          export PYTHONPATH="$PWD/src"
-          python -m transformers_mic.pr_record measure --pr "$PR" --models "$MODELS" \
-            --transformers-sha "$(git rev-parse HEAD)" --out /tmp/record-mic \
-            | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        if: ${{ !cancelled() }}
-        with:
-          name: record-mic
-          path: /tmp/record-mic
-          if-no-files-found: ignore
+          { echo "models=$models"; echo "requested_at=$requested"; } >> "$GITHUB_OUTPUT"
 
   publish:
-    needs: [authorize, record]
-    # Also after a failed record: the PR gets a comment saying why nothing was published.
-    if: ${{ !cancelled() && needs.authorize.result == 'success' }}
+    needs: [get-pr-info, authorize]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
+      actions: read
       pull-requests: write
     steps:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
-      # transformers-mic as transformers-ci pins it; no Transformers checkout, no PR code.
+      # transformers-ci and the transformers-mic it pins; no Transformers checkout, no PR code.
       - name: Install
         env:
           INPUTS_CI_SHA: ${{ inputs.ci_sha }}
         run: pip install "transformers-ci[contracts] @ git+https://github.com/huggingface/transformers-ci@${INPUTS_CI_SHA}"
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        continue-on-error: true
-        with:
-          name: record-mic
-          path: record-mic
+      # The latest PR CI run that completed before the request and whose contracts job tested the
+      # verified merge commit: its record is what that run measured and showed as red.
+      - name: Find the contracts run of the verified merge commit
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr }}
+          WORKFLOW: ${{ inputs.ci_workflow }}
+          HEAD_SHA: ${{ needs.get-pr-info.outputs.PR_HEAD_SHA }}
+          MERGE_SHA: ${{ needs.get-pr-info.outputs.PR_MERGE_COMMIT_SHA }}
+          REQUESTED_AT: ${{ needs.authorize.outputs.requested_at }}
+        run: |
+          before=$(date -d "$REQUESTED_AT" +%s)
+          runs=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&event=pull_request&status=completed&per_page=50" \
+            --jq ".workflow_runs[] | select(.name == env.WORKFLOW) | \"\(.id) \(.updated_at)\"")
+          while read -r id updated; do
+            [[ -n "$id" ]] || continue
+            [ "$(date -d "$updated" +%s)" -lt "$before" ] || continue
+            rm -rf artifact
+            gh run download "$id" --repo "$REPO" --name contracts --dir artifact 2>/dev/null || continue
+            # The contracts job wrote what it tested; the record must be of the verified commit.
+            if python -I - "$MERGE_SHA" "$PR" <<'PY'
+          import json, sys
+          o = json.load(open("artifact/contracts-observation.json"))
+          sys.exit(0 if o.get("sha") == sys.argv[1] and str(o.get("pr")) == sys.argv[2] else 1)
+          PY
+            then
+              echo "run_id=$id" >> "$GITHUB_OUTPUT"
+              [ -f artifact/record-mic/record.json ] || {
+                echo "::error::PR CI run $id tested this merge commit but recorded nothing: its contracts gate blocked no case"
+                exit 1
+              }
+              exit 0
+            fi
+          done <<< "$runs"
+          echo "::error::no completed PR CI run of the current merge commit finished before the request; wait for the contracts job, then ask again"
+          exit 1
 
       - name: Publish
         id: publish
-        if: needs.record.result == 'success'
         env:
           HF_TOKEN: ${{ secrets.mic_write_token }}
           PR: ${{ inputs.pr }}
           BY: ${{ inputs.requested_by }}
+          MODELS: ${{ needs.authorize.outputs.models }}
+          MERGE_SHA: ${{ needs.get-pr-info.outputs.PR_MERGE_COMMIT_SHA }}
         run: |
-          python -I -m transformers_mic.pr_record publish --pr "$PR" --record record-mic --by "$BY" --execute
+          python -I -m transformers_mic.pr_record publish --pr "$PR" --record artifact/record-mic \
+            --models "$MODELS" --merge-sha "$MERGE_SHA" --by "$BY" --execute
 
       - name: Comment on the PR
-        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ inputs.pr }}
           BY: ${{ inputs.requested_by }}
-          OUTCOME: ${{ steps.publish.outcome }}
-          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ steps.run.outputs.run_id }}
         run: |
           {
-            if [[ "$OUTCOME" == success ]]; then
-              echo "**record-mic** (asked by @$BY): re-recorded for this PR only. Re-run the contracts job to apply them."
-            else
-              echo "**record-mic** (asked by @$BY): nothing was published ([run]($RUN))."
-            fi
+            echo "**record-mic** (asked by @$BY): published for this PR only, from PR CI run $RUN_ID. They apply from the next contracts run."
             echo
-            python -I -c "import json, sys; from transformers_mic import pr_record; print(pr_record.summary(json.load(open('record-mic/record.json'))))" 2>/dev/null \
-              || echo "No record was produced; see the [run]($RUN)."
+            python -I -c "import json; from transformers_mic import pr_record; print(pr_record.summary(json.load(open('artifact/record-mic/record.json'))))"
           } > comment.md
           gh pr comment "$PR" --repo "$REPO" --body-file comment.md
+
+  report:
+    needs: [get-pr-info, authorize, publish]
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Say why on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr }}
+          BY: ${{ inputs.requested_by }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [[ "$PR" =~ ^[0-9]+$ ]] || exit 0
+          gh pr comment "$PR" --repo "$REPO" --body "**record-mic** (asked by @$BY): nothing was published; the reason is in the [run]($RUN)."
