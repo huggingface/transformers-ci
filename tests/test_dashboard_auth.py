@@ -423,3 +423,15 @@ def test_slack_link_browser_assets_and_existing_auth_gate(
     gid = sent[-1][2][1]["elements"][0]["value"]
     assert "Connected" in slack_accounts.confirm("T1:U1", gid)
     assert slack_commands.actor_for("T1", "U1") == "octocat"
+
+
+def test_profile_theme_and_navigation(http):
+    status, page, _ = http("/profile")
+    assert status == 200 and 'data-theme="dark"' in page
+    assert "prefers-color-scheme" not in page
+    assert page.index(">Benchmarks</a>") < page.index(">Profile</a>")
+    status, page, _ = http("/profile?theme=light")
+    assert status == 200 and 'data-theme="light"' in page
+    assert 'href="/benchmarks?theme=light"' in page
+    assert 'href="/profile?theme=light"' in page
+    assert 'data-theme="dark"' in http("/profile?theme=invalid")[1]

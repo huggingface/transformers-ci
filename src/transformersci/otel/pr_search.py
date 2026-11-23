@@ -13,6 +13,10 @@ Until it loads the frame is 0x0, so a down exporter leaves Grafana's box alone.
 
 from __future__ import annotations
 
+import json
+
+from transformersci.otel.dashboard_ui import NAV_CSS
+
 PR_DASHBOARD_URL = "/d/pytest-observability-by-pr/pytest-observability-branch"
 
 SEARCH_HTML = """<!doctype html>
@@ -197,14 +201,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
         'body:has(#tci-header-nav) [data-testid="data-testid Edit dashboard button"],' +
         'body:has(#tci-header-nav) [data-testid="data-testid Mark as favorite"]{display:none!important}' +
         'body:has(#tci-header-nav) [data-testid="data-testid DashboardSidebarSplitter primary body"]{padding-right:0!important;padding-top:4px}' +
-        '#tci-header-nav{display:flex;flex:none;align-items:center;gap:8px;white-space:nowrap}' +
-        '#tci-header-nav a{display:inline-flex;align-items:center;box-sizing:border-box;height:32px;flex:none;color:inherit;text-decoration:none;border:1px solid rgba(128,128,128,.4);border-radius:4px;padding:0 8px;font:600 12px/18px Inter,system-ui,sans-serif}' +
-        '#tci-header-nav a:hover{background:rgba(128,128,128,.15)}' +
-        '#tci-header-nav a:focus-visible{outline:2px solid #6e9fff;outline-offset:-2px}' +
-        '#tci-header-nav a[aria-current="page"]{border-color:#6e9fff}' +
-        '#tci-header-nav .tci-lock{width:11px;height:11px;margin-left:5px;opacity:.75}' +
-        '#tci-header-nav .tci-home{display:flex;align-items:center;gap:8px;font-size:14px;border:0;padding:0 4px;line-height:32px}' +
-        '#tci-header-nav .tci-home .tci-emoji{font-size:26px}' +
+        __NAV_CSS__ +
         'header[data-tci-compact="true"]{height:var(--tci-header-height)!important}' +
         '.main-view:has(header[data-tci-compact="true"])>div:not([data-testid="data-testid navigation mega-menu"]){padding-top:var(--tci-header-height)!important}' +
         'header[data-tci-compact="true"] #tci-header-nav{position:absolute;top:44px;left:16px;right:16px;flex-wrap:wrap;white-space:normal}' +
@@ -216,6 +213,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
     if (!nav) {
       nav = pd.createElement('nav');
       nav.id = 'tci-header-nav';
+      nav.className = 'tci-nav';
       nav.setAttribute('aria-label', 'CI dashboards');
       crumbs.parentNode.insertBefore(nav, crumbs);
     }
@@ -238,7 +236,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
       MENU.forEach(function (item) {
         var link = pd.createElement('a');
         link.href = item.url;
-        if (item.url === '/benchmarks' && (/light/.test(pd.body.className) ||
+        if ((item.url === '/benchmarks' || item.url === '/profile') && (/light/.test(pd.body.className) ||
             (parent.grafanaBootData && parent.grafanaBootData.user && parent.grafanaBootData.user.lightTheme))) {
           link.href += '?theme=light';
         }
@@ -453,4 +451,4 @@ a.row.sel,a.row:hover{background:var(--hover)}
 })();
 </script>
 </body></html>
-""".replace("__PR_URL__", PR_DASHBOARD_URL)
+""".replace("__PR_URL__", PR_DASHBOARD_URL).replace("__NAV_CSS__", json.dumps(NAV_CSS))

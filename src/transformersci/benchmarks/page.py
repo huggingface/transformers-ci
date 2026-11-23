@@ -19,23 +19,22 @@ from html import escape
 from pathlib import Path
 from urllib.parse import urlencode
 
-CSS = """
-:root{color-scheme:dark;--bg:#111217;--panel:#181b1f;--fg:#d8d9da;--muted:#a4a8af;--line:#343940;--accent:#8bb4ff;--good:#73bf69;--bad:#ff8585}
-:root[data-theme=light]{color-scheme:light;--bg:#f4f5f5;--panel:white;--fg:#24292e;--muted:#656d76;--line:#d0d7de;--accent:#1f6feb;--good:#26762c;--bad:#b32828}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 Inter,system-ui,sans-serif}
-a{color:var(--accent)}header{border-bottom:1px solid var(--line);padding:10px 16px}nav{display:flex;flex-wrap:wrap;gap:8px;align-items:center}header a,.tabs a{color:inherit;text-decoration:none;border:1px solid var(--line);border-radius:4px;padding:6px 9px}a[aria-current=page]{border-color:var(--accent)}header .home{font-size:16px;font-weight:700;border:0}main{max-width:1440px;margin:auto;padding:24px 20px 64px}h1{font-size:26px;margin:16px 0 4px}h2{margin:28px 0 12px;font-size:20px}h3{margin:0 0 4px;font-size:15px}p{margin:8px 0}.muted,small{color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(360px,100%),1fr));gap:16px}.card,.notice{border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:18px;margin:12px 0;min-width:0}.headline{font-size:24px;font-weight:600}.meta{font-size:12px;color:var(--muted);overflow-wrap:anywhere}.filters{display:flex;flex-wrap:wrap;align-items:end;gap:12px;margin:20px 0}label{display:grid;gap:4px}select,input,button{font:inherit;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:4px;padding:7px;max-width:100%}button{cursor:pointer;border-color:var(--accent)}.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:8px;white-space:nowrap}th{color:var(--muted)}td.wrap{white-space:normal;min-width:150px}summary{cursor:pointer;color:var(--accent);margin:8px 0}.good{color:var(--good)}.bad{color:var(--bad)}.chip{display:inline-block;font-size:12px;border:1px solid var(--line);border-radius:16px;padding:2px 8px;margin:2px}.plot{width:100%;height:auto}.plot text{fill:var(--muted);font:11px system-ui}.plot .gridline{stroke:var(--line)}.plot .line{fill:none;stroke:var(--accent);stroke-width:2}.plot .band{fill:var(--accent);opacity:.15}.plot circle{fill:var(--accent)}code{overflow-wrap:anywhere}footer{margin-top:32px;color:var(--muted);font-size:12px}:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+from transformersci.otel import dashboard_ui
+
+CSS = (
+    dashboard_ui.CSS
+    + """
+.tabs,.section-menu{display:flex;flex-wrap:wrap;gap:4px;margin:0 0 8px;border-bottom:1px solid var(--line)}
+.section-menu{position:sticky;top:0;background:var(--bg);z-index:10}
+.tabs a,.section-menu a{color:var(--muted);padding:6px 12px;text-decoration:none;border-bottom:2px solid transparent;font-size:13px}
+.tabs a:hover,.section-menu a:hover{color:var(--fg);background:var(--hover)}.tabs a[aria-current=page]{color:var(--fg);border-bottom-color:var(--accent)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(360px,100%),1fr));gap:8px}
+.card,.notice,.benchmark-group{background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:10px 12px;min-width:0}
+.benchmark-group{margin:12px 0;scroll-margin-top:48px}.benchmark-group>.panel-heading{display:flex;align-items:center;flex-wrap:wrap;gap:8px;justify-content:space-between;margin:0 0 8px}.panel-heading form{margin:0}
+.benchmark-group .card{background:var(--bg);padding:8px 10px}.headline{font-size:18px;font-weight:500}.meta{font-size:11px;line-height:16px;color:var(--muted);overflow-wrap:anywhere}.filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}.filters label{display:flex;align-items:center;gap:6px;font-size:12px}.filters select,.filters button{font-size:12px}.filters select{max-width:360px}label{display:grid;gap:4px}
+.plot{width:100%;height:auto}.plot text{fill:var(--muted);font:11px Inter,system-ui}.plot .gridline{stroke:var(--line)}.plot .line{fill:none;stroke:var(--accent);stroke-width:2}.plot .band{fill:var(--accent);opacity:.15}.plot circle{fill:var(--accent)}
+summary{cursor:pointer;color:var(--accent);margin:4px 0;font-size:12px}.good{color:var(--good)}.bad{color:var(--bad)}.chip{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:3px;padding:0 5px;margin:2px}.metric-value{display:flex;align-items:baseline;gap:8px;margin:4px 0 0}.delta{font-size:11px;margin:0}code{overflow-wrap:anywhere}footer{margin-top:20px;color:var(--muted);font-size:11px}.overview-card{margin:10px 0;padding:12px}.comparison-list{margin-top:12px}.comparison-list>h2{margin-bottom:4px}.comparison-list>.scroll{background:var(--panel);border:1px solid var(--line);border-radius:3px;margin-top:8px}td{white-space:nowrap}td.wrap{white-space:normal;min-width:150px}.card>h2{margin-bottom:6px}.card>h2~h3{margin-top:12px}
 """
-MENU = (
-    ("Activity", "/"),
-    ("Fix failures", "/d/pytest-test-health/fix-failures"),
-    ("MIC failures", "/d/mic-failures/mic-failures"),
-    ("Monitoring", "/d/pytest-observability-daily/monitoring"),
-    (
-        "CI Health 🔒",
-        "/login/github?redirectTo=%2Fd%2Fpytest-observability-stack-health%2Fci-health",
-    ),
-    ("Benchmarks", "/benchmarks"),
-    ("Profile", "/profile"),
 )
 
 
@@ -82,22 +81,21 @@ def table(headings, rows):
         + "".join(f"<th>{esc(h)}</th>" for h in headings)
         + "</tr></thead><tbody>"
         + "".join(
-            "<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>" for row in rows
+            "<tr>"
+            + "".join(
+                f'<td class="{"wrap" if headings[i] in ("Title", "Models", "Subject", "Verdicts") else ""}">{c}</td>'
+                for i, c in enumerate(row)
+            )
+            + "</tr>"
+            for row in rows
         )
         + "</tbody></table></div>"
     )
 
 
 def document(title, body, theme="dark"):
-    nav = link("/", "🤗 Transformers CI") + "".join(
-        link(
-            url(theme=theme) if name == "Benchmarks" else path,
-            name,
-            name == "Benchmarks",
-        )
-        for name, path in MENU
-    )
-    return f'<!doctype html><html lang="en" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} · Transformers CI</title><style>{CSS}</style></head><body><header><nav aria-label="CI dashboards">{nav}</nav></header><main>{body}</main></body></html>'
+    nav = dashboard_ui.header("Benchmarks", theme)
+    return f'<!doctype html><html lang="en" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} · Transformers CI</title><style>{CSS}</style></head><body>{nav}<main>{body}</main></body></html>'
 
 
 def chart(points, metric, unit):
@@ -165,46 +163,74 @@ def daily(data, params, theme="dark"):
     proc_metric = get("processor_metric", "time")
     if proc_metric not in ("time", "syncs"):
         proc_metric = "time"
-    filters = (
-        '<input type="hidden" name="theme" value="light">' if theme == "light" else ""
-    )
-    filters += select(
-        "metric",
-        "Generation metric",
-        [(k, v["label"]) for k, v in metrics.items()],
-        metric,
-    )
-    filters += select(
-        "processor_metric",
-        "Processor / encoder metric",
-        [("time", "Call time"), ("syncs", "GPU→CPU syncs")],
-        proc_metric,
-    )
-    filters += select(
+    values = {
+        "theme": theme if theme == "light" else "",
+        "model": model,
+        "group": group,
+        "metric": metric,
+        "processor_metric": proc_metric,
+    }
+
+    def hidden(exclude):
+        return "".join(
+            f'<input type="hidden" name="{key}" value="{esc(value)}">'
+            for key, value in values.items()
+            if value and key != exclude
+        )
+
+    model_filter = select(
         "model",
         "Model",
         [("", "All models")] + [(m, m) for m in sorted({s["model"] for s in series})],
         model,
     )
-    filters += select(
-        "group",
-        "Group",
-        [("", "All groups")]
-        + [(g, g) for g in dict.fromkeys(s["group"] for s in series)],
-        group,
-    )
-    out = '<p class="muted">Daily main runs. Lines show medians of run medians; bands show their min–max range. Only current series and metrics present throughout their last seven daily runs are shown.</p>'
-    out += f'<form class="filters" method="get" action="/benchmarks/main">{filters}<button>Apply filters</button>{link(url("main", theme=theme), "Reset")}</form>'
+    out = '<p class="meta">Daily main · median and min–max across runs · metrics recorded throughout the last seven daily runs</p>'
+    out += f'<form class="filters" method="get" action="/benchmarks/main">{hidden("model")}{model_filter}<button>Apply model</button>{link(url("main", theme=theme), "Reset")}</form>'
     groups = defaultdict(list)
     for s in series:
         if (not model or s["model"] == model) and (not group or s["group"] == group):
             groups[s["group"]].append(s)
     if not groups:
         return out + '<p class="notice">No daily series match these filters.</p>'
+    sections = {
+        "Generation": "generation",
+        "Multimodal processors (CPU)": "processors",
+        "Multimodal encoders (GPU, bf16)": "encoders",
+    }
+    out += (
+        '<nav class="section-menu" aria-label="Benchmark sections">'
+        + "".join(link("#" + sections.get(name, "series"), name) for name in groups)
+        + "</nav>"
+    )
     for name, items in groups.items():
-        out += f'<h2>{esc(name)}</h2><div class="grid">'
+        anchor = sections.get(name, "series")
+        controls = ""
+        if name == "Generation":
+            controls = select(
+                "metric",
+                "Metric",
+                [(k, v["label"]) for k, v in metrics.items()],
+                metric,
+            )
+            controls = hidden("metric") + controls
+        elif name == "Multimodal encoders (GPU, bf16)":
+            controls = hidden("processor_metric") + select(
+                "processor_metric",
+                "Metric",
+                [("time", "Call time"), ("syncs", "GPU→CPU syncs")],
+                proc_metric,
+            )
+        if controls:
+            controls = f'<form class="filters" method="get" action="/benchmarks/main#{anchor}">{controls}<button>Apply metric</button></form>'
+        out += f'<section class="benchmark-group" id="{anchor}"><div class="panel-heading"><h2>{esc(name)}</h2>{controls}</div><div class="grid">'
         for s in items:
-            m = metric if name == "Generation" else proc_metric
+            m = (
+                metric
+                if name == "Generation"
+                else "time"
+                if name == "Multimodal processors (CPU)"
+                else proc_metric
+            )
             meta = (metrics if name == "Generation" else data["series_metrics"]).get(
                 m, {}
             )
@@ -216,11 +242,11 @@ def daily(data, params, theme="dark"):
                 continue
             last = points[-1]["values"][m][0]
             first = points[0]["values"][m][0]
-            out += f'<p>{esc(meta.get("label", m))} <span class="headline">{esc(fmt(last, unit))}</span></p>'
+            out += f'<p class="metric-value"><span class="meta">{esc(meta.get("label", m))}</span><span class="headline">{esc(fmt(last, unit))}</span></p>'
             if first and len(points) > 1:
                 change = (last / first - 1) * 100
                 worse = change < 0 if meta.get("higher_is_better") else change > 0
-                out += f'<p class="{"bad" if worse else "good"}">{change:+.2f}% since {esc(points[0]["date"][:10])}</p>'
+                out += f'<p class="delta {"bad" if worse else "good"}">{change:+.2f}% since {esc(points[0]["date"][:10])}</p>'
             out += chart(points, m, unit)
             rows = []
             for p in reversed(points):
@@ -271,7 +297,7 @@ def daily(data, params, theme="dark"):
                     + "</code></details>"
                 )
             out += "</article>"
-        out += "</div>"
+        out += "</div></section>"
     return out
 
 
@@ -334,9 +360,9 @@ def comparisons(data):
 
 def overview(data, theme="dark"):
     main = data["main"]
-    out = f'<section class="card"><h2>{link(url("main", theme=theme), "Daily main")}</h2><p><span class="headline">{main["series"]}</span> series across {main["days"]} days</p><p>Latest: {esc(main["last_date"] or "No daily runs yet")} · {commit(main["last_commit"])}</p></section><h2>Pull requests and benchmark changes</h2><p class="muted">Verdicts describe the latest run. Open a comparison to see every run.</p>'
+    out = f'<section class="card overview-card"><h2>{link(url("main", theme=theme), "Daily main")}</h2><p><span class="headline">{main["series"]}</span> series across {main["days"]} days</p><p>Latest: {esc(main["last_date"] or "No daily runs yet")} · {commit(main["last_commit"])}</p></section><section class="comparison-list"><h2>Pull requests and benchmark changes</h2><p class="muted">Verdicts describe the latest run. Open a comparison to see every run.</p>'
     if not data["prs"]:
-        return out + '<p class="notice">No side-by-side runs yet.</p>'
+        return out + '<p class="notice">No side-by-side runs yet.</p></section>'
     rows = []
     for pr in data["prs"]:
         verdicts = " ".join(
@@ -353,8 +379,10 @@ def overview(data, theme="dark"):
                 verdicts,
             ]
         )
-    return out + table(
-        ["Comparison", "Title", "Models", "Runs", "Latest", "Verdicts"], rows
+    return (
+        out
+        + table(["Comparison", "Title", "Models", "Runs", "Latest", "Verdicts"], rows)
+        + "</section>"
     )
 
 

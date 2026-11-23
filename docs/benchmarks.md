@@ -10,7 +10,9 @@ The overview links to `/benchmarks/main`, `/benchmarks/pr-<number>` and
 `/benchmarks/benchmark-changes`. Daily charts show generation, multimodal
 processors and encoders; comparison pages include all paired runs, confidence
 intervals, verdicts, counters and failed scenarios. GET forms select the metric,
-model and group. Python renders HTML, SVG and detail tables; these pages require
+model. The Generation metric selector lives inside its panel; the encoder
+metric selector lives inside the encoder panel. A section menu links Generation,
+CPU processors and GPU encoders. Python renders HTML, SVG and detail tables; these pages require
 no JavaScript, frontend build or Space iframe.
 
 ## Data flow
@@ -85,3 +87,9 @@ overview, daily page and a PR page, including filtering with JavaScript disabled
 The Grafana search customization measures menu width and switches to wrapped
 navigation plus a separate search row when needed. Check desktop and mobile
 widths and ensure Benchmarks immediately precedes Profile.
+
+Standalone Benchmarks and Profile pages share `otel/dashboard_ui.py` with the
+Grafana navigation customization: the same Inter font assets, navigation sizes,
+colors, hover and focus states. Direct links default to Grafana’s dark theme;
+`?theme=light` preserves a light dashboard choice through links and forms. The
+Grafana menu uses full-document navigation for these exporter-owned routes.

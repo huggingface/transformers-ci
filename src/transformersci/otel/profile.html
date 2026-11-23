@@ -1,17 +1,16 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Profile · Transformers CI</title>
 <style>
-:root{color-scheme:dark;--bg:#111217;--panel:#181b1f;--text:#d8d9da;--muted:#9fa3a9;--line:#343940;--accent:#8bb4ff}
-@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#f4f5f5;--panel:#fff;--text:#24292e;--muted:#656d76;--line:#d0d7de;--accent:#1f6feb}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 Inter,system-ui,sans-serif}header{border-bottom:1px solid var(--line);padding:16px 24px}nav{display:flex;align-items:center;gap:24px;flex-wrap:wrap;max-width:1000px;margin:auto}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}nav a:first-child{font-weight:650;color:var(--text)}nav a[aria-current]{margin-left:auto}main{max-width:860px;margin:48px auto;padding:0 24px}h1{font-size:30px;margin:0}h2{font-size:19px;margin:0 0 12px}p{margin:8px 0 20px}.muted,small{color:var(--muted)}section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:24px;margin:24px 0}.identity{display:flex;align-items:center;gap:20px;flex-wrap:wrap}.identity>div{flex:1}.avatar{border-radius:50%;width:64px;height:64px}button,.button{display:inline-block;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text);padding:8px 14px;font:inherit;cursor:pointer}button:hover,.button:hover{border-color:var(--accent);text-decoration:none}button.primary,.button.primary{background:#245dbe;color:white;border-color:#245dbe}button:disabled{opacity:.5;cursor:wait}.actions{display:flex;gap:12px;flex-wrap:wrap}input{display:block;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:10px;font:18px ui-monospace,monospace;width:100%;max-width:300px;margin:8px 0 16px;text-transform:uppercase}.session{display:flex;gap:16px;align-items:center;padding:16px 0;border-top:1px solid var(--line)}.session>div{flex:1;min-width:0}.session small{display:block}code{font:13px ui-monospace,monospace;overflow-wrap:anywhere}#status{min-height:24px}#status.error{color:#ef7b87}[hidden]{display:none!important}
+__DASHBOARD_CSS__
+main{max-width:1000px}h1{margin-top:4px}h2{margin:0 0 8px}section{background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:16px;margin:12px 0}.identity{display:flex;align-items:center;gap:16px;flex-wrap:wrap}.identity>div{flex:1}.avatar{border-radius:50%;width:48px;height:48px}.button{display:inline-flex;align-items:center;border:1px solid rgba(128,128,128,.4);border-radius:2px;background:var(--panel);color:var(--fg);padding:5px 12px;min-height:32px;font:inherit;cursor:pointer}.button:hover{background:var(--hover);text-decoration:none}button.primary,.button.primary{background:#3d71d9;color:white;border-color:#3d71d9}button:disabled{opacity:.5;cursor:wait}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}input{display:block;font:14px ui-monospace,monospace;width:100%;max-width:300px;margin:8px 0;text-transform:uppercase}.session{display:flex;gap:16px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}.session>div{flex:1;min-width:0}.session small{display:block}code{font:13px ui-monospace,monospace;overflow-wrap:anywhere}#status{min-height:20px}#status.error{color:var(--bad)}[hidden]{display:none!important}
 </style>
 <script src="/profile/app.js" defer></script>
 </head>
 <body>
-<header><nav aria-label="Dashboard"><a href="/">🤗 Transformers CI</a><a href="/d/pytest-test-health/fix-failures">Fix failures</a><a href="/d/mic-failures/mic-failures">MIC failures</a><a href="/benchmarks">Benchmarks</a><a href="/profile" aria-current="page">Profile</a></nav></header>
+__DASHBOARD_HEADER__
 <main>
 <h1>Profile</h1><p class="muted">Your GitHub account and access to the Transformers CI dashboard.</p>
 <p id="status" role="status" aria-live="polite">Loading your profile…</p>

@@ -482,12 +482,25 @@ def handle(handler, method):
         cfg = config()
         if path in ("/profile", "/auth/cli", "/profile/app.js") and method == "GET":
             asset = "profile.js" if path.endswith("app.js") else "profile.html"
+            body = Path(__file__).with_name(asset).read_bytes()
+            if asset.endswith("html"):
+                from transformersci.otel import dashboard_ui
+
+                theme = "light" if query.get("theme", [""])[0] == "light" else "dark"
+                body = body.replace(
+                    b'data-theme="dark"', f'data-theme="{theme}"'.encode()
+                )
+                body = body.replace(b"__DASHBOARD_CSS__", dashboard_ui.CSS.encode())
+                body = body.replace(
+                    b"__DASHBOARD_HEADER__",
+                    dashboard_ui.header("Profile", theme).encode(),
+                )
             handler._send(
                 200,
                 "text/javascript"
                 if asset.endswith("js")
                 else "text/html; charset=utf-8",
-                Path(__file__).with_name(asset).read_bytes(),
+                body,
                 headers=headers,
             )
             return True
