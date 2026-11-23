@@ -2,17 +2,20 @@ name: "[Reusable] record-mic"
 
 # Re-record the expected values of named model integration contracts on a Transformers PR's
 # code, for that PR only. Requested by someone with write access to the caller repository, with a
-# `record-mic: <model> ...` PR comment or `make record-mic` (workflow_dispatch).
+# `record-mic: <model> ...` PR comment or `make record-mic` (workflow_dispatch). The caller only
+# forwards the request; everything that decides whether to act on it happens here.
 #
-#   authorize  the requester has write access; the model list is plain names
-#   record     PR code, NO secrets, read-only token: the PR's merge commit, on the PR CI runner and
-#              image (same platform classes as the contracts job); uploads the candidates
+#   authorize  parse the request (models are plain names); the requester has write access; the PR
+#              is open; its merge commit is older than the request (the `run-slow` timestamp check:
+#              code pushed after the request was not approved)
+#   record     PR code, NO secrets, read-only token: exactly that merge commit, on the PR CI runner
+#              and image (same platform classes as the contracts job); uploads the candidates
 #   publish    the Hub write token, NO PR code: validates the candidates (expected-value JSON for the
 #              named contracts only), commits them to `transformers-pr-<N>` branches of the mic repos,
 #              writes the fleet overlay `overlays/transformers-pr-<N>.json`, and posts the diff on the PR
 #
-# The PR's next contracts run applies the overlay (run-model-contracts --fleet-pr). When the PR
-# merges, pr-ci_record_mic_close.yml writes the overlay into the fleet; a closed PR's is dropped.
+# The PR's next contracts run applies the overlay (run-model-contracts --fleet-pr). Once the PR is
+# merged or closed, mic-record-reconcile.yml (hourly) writes its overlay into the fleet or drops it.
 
 on:
   workflow_call:
@@ -21,18 +24,19 @@ on:
         description: "Transformers PR number"
         type: string
         required: true
-      models:
-        description: "Model types, contract or target names (space or comma separated)"
+      request:
+        description: "The request as written: a comment whose first line is `record-mic: <models>`, or `record-mic: <models>`"
         type: string
         required: true
       requested_by:
-        description: "GitHub login that asked for the re-record"
+        description: "GitHub login that made the request"
         type: string
         required: true
-      merge_sha:
-        description: "The PR merge commit the requester approved (older than their request); the record runs exactly it"
+      requested_at:
+        description: "When it was made (ISO 8601; empty: now, for a workflow_dispatch)"
         type: string
-        required: true
+        required: false
+        default: ""
       docker_image:
         type: string
         required: false
@@ -59,29 +63,42 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       models: ${{ steps.check.outputs.models }}
+      merge_sha: ${{ steps.check.outputs.merge_sha }}
     steps:
-      - name: Requester has write access; models are plain names
+      # Inputs reach the script only as environment variables, never interpolated into it.
+      - name: Parse and authorize the request
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          USER_LOGIN: ${{ inputs.requested_by }}
-          MODELS: ${{ inputs.models }}
           PR: ${{ inputs.pr }}
+          REQUEST: ${{ inputs.request }}
+          USER_LOGIN: ${{ inputs.requested_by }}
+          REQUESTED_AT: ${{ inputs.requested_at }}
         run: |
           [[ "$PR" =~ ^[0-9]+$ ]] || { echo "::error::not a PR number: $PR"; exit 1; }
-          models=$(echo "$MODELS" | tr ',' ' ' | xargs)
-          [[ -n "$models" && "$models" =~ ^[A-Za-z0-9_.\ -]+$ ]] || { echo "::error::models must be plain names: $MODELS"; exit 1; }
+          line=$(printf '%s\n' "$REQUEST" | head -1 | tr -d '\r')
+          [[ "$line" == record-mic:* ]] || { echo "::error::the request must start with 'record-mic:'"; exit 1; }
+          models=$(echo "${line#record-mic:}" | tr ',' ' ' | xargs)
+          [[ -n "$models" && "$models" =~ ^[A-Za-z0-9_.\ -]+$ ]] || { echo "::error::record-mic: <model> [<model> ...] (plain names)"; exit 1; }
           permission=$(gh api "repos/$REPO/collaborators/$USER_LOGIN/permission" --jq .permission)
           case "$permission" in
             admin|maintain|write) ;;
             *) echo "::error::$USER_LOGIN has '$permission' access to $REPO; record-mic needs write"; exit 1 ;;
           esac
-          state=$(gh pr view "$PR" --repo "$REPO" --json state --jq .state)
-          [[ "$state" == OPEN ]] || { echo "::error::PR #$PR is $state"; exit 1; }
-          echo "models=$models" >> "$GITHUB_OUTPUT"
+          read -r state merge_sha < <(gh api "repos/$REPO/pulls/$PR" --jq '"\(.state) \(.merge_commit_sha // "")"')
+          [[ "$state" == open ]] || { echo "::error::PR #$PR is $state"; exit 1; }
+          [[ "$merge_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::GitHub has no merge commit for #$PR yet (conflicts?); ask again"; exit 1; }
+          merged_at=$(gh api "repos/$REPO/commits/$merge_sha" --jq .commit.committer.date)
+          requested=${REQUESTED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+          if [ "$(date -d "$requested" +%s)" -le "$(date -d "$merged_at" +%s)" ]; then
+            echo "::error::#$PR changed after the request ($merged_at >= $requested): code pushed later was not approved; ask again"
+            exit 1
+          fi
+          { echo "models=$models"; echo "merge_sha=$merge_sha"; } >> "$GITHUB_OUTPUT"
 
   record:
     needs: authorize
@@ -113,12 +130,12 @@ jobs:
 
       - name: Verify the approved merge commit
         env:
-          APPROVED: ${{ inputs.merge_sha }}
+          APPROVED: ${{ needs.authorize.outputs.merge_sha }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           actual=$(git rev-parse HEAD)
           if [[ "$actual" != "$APPROVED" ]]; then
-            echo "::error::refs/pull/<pr>/merge is $actual, not the approved $APPROVED: the PR changed after the request; ask again"
+            echo "::error::refs/pull/<pr>/merge is $actual, not the authorized $APPROVED: the PR changed during the request; ask again"
             exit 1
           fi
 
