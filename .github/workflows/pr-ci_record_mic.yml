@@ -142,7 +142,7 @@ jobs:
             | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        if: always()
+        if: ${{ !cancelled() }}
         with:
           name: record-mic
           path: /tmp/record-mic
@@ -151,7 +151,7 @@ jobs:
   publish:
     needs: [authorize, record]
     # Also after a failed record: the PR gets a comment saying why nothing was published.
-    if: always() && needs.authorize.result == 'success'
+    if: ${{ !cancelled() && needs.authorize.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -185,7 +185,7 @@ jobs:
           python -I -m transformers_mic.pr_record publish --pr "$PR" --record record-mic --by "$BY" --execute
 
       - name: Comment on the PR
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
