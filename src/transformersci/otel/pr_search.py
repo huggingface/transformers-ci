@@ -158,7 +158,8 @@ a.row.sel,a.row:hover{background:var(--hover)}
     {title: 'CI Health', lock: true, tooltip: 'CI Health: Hugging Face members only (sign in with GitHub)',
      url: '/login/github?redirectTo=%2Fd%2Fpytest-observability-stack-health%2Fci-health%3ForgId%3D1%26from%3Dnow-24h%26to%3Dnow%26timezone%3Dbrowser%26refresh%3D30s',
      uids: ['pytest-observability-stack-health']},
-    {title: 'Your profile', url: '/profile', uids: []},
+    {title: 'Benchmarks', url: '/benchmarks', uids: []},
+    {title: 'Profile', url: '/profile', uids: []},
   ];
   function current(item) {
     var path = parent.location.pathname;
@@ -183,7 +184,7 @@ a.row.sel,a.row:hover{background:var(--hover)}
         'body:has(#tci-header-nav) [data-testid="data-testid Edit dashboard button"],' +
         'body:has(#tci-header-nav) [data-testid="data-testid Mark as favorite"]{display:none!important}' +
         'body:has(#tci-header-nav) [data-testid="data-testid DashboardSidebarSplitter primary body"]{padding-right:0!important;padding-top:4px}' +
-        '#tci-header-nav{display:flex;align-items:center;gap:8px;min-width:0;overflow-x:auto;white-space:nowrap}' +
+        '#tci-header-nav{display:flex;flex:none;align-items:center;gap:8px;white-space:nowrap}' +
         '#tci-header-nav a{display:inline-flex;align-items:center;box-sizing:border-box;height:32px;flex:none;color:inherit;text-decoration:none;border:1px solid rgba(128,128,128,.4);border-radius:4px;padding:0 8px;font:600 12px/18px Inter,system-ui,sans-serif}' +
         '#tci-header-nav a:hover{background:rgba(128,128,128,.15)}' +
         '#tci-header-nav a:focus-visible{outline:2px solid #6e9fff;outline-offset:-2px}' +
@@ -191,11 +192,11 @@ a.row.sel,a.row:hover{background:var(--hover)}
         '#tci-header-nav .tci-lock{width:11px;height:11px;margin-left:5px;opacity:.75}' +
         '#tci-header-nav .tci-home{display:flex;align-items:center;gap:8px;font-size:14px;border:0;padding:0 4px;line-height:32px}' +
         '#tci-header-nav .tci-home .tci-emoji{font-size:26px}' +
-        '@media(max-width:1250px){header:has(#tci-header-nav){height:128px!important}' +
-        '.main-view:has(#tci-header-nav)>div:not([data-testid="data-testid navigation mega-menu"]){padding-top:128px!important}' +
-        '#tci-header-nav{position:absolute;top:44px;left:16px;right:16px;max-width:none}' +
-        '#tci-header-nav .tci-home{position:fixed;top:4px;left:16px}' +
-        'header img[alt="Grafana"]{display:none!important}}';
+        'header[data-tci-compact="true"]{height:var(--tci-header-height)!important}' +
+        '.main-view:has(header[data-tci-compact="true"])>div:not([data-testid="data-testid navigation mega-menu"]){padding-top:var(--tci-header-height)!important}' +
+        'header[data-tci-compact="true"] #tci-header-nav{position:absolute;top:44px;left:16px;right:16px;flex-wrap:wrap;white-space:normal}' +
+        'header[data-tci-compact="true"] #tci-header-nav .tci-home{position:fixed;top:4px;left:16px}' +
+        'header[data-tci-compact="true"] img[alt="Grafana"]{display:none!important}';
       pd.head.appendChild(style);
     }
     var nav = pd.getElementById('tci-header-nav');
@@ -252,14 +253,23 @@ a.row.sel,a.row:hover{background:var(--hover)}
     header();
     var h = pd.querySelector("header"), show = !!(h && h.getBoundingClientRect().height > 0);
     fe.style.display = show ? "block" : "none";
-    var narrow = parent.innerWidth <= 1250;
     var nav = pd.getElementById('tci-header-nav');
-    fe.style.top = narrow ? '88px' : (nav ? nav.getBoundingClientRect().top : 8) + 'px';
-    fe.style.left = narrow ? '16px' : 'auto';
-    fe.style.right = narrow ? 'auto' : '160px';
+    // Reserve the menu's actual intrinsic width before allocating search space.
+    // If a usable search box will not fit, wrap the menu and put search below it.
+    var menuWidth = nav ? Array.from(nav.children).reduce(function (width, item) {
+      return width + item.getBoundingClientRect().width + 8;
+    }, -8) : 0;
+    var narrow = parent.innerWidth < menuWidth + 16 + 16 + 280 + 160;
+    if (h) h.dataset.tciCompact = narrow ? 'true' : 'false';
+    var rect = nav && nav.getBoundingClientRect();
+    var top = narrow ? (rect ? rect.bottom + 8 : 88) : (rect ? rect.top : 8);
+    var left = narrow ? 16 : (rect ? rect.right + 16 : 16);
+    fe.style.top = top + 'px';
+    fe.style.left = left + 'px';
+    fe.style.right = 'auto';
     fe.style.transform = 'none';
-    fe.style.width = Math.min(WIDTH, Math.max(160, parent.innerWidth - (narrow ? 32 : 850))) + "px";
-    if (nav) nav.style.maxWidth = narrow ? 'none' : Math.max(160, fe.getBoundingClientRect().left - nav.getBoundingClientRect().left - 16) + 'px';
+    fe.style.width = Math.min(WIDTH, Math.max(0, parent.innerWidth - left - (narrow ? 16 : 160))) + 'px';
+    pd.documentElement.style.setProperty('--tci-header-height', (top + 40) + 'px');
     if (!list.classList.contains("open")) fe.style.height = "32px";
   }
   function grow() {

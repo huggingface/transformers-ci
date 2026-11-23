@@ -46,6 +46,11 @@ pytest-plugin = [
   "psutil",
   "pytest>=8.0",
 ]
+benchmarks = [
+  # Shared analysis with the performance Space (daily series and paired A/B CIs).
+  # The HTTP server stays stdlib-only; only the snapshot refresher needs this extra.
+  "transformers-perf[dashboard] @ https://github.com/huggingface/transformers-perf/archive/97c76569a8f2144e8f287bae819ddad127a70d7f.zip ; python_version >= '3.11'",
+]
 publish = [
   "huggingface_hub[cli,hf_xet]",
   "pyarrow",

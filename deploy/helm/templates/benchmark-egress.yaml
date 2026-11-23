@@ -1,0 +1,141 @@
+{{- if and .Values.traceExporter.benchmarks.enabled .Values.traceExporter.benchmarks.egress.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: benchmark-egress
+  namespace: {{ include "transformers-ci.namespace" . }}
+data:
+  tinyproxy.conf: |
+    Port 3128
+    Listen 0.0.0.0
+    Timeout 120
+    Allow 0.0.0.0/0
+    ConnectPort 443
+    FilterDefaultDeny Yes
+    Filter "/etc/tinyproxy/filter"
+    FilterType ere
+    FilterCaseSensitive Off
+    PidFile "/tmp/tinyproxy.pid"
+    LogLevel Warning
+  filter: |
+    ^pypi\.org$
+    ^files\.pythonhosted\.org$
+    ^github\.com$
+    ^api\.github\.com$
+    ^codeload\.github\.com$
+    ^huggingface\.co$
+    (^|\.)hf\.co$
+    (^|\.)xethub\.hf\.co$
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: benchmark-egress
+  namespace: {{ include "transformers-ci.namespace" . }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: benchmark-egress
+  template:
+    metadata:
+      # Deliberately outside the release-wide cluster-boundary policy: this
+      # proxy has its own stricter ingress and public-HTTPS-only egress policy.
+      labels:
+        app: benchmark-egress
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: tinyproxy
+          image: {{ .Values.traceExporter.benchmarks.egress.image | quote }}
+          command: ["tinyproxy", "-d", "-c", "/etc/tinyproxy/tinyproxy.conf"]
+          ports:
+            - name: proxy
+              containerPort: 3128
+          readinessProbe:
+            tcpSocket:
+              port: proxy
+          livenessProbe:
+            tcpSocket:
+              port: proxy
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/tinyproxy
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: benchmark-egress
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: benchmark-egress
+  namespace: {{ include "transformers-ci.namespace" . }}
+spec:
+  selector:
+    app: benchmark-egress
+  ports:
+    - name: proxy
+      port: 3128
+      targetPort: proxy
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: benchmark-egress
+  namespace: {{ include "transformers-ci.namespace" . }}
+spec:
+  podSelector:
+    matchLabels:
+      app: benchmark-egress
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "transformers-ci.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: trace-exporter
+      ports:
+        - protocol: TCP
+          port: 3128
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16]
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}

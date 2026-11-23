@@ -175,6 +175,22 @@ tempo:
 #------------------------------------------------------------------------------
 traceExporter:
   replicas: 1
+  benchmarks:
+    enabled: false
+    dataset: hf-internal-testing/transformers-perf
+    refreshSeconds: 900
+    # CONNECT proxy for Hub, GitHub and package downloads when public egress is blocked.
+    proxy: ""
+    # Dedicated allowlisted HTTPS proxy; avoids extending Serge's shared proxy.
+    egress:
+      enabled: false
+      image: ghcr.io/huggingface/serge-egress:sha-b251e5c
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
   slack:
     enabled: false
     publicUrl: ""

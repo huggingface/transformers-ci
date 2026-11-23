@@ -78,6 +78,8 @@ spec:
             - -m
             - transformersci.otel.trace_exporter
           env:
+            - name: TCI_BENCHMARK_SNAPSHOT
+              value: /benchmarks/snapshot.json
             {{- if and .Values.traceExporter.micJobs.enabled (not .Values.traceExporter.auth.enabled) }}
             {{- fail "traceExporter.micJobs requires traceExporter.auth.enabled" }}
             {{- end }}
@@ -243,6 +245,11 @@ spec:
           resources:
             {{- toYaml .Values.traceExporter.resources | nindent 12 }}
           volumeMounts:
+            {{- if .Values.traceExporter.benchmarks.enabled }}
+            - name: benchmarks
+              mountPath: /benchmarks
+              readOnly: true
+            {{- end }}
             - name: src
               mountPath: /app/src
             {{- if .Values.traceExporter.runStore.enabled }}
@@ -271,7 +278,50 @@ spec:
               port: {{ .Values.traceExporter.config.port }}
             timeoutSeconds: 10
             periodSeconds: 10
+        {{- if .Values.traceExporter.benchmarks.enabled }}
+        - name: benchmark-refresh
+          image: "{{ .Values.traceExporter.image.repository }}:{{ .Values.traceExporter.image.tag }}"
+          command:
+            - sh
+            - -c
+            - |
+              pip install --no-cache-dir --quiet '/app/src[benchmarks]' &&
+              exec python -m transformersci.benchmarks.refresh --interval {{ .Values.traceExporter.benchmarks.refreshSeconds }}
+          env:
+            - name: PYTHONPATH
+              value: /app/src/src
+            - name: TCI_BENCHMARK_DATASET
+              value: {{ .Values.traceExporter.benchmarks.dataset | quote }}
+            - name: HF_HOME
+              value: /benchmarks/hf-cache
+            - name: HF_HUB_DISABLE_XET
+              value: "1"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.hfToken }}
+                  optional: true
+            {{- if or .Values.traceExporter.benchmarks.proxy .Values.traceExporter.benchmarks.egress.enabled }}
+            - name: HTTPS_PROXY
+              value: {{ default "http://benchmark-egress:3128" .Values.traceExporter.benchmarks.proxy | quote }}
+            - name: HTTP_PROXY
+              value: {{ default "http://benchmark-egress:3128" .Values.traceExporter.benchmarks.proxy | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.traceExporter.benchmarks.resources | nindent 12 }}
+          volumeMounts:
+            - name: src
+              mountPath: /app/src
+            - name: benchmarks
+              mountPath: /benchmarks
+        {{- end }}
       volumes:
+        {{- if .Values.traceExporter.benchmarks.enabled }}
+        - name: benchmarks
+          emptyDir:
+            sizeLimit: 4Gi
+        {{- end }}
         - name: src
           emptyDir: {}
         {{- if .Values.traceExporter.runStore.enabled }}

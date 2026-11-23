@@ -97,6 +97,7 @@ from transformersci.otel import claims
 from transformersci.otel import branch_runs
 from transformersci.otel import probable_fix
 from transformersci.otel import project_health
+from transformersci.benchmarks import page as benchmark_page
 from transformersci.otel import mic_page
 from transformersci.otel import test_page
 
@@ -9881,6 +9882,16 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 "image/png",
                 FAVICONS[parsed.path],
                 cache_control="public, max-age=86400",
+            )
+            return
+        if parsed.path == "/benchmarks" or parsed.path.startswith("/benchmarks/"):
+            self._request_route = "/benchmarks"
+            status, body = benchmark_page.render(parsed.path, parse_qs(parsed.query))
+            self._send(
+                status,
+                "text/html; charset=utf-8",
+                body.encode(),
+                cache_control="no-store",
             )
             return
         if parsed.path in {"/mic", "/mic/app.js", "/mic/data"}:
