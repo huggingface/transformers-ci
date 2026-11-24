@@ -24,7 +24,15 @@ from pathlib import Path
 LOGGER = logging.getLogger(__name__)
 
 DATASET = "hf-internal-testing/transformers-perf"
-MEMORY_FILES = ("report.html", "host-flamegraph.html")
+# Copied as published; report.json is rendered here from the summaries (the site's page around it)
+MEMORY_FILES = (
+    "report.html",
+    "host-flamegraph.html",
+    "profile.json",
+    "gpu_summary.json",
+    "host_summary.json",
+    "gpu_snapshot.pickle.gz",
+)
 MEMORY_REPORT = re.compile(
     r"(memory/[0-9]{4}-[0-9]{2}/([A-Za-z0-9][A-Za-z0-9._-]*))/report\.html"
 )
@@ -114,10 +122,33 @@ def copy_memory_reports(dataset, revision, memory, dest):
                     temp = target / (name + ".tmp")
                     shutil.copyfile(source, temp)
                     temp.replace(target / name)
+            render_memory_report(target)
     if dest.is_dir():
         for old in dest.iterdir():
             if old.name not in memory:
                 shutil.rmtree(old, ignore_errors=True)
+
+
+def render_memory_report(target):
+    """report.json ({title, css, body}) for the exporter to put inside the site's
+    page, rendered by the pinned transformers-perf from the published summaries:
+    no script, every value escaped. Reports published before the summaries were
+    keep their standalone report.html only."""
+    try:
+        from tperf.memory.report import load_summaries, render_fragment
+    except ImportError:
+        return
+    if not (target / "profile.json").is_file():
+        return
+    profile, gpu, host = load_summaries(target)
+    links = {}
+    if (target / "host-flamegraph.html").is_file():
+        links["flamegraph"] = "host-flamegraph.html"
+    if (target / "gpu_snapshot.pickle.gz").is_file():
+        links["memory_viz"] = "memory-viz.html"
+    temp = target / "report.json.tmp"
+    temp.write_text(json.dumps(render_fragment(profile, gpu, host, links)))
+    temp.replace(target / "report.json")
 
 
 def main():

@@ -9886,15 +9886,16 @@ class MetricsHandler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/benchmarks/memory/"):
             self._request_route = "/benchmarks/memory"
-            status, payload = benchmark_page.memory_file(parsed.path)
+            theme = (parse_qs(parsed.query).get("theme") or [""])[0]
+            status, payload, content_type, headers = benchmark_page.memory_file(
+                parsed.path, "light" if theme == "light" else "dark"
+            )
             self._send(
                 status,
-                "text/html; charset=utf-8"
-                if status == 200
-                else "text/plain; charset=utf-8",
+                content_type,
                 payload,
                 cache_control="public, max-age=3600" if status == 200 else "no-store",
-                headers=benchmark_page.MEMORY_HEADERS,
+                headers=headers,
             )
             return
         if parsed.path == "/benchmarks" or parsed.path.startswith("/benchmarks/"):

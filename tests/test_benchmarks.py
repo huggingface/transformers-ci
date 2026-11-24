@@ -258,10 +258,16 @@ def test_memory_reports_are_copied_linked_and_served_sandboxed(tmp_path, monkeyp
     report.mkdir(parents=True)
     (report / "report.html").write_text("<!doctype html><p>peak 1.9 GB</p>")
     (report / "host-flamegraph.html").write_text("<script>flame()</script>")
+    (report / "profile.json").write_text(
+        json.dumps({"model_id": "org/model<script>", "marks": []})
+    )
+    (report / "gpu_snapshot.pickle.gz").write_bytes(b"\x1f\x8bgz")
     files = [
         "data/2026-11/rows.parquet",
         "memory/2026-11/day-22/report.html",
         "memory/2026-11/day-22/host-flamegraph.html",
+        "memory/2026-11/day-22/profile.json",
+        "memory/2026-11/day-22/gpu_snapshot.pickle.gz",
         "memory/2026-11/not-a-daily-group/report.html",
     ]
 
@@ -284,9 +290,9 @@ def test_memory_reports_are_copied_linked_and_served_sandboxed(tmp_path, monkeyp
     assert refresh.refresh(path)
     # Only the linked report is fetched, the stale copy is gone
     assert downloads[1]["allow_patterns"] == [
-        "memory/2026-11/day-22/report.html",
-        "memory/2026-11/day-22/host-flamegraph.html",
+        f"memory/2026-11/day-22/{name}" for name in refresh.MEMORY_FILES
     ]
+    assert (path.parent / "memory/day-22/report.json").is_file()  # rendered here
     assert not stale.exists()
     assert (
         (path.parent / "memory/day-22/report.html").read_text().endswith("1.9 GB</p>")
@@ -297,10 +303,26 @@ def test_memory_reports_are_copied_linked_and_served_sandboxed(tmp_path, monkeyp
     assert status == 200
     assert 'href="/benchmarks/memory/day-22/report.html"' in html
     assert "Memory report, 2026-11-22" in html and "<th>Memory</th>" in html
-    assert page.memory_file("/benchmarks/memory/day-22/report.html") == (
-        200,
-        b"<!doctype html><p>peak 1.9 GB</p>",
+    # The report inside the site's page: header, styles, no script, data escaped
+    status, body, kind, headers = page.memory_file(
+        "/benchmarks/memory/day-22/report.html"
     )
+    html = body.decode().replace("'", '"')
+    assert status == 200 and kind.startswith("text/html") and headers == {}
+    assert '<div class="mem">' in html and ">Benchmarks</a>" in html
+    assert "org/model&lt;script&gt;" in html and "<script" not in html
+    assert 'href="memory-viz.html"' in html
+    status, body, _, headers = page.memory_file(
+        "/benchmarks/memory/day-22/memory-viz.html"
+    )
+    assert status == 200 and page.MEMORY_VIZ_JS in body.decode()
+    assert headers["Content-Security-Policy"].startswith("sandbox allow-scripts")
+    status, body, kind, headers = page.memory_file(
+        "/benchmarks/memory/day-22/gpu_snapshot.pickle"
+    )
+    assert body == b"\x1f\x8bgz" and headers["Content-Encoding"] == "gzip"
+    assert headers["Access-Control-Allow-Origin"] == "*"
+    assert page.memory_file("/benchmarks/memory/day-22/profile.json")[0] == 404
     assert (
         page.memory_file("/benchmarks/memory/day-22/../../snapshot.json.html")[0] == 404
     )

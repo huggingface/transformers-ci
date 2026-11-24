@@ -152,30 +152,77 @@ def select(name, label, choices, selected):
 
 
 MEMORY_PATH = re.compile(
-    r"/benchmarks/memory/([A-Za-z0-9][A-Za-z0-9._-]*)/(report|host-flamegraph)\.html"
+    r"/benchmarks/memory/([A-Za-z0-9][A-Za-z0-9._-]*)/(report\.html|host-flamegraph\.html|memory-viz\.html|gpu_snapshot\.pickle)"
 )
-# memray's flamegraph runs scripts: an opaque origin keeps them away from the
-# dashboard's cookies and storage, links still open
-MEMORY_HEADERS = {
+# Pages that run scripts (memray's flamegraph, PyTorch's memory viewer) get an
+# opaque origin: their scripts cannot reach the dashboard's cookies or storage
+SANDBOX = {
     "Content-Security-Policy": "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox",
     "X-Content-Type-Options": "nosniff",
 }
+# PyTorch's memory viewer, pinned to the bench host's torch release (the
+# snapshot format follows torch); it builds its own page in <body>
+MEMORY_VIZ_JS = (
+    "https://cdn.jsdelivr.net/gh/pytorch/pytorch@v2.15.0/torch/utils/viz/MemoryViz.js"
+)
+MEMORY_VIZ_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><title>GPU allocations · {title}</title></head><body><script type="module">
+import {{add_remote_files}} from "{js}";
+add_remote_files([{{name: {name}, url: "gpu_snapshot.pickle"}}]);
+</script></body></html>"""
 
 
-def memory_file(path):
-    """A daily memory report copied by the refresher: (status, bytes)."""
+def memory_file(path, theme="dark"):
+    """A daily memory report copied by the refresher: (status, body, content
+    type, headers). The report is the site's page around the fragment rendered
+    by the refresher; the flamegraph and the memory viewer run sandboxed."""
     match = MEMORY_PATH.fullmatch(path)
+    text = "text/html; charset=utf-8"
     if not match or ".." in match.group(1):
-        return 404, b"Not found"
-    root = Path(
-        os.environ.get("TCI_BENCHMARK_SNAPSHOT", "/benchmarks/snapshot.json")
-    ).parent
+        return 404, b"Not found", "text/plain; charset=utf-8", {}
+    group, name = match.groups()
+    root = (
+        Path(
+            os.environ.get("TCI_BENCHMARK_SNAPSHOT", "/benchmarks/snapshot.json")
+        ).parent
+        / "memory"
+        / group
+    )
+    missing = (
+        404,
+        b"Memory report not found (reports are kept for 14 days)",
+        "text/plain; charset=utf-8",
+        {},
+    )
     try:
-        return 200, (
-            root / "memory" / match.group(1) / f"{match.group(2)}.html"
-        ).read_bytes()
-    except OSError:
-        return 404, b"Memory report not found (reports are kept for 14 days)"
+        if name == "report.html" and (root / "report.json").is_file():
+            fragment = json.loads((root / "report.json").read_text())
+            body = (
+                f"<style>{fragment['css']}</style>"
+                + '<p class="meta">'
+                + link(url("main", theme=theme), "← Daily main")
+                + "</p>"
+                + fragment["body"]
+            )
+            return 200, document(fragment["title"], body, theme).encode(), text, {}
+        if name == "memory-viz.html":
+            if not (root / "gpu_snapshot.pickle.gz").is_file():
+                return missing
+            page = MEMORY_VIZ_PAGE.format(
+                title=esc(group), js=MEMORY_VIZ_JS, name=json.dumps(group)
+            )
+            return 200, page.encode(), text, SANDBOX
+        if name == "gpu_snapshot.pickle":
+            # Stored gzipped; every browser decodes it. Fetched by the sandboxed
+            # viewer, whose origin is opaque: hence the CORS header
+            return (
+                200,
+                (root / "gpu_snapshot.pickle.gz").read_bytes(),
+                "application/octet-stream",
+                {"Content-Encoding": "gzip", "Access-Control-Allow-Origin": "*"},
+            )
+        return 200, (root / name).read_bytes(), text, SANDBOX
+    except (OSError, ValueError, KeyError):
+        return missing
 
 
 def daily(data, params, theme="dark"):
@@ -276,11 +323,12 @@ def daily(data, params, theme="dark"):
                 out += f'<p class="delta {"bad" if worse else "good"}">{change:+.2f}% since {esc(points[0]["date"][:10])}</p>'
             out += chart(points, m, unit)
             reports = [p for p in s["points"] if p.get("memory")]
+            theme_query = "?theme=light" if theme == "light" else ""
             if reports:
                 out += (
                     '<p class="meta">'
                     + link(
-                        "/benchmarks/" + reports[-1]["memory"],
+                        "/benchmarks/" + reports[-1]["memory"] + theme_query,
                         f"Memory report, {reports[-1]['date'][:10]}",
                     )
                     + " · what held GPU and host memory at the peak, and the code that allocated it</p>"
@@ -300,7 +348,7 @@ def daily(data, params, theme="dark"):
                     ]
                     + (
                         [
-                            link("/benchmarks/" + p["memory"], "report")
+                            link("/benchmarks/" + p["memory"] + theme_query, "report")
                             if p.get("memory")
                             else ""
                         ]
