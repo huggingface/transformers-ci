@@ -32,6 +32,8 @@ MEMORY_FILES = (
     "gpu_summary.json",
     "host_summary.json",
     "gpu_snapshot.pickle.gz",
+    "python_summary.json",
+    "python.folded",
 )
 MEMORY_REPORT = re.compile(
     r"(memory/[0-9]{4}-[0-9]{2}/([A-Za-z0-9][A-Za-z0-9._-]*))/report\.html"
@@ -141,13 +143,25 @@ def render_memory_report(target):
     if not (target / "profile.json").is_file():
         return
     profile, gpu, host = load_summaries(target)
+    try:  # the python pass (py-spy): transformers-perf after 1190a10 (pinned at acef2ad)
+        from tperf.memory.report import load_python_summary
+    except ImportError:
+        load_python_summary = None
+    python = load_python_summary(target) if load_python_summary else None
     links = {}
     if (target / "host-flamegraph.html").is_file():
         links["flamegraph"] = "host-flamegraph.html"
     if (target / "gpu_snapshot.pickle.gz").is_file():
         links["memory_viz"] = "memory-viz.html"
+    if (target / "python.folded").is_file():
+        links["python_stacks"] = "python.folded"
+    fragment = (
+        render_fragment(profile, gpu, host, links, python)
+        if python is not None
+        else render_fragment(profile, gpu, host, links)
+    )
     temp = target / "report.json.tmp"
-    temp.write_text(json.dumps(render_fragment(profile, gpu, host, links)))
+    temp.write_text(json.dumps(fragment))
     temp.replace(target / "report.json")
 
 

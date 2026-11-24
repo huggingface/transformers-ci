@@ -152,7 +152,8 @@ def select(name, label, choices, selected):
 
 
 MEMORY_PATH = re.compile(
-    r"/benchmarks/memory/([A-Za-z0-9][A-Za-z0-9._-]*)/(report\.html|host-flamegraph\.html|memory-viz\.html|gpu_snapshot\.pickle)"
+    r"/benchmarks/memory/([A-Za-z0-9][A-Za-z0-9._-]*)/"
+    r"(report\.html|host-flamegraph\.html|memory-viz\.html|gpu_snapshot\.pickle|python\.folded)"
 )
 # Pages that run scripts (memray's flamegraph, PyTorch's memory viewer) get an
 # opaque origin: their scripts cannot reach the dashboard's cookies or storage
@@ -219,6 +220,14 @@ def memory_file(path, theme="dark"):
                 (root / "gpu_snapshot.pickle.gz").read_bytes(),
                 "application/octet-stream",
                 {"Content-Encoding": "gzip", "Access-Control-Allow-Origin": "*"},
+            )
+        if name == "python.folded":
+            # py-spy's folded stacks, for speedscope.app or flamegraph.pl: plain text
+            return (
+                200,
+                (root / name).read_bytes(),
+                "text/plain; charset=utf-8",
+                {**SANDBOX, "Content-Disposition": 'inline; filename="python.folded"'},
             )
         return 200, (root / name).read_bytes(), text, SANDBOX
     except (OSError, ValueError, KeyError):

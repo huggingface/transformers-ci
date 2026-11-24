@@ -262,12 +262,20 @@ def test_memory_reports_are_copied_linked_and_served_sandboxed(tmp_path, monkeyp
         json.dumps({"model_id": "org/model<script>", "marks": []})
     )
     (report / "gpu_snapshot.pickle.gz").write_bytes(b"\x1f\x8bgz")
+    (report / "python.folded").write_text("main (/x/app.py:1) 3\n")
+    python_summary = {"rate": 100, "samples": 3, "seconds": 0.03, "groups": [
+        {"name": "generations", "samples": 3, "seconds": 0.03, "by_area": {"torch": 0.03},
+         "self": [{"function": "app.py:1 main<b>", "area": "torch", "samples": 3, "seconds": 0.03}],
+         "inclusive": []}]}  # fmt: skip
+    (report / "python_summary.json").write_text(json.dumps(python_summary))
     files = [
         "data/2026-11/rows.parquet",
         "memory/2026-11/day-22/report.html",
         "memory/2026-11/day-22/host-flamegraph.html",
         "memory/2026-11/day-22/profile.json",
         "memory/2026-11/day-22/gpu_snapshot.pickle.gz",
+        "memory/2026-11/day-22/python.folded",
+        "memory/2026-11/day-22/python_summary.json",
         "memory/2026-11/not-a-daily-group/report.html",
     ]
 
@@ -312,6 +320,13 @@ def test_memory_reports_are_copied_linked_and_served_sandboxed(tmp_path, monkeyp
     assert '<div class="mem">' in html and ">Benchmarks</a>" in html
     assert "org/model&lt;script&gt;" in html and "<script" not in html
     assert 'href="memory-viz.html"' in html
+    try:  # transformers-perf with the python pass renders its section
+        from tperf.memory.report import load_python_summary  # noqa: F401
+
+        assert "Python time" in html and "app.py:1 main&lt;b&gt;" in html
+        assert 'href="python.folded"' in html
+    except ImportError:
+        pass
     status, body, _, headers = page.memory_file(
         "/benchmarks/memory/day-22/memory-viz.html"
     )
@@ -322,6 +337,13 @@ def test_memory_reports_are_copied_linked_and_served_sandboxed(tmp_path, monkeyp
     )
     assert body == b"\x1f\x8bgz" and headers["Content-Encoding"] == "gzip"
     assert headers["Access-Control-Allow-Origin"] == "*"
+    status, body, kind, headers = page.memory_file(
+        "/benchmarks/memory/day-22/python.folded"
+    )
+    assert status == 200 and body == b"main (/x/app.py:1) 3\n"
+    assert (
+        kind.startswith("text/plain") and headers["X-Content-Type-Options"] == "nosniff"
+    )
     assert page.memory_file("/benchmarks/memory/day-22/profile.json")[0] == 404
     assert (
         page.memory_file("/benchmarks/memory/day-22/../../snapshot.json.html")[0] == 404
