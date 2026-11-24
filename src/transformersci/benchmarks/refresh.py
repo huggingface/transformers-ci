@@ -2,6 +2,11 @@
 
 Run with the ``benchmarks`` extra installed. A failed refresh leaves the last
 complete snapshot intact. The request path never downloads or parses Parquet.
+
+Daily memory reports (``memory/<month>/<group>/`` in the dataset, one per suite
+and day) are copied next to the snapshot, in ``memory/<group>/``, for the days
+the pinned analysis links (its MEMORY_DAYS); older ones are deleted, so the
+directory stays bounded.
 """
 
 from __future__ import annotations
@@ -11,12 +16,18 @@ import json
 import logging
 import math
 import os
+import re
+import shutil
 import time
 from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 
 DATASET = "hf-internal-testing/transformers-perf"
+MEMORY_FILES = ("report.html", "host-flamegraph.html")
+MEMORY_REPORT = re.compile(
+    r"(memory/[0-9]{4}-[0-9]{2}/([A-Za-z0-9][A-Za-z0-9._-]*))/report\.html"
+)
 
 
 def finite(value):
@@ -59,19 +70,54 @@ def refresh(path: Path, dataset: str = DATASET) -> bool:
             for row in pq.read_table(file).to_pylist()
         ]
 
+    files = HfApi().list_repo_files(dataset, repo_type="dataset", revision=revision)
+    reports = {m.group(2): m.group(1) for m in map(MEMORY_REPORT.fullmatch, files) if m}
+    pages = build(rows("data"), rows("processors"), reports)
+    memory = pages.pop("_memory", {})
     payload = finite(
         {
             "dataset": dataset,
             "revision": revision,
             "updated_at": time.time(),
-            "pages": build(rows("data"), rows("processors")),
+            "pages": pages,
         }
     )
     path.parent.mkdir(parents=True, exist_ok=True)
+    copy_memory_reports(dataset, revision, memory, path.parent / "memory")
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(payload, allow_nan=False, separators=(",", ":")))
     temp.replace(path)
     return True
+
+
+def copy_memory_reports(dataset, revision, memory, dest):
+    """The linked reports into dest/<group>/ (before the snapshot that links them
+    is written), then every other group out."""
+    from huggingface_hub import snapshot_download
+
+    if memory:
+        wanted = [f"{d}/{name}" for d in memory.values() for name in MEMORY_FILES]
+        root = Path(
+            snapshot_download(
+                dataset,
+                repo_type="dataset",
+                revision=revision,
+                allow_patterns=wanted,
+            )
+        )
+        for group, directory in memory.items():
+            target = dest / group
+            target.mkdir(parents=True, exist_ok=True)
+            for name in MEMORY_FILES:
+                source = root / directory / name
+                if source.is_file():
+                    temp = target / (name + ".tmp")
+                    shutil.copyfile(source, temp)
+                    temp.replace(target / name)
+    if dest.is_dir():
+        for old in dest.iterdir():
+            if old.name not in memory:
+                shutil.rmtree(old, ignore_errors=True)
 
 
 def main():

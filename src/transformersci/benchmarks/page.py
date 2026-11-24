@@ -151,6 +151,33 @@ def select(name, label, choices, selected):
     return f'<label>{esc(label)}<select name="{esc(name)}">{options}</select></label>'
 
 
+MEMORY_PATH = re.compile(
+    r"/benchmarks/memory/([A-Za-z0-9][A-Za-z0-9._-]*)/(report|host-flamegraph)\.html"
+)
+# memray's flamegraph runs scripts: an opaque origin keeps them away from the
+# dashboard's cookies and storage, links still open
+MEMORY_HEADERS = {
+    "Content-Security-Policy": "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
+def memory_file(path):
+    """A daily memory report copied by the refresher: (status, bytes)."""
+    match = MEMORY_PATH.fullmatch(path)
+    if not match or ".." in match.group(1):
+        return 404, b"Not found"
+    root = Path(
+        os.environ.get("TCI_BENCHMARK_SNAPSHOT", "/benchmarks/snapshot.json")
+    ).parent
+    try:
+        return 200, (
+            root / "memory" / match.group(1) / f"{match.group(2)}.html"
+        ).read_bytes()
+    except OSError:
+        return 404, b"Memory report not found (reports are kept for 14 days)"
+
+
 def daily(data, params, theme="dark"):
     get = lambda name, default="": (params.get(name) or [default])[0]
     series = data["series"]
@@ -248,6 +275,16 @@ def daily(data, params, theme="dark"):
                 worse = change < 0 if meta.get("higher_is_better") else change > 0
                 out += f'<p class="delta {"bad" if worse else "good"}">{change:+.2f}% since {esc(points[0]["date"][:10])}</p>'
             out += chart(points, m, unit)
+            reports = [p for p in s["points"] if p.get("memory")]
+            if reports:
+                out += (
+                    '<p class="meta">'
+                    + link(
+                        "/benchmarks/" + reports[-1]["memory"],
+                        f"Memory report, {reports[-1]['date'][:10]}",
+                    )
+                    + " · what held GPU and host memory at the peak, and the code that allocated it</p>"
+                )
             rows = []
             for p in reversed(points):
                 v = p["values"][m]
@@ -261,6 +298,15 @@ def daily(data, params, theme="dark"):
                         esc(p["runs"]),
                         esc(p["failed"]),
                     ]
+                    + (
+                        [
+                            link("/benchmarks/" + p["memory"], "report")
+                            if p.get("memory")
+                            else ""
+                        ]
+                        if reports
+                        else []
+                    )
                 )
             out += (
                 "<details><summary>Data and commits</summary>"
@@ -273,7 +319,8 @@ def daily(data, params, theme="dark"):
                         "Min–max",
                         "Runs",
                         "Failed",
-                    ],
+                    ]
+                    + (["Memory"] if reports else []),
                     rows,
                 )
                 + "</details>"

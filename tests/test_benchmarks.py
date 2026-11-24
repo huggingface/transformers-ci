@@ -176,6 +176,9 @@ def test_refresher_pins_revision_and_keeps_last_good_snapshot(tmp_path, monkeypa
             assert repo == refresh.DATASET and repo_type == "dataset"
             return type("Info", (), {"sha": "immutable-revision"})()
 
+        def list_repo_files(self, repo, repo_type, revision):
+            return ["data/2026-11/rows.parquet"]
+
     monkeypatch.setattr(hub, "HfApi", API)
     calls = []
 
@@ -231,3 +234,91 @@ def test_theme_defaults_to_grafana_dark_and_preserves_explicit_light(snapshot):
     assert 'name="theme" value="light"' in html
     _, html = page.render("/benchmarks", {"theme": ["<script>"]})
     assert 'data-theme="dark"' in html
+
+
+def test_memory_reports_are_copied_linked_and_served_sandboxed(tmp_path, monkeypatch):
+    hub = pytest.importorskip("huggingface_hub")
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    build = pytest.importorskip("tperf.dashboard.build")
+    if "reports" not in build.build.__code__.co_varnames:
+        pytest.skip("pinned transformers-perf predates memory reports")
+    monkeypatch.setattr(build, "pr_titles", lambda prs: {})
+    data, processors = rows()
+    root = tmp_path / "hub"
+    for folder, items in [("data", data), ("processors", processors)]:
+        target = root / folder / "2026-11"
+        target.mkdir(parents=True)
+        keys = set().union(*(r.keys() for r in items))
+        pq.write_table(
+            pa.Table.from_pylist([{k: r.get(k) for k in keys} for r in items]),
+            target / "rows.parquet",
+        )
+    report = root / "memory/2026-11/day-22"
+    report.mkdir(parents=True)
+    (report / "report.html").write_text("<!doctype html><p>peak 1.9 GB</p>")
+    (report / "host-flamegraph.html").write_text("<script>flame()</script>")
+    files = [
+        "data/2026-11/rows.parquet",
+        "memory/2026-11/day-22/report.html",
+        "memory/2026-11/day-22/host-flamegraph.html",
+        "memory/2026-11/not-a-daily-group/report.html",
+    ]
+
+    class API:
+        def repo_info(self, repo, repo_type):
+            return type("Info", (), {"sha": "rev"})()
+
+        def list_repo_files(self, repo, repo_type, revision):
+            assert revision == "rev"
+            return files
+
+    downloads = []
+    monkeypatch.setattr(hub, "HfApi", API)
+    monkeypatch.setattr(
+        hub, "snapshot_download", lambda repo, **kw: downloads.append(kw) or str(root)
+    )
+    path = tmp_path / "benchmarks" / "snapshot.json"
+    stale = path.parent / "memory" / "day-1"
+    stale.mkdir(parents=True)
+    assert refresh.refresh(path)
+    # Only the linked report is fetched, the stale copy is gone
+    assert downloads[1]["allow_patterns"] == [
+        "memory/2026-11/day-22/report.html",
+        "memory/2026-11/day-22/host-flamegraph.html",
+    ]
+    assert not stale.exists()
+    assert (
+        (path.parent / "memory/day-22/report.html").read_text().endswith("1.9 GB</p>")
+    )
+
+    monkeypatch.setenv("TCI_BENCHMARK_SNAPSHOT", str(path))
+    status, html = page.render("/benchmarks/main", {})
+    assert status == 200
+    assert 'href="/benchmarks/memory/day-22/report.html"' in html
+    assert "Memory report, 2026-11-22" in html and "<th>Memory</th>" in html
+    assert page.memory_file("/benchmarks/memory/day-22/report.html") == (
+        200,
+        b"<!doctype html><p>peak 1.9 GB</p>",
+    )
+    assert (
+        page.memory_file("/benchmarks/memory/day-22/../../snapshot.json.html")[0] == 404
+    )
+    assert page.memory_file("/benchmarks/memory/../snapshot/report.html")[0] == 404
+    assert page.memory_file("/benchmarks/memory/day-21/report.html")[0] == 404
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), trace_exporter.MetricsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}/benchmarks/memory/day-22"
+        with urlopen(f"{base}/host-flamegraph.html") as response:
+            assert response.read() == b"<script>flame()</script>"
+            assert response.headers["Content-Security-Policy"].startswith(
+                "sandbox allow-scripts"
+            )
+            assert response.headers["Content-Type"].startswith("text/html")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

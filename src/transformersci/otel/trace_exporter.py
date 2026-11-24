@@ -9884,6 +9884,19 @@ class MetricsHandler(BaseHTTPRequestHandler):
                 cache_control="public, max-age=86400",
             )
             return
+        if parsed.path.startswith("/benchmarks/memory/"):
+            self._request_route = "/benchmarks/memory"
+            status, payload = benchmark_page.memory_file(parsed.path)
+            self._send(
+                status,
+                "text/html; charset=utf-8"
+                if status == 200
+                else "text/plain; charset=utf-8",
+                payload,
+                cache_control="public, max-age=3600" if status == 200 else "no-store",
+                headers=benchmark_page.MEMORY_HEADERS,
+            )
+            return
         if parsed.path == "/benchmarks" or parsed.path.startswith("/benchmarks/"):
             self._request_route = "/benchmarks"
             status, body = benchmark_page.render(parsed.path, parse_qs(parsed.query))

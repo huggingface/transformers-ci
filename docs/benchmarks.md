@@ -24,6 +24,14 @@ It reuses the pinned `tperf.dashboard.build` analysis, then atomically replaces
 GitHub PR titles are best effort, as in the Space; a GitHub rate limit does not
 hide benchmark results.
 
+Each daily run also profiles one scenario per GPU suite (`tperf memory
+profile`) and publishes the HTML report to `memory/<month>/<group>/` in the
+dataset. The refresher copies the reports the pinned analysis links (the last
+14 days) to `memory/<group>/` next to the snapshot and deletes older ones; the
+daily page links each card's latest report and every day's. The exporter
+serves them at `/benchmarks/memory/<group>/{report,host-flamegraph}.html` with
+a `sandbox` Content-Security-Policy, since memray's flamegraph runs scripts.
+
 The exporter reads that snapshot through a read-only mount and stays
 stdlib-only. It never contacts the Hub in the HTTP request path. A failed refresh
 retains the last complete snapshot. Pages flag results more than 48 hours old;
