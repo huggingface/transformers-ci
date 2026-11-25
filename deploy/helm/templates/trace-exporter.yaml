@@ -101,6 +101,28 @@ spec:
                   name: {{ .Values.secrets.name }}
                   key: {{ .Values.secrets.keys.benchmarkBisectToken }}
                   optional: true
+            {{- with .Values.traceExporter.benchmarks.bisect.boxes }}
+            {{- $boxes := list }}
+            {{- range . }}
+            {{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,31}$" (toString .name)) }}
+            {{- fail (printf "traceExporter.benchmarks.bisect.boxes: invalid box name %q" (toString .name)) }}
+            {{- end }}
+            {{- if not .tokenKey }}
+            {{- fail (printf "traceExporter.benchmarks.bisect.boxes: box %s needs a tokenKey" .name) }}
+            {{- end }}
+            {{- $boxes = append $boxes (dict "name" .name "label" (.label | default .name) "instance_type" (.instanceType | default "") "default" (.default | default false)) }}
+            {{- end }}
+            - name: TCI_BENCHMARK_BOXES
+              value: {{ $boxes | toJson | quote }}
+            {{- range . }}
+            - name: TCI_BENCHMARK_BOX_TOKEN_{{ .name | upper | replace "-" "_" }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.secrets.name }}
+                  key: {{ .tokenKey }}
+                  optional: true
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- if .Values.traceExporter.auth.enabled }}
             {{- if not .Values.traceExporter.runStore.enabled }}

@@ -197,6 +197,12 @@ traceExporter:
       enabled: false
       # Slack channel id for job messages (the bot must be a member); empty: no Slack posts.
       slackChannel: ""
+      # Bench boxes, each running `tperf bisect worker` with its own token (an Infisical key of secrets.name):
+      #   - {name: g5-48xl, label: "g5.48xlarge · 8× A10G", instanceType: g5.48xlarge, default: true,
+      #      tokenKey: benchmark-bisect-token}
+      # name: [a-z0-9-], the box's id in requests and `tperf deploy --box`; instanceType matches daily series to the
+      # box that ran them. Empty: one box, "default", whose token is secrets.keys.benchmarkBisectToken.
+      boxes: []
   slack:
     enabled: false
     publicUrl: ""

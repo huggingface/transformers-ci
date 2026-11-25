@@ -20,8 +20,17 @@ bench:submit), `@askserge bench <PR>` in Slack (a linked GitHub account), or a b
                                           the snapshot
   GET  /benchmarks/pr-bench/<id>          one PR bench (?format=json for JSON)
 
-  GET  /benchmarks/queue                  members only (a dashboard session): the running job, the queued ones and
-                                          the last 10 that ended
+  GET  /benchmarks/queue                  members only (a dashboard session): per bench box, the running job and
+                                          the queued ones; the last 10 that ended
+
+Bench boxes: TCI_BENCHMARK_BOXES lists them (JSON: name, label, instance_type, default), each with its own worker token
+in TCI_BENCHMARK_BOX_TOKEN_<NAME> (upper case, - as _); the token tells which box a worker is, and a worker only claims
+its box's jobs. Without a list there is one box, "default", whose token is TCI_BENCHMARK_BISECT_TOKEN. A bisect runs on
+the box that produced the series (by instance type) unless the request names another; a PR bench on the default box.
+Each box's worker also runs that box's daily benchmark and registers it here as a job of kind "daily":
+
+  POST /benchmarks/bisect/daily           worker token: {"total": <steps>} -> 201 {"id"}; a running job, reported like
+                                          any other
 
 Membership is checked at login, and sessions last 8 hours, so a submit re-checks active membership of the
 organization through the GitHub App: an ex-member's live session does not spend GPU time.
@@ -56,7 +65,9 @@ TOKEN_ENV = "TCI_BENCHMARK_BISECT_TOKEN"  # the worker's service token
 CHANNEL_ENV = "TCI_BENCHMARK_BISECT_SLACK_CHANNEL"
 ORG = "huggingface"
 SCOPE = "bench:submit"
-MAX_PENDING = 3  # queued or running, all series together
+MAX_PENDING = 3  # queued or running per box, daily runs not counted
+BOXES_ENV = "TCI_BENCHMARK_BOXES"
+BOX_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 LOST_SECONDS = (
     3 * 3600
 )  # a running job with no report for this long is failed: the worker died
@@ -84,6 +95,62 @@ class Error(Exception):
         self.status, self.error = status, error
 
 
+def boxes() -> list[dict]:
+    """The bench boxes, the default first: [{"name", "label", "instance_type", "default"}]."""
+    try:
+        configured = json.loads(os.getenv(BOXES_ENV) or "[]")
+    except ValueError:
+        log.warning("bisect: %s is not JSON; using one default box", BOXES_ENV)
+        configured = []
+    out = [
+        {"name": b["name"], "label": str(b.get("label") or b["name"]),
+         "instance_type": b.get("instance_type") or None, "default": bool(b.get("default"))}
+        for b in configured if isinstance(b, dict) and BOX_NAME.fullmatch(str(b.get("name", "")))
+    ]  # fmt: skip
+    if not out:
+        return [
+            {
+                "name": "default",
+                "label": "Bench host",
+                "instance_type": None,
+                "default": True,
+            }
+        ]
+    if not any(b["default"] for b in out):
+        out[0]["default"] = True
+    return sorted(out, key=lambda b: not b["default"])
+
+
+def default_box() -> dict:
+    return boxes()[0]
+
+
+def find_box(name: str | None) -> dict:
+    """A box by name (the default for None or ""); 422 for a name that is not in the list."""
+    if not name:
+        return default_box()
+    for b in boxes():
+        if b["name"] == name:
+            return b
+    raise Error(422, "unknown_box")
+
+
+def series_box(series: dict) -> dict:
+    """The box that produced a daily series (same instance type), else the default."""
+    instance = series.get("instance_type")
+    return next(
+        (b for b in boxes() if instance and b["instance_type"] == instance),
+        default_box(),
+    )
+
+
+def box_token(name: str) -> str:
+    token = os.getenv("TCI_BENCHMARK_BOX_TOKEN_" + name.upper().replace("-", "_"), "")
+    if not token and name == default_box()["name"]:
+        token = os.getenv(TOKEN_ENV, "")
+    return token
+
+
 class Store:
     def __init__(self, path: Path):
         self.lock = threading.RLock()
@@ -96,6 +163,9 @@ class Store:
             "CREATE TABLE IF NOT EXISTS bisect_jobs (id TEXT PRIMARY KEY, created REAL, updated REAL, series TEXT,"
             " requester TEXT, requester_id INTEGER, state TEXT, job TEXT, steps TEXT, result TEXT, slack_ts TEXT)"
         )
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(bisect_jobs)")}
+        if "box" not in columns:  # jobs from before bench boxes ran on the default box
+            self.db.execute("ALTER TABLE bisect_jobs ADD COLUMN box TEXT")
 
     def _job(self, row) -> dict:
         return {
@@ -108,6 +178,7 @@ class Store:
             "steps": json.loads(row["steps"]),
             "result": json.loads(row["result"]) if row["result"] else None,
             "slack_ts": row["slack_ts"],
+            "box": row["box"] or default_box()["name"],
         }
 
     def get(self, job_id: str) -> dict | None:
@@ -122,12 +193,24 @@ class Store:
         )
         return [self._job(r) for r in rows]
 
+    def _box_clause(self, box: str) -> tuple[str, tuple]:
+        """SQL matching a box's jobs (rows from before bench boxes have none: the default box's)."""
+        if box == default_box()["name"]:
+            return "(box = ? OR box IS NULL)", (box,)
+        return "box = ?", (box,)
+
     def create(self, job: dict, login: str, user_id: int) -> dict:
+        box = job.get("box") or default_box()["name"]
+        clause, args = self._box_clause(box)
         with self.lock:
             self.expire_lost()
             pending = self.db.execute(
-                "SELECT series FROM bisect_jobs WHERE state IN ('queued', 'running')"
+                f"SELECT series, job FROM bisect_jobs WHERE state IN ('queued', 'running') AND {clause}",
+                args,
             ).fetchall()
+            pending = [
+                r for r in pending if json.loads(r["job"]).get("kind") != "daily"
+            ]
             if any(r["series"] == job["series"] for r in pending):
                 raise Error(
                     409,
@@ -139,16 +222,37 @@ class Store:
                 raise Error(429, "bisect_queue_full")
             job_id, now = uuid.uuid4().hex[:12], time.time()
             self.db.execute(
-                "INSERT INTO bisect_jobs VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, '[]', NULL, NULL)",
-                (job_id, now, now, job["series"], login, user_id, json.dumps(job)),
+                "INSERT INTO bisect_jobs VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, '[]', NULL, NULL, ?)",
+                (job_id, now, now, job["series"], login, user_id, json.dumps(job), box),
             )
             return self.get(job_id)
 
-    def claim(self) -> dict | None:
+    def register(self, job: dict) -> dict:
+        """A job the worker started on its own (the daily run): running at once, outside the limits."""
+        job_id, now = uuid.uuid4().hex[:12], time.time()
+        with self.lock:
+            self.expire_lost()
+            self.db.execute(
+                "INSERT INTO bisect_jobs VALUES (?, ?, ?, ?, ?, 0, 'running', ?, '[]', NULL, NULL, ?)",
+                (
+                    job_id,
+                    now,
+                    now,
+                    job["series"],
+                    job["requester"],
+                    json.dumps(job),
+                    job["box"],
+                ),
+            )
+        return self.get(job_id)
+
+    def claim(self, box: str | None = None) -> dict | None:
+        clause, args = self._box_clause(box or default_box()["name"])
         with self.lock:
             self.expire_lost()
             row = self.db.execute(
-                "SELECT * FROM bisect_jobs WHERE state = 'queued' ORDER BY created LIMIT 1"
+                f"SELECT * FROM bisect_jobs WHERE state = 'queued' AND {clause} ORDER BY created LIMIT 1",
+                args,
             ).fetchone()
             if not row:
                 return None
@@ -270,6 +374,7 @@ def build_job(snapshot: dict, series_key: str, good: str, bad: str) -> dict:
         raise Error(422, "no_e2e_values")
     return {
         "series": series_key,
+        "box": series_box(series)["name"],
         "model": series["model"],
         "scenario_label": series["scenario"],
         "gpu": series["gpu"],
@@ -286,14 +391,23 @@ def build_job(snapshot: dict, series_key: str, good: str, bad: str) -> dict:
     }
 
 
-def pr_scenarios(snapshot: dict) -> list[dict]:
-    """The daily scenarios a PR bench runs: every daily series the worker can rerun, uncompiled."""
+def pr_scenarios(snapshot: dict, box: dict | None = None) -> list[dict]:
+    """The daily scenarios a PR bench runs: every daily series the worker can rerun, uncompiled, of the box's own
+    daily run (the default box's when the box has none yet)."""
     page = snapshot.get("pages", {}).get("main.html") or {}
+    every = page.get("series", [])
+    box = box or default_box()
+    own = [s for s in every if series_box(s)["name"] == box["name"]]
+    fallback = [s for s in every if series_box(s)["name"] == default_box()["name"]]
     scenarios = []
-    for s in page.get("series", []):
+    seen = set()
+    for s in own or fallback:
         spec = s.get("bisect")
         if not spec or set(spec["config"]) != {"attn_implementation"}:
             continue
+        if (s["model"], s["scenario"]) in seen:
+            continue
+        seen.add((s["model"], s["scenario"]))
         scenarios.append(
             {
                 "series": s["key"],
@@ -333,24 +447,27 @@ def pull_request(pr: str) -> dict:
     return {"head": head, "title": str(pull.get("title", ""))[:200]}
 
 
-def build_pr_job(snapshot: dict, pr: str, pull: dict) -> dict:
+def build_pr_job(snapshot: dict, pr: str, pull: dict, box: dict | None = None) -> dict:
+    box = box or default_box()
     return {
         "kind": "pr",
-        "series": f"pr:{pr}",
+        "series": f"pr:{pr}@{box['name']}",
+        "box": box["name"],
         "pr": int(pr),
         "title": pull["title"],
         "head": pull["head"],
-        "scenarios": pr_scenarios(snapshot),
+        "scenarios": pr_scenarios(snapshot, box),
         "metric": "e2e",
         "rounds": PR_ROUNDS,
     }
 
 
-def submit_pr(pr: str, user: dict) -> dict:
-    """Queue a PR bench for a member (browser, CLI token, or Slack's linked GitHub login)."""
+def submit_pr(pr: str, user: dict, box: str | None = None) -> dict:
+    """Queue a PR bench for a member (browser, CLI token, or Slack's linked GitHub login), on a box (the default)."""
     if not PR.fullmatch(str(pr)):
         raise Error(400, "invalid_request")
-    job = build_pr_job(snapshot(), str(pr), pull_request(str(pr)))
+    target = find_box(box)
+    job = build_pr_job(snapshot(), str(pr), pull_request(str(pr)), target)
     still_member(user)
     db = store()
     created = db.create(job, user["login"], user.get("user_id", 0))
@@ -417,11 +534,19 @@ def requester(handler) -> dict:
         raise Error(exc.status, exc.error) from None
 
 
-def worker(handler) -> None:
-    expected = os.getenv(TOKEN_ENV, "")
+def worker(handler) -> str:
+    """The box whose worker token the request carries; 401 for any other."""
     supplied = handler.headers.get("Authorization", "")
-    if not expected or not hmac.compare_digest(supplied, "Bearer " + expected):
+    found = ""
+    for (
+        b
+    ) in boxes():  # every token compared, so the time does not tell which box matched
+        expected = box_token(b["name"])
+        if expected and hmac.compare_digest(supplied, "Bearer " + expected):
+            found = b["name"]
+    if not found:
         raise Error(401, "unauthorized")
+    return found
 
 
 def body(handler, limit: int = 262144) -> dict:
@@ -448,6 +573,8 @@ def job_path(job: dict) -> str:
 
 
 def describe_step(step: dict) -> str:
+    if "label" in step and "base" not in step:  # a daily run's stage
+        return f"{step['label']}: {step.get('verdict', '')}"
     if step.get("scenario"):  # a PR bench: one step per scenario
         where = f"{step['model']} · {step['scenario']}"
     else:
@@ -455,7 +582,8 @@ def describe_step(step: dict) -> str:
     if step.get("change") is None:
         return f"{step.get('role', '')} {where}: {step['verdict']}".strip()
     lo, hi = step["ci"]
-    return f"{step.get('role', '')} {where}: {step['change']:+.2f}% [{lo:+.2f}, {hi:+.2f}] → {step['verdict']}".strip()
+    verdict = pr_verdict(step) if step.get("scenario") else step["verdict"]
+    return f"{step.get('role', '')} {where}: {step['change']:+.2f}% [{lo:+.2f}, {hi:+.2f}] → {verdict}".strip()
 
 
 def describe_result(job: dict) -> str:
@@ -503,7 +631,7 @@ def announce(db: Store, job: dict) -> None:
         text = (
             f"*PR bench: <https://github.com/{REPO}/pull/{job['pr']}|#{job['pr']}> {job['title']}*, "
             f"requested by {job['requester']}\n`{job['head'][:10]}` against its merge-base with main, "
-            f"{len(job['scenarios'])} daily scenarios · <{job_url(job)}|job page>"
+            f"{len(job['scenarios'])} daily scenarios on {box_label(job)} · <{job_url(job)}|job page>"
         )
         if ts := slack(job, text, thread=False):
             db.set_slack_ts(job["id"], ts)
@@ -511,10 +639,18 @@ def announce(db: Store, job: dict) -> None:
     text = (
         f"*Bisect: {job['model']} · {job['scenario_label']} · {job['gpu']}*, requested by {job['requester']}\n"
         f"{job['good_date']} → {job['bad_date']}: e2e {job['expected']:+.2f}% "
-        f"(`{job['good'][:10]}`..`{job['bad'][:10]}`) · <{job_url(job)}|job page>"
+        f"(`{job['good'][:10]}`..`{job['bad'][:10]}`) on {box_label(job)} · <{job_url(job)}|job page>"
     )
     if ts := slack(job, text, thread=False):
         db.set_slack_ts(job["id"], ts)
+
+
+def box_label(job: dict) -> str:
+    """A job's box as people read it ("g5.48xlarge · 8× A10G"), or its name when it left the list."""
+    return next(
+        (b["label"] for b in boxes() if b["name"] == job.get("box")),
+        job.get("box") or "the bench host",
+    )
 
 
 def public(job: dict) -> dict:
@@ -567,15 +703,25 @@ def handle(handler, method: str) -> bool:
             if not series or not SHA.fullmatch(good) or not SHA.fullmatch(bad):
                 raise Error(400, "invalid_request")
             job = build_job(snapshot(), series, good, bad)
+            if data.get("box"):
+                job["box"] = find_box(str(data["box"]))["name"]
             still_member(user)
             created = db.create(job, user["login"], user["user_id"])
             announce(db, created)
             handler._reply_json(
                 201, {"id": created["id"], "url": f"/benchmarks/bisect/{created['id']}"}
             )
+        elif method == "POST" and tail == "daily":
+            box = worker(handler)
+            data = body(handler, 4096)
+            total = data.get("total")
+            job = db.register(
+                {"kind": "daily", "series": f"daily@{box}", "box": box, "requester": "daily run",
+                 "total": int(total) if isinstance(total, int) and 0 < total < 1000 else None}
+            )  # fmt: skip
+            handler._reply_json(201, {"id": job["id"], "url": job_path(job)})
         elif method == "GET" and tail == "next":
-            worker(handler)
-            job = db.claim()
+            job = db.claim(worker(handler))
             if not job:
                 handler._send(204, "text/plain", b"")
             else:
@@ -586,8 +732,11 @@ def handle(handler, method: str) -> bool:
             and tail.endswith("/report")
             and ID.fullmatch(tail.removesuffix("/report"))
         ):
-            worker(handler)
+            box = worker(handler)
             job_id, data = tail.removesuffix("/report"), body(handler)
+            mine = db.get(job_id)
+            if mine and mine["box"] != box:
+                raise Error(403, "job_of_another_box")
             if data.get("kind") == "step" and isinstance(data.get("step"), dict):
                 job = db.add_step(job_id, data["step"])
                 slack(job, describe_step(data["step"]))
@@ -609,11 +758,10 @@ def handle(handler, method: str) -> bool:
                 if as_json:
                     handler._reply_json(200, public(job))
                 else:
-                    page_html = (
-                        pr_page(job, theme)
-                        if job.get("kind") == "pr"
-                        else job_page(job, theme)
+                    render = {"pr": pr_page, "daily": daily_page}.get(
+                        job.get("kind"), job_page
                     )
+                    page_html = render(job, theme)
                     handler._send(200, "text/html; charset=utf-8", page_html.encode())
             elif as_json:
                 handler._reply_json(200, {"jobs": [public(j) for j in db.recent()]})
@@ -635,7 +783,10 @@ def handle_pr(handler, method: str, tail: str, query: str) -> None:
     try:
         if method == "POST" and not tail:
             user = requester(handler)
-            created = submit_pr(str(body(handler, 1024).get("pr", "")), user)
+            data = body(handler, 1024)
+            created = submit_pr(
+                str(data.get("pr", "")), user, str(data.get("box") or "") or None
+            )
             handler._reply_json(201, {"id": created["id"], "url": job_path(created)})
         elif method == "GET" and ID.fullmatch(tail):
             job = store().get(tail)
@@ -654,8 +805,8 @@ def handle_pr(handler, method: str, tail: str, query: str) -> None:
         handler._reply_json(exc.status, {"error": exc.error})
 
 
-GOOD_VERDICTS = {"faster", "good", "not_reproduced", "no significant change"}
-BAD_VERDICTS = {"slower", "bad", "reproduced", "confirmed"}
+GOOD_VERDICTS = {"faster", "good", "not_reproduced", "no significant change", "ok", "done"}
+BAD_VERDICTS = {"slower", "bad", "reproduced", "confirmed", "failed", "failed to run"}
 LIVE_CSS = """
 .job-progress{margin:14px 0 18px;padding:12px 14px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
 .job-progress .row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
@@ -699,6 +850,19 @@ old.replaceWith(nu);nu.querySelectorAll('tbody tr').forEach((tr,i)=>{if(i>=n-1&&
 tick();if(nu.dataset.done){document.title='\u2713 '+document.title;return}}}catch(e){}
 setTimeout(poll,5000)};setTimeout(poll,5000)})();
 """
+
+
+def pr_verdict(step: dict) -> str:
+    """A PR bench step's verdict; "no significant change" with a wide CI (workers before 2026-11-25) reads as what
+    it was: too noisy to tell."""
+    ci = step.get("ci")
+    if (
+        step.get("verdict") == "no significant change"
+        and ci
+        and max(-ci[0], ci[1]) > 1.0
+    ):
+        return f"inconclusive (±{(ci[1] - ci[0]) / 2:.1f}%)"
+    return step.get("verdict", "")
 
 
 def pill(verdict: str) -> str:
@@ -778,7 +942,7 @@ def pr_page(job: dict, theme: str = "dark") -> str:
             [esc(sc["model"]), esc(sc["label"]),
              esc("" if not s or s.get("change") is None else f"{s['change']:+.2f}%"),
              esc("" if not s or s.get("ci") is None else f"[{s['ci'][0]:+.2f}, {s['ci'][1]:+.2f}]"),
-             pill(s["verdict"]) if s else ("" if job["state"] == "done" else (running_cell() if sc is current else pill("pending")))]
+             pill(pr_verdict(s)) if s else ("" if job["state"] == "done" else (running_cell() if sc is current else pill("pending")))]
         )  # fmt: skip
     r = job["result"] or {}
     state = job["state"] if job["state"] != "done" else r.get("state", "failed")
@@ -790,7 +954,7 @@ def pr_page(job: dict, theme: str = "dark") -> str:
         f"<p>{link('/benchmarks/bisect', 'All jobs')} · {link('/benchmarks/main', 'Daily main')}</p>"
         f"<h1>PR bench: #{job['pr']}</h1>"
         f'<p class="meta">{pr_link}'
-        f" · requested by {esc(job['requester'])}</p>"
+        f" · requested by {esc(job['requester'])} · on {esc(box_label(job))}</p>"
         f"<p>Head {commit(job['head'])}"
         + (
             f" against merge-base {commit(base)}"
@@ -804,6 +968,29 @@ def pr_page(job: dict, theme: str = "dark") -> str:
         body += f"<p>{esc(r['reason'])}</p>"
     body += table(["Model", "Scenario", "Change", "95% CI", "Verdict"], rows)
     return document(f"PR bench #{job['pr']}", live(job, body), theme)
+
+
+def daily_page(job: dict, theme: str = "dark") -> str:
+    """A box's daily run, as its worker reports it: one step per stage (GPU suite runs, serve, processors, ...)."""
+    from transformersci.benchmarks.page import document, esc, link, table
+
+    r = job["result"] or {}
+    state = job["state"] if job["state"] != "done" else r.get("state", "failed")
+    rows = [[esc(s.get("label", "")), pill(s.get("verdict", ""))] for s in job["steps"]]
+    if job["state"] == "running":
+        rows.append(["", running_cell()])
+    body = (
+        f"<p>{link('/benchmarks/queue', 'Bench queue')} · {link('/benchmarks/main', 'Daily main')}</p>"
+        f"<h1>Daily main benchmark</h1>"
+        f'<p class="meta">on {esc(box_label(job))}'
+        + (f" · main {esc(r['commit'][:10])}" if r.get("commit") else "")
+        + "</p>"
+        + progress(job, len(job["steps"]), job.get("total"), state)
+    )
+    if r.get("reason"):
+        body += f"<p>{esc(r['reason'])}</p>"
+    body += table(["Stage", "Status"], rows) if rows else ""
+    return document("Daily run", live(job, body), theme)
 
 
 def job_page(job: dict, theme: str = "dark") -> str:
@@ -827,7 +1014,8 @@ def job_page(job: dict, theme: str = "dark") -> str:
     body = (
         f"<p>{link('/benchmarks/bisect', 'All bisects')} · {link('/benchmarks/main', 'Daily main')}</p>"
         f"<h1>Bisect: {esc(job['model'])}</h1>"
-        f'<p class="meta">{esc(job["scenario_label"])} · {esc(job["gpu"])} · requested by {esc(job["requester"])}</p>'
+        f'<p class="meta">{esc(job["scenario_label"])} · {esc(job["gpu"])} · requested by {esc(job["requester"])}'
+        f" · on {esc(box_label(job))}</p>"
         f"<p>{esc(job['good_date'])} {commit(job['good'])} → {esc(job['bad_date'])} {commit(job['bad'])}: "
         f"e2e {job['expected']:+.2f}% on the daily chart</p>"
         + progress(job, len(job["steps"]), None, ENDINGS.get(state, state))
@@ -851,6 +1039,9 @@ def job_page(job: dict, theme: str = "dark") -> str:
 
 def describe_job(job: dict) -> tuple[str, str]:
     """(what, detail) of a job for the tables."""
+    if job.get("kind") == "daily":
+        last = job["steps"][-1]["label"] if job["steps"] else "starting"
+        return "Daily main benchmark", last
     if job.get("kind") == "pr":
         return (
             f"PR #{job['pr']} {job.get('title', '')}",
@@ -886,13 +1077,14 @@ def queue_page(
 ) -> str:
     from transformersci.benchmarks.page import document, esc, link, table, tabs
 
-    def rows(jobs: list[dict], when: str) -> list[list[str]]:
+    def rows(jobs: list[dict], when: str, with_box: bool = False) -> list[list[str]]:
         out = []
         for j in jobs:
             what, detail = describe_job(j)
             stamp = j["updated"] if when == "ended" else j["created"]
             out.append(
-                [link(job_path(j), j["id"]), esc(what), esc(detail), esc(j["requester"]),
+                [link(job_path(j), j["id"]), esc(what), esc(detail), *([esc(box_label(j))] if with_box else []),
+                 esc(j["requester"]),
                  pill(job_state(j)) if when == "ended" else esc(f"{len(j['steps'])} steps"),
                  f'<span data-since="{stamp:.0f}"></span> ago']
             )  # fmt: skip
@@ -900,35 +1092,41 @@ def queue_page(
 
     body = tabs("queue", theme) + "<h1>Bench queue</h1>"
     body += (
-        '<p class="meta">Bisects from the Daily main charts and PR benches (<code>tperf bench &lt;PR&gt;</code>, '
-        "<code>/askserge bench &lt;PR&gt;</code>) run one at a time on the bench host. Up to "
-        f"{MAX_PENDING} jobs wait or run at once.</p>"
+        '<p class="meta">Each bench box runs its jobs one at a time: its daily benchmark at 03:00 UTC first, then '
+        "bisects from the Daily main charts and PR benches (<code>tperf bench &lt;PR&gt; [--box NAME]</code>, "
+        f"<code>/askserge bench &lt;PR&gt; [box]</code>). Up to {MAX_PENDING} jobs wait or run per box.</p>"
     )
-    body += "<h2>Running</h2>"
-    if running:
-        for j in running:
-            what, detail = describe_job(j)
-            total = len(j["scenarios"]) if j.get("kind") == "pr" else None
-            body += (
-                f"<p>{link(job_path(j), what)} · {esc(detail)} · requested by {esc(j['requester'])}</p>"
-                + progress(j, len(j["steps"]), total, "running")
+    for b in boxes():
+        mine = lambda jobs: [j for j in jobs if j["box"] == b["name"]]  # noqa: B023
+        tag = ' <span class="pill">default</span>' if b["default"] else ""
+        body += f'<section class="box"><h2>{esc(b["label"])}{tag} <code class="meta">{esc(b["name"])}</code></h2>'
+        here = mine(running)
+        if here:
+            for j in here:
+                what, detail = describe_job(j)
+                total = len(j["scenarios"]) if j.get("kind") == "pr" else j.get("total")
+                body += (
+                    f"<p>{link(job_path(j), what)} · {esc(detail)} · requested by {esc(j['requester'])}</p>"
+                    + progress(j, len(j["steps"]), total, "running")
+                )
+        else:
+            body += '<p class="muted">Nothing is running.</p>'
+        waiting = mine(queued)
+        body += (
+            "<h3>Queued</h3>"
+            + table(
+                ["Job", "What", "Detail", "Requested by", "Progress", "Queued"],
+                rows(waiting, "queued"),
             )
-    else:
-        body += '<p class="muted">Nothing is running.</p>'
-    body += "<h2>Queued</h2>"
-    body += (
-        table(
-            ["Job", "What", "Detail", "Requested by", "Progress", "Queued"],
-            rows(queued, "queued"),
+            if waiting
+            else '<p class="muted">Nothing is waiting.</p>'
         )
-        if queued
-        else '<p class="muted">Nothing is waiting.</p>'
-    )
+        body += "</section>"
     body += "<h2>Last 10 finished</h2>"
     body += (
         table(
-            ["Job", "What", "Detail", "Requested by", "Result", "Ended"],
-            rows(finished, "ended"),
+            ["Job", "What", "Detail", "Box", "Requested by", "Result", "Ended"],
+            rows(finished, "ended", with_box=True),
         )
         if finished
         else '<p class="muted">No job has finished yet.</p>'
@@ -937,9 +1135,13 @@ def queue_page(
         f"{j['id']}:{j['state']}:{len(j['steps'])}"
         for j in running + queued + finished[:1]
     )
+    style = (
+        LIVE_CSS
+        + ".box{margin:14px 0 22px}.box h2 code{font-weight:400;margin-left:6px}"
+    )
     return document(
         "Bench queue",
-        f'<style>{LIVE_CSS}</style><div id="job" data-version="{esc(version)}">{body}</div><script>{LIVE_SCRIPT}</script>',
+        f'<style>{style}</style><div id="job" data-version="{esc(version)}">{body}</div><script>{LIVE_SCRIPT}</script>',
         theme,
     )
 
@@ -948,6 +1150,8 @@ def jobs_page(jobs: list[dict], theme: str = "dark") -> str:
     from transformersci.benchmarks.page import document, esc, link, table
 
     def what(j: dict) -> list[str]:
+        if j.get("kind") == "daily":
+            return [esc("Daily main benchmark"), esc(box_label(j)), ""]
         if j.get("kind") == "pr":
             return [
                 esc(f"PR #{j['pr']}"),

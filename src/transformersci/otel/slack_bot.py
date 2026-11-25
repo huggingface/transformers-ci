@@ -62,6 +62,9 @@ def chat_requested(text):
         re.fullmatch(
             r"(?:pr|rerun|investigate|bench|bench-pr)\s+[1-9][0-9]{0,9}", value
         )
+        or re.fullmatch(
+            r"(?:bench|bench-pr)\s+[1-9][0-9]{0,9}\s+[a-z0-9][a-z0-9-]{0,31}", value
+        )
         or re.fullmatch(r"result\s+[a-f0-9]{24}", value)
         or re.fullmatch(r"link-confirm\s+[a-f0-9]{32}", value)
         or re.fullmatch(r"decision\s+[a-f0-9]{24}\s+(?:approve|decline)", value)
@@ -101,7 +104,7 @@ def command_reply(text: str, summary, dashboard: str, serge: str) -> str:
             "• `/askserge pr <number>` — Show the title, author, age, current CI checks, and a Relore brief with review and project history.\n"
             "• `/askserge rerun <number>` — Rerun failed CI for that PR. If active runs need cancellation, confirm in the dashboard first.\n"
             "• `/askserge investigate <number>` — Ask Serge for a draft review of the PR; returns a link to the review.\n"
-            "• `/askserge bench <number>` — Benchmark the PR against main on the bench host (daily scenarios); returns a link to the results.\n"
+            "• `/askserge bench <number> [box]` — Benchmark the PR against main on a bench box (the default one unless named); returns a link to the results.\n"
             "• `/askserge result <id>` — Retrieve a saved command result using the ID from its receipt.\n"
             "• `/askserge dashboard` — Open the CI dashboard.\n"
             "• `/askserge serge` — Open Serge.\n"

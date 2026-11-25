@@ -32,7 +32,7 @@ CSS = (
 .card,.notice,.benchmark-group{background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:10px 12px;min-width:0}
 .benchmark-group{margin:12px 0;scroll-margin-top:48px}.benchmark-group>.panel-heading{display:flex;align-items:center;flex-wrap:wrap;gap:8px;justify-content:space-between;margin:0 0 8px}.panel-heading form{margin:0}
 .benchmark-group .card{background:var(--bg);padding:8px 10px}.headline{font-size:18px;font-weight:500}.meta{font-size:11px;line-height:16px;color:var(--muted);overflow-wrap:anywhere}.filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}.filters label{display:flex;align-items:center;gap:6px;font-size:12px}.filters select,.filters button{font-size:12px}.filters select{max-width:360px}label{display:grid;gap:4px}
-.plot{width:100%;height:auto}.plot text{fill:var(--muted);font:11px Inter,system-ui}.plot .gridline{stroke:var(--line)}.plot .line{fill:none;stroke:var(--accent);stroke-width:2}.plot .band{fill:var(--accent);opacity:.15}.plot circle{fill:var(--accent)}.tabs .queue-busy{display:inline-block;width:8px;height:8px;margin-right:6px;border-radius:50%;background:var(--accent);vertical-align:1px;animation:queue-ring 1.4s ease-out infinite}@keyframes queue-ring{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 70%,transparent)}100%{box-shadow:0 0 0 7px transparent}}@media (prefers-reduced-motion:reduce){.tabs .queue-busy{animation:none}}.tabs .tci-lock{width:11px;height:11px;margin-left:5px;opacity:.75}.bisect-live{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:2px 8px;border:1px solid var(--accent);border-radius:99px;text-decoration:none}.bisect-live .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:bisect-blink 1.2s ease-in-out infinite}@keyframes bisect-blink{50%{opacity:.25}}@media (prefers-reduced-motion:reduce){.bisect-live .dot{animation:none}}.plot .step{fill:var(--bad);opacity:.12}.plot .step-line{stroke:var(--bad);stroke-width:3}
+.plot{width:100%;height:auto}.plot text{fill:var(--muted);font:11px Inter,system-ui}.plot .gridline{stroke:var(--line)}.plot .line{fill:none;stroke:var(--accent);stroke-width:2}.plot .band{fill:var(--accent);opacity:.15}.plot circle{fill:var(--accent)}.tabs .queue-busy{display:inline-block;width:8px;height:8px;margin-right:6px;border-radius:50%;background:var(--accent);vertical-align:1px;animation:queue-ring 1.4s ease-out infinite}@keyframes queue-ring{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 70%,transparent)}100%{box-shadow:0 0 0 7px transparent}}@media (prefers-reduced-motion:reduce){.tabs .queue-busy{animation:none}}.tabs .tci-lock{width:11px;height:11px;margin-left:5px;opacity:.75}.bisect-dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:16px 18px;min-width:min(420px,90vw)}.bisect-dialog::backdrop{background:rgba(0,0,0,.45)}.bisect-dialog h3{margin:0 0 6px}.bisect-dialog select{margin-top:4px}.bisect-dialog menu{display:flex;justify-content:flex-end;gap:8px;padding:0;margin:12px 0 0}.bisect-dialog .primary{background:var(--accent);color:#fff;border-color:var(--accent)}.bisect-live{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:2px 8px;border:1px solid var(--accent);border-radius:99px;text-decoration:none}.bisect-live .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:bisect-blink 1.2s ease-in-out infinite}@keyframes bisect-blink{50%{opacity:.25}}@media (prefers-reduced-motion:reduce){.bisect-live .dot{animation:none}}.plot .step{fill:var(--bad);opacity:.12}.plot .step-line{stroke:var(--bad);stroke-width:3}
 summary{cursor:pointer;color:var(--accent);margin:4px 0;font-size:12px}.good{color:var(--good)}.bad{color:var(--bad)}.chip{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:3px;padding:0 5px;margin:2px}.metric-value{display:flex;align-items:baseline;gap:8px;margin:4px 0 0}.delta{font-size:11px;margin:0}code{overflow-wrap:anywhere}footer{margin-top:20px;color:var(--muted);font-size:11px}.overview-card{margin:10px 0;padding:12px}.comparison-list{margin-top:12px}.comparison-list>h2{margin-bottom:4px}.comparison-list>.scroll{background:var(--panel);border:1px solid var(--line);border-radius:3px;margin-top:8px}td{white-space:nowrap}td.wrap{white-space:normal;min-width:150px}.card>h2{margin-bottom:6px}.card>h2~h3{margin-top:12px}
 """
 )
@@ -428,6 +428,7 @@ def daily(data, params, theme="dark"):
                 bisect_enabled() and s.get("bisect") and name == "Generation"
             )
             step = largest_step(s["points"]) if bisectable else None
+            series_box_name = bisect_jobs.series_box(s)["name"] if bisectable else ""
             out += chart(
                 points,
                 m,
@@ -445,6 +446,7 @@ def daily(data, params, theme="dark"):
                         after["commit"],
                         "Bisect this step",
                         running,
+                        box=series_box_name,
                     )
                     + "</p>"
                 )
@@ -493,6 +495,7 @@ def daily(data, params, theme="dark"):
                                 previous[p["commit"]]["commit"],
                                 p["commit"],
                                 active=running,
+                                box=series_box_name,
                             )
                             if p["commit"] in previous
                             else ""
@@ -540,8 +543,27 @@ def daily(data, params, theme="dark"):
             out += "</article>"
         out += "</div></section>"
     if bisect_enabled():
-        out += BISECT_SCRIPT
+        out += bisect_dialog() + BISECT_SCRIPT
     return out
+
+
+def bisect_dialog():
+    """The confirmation dialog of the Bisect buttons, with the bench box to run on (the series' own preselected)."""
+    from transformersci.benchmarks import bisect as bisect_jobs
+
+    options = "".join(
+        f'<option value="{esc(b["name"])}">{esc(b["label"])}{" (default)" if b["default"] else ""}</option>'
+        for b in bisect_jobs.boxes()
+    )
+    return (
+        '<dialog id="bisect-dialog" class="bisect-dialog"><form method="dialog">'
+        '<h3>Start a bisect</h3><p class="what meta"></p>'
+        f'<label>Bench box<select name="box">{options}</select></label>'
+        '<p class="meta">The daily series ran on the preselected box: a regression on one box may not show on '
+        "another. The result is posted to #transformers-benchmark.</p>"
+        '<menu><button value="cancel">Cancel</button><button value="ok" class="primary">Bisect</button></menu>'
+        "</form></dialog>"
+    )
 
 
 def bisect_enabled():
@@ -558,12 +580,18 @@ BISECT_SCRIPT = """<script>
   }).catch(() => {});
   for (const b of buttons) b.addEventListener('click', async () => {
     if (b.dataset.signin) return signIn();
-    if (!confirm('Bisect ' + b.dataset.good.slice(0, 10) + '..' + b.dataset.bad.slice(0, 10) +
-                 ' on the bench host? The result is posted to #transformers-benchmark.')) return;
+    const dialog = document.getElementById('bisect-dialog');
+    dialog.querySelector('.what').textContent = b.dataset.good.slice(0, 10) + '..' + b.dataset.bad.slice(0, 10);
+    const select = dialog.querySelector('select');
+    if ([...select.options].some(o => o.value === b.dataset.box)) select.value = b.dataset.box;
+    dialog.returnValue = '';
+    dialog.showModal();
+    await new Promise(resolve => dialog.addEventListener('close', resolve, {once: true}));
+    if (dialog.returnValue !== 'ok') return;
     b.disabled = true;
     const r = await fetch('/benchmarks/bisect', {method: 'POST', cache: 'no-store',
       headers: {'Content-Type': 'application/json', 'X-TCI-Action': '1'},
-      body: JSON.stringify({series: b.dataset.series, good: b.dataset.good, bad: b.dataset.bad})});
+      body: JSON.stringify({series: b.dataset.series, good: b.dataset.good, bad: b.dataset.bad, box: select.value})});
     const data = await r.json().catch(() => ({}));
     if (r.status === 401) return signIn();
     if (r.ok) { location.href = data.url; return; }
@@ -574,7 +602,7 @@ BISECT_SCRIPT = """<script>
 </script>"""
 
 
-def bisect_button(series, good, bad, label="Bisect", active=None):
+def bisect_button(series, good, bad, label="Bisect", active=None, box=""):
     """The Bisect button, or a link to the series' bisect when one is already queued or running."""
     job = (active or {}).get(series)
     if job:
@@ -585,7 +613,7 @@ def bisect_button(series, good, bad, label="Bisect", active=None):
         )
     return (
         f'<button type="button" class="bisect" data-series="{esc(series)}" data-good="{esc(good)}" '
-        f'data-bad="{esc(bad)}">{esc(label)}</button>'
+        f'data-bad="{esc(bad)}" data-box="{esc(box)}">{esc(label)}</button>'
     )
 
 

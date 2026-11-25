@@ -469,8 +469,9 @@ def test_bench_queue_shows_running_queued_and_the_last_ten(pr_service, monkeypat
     h = Handler("/benchmarks/queue")
     bisect.handle(h, "GET")
     html = h.reply[1].decode()
-    running_part, rest = html.split("<h2>Queued</h2>")
-    queued_part, finished_part = rest.split("<h2>Last 10 finished</h2>")
+    box_part, finished_part = html.split("<h2>Last 10 finished</h2>")
+    running_part, queued_part = box_part.split("<h3>Queued</h3>")
+    assert "Bench host" in running_part and "default" in running_part
     assert running["id"] in running_part and "job-progress" in running_part
     assert queued["id"] in queued_part and "PR #123" in queued_part
     assert (
@@ -527,3 +528,161 @@ def test_serve_series_get_their_own_section_and_metric_menu(monkeypatch):
         {"serve_metric": ["e2e"]},
     )
     assert "900" in html
+
+
+BOXES = [{"name": "big", "label": "g5.48xlarge · 8× A10G", "instance_type": "g5.48xlarge", "default": True},
+         {"name": "small", "label": "g5.4xlarge · 1× A10G", "instance_type": "g5.4xlarge"}]  # fmt: skip
+
+
+@pytest.fixture
+def two_boxes(pr_service, monkeypatch):
+    monkeypatch.setenv("TCI_BENCHMARK_BOXES", json.dumps(BOXES))
+    monkeypatch.setenv("TCI_BENCHMARK_BOX_TOKEN_BIG", "big-secret")
+    monkeypatch.setenv("TCI_BENCHMARK_BOX_TOKEN_SMALL", "small-secret")
+    monkeypatch.delenv("TCI_BENCHMARK_BISECT_TOKEN")
+    small = {**SERIES, "key": "gemma-small", "instance_type": "g5.4xlarge"}
+    big = {**SERIES, "instance_type": "g5.48xlarge"}
+    snap = {"pages": {"main.html": {"series": [big, small]}}}
+    monkeypatch.setattr(bisect, "snapshot", lambda: snap)
+    return pr_service
+
+
+def claim(token):
+    h = Handler("/benchmarks/bisect/next", auth=f"Bearer {token}")
+    bisect.handle(h, "GET")
+    return h.reply
+
+
+def test_without_a_box_list_there_is_one_default_box(monkeypatch):
+    monkeypatch.delenv("TCI_BENCHMARK_BOXES", raising=False)
+    assert [b["name"] for b in bisect.boxes()] == ["default"]
+    monkeypatch.setenv("TCI_BENCHMARK_BOXES", json.dumps(list(reversed(BOXES))))
+    assert [b["name"] for b in bisect.boxes()] == ["big", "small"]  # the default first
+
+
+def test_a_bisect_runs_on_the_box_of_its_series_unless_another_is_named(two_boxes):
+    def post(series, box=None):
+        h = Handler(
+            "/benchmarks/bisect",
+            {
+                "series": series,
+                "good": GOOD,
+                "bad": BAD,
+                **({"box": box} if box else {}),
+            },
+        )
+        bisect.handle(h, "POST")
+        return h.reply
+
+    _, small = post("gemma-small")
+    assert bisect.store().get(small["id"])["box"] == "small"
+    _, big = post("gemma-fa2", "small")
+    assert bisect.store().get(big["id"])["box"] == "small"
+    assert post("gemma-fa2", "nope") == (422, {"error": "unknown_box"})
+    assert claim("big-secret") == (
+        204,
+        b"",
+    )  # big has no job: each worker claims its own box's only
+    assert claim("small-secret")[1]["id"] == small["id"]
+    assert claim("wrong")[0] == 401
+
+
+def test_a_worker_cannot_report_on_another_boxs_job(two_boxes):
+    _, job = submit_pr()  # PR benches go to the default box
+    assert claim("big-secret")[1]["id"] == job["id"]
+    h = Handler(f"/benchmarks/bisect/{job['id']}/report", {"kind": "done", "result": {"state": "done"}},
+                auth="Bearer small-secret")  # fmt: skip
+    bisect.handle(h, "POST")
+    assert h.reply == (403, {"error": "job_of_another_box"})
+
+
+def test_pr_benches_per_box_and_limits_per_box(two_boxes):
+    big = bisect.submit_pr("123", MEMBER)
+    small = bisect.submit_pr(
+        "123", MEMBER, "small"
+    )  # the same PR on another box is another job
+    assert (big["box"], small["box"]) == ("big", "small")
+    assert [s["series"] for s in small["scenarios"]] == [
+        "gemma-small"
+    ]  # the small box's own daily scenarios
+    for pr in ("124", "125"):
+        bisect.submit_pr(pr, MEMBER, "small")
+    with pytest.raises(bisect.Error) as exc:
+        bisect.submit_pr("126", MEMBER, "small")
+    assert exc.value.error == "bisect_queue_full"
+    assert (
+        bisect.submit_pr("126", MEMBER)["box"] == "big"
+    )  # the other box still has room
+
+
+def test_jobs_from_before_bench_boxes_belong_to_the_default_box(two_boxes):
+    db = bisect.store()
+    job = db.create(
+        bisect.build_pr_job(bisect.snapshot(), "7", {"head": HEAD, "title": "t"}),
+        "member",
+        42,
+    )
+    db.db.execute("UPDATE bisect_jobs SET box = NULL WHERE id = ?", (job["id"],))
+    assert db.get(job["id"])["box"] == "big"
+    assert claim("big-secret")[1]["id"] == job["id"]
+
+
+def test_the_daily_run_registers_as_a_running_job_of_its_box(two_boxes, monkeypatch):
+    h = Handler("/benchmarks/bisect/daily", {"total": 9}, auth="Bearer small-secret")
+    bisect.handle(h, "POST")
+    assert h.reply[0] == 201
+    job = bisect.store().get(h.reply[1]["id"])
+    assert (job["kind"], job["box"], job["state"], job["total"]) == (
+        "daily",
+        "small",
+        "running",
+        9,
+    )
+    for pr in ("1", "2", "3"):  # a daily run does not count against the box's queue
+        bisect.submit_pr(pr, MEMBER, "small")
+    step = Handler(f"/benchmarks/bisect/{job['id']}/report", {"kind": "step", "step": {"label": "GPU suites, run 1/3",
+                   "verdict": "done"}}, auth="Bearer small-secret")  # fmt: skip
+    bisect.handle(step, "POST")
+    page_ = Handler(f"/benchmarks/bisect/{job['id']}")
+    bisect.handle(page_, "GET")
+    assert (
+        b"Daily main benchmark" in page_.reply[1]
+        and b"GPU suites, run 1/3" in page_.reply[1]
+    )
+    assert b"g5.4xlarge" in page_.reply[1]
+    monkeypatch.setattr(bisect.auth, "identity", lambda headers, cli=False: MEMBER)
+    queue = Handler("/benchmarks/queue")
+    bisect.handle(queue, "GET")
+    html = queue.reply[1].decode()
+    small_part = html[html.index("g5.4xlarge · 1× A10G") :]
+    assert "Daily main benchmark" in small_part and "GPU suites, run 1/3" in small_part
+
+
+def test_slack_bench_names_a_box(two_boxes):
+    from transformersci.otel import slack_commands
+
+    assert "on g5.4xlarge" in slack_commands.bench(
+        "123 small", "member", "https://dash"
+    )
+    assert "No bench box named `tiny`" in slack_commands.bench(
+        "124 tiny", "member", "https://dash"
+    )
+
+
+def test_the_bisect_dialog_preselects_the_series_box(two_boxes):
+    data = {"series": [{**SERIES, "instance_type": "g5.4xlarge"}],
+            "metrics": {"e2e": {"label": "End-to-end latency", "unit": "ms"}}, "series_metrics": {}}  # fmt: skip
+    html = page.daily(data, {})
+    assert (
+        'data-box="small"' in html
+        and '<option value="big">g5.48xlarge · 8× A10G (default)</option>' in html
+    )
+
+
+def test_a_wide_ci_around_zero_reads_inconclusive_not_no_change():
+    step = {"verdict": "no significant change", "ci": [-3.32, 8.57], "change": 2.45}
+    assert bisect.pr_verdict(step) == "inconclusive (±5.9%)"
+    assert bisect.pr_verdict({**step, "ci": [-0.5, 0.8]}) == "no significant change"
+    assert "inconclusive" in bisect.describe_step(
+        {**step, "model": "m", "scenario": "s"}
+    )
