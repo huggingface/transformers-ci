@@ -51,6 +51,7 @@ CPU_JOBS = frozenset(
         "tests_training_ci",
         "tests_tensor_parallel_ci",
         "tests_expert_parallel_ci",
+        "tests_context_parallel_ci",
         "tests_fsdp_ci",
         "tests_peft_integration",
     }
