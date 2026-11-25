@@ -94,6 +94,8 @@ jobs:
           # A fix for the bug behind a declared skip can show the skipped variant passing.
           RUN_DECLARED: ${{ inputs.run_declared || contains(github.event.pull_request.labels.*.name, 'mic-run-declared') }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          # GitHub's compare API answers which record-mic commits the code under test contains.
+          GH_TOKEN: ${{ github.token }}
         run: |
           export PYTHONPATH="$PWD/src"
           python - <<'PY_SOURCE'
@@ -116,6 +118,8 @@ jobs:
             selection=(--run-all)
             echo "Changed files: all"
           fi
+          # Each contract meets the record-mic values this code contains (fleet history).
+          selection+=(--code-revision "$(git rev-parse HEAD)")
           if [[ "$RUN_DECLARED" == true ]]; then
             selection+=(--run-declared)
             echo "Running variants the contracts declare unmeasured"
@@ -234,6 +238,7 @@ jobs:
           RUN_DECLARED: ${{ inputs.run_declared || contains(github.event.pull_request.labels.*.name, 'mic-run-declared') }}
           ENFORCE: ${{ inputs.enforce }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           args=(/tmp/results.jsonl --base HEAD^1 --labels "$LABELS" --summary "$GITHUB_STEP_SUMMARY"
                 --output /tmp/contracts-gate.json --log /tmp/gate.log --fleet-pr "$PR_NUMBER")

@@ -80,6 +80,10 @@ def parser():
         help="dataset revision for --fleet (default: tests/contracts.lock, otherwise main)",
     )
     parser.add_argument(
+        "--code-revision",
+        help="with --fleet: the Transformers commit under test; each contract meets the record-mic values it contains",
+    )
+    parser.add_argument(
         "--fleet-pr",
         type=int,
         help="with --fleet: also apply this Transformers PR's re-recorded expected values (record-mic)",
@@ -181,6 +185,9 @@ def resolve_fleet(args):
     if args.fleet_pr is not None:
         options += ["--fleet-pr", str(args.fleet_pr)]
         metadata["fleet_pr"] = args.fleet_pr
+    if args.code_revision:
+        options += ["--code-revision", args.code_revision]
+        metadata["code_revision"] = args.code_revision
     return options, metadata
 
 
