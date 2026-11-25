@@ -162,7 +162,9 @@ def render_memory_report(target):
         render_time_fragment = None
     time_json = target / "time.json"
     if python is not None and render_time_fragment is not None:
-        time_links = {"memory": "report.html"}
+        # a serve run (tperf.serve.report) has no memory pass to link back to
+        serve = profile.get("kind") == "serve"
+        time_links = {} if serve else {"memory": "report.html"}
         if "python_stacks" in links:
             time_links["python_stacks"] = links["python_stacks"]
         temp = target / "time.json.tmp"

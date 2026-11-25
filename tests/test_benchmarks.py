@@ -222,6 +222,31 @@ def test_unbounded_intervals_are_valid_json(snapshot):
     assert "Unbounded (insufficient rounds)" in page.comparisons(comparison)
 
 
+def test_ab_profiles_are_linked_and_lead_back_to_the_pr(
+    snapshot, tmp_path, monkeypatch
+):
+    _, data = snapshot
+    monkeypatch.setenv("TCI_BENCHMARK_SNAPSHOT", str(tmp_path / "snapshot.json"))
+    comparison = data["pages"]["pr-123.html"]
+    assert "Profiles" not in page.comparisons(comparison)  # an A/B run without PROFILE
+    group = "20261125-090000-pr123"
+    comparison["abs"][0]["profiles"] = {
+        side: f"memory/{group}-{side}/report.html" for side in ("base", "head")
+    }
+    head = tmp_path / "memory" / f"{group}-head"
+    head.mkdir(parents=True)
+    (head / "time.json").write_text(
+        json.dumps({"title": "t", "css": "", "body": "<div>time</div>"})
+    )
+    html = page.comparisons(comparison)
+    assert f'href="/benchmarks/memory/{group}-base/report.html"' in html
+    assert f'href="/benchmarks/memory/{group}-head/time.html"' in html
+    assert f"/benchmarks/memory/{group}-base/time.html" not in html  # none rendered
+    status, body, _, _ = page.memory_file(f"/benchmarks/memory/{group}-head/time.html")
+    assert status == 200 and 'href="/benchmarks/pr-123"' in body.decode()
+    assert "← PR #123" in body.decode()
+
+
 def test_theme_defaults_to_grafana_dark_and_preserves_explicit_light(snapshot):
     _, html = page.render("/benchmarks", {})
     assert 'data-theme="dark"' in html

@@ -200,11 +200,16 @@ def memory_file(path, theme="dark"):
         )
         if fragment_file and (root / fragment_file).is_file():
             fragment = json.loads((root / fragment_file).read_text())
+            # an A/B side's profile (<ab id>-base / -head) goes back to its PR's page
+            pr = re.search(r"-pr(\d+)-(?:base|head)$", group)
+            back = (
+                link(url(f"pr-{pr.group(1)}", theme=theme), f"← PR #{pr.group(1)}")
+                if pr
+                else link(url("main", theme=theme), "← Daily main")
+            )
             body = (
                 f"<style>{fragment['css']}</style>"
-                + '<p class="meta">'
-                + link(url("main", theme=theme), "← Daily main")
-                + "</p>"
+                + f'<p class="meta">{back}</p>'
                 + fragment["body"]
             )
             return 200, document(fragment["title"], body, theme).encode(), text, {}
@@ -428,10 +433,33 @@ def daily(data, params, theme="dark"):
     return out
 
 
+def profile_links(profiles):
+    """The memory and time reports of an A/B's base and head (tperf ab with PROFILE)."""
+    sides = []
+    for side in ("base", "head"):
+        if side not in profiles:
+            continue
+        memory = "/benchmarks/" + profiles[side]
+        time_url = time_report(memory)
+        sides.append(
+            f"{side.capitalize()}: "
+            + link(memory, "memory report")
+            + (" · " + link(time_url, "time report") if time_url else "")
+        )
+    if not sides:
+        return ""
+    return (
+        '<p class="meta">Profiles (a separate, untimed run of each side): '
+        + " · ".join(sides)
+        + "</p>"
+    )
+
+
 def comparisons(data):
     out = '<p class="muted">Base and head run side by side, swapping GPUs each round. Change fits out the GPU difference; positive means worse (slower or less throughput). Confidence intervals are 95%; verdict threshold is 1%.</p>'
     for run in data["abs"]:
         out += f'<section class="card"><h2>{esc(run["model"])} · {esc(run["date"])}</h2><p>Base {commit(run["base_commit"])} → head {commit(run["head_commit"])}</p><p class="meta">{esc(run["ab_id"])}</p><details><summary>Benchmark arguments</summary><code>{esc(run["bench_args"])}</code></details>'
+        out += profile_links(run.get("profiles") or {})
         for scenario in run["scenarios"]:
             out += f"<h3>{esc(scenario['scenario'])} · {scenario['rounds']} paired rounds</h3>"
             rows = []
