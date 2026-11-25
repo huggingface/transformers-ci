@@ -179,7 +179,8 @@ def select(name, label, choices, selected):
         + f">{esc(text)}</option>"
         for key, text in choices
     )
-    return f'<label>{esc(label)}<select name="{esc(name)}">{options}</select></label>'
+    # Changing the value reloads the page (no Apply button); a <noscript> button covers browsers without scripts.
+    return f'<label>{esc(label)}<select name="{esc(name)}" onchange="this.form.submit()">{options}</select></label>'
 
 
 MEMORY_PATH = re.compile(
@@ -326,7 +327,7 @@ def daily(data, params, theme="dark"):
         model,
     )
     out = '<p class="meta">Daily main · median and min–max across runs · metrics recorded throughout the last seven daily runs</p>'
-    out += f'<form class="filters" method="get" action="/benchmarks/main">{hidden("model")}{model_filter}<button>Apply model</button>{link(url("main", theme=theme), "Reset")}</form>'
+    out += f'<form class="filters" method="get" action="/benchmarks/main">{hidden("model")}{model_filter}<noscript><button>Apply</button></noscript>{link(url("main", theme=theme), "Reset")}</form>'
     groups = defaultdict(list)
     for s in series:
         if (not model or s["model"] == model) and (not group or s["group"] == group):
@@ -362,7 +363,7 @@ def daily(data, params, theme="dark"):
                 proc_metric,
             )
         if controls:
-            controls = f'<form class="filters" method="get" action="/benchmarks/main#{anchor}">{controls}<button>Apply metric</button></form>'
+            controls = f'<form class="filters" method="get" action="/benchmarks/main#{anchor}">{controls}<noscript><button>Apply</button></noscript></form>'
         out += f'<section class="benchmark-group" id="{anchor}"><div class="panel-heading"><h2>{esc(name)}</h2>{controls}</div><div class="grid">'
         for s in items:
             m = (
