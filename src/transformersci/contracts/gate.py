@@ -101,7 +101,7 @@ def to_replay(records):
 
 
 def decide(records, base, labels, replayed):
-    """One decision per red case: {"case", "verdict": block|warn, "reason", ...}."""
+    """One decision per red case: {"case", "verdict": blocked|warn, "reason", ...}."""
     base = {key(r): r for r in base}
     replayed = {key(r) for r in replayed}
     intended = LABEL in labels
@@ -137,7 +137,7 @@ def decide(records, base, labels, replayed):
             )
         else:
             verdict, reason = (
-                "block",
+                "blocked",
                 f"green on the base ({base[k]['status']}), red with this change",
             )
         decisions.append(
@@ -236,14 +236,14 @@ def replay(cases, base, repo, runner, run_declared, log, fleet_pr=None):
 
 
 def summary(decisions, enforce, base, labels):
-    blocks = [d for d in decisions if d["verdict"] == "block"]
+    blocked = [d for d in decisions if d["verdict"] == "blocked"]
     warns = [d for d in decisions if d["verdict"] == "warn"]
     lines = ["### Contracts gate", ""]
     if not decisions:
         return "\n".join(lines + ["✅ No red contract.", ""])
-    if blocks:
+    if blocked:
         lines.append(
-            f"❌ **{len(blocks)} red case(s) caused by this change** — "
+            f"❌ **{len(blocked)} red case(s) caused by this change** — "
             + (
                 "this PR is blocked."
                 if enforce
@@ -261,13 +261,13 @@ def summary(decisions, enforce, base, labels):
         "| verdict | contract | target | variant | PR | base | why |",
         "|---|---|---|---|---|---|---|",
     ]
-    for d in blocks + warns:
-        icon = "❌ block" if d["verdict"] == "block" else "⚠️ warn"
+    for d in blocked + warns:
+        icon = "❌ blocked" if d["verdict"] == "blocked" else "⚠️ warn"
         lines.append(
             f"| {icon} | {d['contract']} | {d['target']} | {d['variant']} | {d['status']}: "
             f"{d['failure'].replace('|', chr(92) + '|')} | {d['base_status'] or '—'} | {d['reason']} |"
         )
-    if blocks:
+    if blocked:
         lines += [
             "",
             "A blocked case is green on the base and red here. If it is a bug, fix it in this PR. If the change "
@@ -344,13 +344,13 @@ def main(argv=None):
     if args.summary:
         with args.summary.open("a") as f:
             f.write(text)
-    blocks = [d for d in decisions if d["verdict"] == "block"]
+    blocked = [d for d in decisions if d["verdict"] == "blocked"]
     if args.output:
         args.output.write_text(
             json.dumps(
                 {
                     "enforced": args.enforce,
-                    "blocks": len(blocks),
+                    "blocked": len(blocked),
                     "replayed": len(cases),
                     "replay_seconds": replay_seconds,
                     "decisions": decisions,
@@ -360,11 +360,11 @@ def main(argv=None):
             + "\n"
         )
     for d in decisions:
-        level = "error" if d["verdict"] == "block" and args.enforce else "warning"
+        level = "error" if d["verdict"] == "blocked" and args.enforce else "warning"
         print(
             f"::{level}::contract {d['contract']}/{d['target']} [{d['variant']}] {d['verdict']}: {d['reason']}"
         )
-    return 1 if blocks and args.enforce else 0
+    return 1 if blocked and args.enforce else 0
 
 
 if __name__ == "__main__":

@@ -38,7 +38,7 @@ def test_decide_blocks_only_cases_green_on_the_base():
     assert [r["target"] for r in cases] == ["broke", "main-red"]
     got = verdicts(gate.decide(records, base, [], cases))
     assert got == {
-        "broke": ("block", "green on the base (pass), red with this change"),
+        "broke": ("blocked", "green on the base (pass), red with this change"),
         "main-red": ("warn", "red on the base too"),
         "xpass": ("warn", "known failure now passes"),
         "setup": ("warn", "setup error"),
@@ -59,7 +59,7 @@ def test_replay_limit(monkeypatch):
     records = [rec(f"t{i}", "fail", ["x"]) for i in range(3)]
     cases = gate.to_replay(records)
     got = verdicts(gate.decide(records, [rec("t0"), rec("t1")], [], cases))
-    assert got["t2"][0] == "warn" and got["t0"][0] == got["t1"][0] == "block"
+    assert got["t2"][0] == "warn" and got["t0"][0] == got["t1"][0] == "blocked"
 
 
 def test_same_target_in_two_fleets_is_two_cases():
@@ -69,7 +69,7 @@ def test_same_target_in_two_fleets_is_two_cases():
     ]
     base = [rec("x", fleet="control"), rec("x", "fail", ["d"], fleet="prototypes")]
     decisions = gate.decide(records, base, [], gate.to_replay(records))
-    assert [(d["fleet"], d["verdict"]) for d in decisions] == [("control", "block")]
+    assert [(d["fleet"], d["verdict"]) for d in decisions] == [("control", "blocked")]
 
 
 def test_replay_env_drops_tracing(monkeypatch, tmp_path):
@@ -157,7 +157,7 @@ def test_main_replays_red_cases_on_the_base_tree(tmp_path):
     decisions = {d["target"]: d for d in json.loads(out.read_text())["decisions"]}
     assert code == 1
     assert (
-        decisions["broke"]["verdict"] == "block"
+        decisions["broke"]["verdict"] == "blocked"
         and decisions["broke"]["base_status"] == "pass"
     )
     assert (
@@ -196,7 +196,7 @@ def test_gate_json_reports_the_replay_cost(tmp_path, monkeypatch):
     assert gate.main([str(results), "--output", str(out)]) == 0
     report = json.loads(out.read_text())
     assert report["replayed"] == 1 and isinstance(report["replay_seconds"], float)
-    assert report["blocks"] == 1  # green on the base: would block, not enforced
+    assert report["blocked"] == 1  # green on the base: would block, not enforced
 
 
 def test_replay_applies_the_prs_overlay_on_the_base(tmp_path, monkeypatch):
