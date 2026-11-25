@@ -355,6 +355,19 @@ def daily(data, params, theme="dark"):
                 worse = change < 0 if meta.get("higher_is_better") else change > 0
                 out += f'<p class="delta {"bad" if worse else "good"}">{change:+.2f}% since {esc(points[0]["date"][:10])}</p>'
             out += chart(points, m, unit)
+            bisectable = bool(
+                bisect_enabled() and s.get("bisect") and name == "Generation"
+            )
+            if bisectable and (step := largest_step(s["points"])):
+                before, after, change = step
+                out += (
+                    f'<p class="meta">Largest day-over-day e2e step: {esc(before["date"][:10])} → '
+                    f"{esc(after['date'][:10])}, {change:+.2f}% "
+                    + bisect_button(
+                        s["key"], before["commit"], after["commit"], "Bisect this step"
+                    )
+                    + "</p>"
+                )
             reports = [p for p in s["points"] if p.get("memory")]
             theme_query = "?theme=light" if theme == "light" else ""
             if reports:
@@ -371,6 +384,7 @@ def daily(data, params, theme="dark"):
                     + " · what held GPU and host memory at the peak, and where the time went</p>"
                 )
             rows = []
+            previous = {p["commit"]: q for q, p in zip(s["points"], s["points"][1:])}
             for p in reversed(points):
                 v = p["values"][m]
                 rows.append(
@@ -392,6 +406,17 @@ def daily(data, params, theme="dark"):
                         if reports
                         else []
                     )
+                    + (
+                        [
+                            bisect_button(
+                                s["key"], previous[p["commit"]]["commit"], p["commit"]
+                            )
+                            if p["commit"] in previous
+                            else ""
+                        ]
+                        if bisectable
+                        else []
+                    )
                 )
             out += (
                 "<details><summary>Data and commits</summary>"
@@ -405,7 +430,8 @@ def daily(data, params, theme="dark"):
                         "Runs",
                         "Failed",
                     ]
-                    + (["Memory"] if reports else []),
+                    + (["Memory"] if reports else [])
+                    + (["Bisect"] if bisectable else []),
                     rows,
                 )
                 + "</details>"
@@ -430,7 +456,56 @@ def daily(data, params, theme="dark"):
                 )
             out += "</article>"
         out += "</div></section>"
+    if bisect_enabled():
+        out += BISECT_SCRIPT
     return out
+
+
+def bisect_enabled():
+    return os.getenv("TCI_BENCHMARK_BISECT_ENABLED") == "1"
+
+
+BISECT_SCRIPT = """<script>
+(() => {
+  const buttons = [...document.querySelectorAll('button.bisect')];
+  const signIn = () => { location.href = '/auth/github?next=' + encodeURIComponent(location.pathname + location.search); };
+  fetch('/auth/me', {cache: 'no-store'}).then(r => {
+    if (r.ok) return;
+    for (const b of buttons) { b.textContent = 'Sign in to bisect'; b.dataset.signin = '1'; }
+  }).catch(() => {});
+  for (const b of buttons) b.addEventListener('click', async () => {
+    if (b.dataset.signin) return signIn();
+    if (!confirm('Bisect ' + b.dataset.good.slice(0, 10) + '..' + b.dataset.bad.slice(0, 10) +
+                 ' on the bench host? The result is posted to #transformers-benchmark.')) return;
+    b.disabled = true;
+    const r = await fetch('/benchmarks/bisect', {method: 'POST', cache: 'no-store',
+      headers: {'Content-Type': 'application/json', 'X-TCI-Action': '1'},
+      body: JSON.stringify({series: b.dataset.series, good: b.dataset.good, bad: b.dataset.bad})});
+    const data = await r.json().catch(() => ({}));
+    if (r.status === 401) return signIn();
+    if (r.ok) { location.href = data.url; return; }
+    b.disabled = false;
+    alert('Bisect not queued: ' + (data.error || r.status));
+  });
+})();
+</script>"""
+
+
+def bisect_button(series, good, bad, label="Bisect"):
+    return (
+        f'<button type="button" class="bisect" data-series="{esc(series)}" data-good="{esc(good)}" '
+        f'data-bad="{esc(bad)}">{esc(label)}</button>'
+    )
+
+
+def largest_step(points):
+    """The adjacent daily points with the largest e2e change, as (before, after, %)."""
+    steps = [
+        (a, b, (b["values"]["e2e"][0] / a["values"]["e2e"][0] - 1) * 100)
+        for a, b in zip(points, points[1:])
+        if a["values"].get("e2e") and b["values"].get("e2e") and a["values"]["e2e"][0]
+    ]
+    return max(steps, key=lambda s: abs(s[2]), default=None)
 
 
 def profile_links(profiles):

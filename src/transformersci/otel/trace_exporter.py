@@ -97,6 +97,7 @@ from transformersci.otel import claims
 from transformersci.otel import branch_runs
 from transformersci.otel import probable_fix
 from transformersci.otel import project_health
+from transformersci.benchmarks import bisect as benchmark_bisect
 from transformersci.benchmarks import page as benchmark_page
 from transformersci.otel import mic_page
 from transformersci.otel import test_page
@@ -8822,6 +8823,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
             return
         if mic_jobs.handle(self, "POST"):
             return
+        if benchmark_bisect.handle(self, "POST"):
+            return
         path = urlparse(self.path).path
         if path not in (
             "/serge-actions/fix-it",
@@ -9783,6 +9786,8 @@ class MetricsHandler(BaseHTTPRequestHandler):
         if dashboard_auth.handle(self, "GET"):
             return
         if mic_jobs.handle(self, "GET"):
+            return
+        if benchmark_bisect.handle(self, "GET"):
             return
         parsed = urlparse(self.path)
         if parsed.path in {

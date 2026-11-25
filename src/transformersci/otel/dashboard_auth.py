@@ -27,7 +27,7 @@ COOKIE = "__Host-tci_session"
 STATE_COOKIE = "__Host-tci_oauth"
 SESSION_SECONDS = 8 * 3600
 DEVICE_SECONDS = 900
-SCOPES = "profile:read mic:read mic:submit"
+SCOPES = "profile:read mic:read mic:submit bench:submit"
 
 
 class AuthError(Exception):

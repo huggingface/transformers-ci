@@ -87,6 +87,21 @@ spec:
               value: {{ ternary "1" "0" .Values.traceExporter.micJobs.enabled | quote }}
             - name: TCI_MIC_UPLOAD_NAMESPACES
               value: {{ join "," .Values.traceExporter.micJobs.uploadNamespaces | quote }}
+            {{- if .Values.traceExporter.benchmarks.bisect.enabled }}
+            {{- if not (and .Values.traceExporter.auth.enabled .Values.traceExporter.runStore.enabled) }}
+            {{- fail "traceExporter.benchmarks.bisect requires traceExporter.auth.enabled and traceExporter.runStore.enabled" }}
+            {{- end }}
+            - name: TCI_BENCHMARK_BISECT_ENABLED
+              value: "1"
+            - name: TCI_BENCHMARK_BISECT_SLACK_CHANNEL
+              value: {{ .Values.traceExporter.benchmarks.bisect.slackChannel | quote }}
+            - name: TCI_BENCHMARK_BISECT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.name }}
+                  key: {{ .Values.secrets.keys.benchmarkBisectToken }}
+                  optional: true
+            {{- end }}
             {{- if .Values.traceExporter.auth.enabled }}
             {{- if not .Values.traceExporter.runStore.enabled }}
             {{- fail "traceExporter.auth requires traceExporter.runStore.enabled" }}

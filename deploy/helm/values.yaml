@@ -191,6 +191,12 @@ traceExporter:
         memory: 256Mi
       limits:
         memory: 1Gi
+    # "Bisect" buttons on /benchmarks/main: jobs queued here, run by `tperf bisect worker` on the bench host, which
+    # polls with secrets.keys.benchmarkBisectToken. Requires auth (members only) and runStore (the job store).
+    bisect:
+      enabled: false
+      # Slack channel id for job messages (the bot must be a member); empty: no Slack posts.
+      slackChannel: ""
   slack:
     enabled: false
     publicUrl: ""
@@ -738,6 +744,8 @@ secrets:
     # Bearer token for serge's /dashboard/* API ("Re-run failed tests"); the
     # same value is DASHBOARD_API_TOKEN in Infisical /serge. Optional.
     sergeDashboardToken: serge-dashboard-token
+    # Bearer token of the bench host's `tperf bisect worker`. Optional (bisect jobs are never claimed without it).
+    benchmarkBisectToken: benchmark-bisect-token
   placeholder:
     # Only used when secrets.create is true
     traceApiKey: ""
