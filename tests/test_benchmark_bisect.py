@@ -490,3 +490,13 @@ def test_bench_queue_tab_has_a_lock_and_shows_only_when_enabled(monkeypatch):
         'href="/benchmarks/queue" aria-current="page">Bench queue<svg class="tci-lock"'
         in nav
     )
+
+
+def test_bench_queue_tab_pulses_while_a_bench_runs(service):
+    assert "queue-busy" not in page.tabs("main")
+    submit()
+    assert "queue-busy" not in page.tabs("main")  # queued is not running
+    bisect.handle(
+        Handler("/benchmarks/bisect/next", auth="Bearer worker-secret"), "GET"
+    )
+    assert 'class="queue-busy"' in page.tabs("main")
