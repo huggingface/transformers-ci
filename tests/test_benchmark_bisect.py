@@ -1,3 +1,4 @@
+import copy
 import json
 from email.message import Message
 from io import BytesIO
@@ -232,6 +233,27 @@ def test_still_member_asks_github_through_the_app(monkeypatch):
     assert exc.value.status == 503
 
 
+def test_still_member_relies_on_the_login_check_when_the_app_cannot_read_members(
+    monkeypatch,
+):
+    monkeypatch.setattr(bisect.auth, "config", lambda: None)
+    monkeypatch.setattr(bisect.github_app, "app_token", lambda: "app")
+
+    def github_json(url, token=None):
+        raise HTTPError(url, 403, "Resource not accessible by integration", None, None)
+
+    monkeypatch.setattr(bisect.auth, "github_json", github_json)
+    bisect.still_member({"user_id": 1, "login": "member"})  # no raise
+
+    def down(url, token=None):
+        raise HTTPError(url, 502, "Bad Gateway", None, None)
+
+    monkeypatch.setattr(bisect.auth, "github_json", down)
+    with pytest.raises(bisect.Error) as exc:  # anything else still fails closed
+        bisect.still_member({"user_id": 1, "login": "member"})
+    assert exc.value.status == 503
+
+
 def test_cli_tokens_need_the_bench_submit_scope(monkeypatch):
     monkeypatch.setattr(
         bisect.auth,
@@ -282,5 +304,23 @@ def test_daily_page_shows_bisect_buttons_only_when_enabled(monkeypatch):
         f'data-good="{GOOD}" data-bad="{BAD}"' in html
     )  # the largest step, and its table row
     assert f'data-good="{BAD}" data-bad="{LATER}"' in html
-    assert "Largest day-over-day e2e step: 2026-11-20 → 2026-11-21, +6.24%" in html
+    assert (
+        "Largest day-over-day e2e step (shaded on the chart): 2026-11-20 → 2026-11-21, +6.24%"
+        in html
+    )
+    assert html.count('class="step"') == 1 and 'class="step-line"' in html
     assert "/benchmarks/bisect" in html and "X-TCI-Action" in html
+
+
+def test_no_bisect_this_step_under_two_percent(monkeypatch):
+    monkeypatch.setenv("TCI_BENCHMARK_BISECT_ENABLED", "1")
+    flat = copy.deepcopy(SERIES)
+    for p in flat["points"]:
+        p["values"]["e2e"] = [1000.0, 990.0, 1010.0]
+    flat["points"][-1]["values"]["e2e"] = [1019.0, 1010.0, 1030.0]  # +1.9%
+    data = {"series": [flat], "metrics": {"e2e": {"label": "End-to-end latency", "unit": "ms"}},
+            "series_metrics": {}}  # fmt: skip
+    html = page.daily(data, {})
+    assert "Bisect this step" not in html and 'class="step"' not in html
+    assert page.largest_step(flat["points"]) is None
+    assert page.largest_step(flat["points"], minimum=1.0)[2] > 1.8

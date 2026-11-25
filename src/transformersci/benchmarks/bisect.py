@@ -261,6 +261,14 @@ def still_member(user: dict) -> None:
     except HTTPError as exc:
         if exc.code == 404:
             raise Error(403, "account_not_allowed") from None
+        if exc.code == 403:
+            # The App lacks the organization's "Members: read": the caller's own membership check stands. Browser
+            # sessions and CLI tokens (approved from a session) both last 8 hours, and each passed it at login.
+            log.warning(
+                "bisect: the GitHub App cannot read %s memberships; relying on the login check",
+                ORG,
+            )
+            return
         raise Error(503, "membership_check_unavailable") from None
     except (URLError, OSError, auth.AuthError):
         raise Error(503, "membership_check_unavailable") from None

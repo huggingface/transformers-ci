@@ -32,7 +32,7 @@ CSS = (
 .card,.notice,.benchmark-group{background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:10px 12px;min-width:0}
 .benchmark-group{margin:12px 0;scroll-margin-top:48px}.benchmark-group>.panel-heading{display:flex;align-items:center;flex-wrap:wrap;gap:8px;justify-content:space-between;margin:0 0 8px}.panel-heading form{margin:0}
 .benchmark-group .card{background:var(--bg);padding:8px 10px}.headline{font-size:18px;font-weight:500}.meta{font-size:11px;line-height:16px;color:var(--muted);overflow-wrap:anywhere}.filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}.filters label{display:flex;align-items:center;gap:6px;font-size:12px}.filters select,.filters button{font-size:12px}.filters select{max-width:360px}label{display:grid;gap:4px}
-.plot{width:100%;height:auto}.plot text{fill:var(--muted);font:11px Inter,system-ui}.plot .gridline{stroke:var(--line)}.plot .line{fill:none;stroke:var(--accent);stroke-width:2}.plot .band{fill:var(--accent);opacity:.15}.plot circle{fill:var(--accent)}
+.plot{width:100%;height:auto}.plot text{fill:var(--muted);font:11px Inter,system-ui}.plot .gridline{stroke:var(--line)}.plot .line{fill:none;stroke:var(--accent);stroke-width:2}.plot .band{fill:var(--accent);opacity:.15}.plot circle{fill:var(--accent)}.plot .step{fill:var(--bad);opacity:.12}.plot .step-line{stroke:var(--bad);stroke-width:3}
 summary{cursor:pointer;color:var(--accent);margin:4px 0;font-size:12px}.good{color:var(--good)}.bad{color:var(--bad)}.chip{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:3px;padding:0 5px;margin:2px}.metric-value{display:flex;align-items:baseline;gap:8px;margin:4px 0 0}.delta{font-size:11px;margin:0}code{overflow-wrap:anywhere}footer{margin-top:20px;color:var(--muted);font-size:11px}.overview-card{margin:10px 0;padding:12px}.comparison-list{margin-top:12px}.comparison-list>h2{margin-bottom:4px}.comparison-list>.scroll{background:var(--panel);border:1px solid var(--line);border-radius:3px;margin-top:8px}td{white-space:nowrap}td.wrap{white-space:normal;min-width:150px}.card>h2{margin-bottom:6px}.card>h2~h3{margin-top:12px}
 """
 )
@@ -98,7 +98,8 @@ def document(title, body, theme="dark"):
     return f'<!doctype html><html lang="en" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} · Transformers CI</title><style>{CSS}</style></head><body>{nav}<main>{body}</main></body></html>'
 
 
-def chart(points, metric, unit):
+def chart(points, metric, unit, step=None):
+    """The series' daily medians; `step` = (before, after) commits of the step the Bisect button targets, shaded."""
     values = [(p, p["values"][metric]) for p in points if metric in p["values"]]
     if not values:
         return '<p class="muted">No measurements for this metric.</p>'
@@ -130,6 +131,20 @@ def chart(points, metric, unit):
             f"{x(i):.2f},{y(values[i][1][1]):.2f}" for i in reversed(range(len(values)))
         )
     )
+    shade = segment = ""
+    commits = [p["commit"] for p, _ in values]
+    if step and step[0] in commits and step[1] in commits:
+        a, b = commits.index(step[0]), commits.index(step[1])
+        x0, x1 = x(a), x(b)
+        shade = (
+            f'<rect class="step" x="{x0:.2f}" y="20" width="{max(x1 - x0, 2):.2f}" height="135">'
+            f"<title>Step the Bisect button targets: {esc(values[a][0]['date'][:10])} → "
+            f"{esc(values[b][0]['date'][:10])}</title></rect>"
+        )
+        segment = (
+            f'<line class="step-line" x1="{x0:.2f}" y1="{y(values[a][1][0]):.2f}" '
+            f'x2="{x1:.2f}" y2="{y(values[b][1][0]):.2f}"/>'
+        )
     marks = ""
     for i, (point, val) in enumerate(values):
         title = f"{point['date']}: {fmt(val[0], unit)} (min {fmt(val[1])}, max {fmt(val[2])}); {point['commit']}"
@@ -138,7 +153,7 @@ def chart(points, metric, unit):
         f'<line class="gridline" x1="54" x2="454" y1="{y(v):.2f}" y2="{y(v):.2f}"/><text x="49" y="{y(v) + 4:.2f}" text-anchor="end">{esc(fmt(v))}</text>'
         for v in (low, (low + high) / 2, high)
     )
-    return f'<svg class="plot" viewBox="0 0 480 180" role="img" aria-label="{esc(metric)} history in {esc(unit)}"><title>Daily medians and min–max band; exact values in the data table below</title>{axes}<polygon class="band" points="{band}"/><polyline class="line" points="{line}"/>{marks}<text x="54" y="174">{esc(values[0][0]["date"][:10])}</text><text x="454" y="174" text-anchor="end">{esc(values[-1][0]["date"][:10])}</text></svg>'
+    return f'<svg class="plot" viewBox="0 0 480 180" role="img" aria-label="{esc(metric)} history in {esc(unit)}"><title>Daily medians and min–max band; exact values in the data table below</title>{axes}{shade}<polygon class="band" points="{band}"/><polyline class="line" points="{line}"/>{segment}{marks}<text x="54" y="174">{esc(values[0][0]["date"][:10])}</text><text x="454" y="174" text-anchor="end">{esc(values[-1][0]["date"][:10])}</text></svg>'
 
 
 def select(name, label, choices, selected):
@@ -354,14 +369,20 @@ def daily(data, params, theme="dark"):
                 change = (last / first - 1) * 100
                 worse = change < 0 if meta.get("higher_is_better") else change > 0
                 out += f'<p class="delta {"bad" if worse else "good"}">{change:+.2f}% since {esc(points[0]["date"][:10])}</p>'
-            out += chart(points, m, unit)
             bisectable = bool(
                 bisect_enabled() and s.get("bisect") and name == "Generation"
             )
-            if bisectable and (step := largest_step(s["points"])):
+            step = largest_step(s["points"]) if bisectable else None
+            out += chart(
+                points,
+                m,
+                unit,
+                (step[0]["commit"], step[1]["commit"]) if step else None,
+            )
+            if step:
                 before, after, change = step
                 out += (
-                    f'<p class="meta">Largest day-over-day e2e step: {esc(before["date"][:10])} → '
+                    f'<p class="meta">Largest day-over-day e2e step (shaded on the chart): {esc(before["date"][:10])} → '
                     f"{esc(after['date'][:10])}, {change:+.2f}% "
                     + bisect_button(
                         s["key"], before["commit"], after["commit"], "Bisect this step"
@@ -498,14 +519,18 @@ def bisect_button(series, good, bad, label="Bisect"):
     )
 
 
-def largest_step(points):
-    """The adjacent daily points with the largest e2e change, as (before, after, %)."""
+BISECT_MIN_STEP = 2.0  # %: smaller day-over-day steps are within the daily run's own spread, no button
+
+
+def largest_step(points, minimum=BISECT_MIN_STEP):
+    """The adjacent daily points with the largest e2e change, as (before, after, %); None under `minimum` %."""
     steps = [
         (a, b, (b["values"]["e2e"][0] / a["values"]["e2e"][0] - 1) * 100)
         for a, b in zip(points, points[1:])
         if a["values"].get("e2e") and b["values"].get("e2e") and a["values"]["e2e"][0]
     ]
-    return max(steps, key=lambda s: abs(s[2]), default=None)
+    step = max(steps, key=lambda s: abs(s[2]), default=None)
+    return step if step and abs(step[2]) >= minimum else None
 
 
 def profile_links(profiles):
