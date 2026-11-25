@@ -436,3 +436,57 @@ def test_job_pages_update_themselves_until_done(service):
         and "data-done" not in html.split("<script>")[0]
     )
     assert "reload to update" not in html
+
+
+def test_bench_queue_is_for_signed_in_members_only(pr_service, monkeypatch):
+    _, first = submit()
+    _, second = submit_pr()
+    monkeypatch.setattr(bisect.auth, "identity", lambda headers, cli=False: None)
+    h = Handler("/benchmarks/queue")
+    assert bisect.handle(h, "GET")
+    html = h.reply[1].decode()
+    assert (
+        "Sign in with GitHub" in html
+        and first["id"] not in html
+        and second["id"] not in html
+    )
+    assert "/auth/github?next=/benchmarks/queue" in html
+
+
+def test_bench_queue_shows_running_queued_and_the_last_ten(pr_service, monkeypatch):
+    monkeypatch.setattr(bisect.auth, "identity", lambda headers, cli=False: MEMBER)
+    db = bisect.store()
+    for i in range(12):  # twelve finished PR benches: only the last ten are listed
+        job = db.create({**bisect.build_pr_job(bisect.snapshot(), str(1000 + i), {"head": HEAD, "title": f"t{i}"})},
+                        "member", 42)  # fmt: skip
+        db.claim()
+        db.finish(job["id"], {"state": "done"})
+    _, running = submit()
+    bisect.handle(
+        Handler("/benchmarks/bisect/next", auth="Bearer worker-secret"), "GET"
+    )
+    _, queued = submit_pr()
+    h = Handler("/benchmarks/queue")
+    bisect.handle(h, "GET")
+    html = h.reply[1].decode()
+    running_part, rest = html.split("<h2>Queued</h2>")
+    queued_part, finished_part = rest.split("<h2>Last 10 finished</h2>")
+    assert running["id"] in running_part and "job-progress" in running_part
+    assert queued["id"] in queued_part and "PR #123" in queued_part
+    assert (
+        "PR #1011" in finished_part
+        and "PR #1002" in finished_part
+        and "PR #1001 " not in finished_part
+    )
+    assert 'id="job"' in html and "DOMParser" in html
+
+
+def test_bench_queue_tab_has_a_lock_and_shows_only_when_enabled(monkeypatch):
+    monkeypatch.delenv("TCI_BENCHMARK_BISECT_ENABLED", raising=False)
+    assert "Bench queue" not in page.tabs("main")
+    monkeypatch.setenv("TCI_BENCHMARK_BISECT_ENABLED", "1")
+    nav = page.tabs("queue")
+    assert (
+        'href="/benchmarks/queue" aria-current="page">Bench queue<svg class="tci-lock"'
+        in nav
+    )

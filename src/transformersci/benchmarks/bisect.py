@@ -20,6 +20,9 @@ bench:submit), `@askserge bench <PR>` in Slack (a linked GitHub account), or a b
                                           the snapshot
   GET  /benchmarks/pr-bench/<id>          one PR bench (?format=json for JSON)
 
+  GET  /benchmarks/queue                  members only (a dashboard session): the running job, the queued ones and
+                                          the last 10 that ended
+
 Membership is checked at login, and sessions last 8 hours, so a submit re-checks active membership of the
 organization through the GitHub App: an ex-member's live session does not spend GPU time.
 
@@ -179,6 +182,20 @@ class Store:
             "SELECT * FROM bisect_jobs WHERE state IN ('queued', 'running') ORDER BY created"
         )
         return {r["series"]: self._job(r) for r in rows}
+
+    def queue(self, finished: int = 10) -> tuple[list[dict], list[dict], list[dict]]:
+        """(running, queued oldest first, the last `finished` that ended)."""
+        with self.lock:
+            self.expire_lost()
+        rows = lambda sql, *a: [self._job(r) for r in self.db.execute(sql, a)]
+        return (
+            rows("SELECT * FROM bisect_jobs WHERE state = 'running' ORDER BY created"),
+            rows("SELECT * FROM bisect_jobs WHERE state = 'queued' ORDER BY created"),
+            rows(
+                "SELECT * FROM bisect_jobs WHERE state = 'done' ORDER BY updated DESC LIMIT ?",
+                finished,
+            ),
+        )
 
     def set_slack_ts(self, job_id: str, ts: str) -> None:
         self.db.execute(
@@ -510,6 +527,23 @@ def handle(handler, method: str) -> bool:
     path = parts.path.rstrip("/")
     if not enabled():
         return False
+    if path == "/benchmarks/queue" and method == "GET":
+        handler._request_route = "/benchmarks/queue"
+        theme = "light" if parse_qs(parts.query).get("theme") == ["light"] else "dark"
+        if not auth.identity(handler.headers):
+            handler._send(200, "text/html; charset=utf-8", queue_signin(theme).encode())
+            return True
+        try:
+            running, queued, finished = store().queue()
+        except Error as exc:
+            handler._reply_json(exc.status, {"error": exc.error})
+            return True
+        handler._send(
+            200,
+            "text/html; charset=utf-8",
+            queue_page(running, queued, finished, theme).encode(),
+        )
+        return True
     if path == "/benchmarks/pr-bench" or path.startswith("/benchmarks/pr-bench/"):
         handle_pr(
             handler,
@@ -813,6 +847,101 @@ def job_page(job: dict, theme: str = "dark") -> str:
         else ""
     )
     return document("Bisect", live(job, body), theme)
+
+
+def describe_job(job: dict) -> tuple[str, str]:
+    """(what, detail) of a job for the tables."""
+    if job.get("kind") == "pr":
+        return (
+            f"PR #{job['pr']} {job.get('title', '')}",
+            f"{len(job['scenarios'])} scenarios",
+        )
+    return (
+        f"Bisect {job['model']}",
+        f"{job['scenario_label']} · {job['good_date']} → {job['bad_date']}",
+    )
+
+
+def job_state(job: dict) -> str:
+    return (
+        job["state"]
+        if job["state"] != "done"
+        else (job["result"] or {}).get("state", "failed")
+    )
+
+
+def queue_signin(theme: str = "dark") -> str:
+    from transformersci.benchmarks.page import document, tabs
+
+    body = (
+        tabs("queue", theme) + "<h1>Bench queue</h1>"
+        "<p>The bench queue is for Hugging Face organization members. "
+        '<a href="/auth/github?next=/benchmarks/queue">Sign in with GitHub</a> to see it.</p>'
+    )
+    return document("Bench queue", body, theme)
+
+
+def queue_page(
+    running: list[dict], queued: list[dict], finished: list[dict], theme: str = "dark"
+) -> str:
+    from transformersci.benchmarks.page import document, esc, link, table, tabs
+
+    def rows(jobs: list[dict], when: str) -> list[list[str]]:
+        out = []
+        for j in jobs:
+            what, detail = describe_job(j)
+            stamp = j["updated"] if when == "ended" else j["created"]
+            out.append(
+                [link(job_path(j), j["id"]), esc(what), esc(detail), esc(j["requester"]),
+                 pill(job_state(j)) if when == "ended" else esc(f"{len(j['steps'])} steps"),
+                 f'<span data-since="{stamp:.0f}"></span> ago']
+            )  # fmt: skip
+        return out
+
+    body = tabs("queue", theme) + "<h1>Bench queue</h1>"
+    body += (
+        '<p class="meta">Bisects from the Daily main charts and PR benches (<code>tperf bench &lt;PR&gt;</code>, '
+        "<code>/askserge bench &lt;PR&gt;</code>) run one at a time on the bench host. Up to "
+        f"{MAX_PENDING} jobs wait or run at once.</p>"
+    )
+    body += "<h2>Running</h2>"
+    if running:
+        for j in running:
+            what, detail = describe_job(j)
+            total = len(j["scenarios"]) if j.get("kind") == "pr" else None
+            body += (
+                f"<p>{link(job_path(j), what)} · {esc(detail)} · requested by {esc(j['requester'])}</p>"
+                + progress(j, len(j["steps"]), total, "running")
+            )
+    else:
+        body += '<p class="muted">Nothing is running.</p>'
+    body += "<h2>Queued</h2>"
+    body += (
+        table(
+            ["Job", "What", "Detail", "Requested by", "Progress", "Queued"],
+            rows(queued, "queued"),
+        )
+        if queued
+        else '<p class="muted">Nothing is waiting.</p>'
+    )
+    body += "<h2>Last 10 finished</h2>"
+    body += (
+        table(
+            ["Job", "What", "Detail", "Requested by", "Result", "Ended"],
+            rows(finished, "ended"),
+        )
+        if finished
+        else '<p class="muted">No job has finished yet.</p>'
+    )
+    version = "-".join(
+        f"{j['id']}:{j['state']}:{len(j['steps'])}"
+        for j in running + queued + finished[:1]
+    )
+    return document(
+        "Bench queue",
+        f'<style>{LIVE_CSS}</style><div id="job" data-version="{esc(version)}">{body}</div><script>{LIVE_SCRIPT}</script>',
+        theme,
+    )
 
 
 def jobs_page(jobs: list[dict], theme: str = "dark") -> str:
