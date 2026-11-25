@@ -94,6 +94,8 @@ jobs:
           # A fix for the bug behind a declared skip can show the skipped variant passing.
           RUN_DECLARED: ${{ inputs.run_declared || contains(github.event.pull_request.labels.*.name, 'mic-run-declared') }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          # GitHub's compare API answers which record-mic commits the code under test contains.
+          GH_TOKEN: ${{ github.token }}
         run: |
           export PYTHONPATH="$PWD/src"
           python - <<'PY_SOURCE'
@@ -116,6 +118,8 @@ jobs:
             selection=(--run-all)
             echo "Changed files: all"
           fi
+          # Each contract meets the record-mic values this code contains (fleet history).
+          selection+=(--code-revision "$(git rev-parse HEAD)")
           if [[ "$RUN_DECLARED" == true ]]; then
             selection+=(--run-declared)
             echo "Running variants the contracts declare unmeasured"
@@ -234,12 +238,36 @@ jobs:
           RUN_DECLARED: ${{ inputs.run_declared || contains(github.event.pull_request.labels.*.name, 'mic-run-declared') }}
           ENFORCE: ${{ inputs.enforce }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           args=(/tmp/results.jsonl --base HEAD^1 --labels "$LABELS" --summary "$GITHUB_STEP_SUMMARY"
                 --output /tmp/contracts-gate.json --log /tmp/gate.log --fleet-pr "$PR_NUMBER")
           [[ "$RUN_DECLARED" == true ]] && args+=(--run-declared)
           [[ "$ENFORCE" == true ]] && args+=(--enforce)
           gate-model-contracts "${args[@]}"
+
+      # The cases the gate would block (green on the base, red here) are recorded and verified now,
+      # on this run's code, fleet and image, and kept in the artifact: a `record-mic` request then
+      # publishes exactly what this run measured, with no second run of the PR's code. Nothing to
+      # block, nothing recorded. Never fails the job.
+      - name: Record blocked cases
+        if: ${{ !cancelled() && steps.gate.outcome != 'skipped' }}
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CONTEXT: >-
+            {"runner": "${{ inputs.runner }}", "docker_image": "${{ inputs.docker_image }}",
+            "ci_sha": "${{ inputs.ci_sha }}", "run_id": "${{ github.run_id }}"}
+        run: |
+          if ! python -c 'import json, sys; sys.exit(0 if json.load(open("/tmp/contracts-gate.json"))["blocked"] else 1)' 2>/dev/null; then
+            echo "No blocked case: nothing to record."
+            exit 0
+          fi
+          export PYTHONPATH="$PWD/src"
+          python -m transformers_mic.pr_record measure --pr "$PR_NUMBER" --cases /tmp/contracts-gate.json \
+            --transformers-sha "$(git rev-parse HEAD)" --context "$CONTEXT" --out /tmp/record-mic \
+            | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: ${{ !cancelled() }}
@@ -252,6 +280,7 @@ jobs:
             /tmp/contracts-observation.json
             /tmp/contracts-gate.json
             /tmp/gate.log
+            /tmp/record-mic
 
       # A PR's cache is only visible to that PR, so saving there buys little. When the
       # restore fails (e.g. "Egress is over the account limit") every fixture is

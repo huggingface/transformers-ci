@@ -13,10 +13,10 @@ dependencies = []
 [project.optional-dependencies]
 contracts = [
   "huggingface_hub>=0.25",
-  # PINNED: run-model-contracts is `tmic check` plus telemetry, so this commit IS
+  # PINNED: run-model-contracts is `tmic check` plus telemetry, so this release IS
   # the contracts runner PR CI uses (selection, comparison, known failures).
   # transformers-mic needs Python >=3.11; the Transformers CI image is 3.11.
-  "transformers-mic @ git+https://github.com/huggingface/transformers-mic@11ce11de7e50b5435d1b226878e55ac967be7a3c ; python_version >= '3.11'",
+  "transformers-mic==0.1.4 ; python_version >= '3.11'",
 ]
 
 agentic = [
@@ -85,6 +85,7 @@ dev = [
 run-model-contracts = "transformersci.contracts.run:main"
 report-model-contracts = "transformersci.contracts.report:main"
 gate-model-contracts = "transformersci.contracts.gate:main"
+record-mic-reconcile = "transformersci.contracts.record_mic_reconcile:main"
 configure-ci-otel = "transformersci.otel.cli:main"
 report-ci-failure = "transformersci.otel.report_failure:main"
 report-ci-start = "transformersci.otel.report_start:main"

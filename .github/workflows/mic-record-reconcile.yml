@@ -1,0 +1,50 @@
+name: record-mic reconcile
+
+# Hourly bookkeeping: the record-mic overlay of a merged Transformers PR goes into the MIC fleet
+# (pin + history row, in merged_at order); one whose PR closed without merging is dropped. PR CI
+# contracts runs do not wait for it (`--code-revision` already applies merged overlays); runs that
+# read the fleet pin only (nightly, local tmic check, tests/contracts.lock) do. Runs no PR code.
+# See src/transformersci/contracts/record_mic_reconcile.py.
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: "Merge or drop (off: report only)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: mic-record-reconcile
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e ".[contracts]"
+
+      - name: Reconcile
+        env:
+          HF_TOKEN: ${{ secrets.MIC_RECORD_WRITE_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          EXECUTE: ${{ github.event_name == 'schedule' || inputs.execute }}
+        run: |
+          args=(--summary "$GITHUB_STEP_SUMMARY")
+          [[ "$EXECUTE" == true ]] && args+=(--execute)
+          record-mic-reconcile "${args[@]}"
