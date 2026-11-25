@@ -6,12 +6,18 @@ import subprocess
 from transformersci.contracts import record_mic_reconcile as rec
 
 
-def run_with(monkeypatch, tmp_path, states, outputs, execute=True):
+def run_with(monkeypatch, tmp_path, states, outputs, execute=True, merged_at=None):
     monkeypatch.setattr(rec, "overlays", lambda: sorted(states))
     monkeypatch.setattr(
         rec,
         "pr_state",
-        lambda pr: (states[pr], f"sha{pr}" if states[pr] == "merged" else None),
+        lambda pr: (
+            states[pr],
+            f"sha{pr}" if states[pr] == "merged" else None,
+            (merged_at or {}).get(pr, f"2026-11-{pr:02d}T00:00:00Z")
+            if states[pr] == "merged"
+            else None,
+        ),
     )
     calls = []
 
@@ -79,3 +85,17 @@ def test_dry_run_does_not_execute(monkeypatch, tmp_path):
         monkeypatch, tmp_path, {1: "closed"}, {1: (0, "{}")}, execute=False
     )
     assert code == 0 and "--execute" not in calls[0] and "would be dropped" in text
+
+
+def test_merged_prs_settle_in_main_order_not_by_number(monkeypatch, tmp_path):
+    # #5 merged before #4: history rows must follow main.
+    ok = json.dumps({"control": {"applied": [], "stale": []}})
+    code, calls, _ = run_with(
+        monkeypatch,
+        tmp_path,
+        {4: "merged", 5: "merged", 6: "closed"},
+        {4: (0, ok), 5: (0, ok), 6: (0, "{}")},
+        merged_at={4: "2026-11-24T10:00:00Z", 5: "2026-11-24T09:00:00Z"},
+    )
+    assert code == 0
+    assert [c[c.index("--pr") + 1] for c in calls] == ["5", "4", "6"]
