@@ -681,11 +681,21 @@ def test_the_bisect_dialog_preselects_the_series_box(two_boxes):
 
 def test_a_wide_ci_around_zero_reads_inconclusive_not_no_change():
     step = {"verdict": "no significant change", "ci": [-3.32, 8.57], "change": 2.45}
-    assert bisect.pr_verdict(step) == "inconclusive (±5.9%)"
-    assert bisect.pr_verdict({**step, "ci": [-0.5, 0.8]}) == "no significant change"
-    assert "inconclusive" in bisect.describe_step(
-        {**step, "model": "m", "scenario": "s"}
+    assert bisect.pr_verdict(step) == "too noisy to tell (±5.9%), rerun"
+    assert bisect.pr_verdict({**step, "ci": [-2.0, 6.0]}) == "inconclusive (±4.0%)"
+    assert bisect.pr_verdict(
+        {**step, "verdict": "inconclusive", "ci": [-13.09, 20.5]}
+    ) == ("too noisy to tell (±16.8%), rerun")
+    assert (
+        bisect.pr_verdict({**step, "verdict": "inconclusive", "ci": [-1.5, 3.0]})
+        == "inconclusive"
     )
+    assert (
+        bisect.pr_verdict({**step, "verdict": "REGRESSION", "ci": [0.5, 30.0]})
+        == "REGRESSION"
+    )
+    assert bisect.pr_verdict({**step, "ci": [-0.5, 0.8]}) == "no significant change"
+    assert "too noisy" in bisect.describe_step({**step, "model": "m", "scenario": "s"})
 
 
 def test_a_finished_pr_bench_links_the_full_report_both_ways(pr_service, monkeypatch):
@@ -713,3 +723,15 @@ def test_a_finished_pr_bench_links_the_full_report_both_ways(pr_service, monkeyp
     assert 'href="/benchmarks/pr-123"' in html and 'class="pill bad">REGRESSION' in html
     assert f'href="/benchmarks/pr-bench/{reply["id"]}"' in page.pr_jobs(123)
     assert page.pr_jobs(999) == ""
+
+
+def test_overview_lists_comparisons_newest_run_first():
+    prs = [{"file": f"pr-{n}.html", "label": f"PR #{n}", "title": "t", "models": ["m"], "runs": 1,
+            "last_date": d, "verdicts": {}} for n, d in ((1, "2026-11-10"), (2, "2026-11-25"), (3, "2026-11-16"))]  # fmt: skip
+    html = page.overview(
+        {
+            "main": {"series": 1, "days": 1, "last_date": "", "last_commit": ""},
+            "prs": prs,
+        }
+    )
+    assert html.index("PR #2") < html.index("PR #3") < html.index("PR #1")

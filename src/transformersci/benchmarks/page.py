@@ -732,7 +732,8 @@ def overview(data, theme="dark"):
     if not data["prs"]:
         return out + '<p class="notice">No side-by-side runs yet.</p></section>'
     rows = []
-    for pr in data["prs"]:
+    # newest run first (PR benches from Slack or tperf bench land at the top)
+    for pr in sorted(data["prs"], key=lambda p: p.get("last_date") or "", reverse=True):
         verdicts = " ".join(
             f'<span class="chip {"bad" if k == "regression" else "good" if k == "improvement" else ""}">{v} {esc(k)}</span>'
             for k, v in pr["verdicts"].items()

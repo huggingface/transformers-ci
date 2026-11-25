@@ -880,17 +880,21 @@ setTimeout(poll,5000)};setTimeout(poll,5000)})();
 """
 
 
+TOO_NOISY = 5.0  # %: a 95% CI half-width above this says the run could not measure, not that the PR is unclear
+
+
 def pr_verdict(step: dict) -> str:
-    """A PR bench step's verdict; "no significant change" with a wide CI (workers before 2026-11-25) reads as what
-    it was: too noisy to tell."""
-    ci = step.get("ci")
-    if (
-        step.get("verdict") == "no significant change"
-        and ci
-        and max(-ci[0], ci[1]) > 1.0
-    ):
-        return f"inconclusive (±{(ci[1] - ci[0]) / 2:.1f}%)"
-    return step.get("verdict", "")
+    """A PR bench step's verdict as shown: a CI around zero wider than ±TOO_NOISY is "too noisy to tell", and
+    "no significant change" from workers before 2026-11-25 with a CI wider than ±1% is "inconclusive"."""
+    ci, verdict = step.get("ci"), step.get("verdict", "")
+    if not ci or verdict not in ("inconclusive", "no significant change"):
+        return verdict
+    half = (ci[1] - ci[0]) / 2
+    if half > TOO_NOISY:
+        return f"too noisy to tell (±{half:.1f}%), rerun"
+    if verdict == "no significant change" and max(-ci[0], ci[1]) > 1.0:
+        return f"inconclusive (±{half:.1f}%)"
+    return verdict
 
 
 def pill(verdict: str) -> str:

@@ -12,7 +12,7 @@
       headers: {'Content-Type': 'application/json', 'X-TCI-Action': '1'}, body: JSON.stringify(body)});
     if (!response.ok) {
       const data = await response.json();
-      const messages = {invalid_or_expired_code: 'This code has expired or was already used. Run tmic auth login again.',
+      const messages = {invalid_or_expired_code: 'This code has expired or was already used. Run tmic auth login (or tperf auth login) again.',
         rate_limited: 'Too many attempts. Wait a minute and try again.', unauthorized: 'Your session expired. Sign in again.'};
       throw new Error(messages[data.error] || 'The request could not be completed. Try again.');
     }
