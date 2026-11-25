@@ -996,6 +996,57 @@ def test_failing_now_follows_a_cleared_setup_error():
     assert now["failing"] == 0 and now["cases"] == 2
 
 
+def _with_run(failures, run):
+    """queries() that also knows `run` as a job of PR 42 with no failure."""
+
+    def query(expression):
+        if "max by (run_id, pr)" in expression:
+            return [vector({"run_id": run, "pr": "42"}, 1)]
+        return queries(failures)(expression)
+
+    return query
+
+
+def test_an_error_without_platform_is_cleared_by_a_pass_on_a_platform():
+    # It errored before the runner resolved a platform (a usage.md exception): the next
+    # run's pass reports one, and must still count as that case's latest check.
+    x = "tests/contracts::x::x[bfloat16]"
+    records = {
+        "123:1": [_case(x, "123:1", "creator/x", "error")],
+        "124:1": [
+            _case(
+                x, "124:1", "creator/x", "pass", **{"mic.platform": "cpu-x86_64-bf16"}
+            )
+        ],
+    }
+    failures = [failure("123:1", node=x)]
+    data = mic_page.build_rows(_with_run(failures, "124:1"), records.get)
+    assert data["summary"]["now"]["failing"] == 0
+    row = data["rows"][0]
+    assert row["latest"]["status"] == "pass" and row["latest"]["run_id"] == "124:1"
+    sticky = mic_page.build_rows(
+        _with_run(failures, "124:1"), records.get, sticky_only=True
+    )
+    assert sticky["rows"] == []
+
+
+def test_a_platform_check_does_not_clear_another_platforms_failure():
+    x = "tests/contracts::x::x[bfloat16]"
+    records = {
+        "123:1": [_case(x, "123:1", "creator/x", "fail", **{"mic.platform": "cuda"})],
+        "124:1": [
+            _case(
+                x, "124:1", "creator/x", "pass", **{"mic.platform": "cpu-x86_64-bf16"}
+            )
+        ],
+    }
+    data = mic_page.build_rows(
+        _with_run([failure("123:1", node=x)], "124:1"), records.get
+    )
+    assert data["summary"]["now"]["failing"] == 1
+    assert data["rows"][0]["latest"]["status"] == "fail"
+
+
 def test_failing_now_without_checks_is_unknown():
     assert mic_page.failing_now({}) == {"failing": 0, "cases": 0, "rate": None}
 

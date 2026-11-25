@@ -332,6 +332,14 @@ def add_history(
             )
             note(key, run, status)
             case = by_key.get(key)
+            if case is None and key[2]:
+                # A case that errored before the runner resolved its platform was
+                # recorded with none: a later check of it on a real platform is
+                # its next result, else a pass there never clears the error.
+                bare = (key[0], key[1], "", *key[3:])
+                case = by_key.get(bare)
+                if case is not None:
+                    note(bare, run, status)
             if case is None:
                 continue
             observe(case, run, pr, status)
