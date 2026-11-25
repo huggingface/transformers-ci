@@ -1,8 +1,10 @@
 name: record-mic reconcile
 
-# Hourly: the record-mic overlay of a Transformers PR that has merged goes into the MIC fleet (its
-# re-recorded expected values go live with its code); one whose PR closed without merging is
-# dropped. Runs no PR code. See src/transformersci/contracts/record_mic_reconcile.py.
+# Hourly bookkeeping: the record-mic overlay of a merged Transformers PR goes into the MIC fleet
+# (pin + history row, in merged_at order); one whose PR closed without merging is dropped. PR CI
+# contracts runs do not wait for it (`--code-revision` already applies merged overlays); runs that
+# read the fleet pin only (nightly, local tmic check, tests/contracts.lock) do. Runs no PR code.
+# See src/transformersci/contracts/record_mic_reconcile.py.
 
 on:
   schedule:
