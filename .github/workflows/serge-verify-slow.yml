@@ -291,7 +291,7 @@ jobs:
       # because the probe is on, cuda_delta_after_gc_bytes.
       - name: Upload memory probe
         if: ${{ always() && inputs.memory_probe }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: serge-memory-probe-${{ inputs.machine_type }}
           path: /transformers/reports/resource-metrics.jsonl
@@ -299,7 +299,7 @@ jobs:
 
       - name: Upload verify result
         if: ${{ always() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: serge-verify-result-${{ inputs.machine_type }}
           path: /transformers/reports/verify-result.json
