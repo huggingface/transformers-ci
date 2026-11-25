@@ -49,7 +49,7 @@ pytest-plugin = [
 benchmarks = [
   # Shared analysis with the performance Space (daily series and paired A/B CIs).
   # The HTTP server stays stdlib-only; only the snapshot refresher needs this extra.
-  "transformers-perf[dashboard] @ https://github.com/huggingface/transformers-perf/archive/0c2447dd73250e5ea1cc0512bd920383933aeb43.zip ; python_version >= '3.11'",
+  "transformers-perf[dashboard] @ https://github.com/huggingface/transformers-perf/archive/ffab15a16ac3ab08710c2043b61b40ba202f2c57.zip ; python_version >= '3.11'",
 ]
 publish = [
   "huggingface_hub[cli,hf_xet]",
