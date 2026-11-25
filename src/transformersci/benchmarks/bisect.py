@@ -590,7 +590,12 @@ def describe_result(job: dict) -> str:
     r = job["result"] or {}
     state = r.get("state", "failed")
     if job.get("kind") == "pr":
-        text = f"*PR bench {'done' if state == 'done' else state}*: <{job_url(job)}|results>"
+        text = (
+            f"*PR bench {'done' if state == 'done' else state}*: <{job_url(job)}|job>"
+        )
+        if r.get("page"):
+            base = job_url(job).removesuffix(job_path(job))
+            text += f" · <{base}{r['page']}|full report> (every metric, every run of this PR)"
         return text + (f"\n{r['reason']}" if r.get("reason") else "")
     text = f"*Bisect {ENDINGS.get(state, state)}*"
     if state == "culprit" and r.get("culprit"):
@@ -643,6 +648,20 @@ def announce(db: Store, job: dict) -> None:
     )
     if ts := slack(job, text, thread=False):
         db.set_slack_ts(job["id"], ts)
+
+
+def jobs_for_pr(pr: int) -> list[dict]:
+    """PR bench jobs of one PR, newest first ([] when the feature or its store is unavailable)."""
+    if not enabled():
+        return []
+    try:
+        return [
+            j
+            for j in store().recent(200)
+            if j.get("kind") == "pr" and j.get("pr") == pr
+        ]
+    except (Error, sqlite3.Error):
+        return []
 
 
 def box_label(job: dict) -> str:
@@ -805,8 +824,17 @@ def handle_pr(handler, method: str, tail: str, query: str) -> None:
         handler._reply_json(exc.status, {"error": exc.error})
 
 
-GOOD_VERDICTS = {"faster", "good", "not_reproduced", "no significant change", "ok", "done"}
-BAD_VERDICTS = {"slower", "bad", "reproduced", "confirmed", "failed", "failed to run"}
+GOOD_VERDICTS = {"faster", "good", "not_reproduced", "no significant change", "ok", "done", "improvement", "no change",
+                 "no change (significant, below threshold)"}  # fmt: skip
+BAD_VERDICTS = {
+    "slower",
+    "bad",
+    "reproduced",
+    "confirmed",
+    "failed",
+    "failed to run",
+    "REGRESSION",
+}
 LIVE_CSS = """
 .job-progress{margin:14px 0 18px;padding:12px 14px;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
 .job-progress .row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
@@ -961,11 +989,14 @@ def pr_page(job: dict, theme: str = "dark") -> str:
             if base
             else " against its merge-base with main"
         )
-        + f", {job['metric']}, {job['rounds']} rounds per side, change = head vs base (lower is faster)</p>"
+        + f", {job['metric']}, {job['rounds']} paired rounds, GPUs swapped each round; change = head vs base, "
+        "positive is slower; verdicts as <code>tperf ab compare</code> (95% CI, 1% threshold)</p>"
         + progress(job, len(done), len(job["scenarios"]), state)
     )
     if r.get("reason"):
         body += f"<p>{esc(r['reason'])}</p>"
+    if r.get("page"):
+        body += f'<p class="headline">{link(r["page"], "Full report: every metric of every run of this PR →")}</p>'
     body += table(["Model", "Scenario", "Change", "95% CI", "Verdict"], rows)
     return document(f"PR bench #{job['pr']}", live(job, body), theme)
 

@@ -653,6 +653,21 @@ def profile_links(profiles):
     )
 
 
+def pr_jobs(pr, theme="dark"):
+    """The PR's bench jobs (tperf bench, /askserge bench), above its runs: each job's runs are published here."""
+    from transformersci.benchmarks import bisect as bisect_jobs
+
+    jobs = bisect_jobs.jobs_for_pr(pr)
+    if not jobs:
+        return ""
+    items = "".join(
+        f"<li>{link(bisect_jobs.job_path(j), j['id'])} · {esc(bisect_jobs.job_state(j))} · "
+        f"{esc(bisect_jobs.box_label(j))} · requested by {esc(j['requester'])}</li>"
+        for j in jobs[:5]
+    )
+    return f'<section class="notice"><strong>Bench jobs for this PR</strong> (their runs are below)<ul>{items}</ul></section>'
+
+
 def comparisons(data):
     out = '<p class="muted">Base and head run side by side, swapping GPUs each round. Change fits out the GPU difference; positive means worse (slower or less throughput). Confidence intervals are 95%; verdict threshold is 1%.</p>'
     for run in data["abs"]:
@@ -786,7 +801,7 @@ def render(path, params):
     elif name == "main":
         body += daily(page, params, theme)
     else:
-        body += comparisons(page)
+        body += pr_jobs(int(name.removeprefix("pr-")), theme) + comparisons(page)
     updated = datetime.fromtimestamp(data["updated_at"], timezone.utc).strftime(
         "%Y-%m-%d %H:%M UTC"
     )

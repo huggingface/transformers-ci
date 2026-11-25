@@ -379,7 +379,7 @@ def test_pr_bench_reports_one_step_per_scenario_and_links_the_results(pr_service
         assert h.reply[0] == 200
     texts = [t for _, t, _ in pr_service]
     assert any("-3.10% [-4.00, -2.20] → faster" in t for t in texts)
-    assert f"/benchmarks/pr-bench/{reply['id']}|results>" in texts[-1]
+    assert f"/benchmarks/pr-bench/{reply['id']}|job>" in texts[-1]
     page_ = Handler(f"/benchmarks/pr-bench/{reply['id']}")
     bisect.handle(page_, "GET")
     assert b"-3.10%" in page_.reply[1] and b"Faster attention" in page_.reply[1]
@@ -686,3 +686,30 @@ def test_a_wide_ci_around_zero_reads_inconclusive_not_no_change():
     assert "inconclusive" in bisect.describe_step(
         {**step, "model": "m", "scenario": "s"}
     )
+
+
+def test_a_finished_pr_bench_links_the_full_report_both_ways(pr_service, monkeypatch):
+    _, reply = submit_pr()
+    claim_ = Handler("/benchmarks/bisect/next", auth="Bearer worker-secret")
+    bisect.handle(claim_, "GET")
+    step = {"model": SERIES["model"], "scenario": SERIES["scenario"], "base": GOOD, "head": HEAD,
+            "change": 2.7, "ci": [0.4, 5.0], "verdict": "REGRESSION"}  # fmt: skip
+    for kind, payload in (("step", {"step": step}),
+                          ("done", {"result": {"state": "done", "page": "/benchmarks/pr-123"}})):  # fmt: skip
+        h = Handler(
+            f"/benchmarks/bisect/{reply['id']}/report",
+            {"kind": kind, **payload},
+            auth="Bearer worker-secret",
+        )
+        bisect.handle(h, "POST")
+    monkeypatch.setattr(
+        bisect.auth, "config", lambda: type("C", (), {"url": "https://dash"})()
+    )
+    job = bisect.store().get(reply["id"])
+    assert "<https://dash/benchmarks/pr-123|full report>" in bisect.describe_result(job)
+    page_ = Handler(f"/benchmarks/pr-bench/{reply['id']}")
+    bisect.handle(page_, "GET")
+    html = page_.reply[1].decode()
+    assert 'href="/benchmarks/pr-123"' in html and 'class="pill bad">REGRESSION' in html
+    assert f'href="/benchmarks/pr-bench/{reply["id"]}"' in page.pr_jobs(123)
+    assert page.pr_jobs(999) == ""
