@@ -134,7 +134,8 @@ def copy_memory_reports(dataset, revision, memory, dest):
 def render_memory_report(target):
     """report.json ({title, css, body}) for the exporter to put inside the site's
     page, rendered by the pinned transformers-perf from the published summaries:
-    no script, every value escaped. Reports published before the summaries were
+    no script, every value escaped; and time.json, the time report, the same way,
+    when there is a python pass. Reports published before the summaries were
     keep their standalone report.html only."""
     try:
         from tperf.memory.report import load_summaries, render_fragment
@@ -155,6 +156,21 @@ def render_memory_report(target):
         links["memory_viz"] = "memory-viz.html"
     if (target / "python.folded").is_file():
         links["python_stacks"] = "python.folded"
+    try:  # the time report, its own page: transformers-perf after the split
+        from tperf.memory.report import render_time_fragment
+    except ImportError:
+        render_time_fragment = None
+    time_json = target / "time.json"
+    if python is not None and render_time_fragment is not None:
+        time_links = {"memory": "report.html"}
+        if "python_stacks" in links:
+            time_links["python_stacks"] = links["python_stacks"]
+        temp = target / "time.json.tmp"
+        temp.write_text(json.dumps(render_time_fragment(profile, python, time_links)))
+        temp.replace(time_json)
+        links["time"] = "time.html"
+    elif time_json.exists():
+        time_json.unlink()
     fragment = (
         render_fragment(profile, gpu, host, links, python)
         if python is not None

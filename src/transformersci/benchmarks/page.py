@@ -153,7 +153,7 @@ def select(name, label, choices, selected):
 
 MEMORY_PATH = re.compile(
     r"/benchmarks/memory/([A-Za-z0-9][A-Za-z0-9._-]*)/"
-    r"(report\.html|host-flamegraph\.html|memory-viz\.html|gpu_snapshot\.pickle|python\.folded)"
+    r"(report\.html|time\.html|host-flamegraph\.html|memory-viz\.html|gpu_snapshot\.pickle|python\.folded)"
 )
 # Pages that run scripts (memray's flamegraph, PyTorch's memory viewer) get an
 # opaque origin: their scripts cannot reach the dashboard's cookies or storage
@@ -195,8 +195,11 @@ def memory_file(path, theme="dark"):
         {},
     )
     try:
-        if name == "report.html" and (root / "report.json").is_file():
-            fragment = json.loads((root / "report.json").read_text())
+        fragment_file = {"report.html": "report.json", "time.html": "time.json"}.get(
+            name
+        )
+        if fragment_file and (root / fragment_file).is_file():
+            fragment = json.loads((root / fragment_file).read_text())
             body = (
                 f"<style>{fragment['css']}</style>"
                 + '<p class="meta">'
@@ -205,6 +208,8 @@ def memory_file(path, theme="dark"):
                 + fragment["body"]
             )
             return 200, document(fragment["title"], body, theme).encode(), text, {}
+        if name == "time.html":
+            return missing
         if name == "memory-viz.html":
             if not (root / "gpu_snapshot.pickle.gz").is_file():
                 return missing
@@ -232,6 +237,20 @@ def memory_file(path, theme="dark"):
         return 200, (root / name).read_bytes(), text, SANDBOX
     except (OSError, ValueError, KeyError):
         return missing
+
+
+def time_report(memory_url):
+    """The time report next to a memory report (/benchmarks/memory/<group>/report.html),
+    or None when the refresher rendered none for it."""
+    match = MEMORY_PATH.fullmatch(memory_url)
+    if not match:
+        return None
+    root = Path(
+        os.environ.get("TCI_BENCHMARK_SNAPSHOT", "/benchmarks/snapshot.json")
+    ).parent
+    if not (root / "memory" / match.group(1) / "time.json").is_file():
+        return None
+    return memory_url.removesuffix("report.html") + "time.html"
 
 
 def daily(data, params, theme="dark"):
@@ -334,13 +353,17 @@ def daily(data, params, theme="dark"):
             reports = [p for p in s["points"] if p.get("memory")]
             theme_query = "?theme=light" if theme == "light" else ""
             if reports:
+                memory = "/benchmarks/" + reports[-1]["memory"]
                 out += (
                     '<p class="meta">'
-                    + link(
-                        "/benchmarks/" + reports[-1]["memory"] + theme_query,
-                        f"Memory report, {reports[-1]['date'][:10]}",
+                    + link(memory + theme_query, "Memory report")
+                    + (
+                        " · " + link(time_report(memory) + theme_query, "Time report")
+                        if time_report(memory)
+                        else ""
                     )
-                    + " · what held GPU and host memory at the peak, and the code that allocated it</p>"
+                    + f", {esc(reports[-1]['date'][:10])}"
+                    + " · what held GPU and host memory at the peak, and where the time went</p>"
                 )
             rows = []
             for p in reversed(points):

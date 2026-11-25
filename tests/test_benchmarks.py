@@ -310,7 +310,8 @@ def test_memory_reports_are_copied_linked_and_served_sandboxed(tmp_path, monkeyp
     status, html = page.render("/benchmarks/main", {})
     assert status == 200
     assert 'href="/benchmarks/memory/day-22/report.html"' in html
-    assert "Memory report, 2026-11-22" in html and "<th>Memory</th>" in html
+    assert ">Memory report</a>" in html and ", 2026-11-22" in html
+    assert "<th>Memory</th>" in html
     # The report inside the site's page: header, styles, no script, data escaped
     status, body, kind, headers = page.memory_file(
         "/benchmarks/memory/day-22/report.html"
@@ -320,13 +321,24 @@ def test_memory_reports_are_copied_linked_and_served_sandboxed(tmp_path, monkeyp
     assert '<div class="mem">' in html and ">Benchmarks</a>" in html
     assert "org/model&lt;script&gt;" in html and "<script" not in html
     assert 'href="memory-viz.html"' in html
-    try:  # transformers-perf with the python pass renders its section
-        from tperf.memory.report import load_python_summary  # noqa: F401
-
-        assert "Python time" in html and "app.py:1 main&lt;b&gt;" in html
-        assert 'href="python.folded"' in html
+    try:  # transformers-perf with the time report: the python pass is its own page
+        from tperf.memory.report import render_time_fragment  # noqa: F401
     except ImportError:
-        pass
+        render_time_fragment = None
+    if render_time_fragment is not None:
+        assert 'href="time.html"' in html and "app.py:1 main" not in html
+        status, body, _, headers = page.memory_file(
+            "/benchmarks/memory/day-22/time.html"
+        )
+        time_html = body.decode().replace("'", '"')
+        assert status == 200 and headers == {} and "<script" not in time_html
+        assert "Python time" in time_html and "app.py:1 main&lt;b&gt;" in time_html
+        assert 'href="python.folded"' in time_html and 'href="report.html"' in time_html
+        status, daily_html = page.render("/benchmarks/main", {})
+        assert 'href="/benchmarks/memory/day-22/time.html"' in daily_html
+        assert ">Time report</a>" in daily_html
+    else:
+        assert page.memory_file("/benchmarks/memory/day-22/time.html")[0] == 404
     status, body, _, headers = page.memory_file(
         "/benchmarks/memory/day-22/memory-viz.html"
     )
