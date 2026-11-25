@@ -64,7 +64,7 @@ SHA = re.compile(r"[0-9a-f]{40}")
 ID = re.compile(r"[0-9a-f]{12}")
 PR = re.compile(r"[1-9][0-9]{0,9}")
 REPO = "huggingface/transformers"
-PR_ROUNDS = 3
+PR_ROUNDS = 6  # 3 rounds gave a 95% CI of ±17% on gemma-3-1b; 6 gave ±3.7%
 ENDINGS = {
     "culprit": "found the commit",
     "range": "narrowed to a range",
