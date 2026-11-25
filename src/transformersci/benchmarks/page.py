@@ -298,6 +298,9 @@ def time_report(memory_url):
     return memory_url.removesuffix("report.html") + "time.html"
 
 
+SERVE_METRICS = ("ttft", "itl", "e2e", "tps")
+
+
 def daily(data, params, theme="dark"):
     get = lambda name, default="": (params.get(name) or [default])[0]
     series = data["series"]
@@ -313,12 +316,18 @@ def daily(data, params, theme="dark"):
     proc_metric = get("processor_metric", "time")
     if proc_metric not in ("time", "syncs"):
         proc_metric = "time"
+    # The serve suite (a multi-turn chat on `transformers serve`) records the latency metrics only
+    serve_metrics = [k for k in SERVE_METRICS if k in metrics]
+    serve_metric = get("serve_metric", "ttft")
+    if serve_metric not in serve_metrics:
+        serve_metric = serve_metrics[0] if serve_metrics else "ttft"
     values = {
         "theme": theme if theme == "light" else "",
         "model": model,
         "group": group,
         "metric": metric,
         "processor_metric": proc_metric,
+        "serve_metric": serve_metric,
     }
 
     def hidden(exclude):
@@ -344,9 +353,18 @@ def daily(data, params, theme="dark"):
         return out + '<p class="notice">No daily series match these filters.</p>'
     sections = {
         "Generation": "generation",
+        "Serve": "serve",
         "Multimodal processors (CPU)": "processors",
         "Multimodal encoders (GPU, bf16)": "encoders",
     }
+    groups = dict(
+        sorted(
+            groups.items(),
+            key=lambda kv: (
+                list(sections).index(kv[0]) if kv[0] in sections else len(sections)
+            ),
+        )
+    )
     out += (
         '<nav class="section-menu" aria-label="Benchmark sections">'
         + "".join(link("#" + sections.get(name, "series"), name) for name in groups)
@@ -363,6 +381,13 @@ def daily(data, params, theme="dark"):
                 metric,
             )
             controls = hidden("metric") + controls
+        elif name == "Serve":
+            controls = hidden("serve_metric") + select(
+                "serve_metric",
+                "Metric",
+                [(k, metrics[k]["label"]) for k in serve_metrics],
+                serve_metric,
+            )
         elif name == "Multimodal encoders (GPU, bf16)":
             controls = hidden("processor_metric") + select(
                 "processor_metric",
@@ -377,13 +402,15 @@ def daily(data, params, theme="dark"):
             m = (
                 metric
                 if name == "Generation"
+                else serve_metric
+                if name == "Serve"
                 else "time"
                 if name == "Multimodal processors (CPU)"
                 else proc_metric
             )
-            meta = (metrics if name == "Generation" else data["series_metrics"]).get(
-                m, {}
-            )
+            meta = (
+                metrics if name in ("Generation", "Serve") else data["series_metrics"]
+            ).get(m, {})
             unit = meta.get("unit", "")
             out += f'<article class="card"><h3>{esc(s["model"])}</h3><p class="meta">{esc(s["scenario"])}<br>{esc(s["gpu"])}</p>'
             points = [p for p in s["points"] if m in p["values"]]

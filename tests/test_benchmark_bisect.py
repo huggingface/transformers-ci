@@ -500,3 +500,30 @@ def test_bench_queue_tab_pulses_while_a_bench_runs(service):
         Handler("/benchmarks/bisect/next", auth="Bearer worker-secret"), "GET"
     )
     assert 'class="queue-busy"' in page.tabs("main")
+
+
+def test_serve_series_get_their_own_section_and_metric_menu(monkeypatch):
+    monkeypatch.delenv("TCI_BENCHMARK_BISECT_ENABLED", raising=False)
+    serve = {**SERIES, "key": "gemma-serve", "group": "Serve", "bisect": None,
+             "scenario": "transformers serve, chat · sdpa",
+             "points": [{**p, "values": {"ttft": [30.0, 29.0, 31.0], "e2e": [900.0, 880.0, 910.0]}}
+                        for p in SERIES["points"]]}  # fmt: skip
+    metrics = {
+        k: {"label": k.upper(), "unit": "ms"} for k in ("e2e", "ttft", "itl", "cold")
+    }
+    html = page.daily(
+        {"series": [serve, SERIES], "metrics": metrics, "series_metrics": {}}, {}
+    )
+    assert html.index('id="generation"') < html.index(
+        'id="serve"'
+    )  # fixed section order
+    serve_part = html[html.index('id="serve"') :]
+    assert (
+        'name="serve_metric"' in serve_part and '<option value="cold"' not in serve_part
+    )
+    assert "TTFT" in serve_part  # time to first token by default
+    html = page.daily(
+        {"series": [serve], "metrics": metrics, "series_metrics": {}},
+        {"serve_metric": ["e2e"]},
+    )
+    assert "900" in html
