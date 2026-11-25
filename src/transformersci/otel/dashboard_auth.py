@@ -574,7 +574,7 @@ def handle(handler, method):
             send(200, profile)
         elif path == "/auth/device" and method == "POST":
             body = _body(handler)
-            if body.get("client_id") != "tmic":
+            if body.get("client_id") not in ("tmic", "tperf"):
                 raise AuthError(400, "invalid_client")
             result = db.device()
             result["verification_uri"] = cfg.url + "/auth/cli"

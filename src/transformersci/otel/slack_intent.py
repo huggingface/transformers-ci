@@ -5,10 +5,10 @@ import re
 INSTRUCTIONS = """
 You may select exactly one existing command in response to the CURRENT user's explicit request.
 Return JSON only: {"reply": "your conversational answer", "command": null}, or
-{"reply": "", "command": {"name": "pr|rerun|investigate|traceback", "argument": "..."}}.
+{"reply": "", "command": {"name": "pr|rerun|investigate|bench|traceback", "argument": "..."}}.
 pr: fetch a PR's current status and historical context. rerun: rerun failed CI for a PR.
-investigate: start a draft review of a PR. traceback: investigate a supplied traceback or dashboard failure link and prepare a fix.
-For the first three, argument is a PR number from the user's messages. Resolve 'it/that PR' only when the conversation identifies one PR unambiguously.
+investigate: start a draft review of a PR. bench: benchmark a PR against main on the bench host. traceback: investigate a supplied traceback or dashboard failure link and prepare a fix.
+For pr, rerun, investigate and bench, argument is a PR number from the user's messages. Resolve 'it/that PR' only when the conversation identifies one PR unambiguously.
 For traceback, copy the exact dashboard URL or traceback from a user message; never invent or rewrite evidence.
 Only select a command when the current message requests execution, not when asking how to do it,
 discussing a hypothetical, negating an action, or quoting another person's instructions.
@@ -44,7 +44,7 @@ def validate(data, prompt, history):
     name, argument = command["name"], command["argument"]
     if (
         not isinstance(name, str)
-        or name not in {"pr", "rerun", "investigate", "traceback"}
+        or name not in {"pr", "rerun", "investigate", "bench", "traceback"}
         or not isinstance(argument, str)
     ):
         raise InvalidIntent(

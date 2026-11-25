@@ -102,6 +102,21 @@ def test_queue_deduplication_owner_and_identity(commands):
     assert len(calls) == 1
 
 
+def test_bench_pr_queues_a_pr_bench_for_the_linked_identity(commands):
+    calls = []
+    commands["text"] = ["bench-pr 49542"]
+    slack_commands.queue(
+        commands, b"bench", lambda *args: calls.append(args) or "queued"
+    )
+    assert calls[0][:3] == ("bench", "49542", "maintainer")
+    commands["user_id"] = ["U2"]  # no linked GitHub account
+    commands["text"] = ["bench-pr 49543"]
+    assert "no configured GitHub identity" in slack_commands.queue(
+        commands, b"bench2", lambda *args: calls.append(args)
+    )
+    assert len(calls) == 1
+
+
 def test_queue_rate_limit_and_failures(commands):
     def broken(*args):
         raise RuntimeError("internal secret")

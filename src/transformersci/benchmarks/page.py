@@ -32,7 +32,7 @@ CSS = (
 .card,.notice,.benchmark-group{background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:10px 12px;min-width:0}
 .benchmark-group{margin:12px 0;scroll-margin-top:48px}.benchmark-group>.panel-heading{display:flex;align-items:center;flex-wrap:wrap;gap:8px;justify-content:space-between;margin:0 0 8px}.panel-heading form{margin:0}
 .benchmark-group .card{background:var(--bg);padding:8px 10px}.headline{font-size:18px;font-weight:500}.meta{font-size:11px;line-height:16px;color:var(--muted);overflow-wrap:anywhere}.filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}.filters label{display:flex;align-items:center;gap:6px;font-size:12px}.filters select,.filters button{font-size:12px}.filters select{max-width:360px}label{display:grid;gap:4px}
-.plot{width:100%;height:auto}.plot text{fill:var(--muted);font:11px Inter,system-ui}.plot .gridline{stroke:var(--line)}.plot .line{fill:none;stroke:var(--accent);stroke-width:2}.plot .band{fill:var(--accent);opacity:.15}.plot circle{fill:var(--accent)}.plot .step{fill:var(--bad);opacity:.12}.plot .step-line{stroke:var(--bad);stroke-width:3}
+.plot{width:100%;height:auto}.plot text{fill:var(--muted);font:11px Inter,system-ui}.plot .gridline{stroke:var(--line)}.plot .line{fill:none;stroke:var(--accent);stroke-width:2}.plot .band{fill:var(--accent);opacity:.15}.plot circle{fill:var(--accent)}.bisect-live{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:2px 8px;border:1px solid var(--accent);border-radius:99px;text-decoration:none}.bisect-live .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:bisect-blink 1.2s ease-in-out infinite}@keyframes bisect-blink{50%{opacity:.25}}@media (prefers-reduced-motion:reduce){.bisect-live .dot{animation:none}}.plot .step{fill:var(--bad);opacity:.12}.plot .step-line{stroke:var(--bad);stroke-width:3}
 summary{cursor:pointer;color:var(--accent);margin:4px 0;font-size:12px}.good{color:var(--good)}.bad{color:var(--bad)}.chip{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:3px;padding:0 5px;margin:2px}.metric-value{display:flex;align-items:baseline;gap:8px;margin:4px 0 0}.delta{font-size:11px;margin:0}code{overflow-wrap:anywhere}footer{margin-top:20px;color:var(--muted);font-size:11px}.overview-card{margin:10px 0;padding:12px}.comparison-list{margin-top:12px}.comparison-list>h2{margin-bottom:4px}.comparison-list>.scroll{background:var(--panel);border:1px solid var(--line);border-radius:3px;margin-top:8px}td{white-space:nowrap}td.wrap{white-space:normal;min-width:150px}.card>h2{margin-bottom:6px}.card>h2~h3{margin-top:12px}
 """
 )
@@ -277,6 +277,9 @@ def daily(data, params, theme="dark"):
     get = lambda name, default="": (params.get(name) or [default])[0]
     series = data["series"]
     metrics = data["metrics"]
+    from transformersci.benchmarks import bisect as bisect_jobs
+
+    running = bisect_jobs.active() if bisect_enabled() else {}
     metric = get("metric", next(iter(metrics), "e2e"))
     if metric not in metrics:
         metric = next(iter(metrics), "e2e")
@@ -385,7 +388,11 @@ def daily(data, params, theme="dark"):
                     f'<p class="meta">Largest day-over-day e2e step (shaded on the chart): {esc(before["date"][:10])} → '
                     f"{esc(after['date'][:10])}, {change:+.2f}% "
                     + bisect_button(
-                        s["key"], before["commit"], after["commit"], "Bisect this step"
+                        s["key"],
+                        before["commit"],
+                        after["commit"],
+                        "Bisect this step",
+                        running,
                     )
                     + "</p>"
                 )
@@ -430,7 +437,10 @@ def daily(data, params, theme="dark"):
                     + (
                         [
                             bisect_button(
-                                s["key"], previous[p["commit"]]["commit"], p["commit"]
+                                s["key"],
+                                previous[p["commit"]]["commit"],
+                                p["commit"],
+                                active=running,
                             )
                             if p["commit"] in previous
                             else ""
@@ -512,7 +522,15 @@ BISECT_SCRIPT = """<script>
 </script>"""
 
 
-def bisect_button(series, good, bad, label="Bisect"):
+def bisect_button(series, good, bad, label="Bisect", active=None):
+    """The Bisect button, or a link to the series' bisect when one is already queued or running."""
+    job = (active or {}).get(series)
+    if job:
+        state = "queued" if job["state"] == "queued" else "in progress"
+        return (
+            f'<a class="bisect-live" href="/benchmarks/bisect/{esc(job["id"])}">'
+            f'<span class="dot"></span>Bisect {state}</a>'
+        )
     return (
         f'<button type="button" class="bisect" data-series="{esc(series)}" data-good="{esc(good)}" '
         f'data-bad="{esc(bad)}">{esc(label)}</button>'

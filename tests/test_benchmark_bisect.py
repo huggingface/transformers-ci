@@ -324,3 +324,115 @@ def test_no_bisect_this_step_under_two_percent(monkeypatch):
     assert "Bisect this step" not in html and 'class="step"' not in html
     assert page.largest_step(flat["points"]) is None
     assert page.largest_step(flat["points"], minimum=1.0)[2] > 1.8
+
+
+HEAD = "e" * 40
+COMPILED = {**SERIES, "key": "gemma-compiled", "scenario": "compiled",
+            "bisect": {"bench_args": "-b 1", "config": {"attn_implementation": "sdpa", "compile_kwargs": {"mode": "default"}}}}  # fmt: skip
+
+
+@pytest.fixture
+def pr_service(service, monkeypatch):
+    monkeypatch.setattr(
+        bisect,
+        "snapshot",
+        lambda: {"pages": {"main.html": {"series": [SERIES, COMPILED]}}},
+    )
+    monkeypatch.setattr(
+        bisect, "pull_request", lambda pr: {"head": HEAD, "title": "Faster attention"}
+    )
+    return service
+
+
+def submit_pr(pr=123):
+    h = Handler("/benchmarks/pr-bench", {"pr": pr})
+    assert bisect.handle(h, "POST")
+    return h.reply
+
+
+def test_pr_bench_runs_the_uncompiled_daily_scenarios(pr_service):
+    status, reply = submit_pr()
+    assert status == 201 and reply["url"] == f"/benchmarks/pr-bench/{reply['id']}"
+    job = bisect.store().get(reply["id"])
+    assert job["kind"] == "pr" and job["pr"] == 123 and job["head"] == HEAD
+    assert [s["series"] for s in job["scenarios"]] == ["gemma-fa2"]
+    assert job["scenarios"][0]["bench_args"] == "-w 5 -i 6 -b 1 -s 448 -n 128"
+    assert "PR bench" in pr_service[0][1] and "#123" in pr_service[0][1]
+    assert submit_pr() == (409, {"error": "pr_already_queued"})
+    assert submit_pr("12; rm") == (400, {"error": "invalid_request"})
+
+
+def test_pr_bench_reports_one_step_per_scenario_and_links_the_results(pr_service):
+    _, reply = submit_pr()
+    claim = Handler("/benchmarks/bisect/next", auth="Bearer worker-secret")
+    bisect.handle(claim, "GET")
+    assert claim.reply[1]["kind"] == "pr"
+    step = {"model": SERIES["model"], "scenario": SERIES["scenario"], "base": GOOD, "head": HEAD,
+            "change": -3.1, "ci": [-4.0, -2.2], "verdict": "faster"}  # fmt: skip
+    for kind, payload in (
+        ("step", {"step": step}),
+        ("done", {"result": {"state": "done"}}),
+    ):
+        h = Handler(f"/benchmarks/bisect/{reply['id']}/report", {"kind": kind, **payload},
+                    auth="Bearer worker-secret")  # fmt: skip
+        bisect.handle(h, "POST")
+        assert h.reply[0] == 200
+    texts = [t for _, t, _ in pr_service]
+    assert any("-3.10% [-4.00, -2.20] → faster" in t for t in texts)
+    assert f"/benchmarks/pr-bench/{reply['id']}|results>" in texts[-1]
+    page_ = Handler(f"/benchmarks/pr-bench/{reply['id']}")
+    bisect.handle(page_, "GET")
+    assert b"-3.10%" in page_.reply[1] and b"Faster attention" in page_.reply[1]
+    listing = Handler("/benchmarks/bisect")
+    bisect.handle(listing, "GET")
+    assert b"PR #123" in listing.reply[1]
+
+
+def test_a_closed_pr_is_not_benched(service, monkeypatch):
+    monkeypatch.setattr(bisect.github_app, "app_token", lambda: "app")
+    monkeypatch.setattr(
+        bisect.auth, "github_json", lambda url, token=None: {"state": "closed"}
+    )
+    assert submit_pr() == (422, {"error": "pr_not_open"})
+
+
+def test_slack_bench_queues_for_the_linked_login(pr_service):
+    from transformersci.otel import slack_commands
+
+    reply = slack_commands.bench("123", "member", "https://dash")
+    assert (
+        "PR bench queued for #123" in reply
+        and "https://dash/benchmarks/pr-bench/" in reply
+    )
+    assert bisect.store().recent()[0]["requester"] == "member"
+    assert "already has a bench" in slack_commands.bench(
+        "123", "member", "https://dash"
+    )
+
+
+def test_a_running_bisect_turns_the_button_into_a_link_to_its_page(service):
+    data = {"series": [SERIES], "metrics": {"e2e": {"label": "End-to-end latency", "unit": "ms"}},
+            "series_metrics": {}}  # fmt: skip
+    assert "Bisect this step" in page.daily(data, {})
+    _, reply = submit()
+    html = page.daily(data, {})
+    assert "Bisect this step" not in html and 'class="bisect"' not in html
+    assert (
+        f'href="/benchmarks/bisect/{reply["id"]}"' in html and "Bisect queued" in html
+    )
+    claim = Handler("/benchmarks/bisect/next", auth="Bearer worker-secret")
+    bisect.handle(claim, "GET")
+    assert "Bisect in progress" in page.daily(data, {})
+
+
+def test_job_pages_update_themselves_until_done(service):
+    _, reply = submit()
+    h = Handler(f"/benchmarks/bisect/{reply['id']}")
+    bisect.handle(h, "GET")
+    html = h.reply[1].decode()
+    assert (
+        'id="job"' in html
+        and "DOMParser" in html
+        and "data-done" not in html.split("<script>")[0]
+    )
+    assert "reload to update" not in html

@@ -435,3 +435,8 @@ def test_profile_theme_and_navigation(http):
     assert 'href="/benchmarks?theme=light"' in page
     assert 'href="/profile?theme=light"' in page
     assert 'data-theme="dark"' in http("/profile?theme=invalid")[1]
+
+
+def test_http_device_login_accepts_the_tperf_client_only_besides_tmic(http, configured):
+    assert http("/auth/device", body={"client_id": "tperf"})[0] == 200
+    assert http("/auth/device", body={"client_id": "other"})[0] == 400

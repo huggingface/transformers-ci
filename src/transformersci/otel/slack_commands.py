@@ -90,10 +90,11 @@ def queue(
         static_result = row[0] if row else "Command not found for your Slack account."
     elif (
         len(parts) == 2
-        and parts[0] in {"pr", "rerun", "investigate"}
+        and parts[0] in {"pr", "rerun", "investigate", "bench", "bench-pr"}
         and re.fullmatch(r"[1-9][0-9]{0,9}", parts[1])
     ):
         operation, pr = parts
+        operation = "bench" if operation == "bench-pr" else operation
         actor = actor_for(team, user)
         if operation != "pr" and not actor:
             static_result = "Your Slack account has no configured GitHub identity. Ask the dashboard administrator to link it."
@@ -251,6 +252,8 @@ def execute(
         return pr_status(pr, github, dashboard)
     if operation == "pr":
         return command_reply(f"pr {pr}", summary, dashboard, serge)
+    if operation == "bench":
+        return bench(pr, actor, dashboard)
     enabled, reason = rerun_actions.dispatch_enabled()
     if not enabled:
         return "Actions are disabled: " + reason
@@ -284,6 +287,29 @@ def execute(
     ):
         return "Serge returned an unexpected response. Check Serge before retrying."
     return f"Serge investigation started: <{serge}{path}|view investigation>. The result is a draft for review."
+
+
+def bench(pr, actor, dashboard):
+    """Queue a PR bench (tperf ab of the PR against main on the bench host) for a linked member."""
+    from transformersci.benchmarks import bisect
+
+    if not bisect.enabled():
+        return "PR benches are not enabled on this dashboard."
+    try:
+        job = bisect.submit_pr(pr, {"login": actor})
+    except bisect.Error as exc:
+        reasons = {
+            "pr_already_queued": f"PR #{pr} already has a bench queued or running.",
+            "bisect_queue_full": "The bench queue is full (3 jobs). Try again once one finishes.",
+            "pr_not_open": f"PR #{pr} is not open.",
+            "pr_not_found": f"PR #{pr} was not found in huggingface/transformers.",
+            "account_not_allowed": "PR benches are for Hugging Face organization members.",
+        }
+        return "Bench refused: " + reasons.get(exc.error, exc.error)
+    return (
+        f"PR bench queued for #{pr} ({len(job['scenarios'])} daily scenarios against main). "
+        f"Results: <{dashboard}{bisect.job_path(job)}|job page>; progress in #transformers-benchmark."
+    )
 
 
 def pr_status(pr, github, dashboard):
