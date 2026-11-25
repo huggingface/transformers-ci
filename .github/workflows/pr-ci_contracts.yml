@@ -255,7 +255,7 @@ jobs:
             {"runner": "${{ inputs.runner }}", "docker_image": "${{ inputs.docker_image }}",
             "ci_sha": "${{ inputs.ci_sha }}", "run_id": "${{ github.run_id }}"}
         run: |
-          if ! python -c 'import json, sys; sys.exit(0 if json.load(open("/tmp/contracts-gate.json"))["blocks"] else 1)' 2>/dev/null; then
+          if ! python -c 'import json, sys; sys.exit(0 if json.load(open("/tmp/contracts-gate.json"))["blocked"] else 1)' 2>/dev/null; then
             echo "No blocked case: nothing to record."
             exit 0
           fi

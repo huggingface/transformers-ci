@@ -13,8 +13,12 @@ repository: for each overlay it asks GitHub for the PR's state, then
 - closed without merging: `pr_record discard` deletes it and the mic-repo branches;
 - open: nothing.
 
-Main stays red on a merged PR's re-recorded contracts until the next run (at most an hour), which
-the contracts gate reports as a warning, never a block.
+Merged PRs are settled in the order they merged on main (`merged_at`), not by number: the fleet
+history says "from this commit on main, these values", so its rows follow main.
+
+Between a PR's merge and the next pass, a contracts run whose code contains the merge already meets
+its values: `tmic check --code-revision` applies the overlays of merged PRs not settled yet. This
+pass is bookkeeping (pins, history, cleanup), not what makes the values live.
 """
 
 import argparse
@@ -39,7 +43,7 @@ def overlays():
 
 
 def pr_state(pr, repository=REPOSITORY):
-    """open, merged or closed."""
+    """(open | merged | closed, the PR's commit on the base branch once merged, merged_at or None)."""
     request = urllib.request.Request(
         f"https://api.github.com/repos/{repository}/pulls/{pr}",
         headers={"Accept": "application/vnd.github+json"},
@@ -49,11 +53,11 @@ def pr_state(pr, repository=REPOSITORY):
     with urllib.request.urlopen(request, timeout=30) as response:
         data = json.load(response)
     if data.get("merged_at"):
-        return "merged"
-    return "open" if data["state"] == "open" else "closed"
+        return "merged", data.get("merge_commit_sha"), data["merged_at"]
+    return ("open" if data["state"] == "open" else "closed"), None, None
 
 
-def settle(pr, state, execute):
+def settle(pr, state, execute, since=None):
     """Run pr_record for a PR that is no longer open; (exit code, its JSON output or None)."""
     command = "merge" if state == "merged" else "discard"
     args = [
@@ -66,6 +70,9 @@ def settle(pr, state, execute):
     ]
     if execute:
         args.append("--execute")
+    if state == "merged" and since:
+        # Runs of code without this commit keep meeting the values before it (fleet history).
+        args += ["--since", since]
     done = subprocess.run(args, capture_output=True, text=True)
     lines = [line for line in done.stdout.splitlines() if line.startswith("{")]
     return done.returncode, json.loads(lines[-1]) if lines else None, done.stderr
@@ -92,15 +99,19 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     lines, failed = ["### record-mic overlays", ""], False
-    prs = overlays()
-    if not prs:
+    states = {pr: pr_state(pr) for pr in overlays()}
+    if not states:
         lines.append("No overlay.")
-    for pr in prs:
-        state = pr_state(pr)
+    # Merged PRs in the order they merged on main (ISO timestamps sort as text), then the rest.
+    order = sorted(
+        states, key=lambda pr: (states[pr][2] is None, states[pr][2] or "", pr)
+    )
+    for pr in order:
+        state, since, _ = states[pr]
         if state == "open":
             lines.append(f"- #{pr}: open, kept")
             continue
-        code, result, stderr = settle(pr, state, args.execute)
+        code, result, stderr = settle(pr, state, args.execute, since)
         verb = "merged into the fleet" if state == "merged" else "dropped (PR closed)"
         if not args.execute:
             verb = f"would be {verb}"
