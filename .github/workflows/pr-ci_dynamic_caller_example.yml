@@ -331,6 +331,7 @@ jobs:
 
 
   check_repository_consistency:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     permissions:
       contents: read
     name: "Check repository consistency"
@@ -504,9 +505,8 @@ jobs:
 
   # Origin: torch_job in .circleci/create_circleci_config.py
   tests_torch:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_torch == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_torch"
@@ -519,9 +519,8 @@ jobs:
 
   # Origin: generate_job in .circleci/create_circleci_config.py
   tests_generate:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_generate == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_generate"
@@ -534,9 +533,8 @@ jobs:
 
   # Origin: tokenization_job in .circleci/create_circleci_config.py
   tests_tokenization:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_tokenization == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_tokenization"
@@ -547,9 +545,8 @@ jobs:
 
   # Origin: processor_job in .circleci/create_circleci_config.py
   tests_processors:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_processors == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_processors"
@@ -562,9 +559,8 @@ jobs:
   # NOTE: job_name has no "tests_" prefix; report_name must be set explicitly
   #       → "tests_pipelines_torch" (mirrors --make-reports=tests_{self.name}).
   pipelines_torch:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_pipelines_torch == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "pipelines_torch"
@@ -578,9 +574,8 @@ jobs:
 
   # Origin: custom_tokenizers_job in .circleci/create_circleci_config.py
   tests_custom_tokenizers:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_custom_tokenizers == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:               "tests_custom_tokenizers"
@@ -591,9 +586,8 @@ jobs:
 
   # Origin: exotic_models_job in .circleci/create_circleci_config.py
   tests_exotic_models:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_exotic_models == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:              "tests_exotic_models"
@@ -605,9 +599,8 @@ jobs:
 
   # Origin: repo_utils_job in .circleci/create_circleci_config.py
   tests_repo_utils:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_repo_utils == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:           "tests_repo_utils"
@@ -618,9 +611,8 @@ jobs:
 
   # Origin: non_model_job in .circleci/create_circleci_config.py
   tests_non_model:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_non_model == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:          "tests_non_model"
@@ -633,9 +625,8 @@ jobs:
 
   # Origin: training_ci_job in .circleci/create_circleci_config.py
   tests_training_ci:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_training_ci == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "tests_training_ci"
@@ -649,9 +640,8 @@ jobs:
 
   # Origin: tensor_parallel_ci_job in .circleci/create_circleci_config.py
   tests_tensor_parallel_ci:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_tensor_parallel_ci == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "tests_tensor_parallel_ci"
@@ -666,9 +656,8 @@ jobs:
 
   # Origin: expert_parallel_ci_job in .circleci/create_circleci_config.py
   tests_expert_parallel_ci:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_expert_parallel_ci == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "tests_expert_parallel_ci"
@@ -682,9 +671,8 @@ jobs:
 
   # Origin: fsdp_ci_job in .circleci/create_circleci_config.py
   tests_fsdp_ci:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_fsdp_ci == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "tests_fsdp_ci"
@@ -698,9 +686,8 @@ jobs:
 
   # New: PEFT integration tests
   tests_peft_integration:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     needs: [test-preparation, quality_gate]
-    if: ${{ !cancelled() && needs.quality_gate.result == 'success'
-         && needs.test-preparation.outputs.run_tests_peft_integration == 'true' }}
     uses: ./.github/workflows/pr-ci_reusable_test_job.yml
     with:
       job_name:            "tests_peft_integration"
@@ -723,11 +710,11 @@ jobs:
     needs: [test-preparation, quality_gate]
     if: ${{ !cancelled() && needs.quality_gate.result == 'success'
          && needs.test-preparation.outputs.run_fast_integration == 'true' }}
-    uses: huggingface/transformers-ci/.github/workflows/pr-ci_contracts.yml@main
+    uses: huggingface/transformers-ci/.github/workflows/pr-ci_contracts.yml@ci-mic-277-278-282  # TEMP: main
     with:
       docker_image: "huggingface/transformers-torch-light"
       runner:       "aws-m8i-l-cache"
-      ci_sha:       "main"
+      ci_sha:       "ci-mic-277-278-282"  # TEMP: "main"
 
   # ---------------------------------------------------------------------------
   # ===========================================================================
@@ -736,6 +723,7 @@ jobs:
   # Mirrors: poll CircleCI workflow API + process_circleci_workflow_test_reports.py
   # ===========================================================================
   collection:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     permissions:
       contents: read
     name: "Collect and aggregate test results"
@@ -756,7 +744,6 @@ jobs:
       - tests_expert_parallel_ci
       - tests_fsdp_ci
       - tests_peft_integration
-    if: always()
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -807,6 +794,7 @@ jobs:
   #   - collection                                                            (Stage 3)
   # ===========================================================================
   ci_passed:
+    if: false  # TEMP (ci-mic-277-278-282): only fast-integration runs
     permissions: {}
     name: "PR CI status"
     runs-on: ubuntu-22.04
@@ -837,7 +825,6 @@ jobs:
     # Without `if: always()` this job would be skipped on upstream failure, and
     # GitHub treats a missing/skipped required check as "passing" — defeating the
     # whole purpose.
-    if: always()
     steps:
       - name: Decide pass or fail
         env:
