@@ -54,6 +54,13 @@ def test_intended_label_and_unmeasured_cases_warn():
     assert got["lost"] == ("warn", "the base replay did not report this case")
 
 
+def test_new_model_label_warns():
+    records = [rec("broke", "fail", ["x"])]
+    cases = gate.to_replay(records)
+    got = verdicts(gate.decide(records, [rec("broke")], [gate.NEW_MODEL], cases))
+    assert got["broke"][0] == "warn" and gate.NEW_MODEL in got["broke"][1]
+
+
 def test_replay_limit(monkeypatch):
     monkeypatch.setattr(gate, "REPLAY_LIMIT", 2)
     records = [rec(f"t{i}", "fail", ["x"]) for i in range(3)]
