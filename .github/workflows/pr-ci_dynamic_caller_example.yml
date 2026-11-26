@@ -728,6 +728,7 @@ jobs:
       docker_image: "huggingface/transformers-torch-light"
       runner:       "aws-m8i-l-cache"
       ci_sha:       "main"
+      enforce:      true
 
   # ---------------------------------------------------------------------------
   # ===========================================================================
@@ -833,6 +834,7 @@ jobs:
       - tests_peft_integration
       # Stage 3
       - collection
+      - fast-integration
     # Run even when upstream jobs fail so the check is always reported to GitHub.
     # Without `if: always()` this job would be skipped on upstream failure, and
     # GitHub treats a missing/skipped required check as "passing" — defeating the
