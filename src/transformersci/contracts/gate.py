@@ -13,7 +13,8 @@ A red case (fail or error) blocks only when the PR caused it. Everything else wa
   cases, fleet revision and environment on HEAD^1, the commit the merge was built on, so both
   cases compare like with like;
 - the `mic-intended-change` label: a maintainer reviewed the change as intended but could not
-  re-record it (a fallback for when record-mic is unavailable).
+  re-record it (a fallback for when record-mic is unavailable);
+- the `New model` label: a model addition never blocks on contracts, its red cases warn.
 
 The usual path for an intended change is record-mic: someone with write access comments
 `record-mic: <model>` on the PR (or runs `make record-mic`), which re-records the expected
@@ -38,6 +39,7 @@ from collections import defaultdict
 from pathlib import Path
 
 LABEL = "mic-intended-change"
+NEW_MODEL = "New model"  # a model addition: its red cases warn, never block
 KNOWN_PASS = "listed in known_failures but passes"
 # The runner's setup failures: the fleet or its baselines, not the code (mirrors
 # transformers-mic experiments/impact.py SETUP_ERRORS).
@@ -105,6 +107,7 @@ def decide(records, base, labels, replayed):
     base = {key(r): r for r in base}
     replayed = {key(r) for r in replayed}
     intended = LABEL in labels
+    new_model = NEW_MODEL in labels
     decisions = []
     for record in sorted((r for r in records if r["status"] in RED), key=key):
         k = key(record)
@@ -134,6 +137,11 @@ def decide(records, base, labels, replayed):
             verdict, reason = (
                 "warn",
                 f"`{LABEL}`: reviewed as intended; re-record the expected values",
+            )
+        elif new_model:
+            verdict, reason = (
+                "warn",
+                f"`{NEW_MODEL}`: a model addition, red cases only warn",
             )
         else:
             verdict, reason = (
