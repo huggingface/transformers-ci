@@ -53,7 +53,7 @@ REPLAY_LIMIT = (
     40  # red cases replayed on the base at most; the rest warn as not measured
 )
 RED = ("fail", "error")
-RERECORD = "https://github.com/huggingface/transformers-mic/blob/main/docs/improving-contracts.md"
+RERECORD = "https://huggingface.co/docs/transformers/main/en/pr_checks#model-integration-contracts"
 
 
 def key(record):
