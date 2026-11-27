@@ -174,8 +174,8 @@ jobs:
       # A path-only superset of `tmic check --changed-files` selection (select_contracts.may_select),
       # so fast-integration only starts when it can select a contract. On a PR, HEAD is
       # the merge commit and HEAD^1 the base it was built on; other events run every
-      # contract. Fails open: this job gates every test suite, and fast-integration
-      # is observational.
+      # contract. Fails open: this job gates every test suite, so an error here runs
+      # fast-integration rather than skipping it.
       - name: Check whether fast-integration has contracts to run
         id: contracts_gate
         run: |
@@ -712,12 +712,13 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # ===========================================================================
-  # Model integration contracts — observational, does not block the PR.
+  # Model integration contracts — enforced: a case the PR turns red (green on the base) fails
+  # the job and so ci_passed. Red on the base too, setup errors and the `mic-intended-change` /
+  # `New model` labels only warn; install and run failures never block (pr-ci_contracts.yml).
   # Runs slim fixture contracts (~70s), and in a parallel job the vLLM contracts (~5 min incl. the vLLM
-  # install, same changed-file selection), independently of the test suite.
+  # install, same changed-file selection, report only), independently of the test suite.
   # Depends on quality_gate so it is skipped when quality checks fail, and on
   # test-preparation so it is skipped when no changed file can select a contract.
-  # Not in ci_passed.needs for phase 1 (observational); add it for phase 2.
   # ===========================================================================
   fast-integration:
     needs: [test-preparation, quality_gate]
@@ -728,6 +729,7 @@ jobs:
       docker_image: "huggingface/transformers-torch-light"
       runner:       "aws-m8i-l-cache"
       ci_sha:       "main"
+      enforce:      true
 
   # ---------------------------------------------------------------------------
   # ===========================================================================
@@ -833,6 +835,7 @@ jobs:
       - tests_peft_integration
       # Stage 3
       - collection
+      - fast-integration
     # Run even when upstream jobs fail so the check is always reported to GitHub.
     # Without `if: always()` this job would be skipped on upstream failure, and
     # GitHub treats a missing/skipped required check as "passing" — defeating the
