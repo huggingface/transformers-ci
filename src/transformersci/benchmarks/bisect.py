@@ -23,10 +23,12 @@ bench:submit), `@askserge bench <PR>` in Slack (a linked GitHub account), or a b
   GET  /benchmarks/queue                  members only (a dashboard session): per bench box, the running job and
                                           the queued ones; the last 10 that ended
 
-Bench boxes: TCI_BENCHMARK_BOXES lists them (JSON: name, label, instance_type, default), each with its own worker token
+Bench boxes: TCI_BENCHMARK_BOXES lists them (JSON: name, label, instance_type, default, bisect), each with its own worker
+token
 in TCI_BENCHMARK_BOX_TOKEN_<NAME> (upper case, - as _); the token tells which box a worker is, and a worker only claims
 its box's jobs. Without a list there is one box, "default", whose token is TCI_BENCHMARK_BISECT_TOKEN. A bisect runs on
-the box that produced the series (by instance type) unless the request names another; a PR bench on the default box.
+the bisect box (the first with "bisect": true) when there is one, else on the box that produced the series (by instance
+type), unless the request names another; a PR bench on the default box.
 Each box's worker also runs that box's daily benchmark and registers it here as a job of kind "daily":
 
   POST /benchmarks/bisect/daily           worker token: {"total": <steps>} -> 201 {"id"}; a running job, reported like
@@ -96,7 +98,7 @@ class Error(Exception):
 
 
 def boxes() -> list[dict]:
-    """The bench boxes, the default first: [{"name", "label", "instance_type", "default"}]."""
+    """The bench boxes, the default first: [{"name", "label", "instance_type", "default", "bisect"}]."""
     try:
         configured = json.loads(os.getenv(BOXES_ENV) or "[]")
     except ValueError:
@@ -104,7 +106,8 @@ def boxes() -> list[dict]:
         configured = []
     out = [
         {"name": b["name"], "label": str(b.get("label") or b["name"]),
-         "instance_type": b.get("instance_type") or None, "default": bool(b.get("default"))}
+         "instance_type": b.get("instance_type") or None, "default": bool(b.get("default")),
+         "bisect": bool(b.get("bisect"))}
         for b in configured if isinstance(b, dict) and BOX_NAME.fullmatch(str(b.get("name", "")))
     ]  # fmt: skip
     if not out:
@@ -114,6 +117,7 @@ def boxes() -> list[dict]:
                 "label": "Bench host",
                 "instance_type": None,
                 "default": True,
+                "bisect": False,
             }
         ]
     if not any(b["default"] for b in out):
@@ -142,6 +146,11 @@ def series_box(series: dict) -> dict:
         (b for b in boxes() if instance and b["instance_type"] == instance),
         default_box(),
     )
+
+
+def bisect_box(series: dict) -> dict:
+    """Where a bisect of this series runs: the bisect box if one is set, else the box that produced the series."""
+    return next((b for b in boxes() if b["bisect"]), None) or series_box(series)
 
 
 def box_token(name: str) -> str:
@@ -374,7 +383,7 @@ def build_job(snapshot: dict, series_key: str, good: str, bad: str) -> dict:
         raise Error(422, "no_e2e_values")
     return {
         "series": series_key,
-        "box": series_box(series)["name"],
+        "box": bisect_box(series)["name"],
         "model": series["model"],
         "scenario_label": series["scenario"],
         "gpu": series["gpu"],
