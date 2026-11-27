@@ -201,7 +201,8 @@ traceExporter:
       #   - {name: g5-48xl, label: "g5.48xlarge · 8× A10G", instanceType: g5.48xlarge, default: true,
       #      tokenKey: benchmark-bisect-token}
       # name: [a-z0-9-], the box's id in requests and `tperf deploy --box`; instanceType matches daily series to the
-      # box that ran them. Empty: one box, "default", whose token is secrets.keys.benchmarkBisectToken.
+      # box that ran them. bisect: true sends every bisect to that box (else a series' own box). Empty: one box,
+      # "default", whose token is secrets.keys.benchmarkBisectToken.
       boxes: []
   slack:
     enabled: false

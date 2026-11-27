@@ -587,6 +587,27 @@ def test_a_bisect_runs_on_the_box_of_its_series_unless_another_is_named(two_boxe
     assert claim("wrong")[0] == 401
 
 
+def test_a_bisect_box_takes_every_bisect_but_not_the_pr_scenarios(
+    two_boxes, monkeypatch
+):
+    flagged = [{**b, "bisect": b["name"] == "small"} for b in BOXES]
+    monkeypatch.setenv("TCI_BENCHMARK_BOXES", json.dumps(flagged))
+    big_series = {**SERIES, "instance_type": "g5.48xlarge"}
+    assert bisect.bisect_box(big_series)["name"] == "small"
+    assert (
+        bisect.series_box(big_series)["name"] == "big"
+    )  # still the box whose PR benches rerun it
+    h = Handler("/benchmarks/bisect", {"series": "gemma-fa2", "good": GOOD, "bad": BAD})
+    bisect.handle(h, "POST")
+    assert bisect.store().get(h.reply[1]["id"])["box"] == "small"
+
+
+def test_without_a_bisect_box_a_bisect_follows_its_series(two_boxes):
+    assert (
+        bisect.bisect_box({**SERIES, "instance_type": "g5.48xlarge"})["name"] == "big"
+    )
+
+
 def test_a_worker_cannot_report_on_another_boxs_job(two_boxes):
     _, job = submit_pr()  # PR benches go to the default box
     assert claim("big-secret")[1]["id"] == job["id"]

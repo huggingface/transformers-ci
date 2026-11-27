@@ -428,7 +428,7 @@ def daily(data, params, theme="dark"):
                 bisect_enabled() and s.get("bisect") and name == "Generation"
             )
             step = largest_step(s["points"]) if bisectable else None
-            series_box_name = bisect_jobs.series_box(s)["name"] if bisectable else ""
+            series_box_name = bisect_jobs.bisect_box(s)["name"] if bisectable else ""
             out += chart(
                 points,
                 m,
