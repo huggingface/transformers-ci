@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import io
 import gzip
 import json
@@ -42,6 +43,7 @@ def make_test_span(
     duration: int,
     status_code: str = "UNSET",
     exception_type: str | None = None,
+    outcome: str | None = None,
 ) -> dict:
     logs: list[dict[str, object]] = []
     if exception_type is not None:
@@ -68,6 +70,7 @@ def make_test_span(
             make_tag("pytest.nodeid", nodeid),
             make_tag("pytest.span_type", "test"),
             make_tag("otel.status_code", status_code),
+            *([make_tag("pytest.outcome", outcome)] if outcome is not None else []),
         ],
     }
 
@@ -154,6 +157,7 @@ def workflow_split_across_three_jobs() -> list[dict]:
                     nodeid="tests/test_torch.py::TestTorch::test_pass",
                     start_time=1_000_000,
                     duration=2_000_000,
+                    outcome="passed",
                 ),
                 make_test_span(
                     process_id=process_id,
@@ -175,6 +179,7 @@ def workflow_split_across_three_jobs() -> list[dict]:
                     nodeid="tests/test_tf.py::TestTf::test_pass",
                     start_time=2_000_000,
                     duration=3_000_000,
+                    outcome="passed",
                 )
             ],
         ),
@@ -188,6 +193,7 @@ def workflow_split_across_three_jobs() -> list[dict]:
                     nodeid="tests/test_flax.py::TestFlax::test_pass",
                     start_time=3_000_000,
                     duration=1_500_000,
+                    outcome="passed",
                 )
             ],
         ),
@@ -1829,12 +1835,14 @@ def test_rollup_emits_a_job_only_the_run_store_knows_about() -> None:
             "total": 12806.0,
             "failed": 132.0,
             "duration": 500.0,
+            "outcomes": Counter(passed=12806 - 132, failed=132),
         },
         # Only the store remembers this one.
         ("run_models_gpu", "single-gpu"): {
             "total": 12806.0,
             "failed": 129.0,
             "duration": 400.0,
+            "outcomes": Counter(passed=12806 - 129 - 100, failed=129, skipped=100),
         },
     }
     try:
@@ -1855,7 +1863,8 @@ def test_rollup_emits_a_job_only_the_run_store_knows_about() -> None:
     # The shard that was NOT in the window now gets a row at all.
     assert value("pytest_run_job_total_tests", "single-gpu") == 12806
     assert value("pytest_run_job_failed_tests", "single-gpu") == 129
-    assert value("pytest_run_job_passed_tests", "single-gpu") == 12806 - 129
+    assert value("pytest_run_job_passed_tests", "single-gpu") == 12806 - 129 - 100
+    assert value("pytest_run_job_executed_tests", "single-gpu") == 12806 - 100
     # It must also be a member of the run, or the dashboards' joins drop it.
     member = [
         ln
@@ -1900,6 +1909,7 @@ def test_rollup_does_not_invent_wall_time_for_a_store_only_job() -> None:
             "total": 10.0,
             "failed": 1.0,
             "duration": 5.0,
+            "outcomes": Counter(unknown=9, failed=1),
         },
     }
     try:
@@ -4174,6 +4184,129 @@ def _run_failed_extract(rows, *, run_failed=1, run_id="29334708040:1", hardware=
     ]
 
 
+def test_rollup_does_not_count_skips_as_passes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
+    )
+    trace = make_trace(
+        trace_id="outcomes-trace",
+        run_id="outcomes-run",
+        job="tests_torch",
+        spans=[
+            make_test_span(
+                process_id="pytest-process",
+                nodeid=f"tests/test_fixture.py::test_case[{i}]",
+                start_time=1_000_000 + i,
+                duration=1,
+                status_code="OK",
+                outcome="passed" if i < 176 else "skipped",
+            )
+            for i in range(320)
+        ],
+    )
+    rollup = trace_exporter.extract_run_rollup_metrics([trace])
+    assert metric_lines(rollup, "pytest_run_job_passed_tests")[0].endswith(" 176")
+    for prefix in ("pytest_run", "pytest_run_job"):
+        assert metric_lines(rollup, f"{prefix}_total_tests")[0].endswith(" 320")
+        assert metric_lines(rollup, f"{prefix}_executed_tests")[0].endswith(" 176")
+        outcomes = metric_lines(rollup, f"{prefix}_outcome_tests")
+        assert any(
+            'outcome="skipped"' in line and line.endswith(" 144") for line in outcomes
+        )
+        assert any(
+            'outcome="passed"' in line and line.endswith(" 176") for line in outcomes
+        )
+
+
+def test_rollup_recovers_outcomes_from_an_aged_out_job(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
+    )
+
+    def extract(job, outcomes):
+        trace = make_trace(
+            trace_id=f"trace-{job}",
+            run_id="stored-outcomes",
+            job=job,
+            spans=[
+                make_test_span(
+                    process_id="pytest-process",
+                    nodeid=f"tests/test_fixture.py::test_{outcome}",
+                    start_time=1_000_000,
+                    duration=1,
+                    status_code="OK",
+                    outcome=outcome,
+                )
+                for outcome in outcomes
+            ],
+        )
+        return trace_exporter.extract_trace_rows(trace)
+
+    aged_out = extract("first", ["passed", "skipped", "xfailed", "xfailed_not_run"])
+    current = extract("second", ["passed", "failed"])
+    trace_exporter.persist_settled_runs([aged_out, current], directory=str(tmp_path))
+    # A trace re-read without the optional tag must keep the outcome already stored.
+    old_row = {key: value for key, value in aged_out[1][0].items() if key != "outcome"}
+    trace_exporter.persist_run_rows(
+        "stored-outcomes", [old_row], directory=str(tmp_path)
+    )
+    stored = trace_exporter.load_run_rows("stored-outcomes", directory=str(tmp_path))
+    assert (
+        next(
+            r["outcome"]
+            for r in stored
+            if r["test_nodeid"] == old_row["test_nodeid"] and r["test_job"] == "first"
+        )
+        == "passed"
+    )
+
+    rollup = trace_exporter.extract_run_rollup_metrics(_extracted=[current])
+    assert metric_lines(rollup, "pytest_run_executed_tests")[0].endswith(" 4")
+    assert metric_lines(rollup, "pytest_run_failed_tests")[0].endswith(" 1")
+    outcomes = metric_lines(rollup, "pytest_run_outcome_tests")
+    assert any(
+        'outcome="xfailed_not_run"' in line and line.endswith(" 1") for line in outcomes
+    )
+    assert any(
+        'test_job="first"' in line
+        and 'outcome="skipped"' in line
+        and line.endswith(" 1")
+        for line in metric_lines(rollup, "pytest_run_job_outcome_tests")
+    )
+
+
+def test_rollup_keeps_mic_and_instrumented_step_outcomes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
+    )
+    spans = []
+    for case, status in (("format-check", None), ("model-unsupported", "unsupported")):
+        span = make_test_span(
+            process_id="pytest-process",
+            nodeid=f"tests/contracts::{case}",
+            start_time=1_000_000,
+            duration=1,
+            status_code="OK",
+        )
+        span["tags"].append(make_tag("transformers.check.exit_code", "0"))
+        if status:
+            span["tags"].append(make_tag("mic.status", status))
+        spans.append(span)
+    trace = make_trace(
+        trace_id="instrumented",
+        run_id="instrumented",
+        job="fast-integration",
+        spans=spans,
+    )
+    rollup = trace_exporter.extract_run_rollup_metrics([trace])
+    assert metric_lines(rollup, "pytest_run_job_passed_tests")[0].endswith(" 1")
+    assert metric_lines(rollup, "pytest_run_executed_tests")[0].endswith(" 1")
+    assert any(
+        'outcome="skipped"' in line and line.endswith(" 1")
+        for line in metric_lines(rollup, "pytest_run_outcome_tests")
+    )
+
+
 def test_rollup_run_span_floor_keeps_truncated_failed_job_red(monkeypatch) -> None:
     """Regression guard for the red->green inversion. A large shard trace whose
     single ERROR *test* span was dropped by a truncated read (every read-back row
@@ -4189,9 +4322,42 @@ def test_rollup_run_span_floor_keeps_truncated_failed_job_red(monkeypatch) -> No
     rollup = trace_exporter.extract_run_rollup_metrics(_extracted=extracted)
     assert metric_lines(rollup, "pytest_run_job_failed_tests")[0].endswith(" 1")
     assert metric_lines(rollup, "pytest_run_failed_tests")[0].endswith(" 1")
-    # total is what was read (3); passed is clamped so it never goes negative.
+    # The old OK rows do not tell us which tests passed or were skipped.
     assert metric_lines(rollup, "pytest_run_job_total_tests")[0].endswith(" 3")
     assert metric_lines(rollup, "pytest_run_job_passed_tests")[0].endswith(" 2")
+    assert metric_lines(rollup, "pytest_run_job_executed_tests")[0].endswith(" NaN")
+    assert metric_lines(rollup, "pytest_run_executed_tests")[0].endswith(" NaN")
+    assert any(
+        'outcome="unknown"' in line and line.endswith(" 3")
+        for line in metric_lines(rollup, "pytest_run_job_outcome_tests")
+    )
+
+
+def test_rollup_keeps_legacy_passed_count_when_outcomes_are_missing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        trace_exporter, "_run_store_counts", trace_exporter.OrderedDict()
+    )
+    extracted = _run_failed_extract(
+        [
+            {"status_code": "OK", "duration_seconds": 1.0, "outcome": "passed"},
+            {"status_code": "OK", "duration_seconds": 1.0, "outcome": "skipped"},
+            {"status_code": "OK", "duration_seconds": 1.0},
+            {"status_code": "ERROR", "duration_seconds": 1.0},
+        ]
+    )
+    rollup = trace_exporter.extract_run_rollup_metrics(_extracted=extracted)
+    assert metric_lines(rollup, "pytest_run_job_total_tests")[0].endswith(" 4")
+    assert metric_lines(rollup, "pytest_run_job_failed_tests")[0].endswith(" 1")
+    assert metric_lines(rollup, "pytest_run_job_passed_tests")[0].endswith(" 3")
+    assert metric_lines(rollup, "pytest_run_job_executed_tests")[0].endswith(" NaN")
+    explicit_passed = [
+        line
+        for line in metric_lines(rollup, "pytest_run_job_outcome_tests")
+        if 'outcome="passed"' in line
+    ]
+    assert len(explicit_passed) == 1 and explicit_passed[0].endswith(" 1")
 
 
 def test_rollup_run_span_floor_does_not_double_count(monkeypatch) -> None:

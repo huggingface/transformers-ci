@@ -72,8 +72,10 @@
         icons.title = run.lanes.map(hardware => tci.laneName(hardware)).join(' + ');
         lanes.append(icons);
       } else lanes.textContent = '-';
+      const testCount = run.total != null ? Math.round(run.total) :
+        run.recorded != null ? `${Math.round(run.recorded)} (recorded)` : '';
       tr.append(live, cell('', run.branch), commit, cell('num', run.jobs ?? ''), lanes,
-        cell('num', run.total == null ? '' : Math.round(run.total)), cell('num', fromNow(run.started)),
+        cell('num', testCount), cell('num', fromNow(run.started)),
         cell('num', seconds(run.duration)), cell('num', seconds(run.wall)), rateCell(run.rate));
       tr.children[6].title = new Date(run.started * 1000).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
       rows.append(tr);
